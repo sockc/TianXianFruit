@@ -1123,6 +1123,26 @@ private fun SettlementScreen(db: AppDatabase, dataVersion: Int, onChanged: () ->
     val expenses = remember(dataVersion, date) { db.getExpenseTotalsByPartner(date) }
     val profitRows = remember(dataVersion, date) { db.getProfitDistribution(date) }
     val bundle = remember(dataVersion, date) { db.getCashSettlement(date) }
+
+    // V1.2.0: 使用默认利润规则自动生成当天分配，不再要求每天进入“利润分配”手动保存。
+    LaunchedEffect(dataVersion, date, summary.profit, profitRows.size) {
+        if (profitRows.isEmpty() && summary.profit > 0) {
+            val rules = db.getProfitRules()
+            if (rules.isNotEmpty()) {
+                val partners = db.getPartners()
+                val allocations = rules.mapNotNull { rule ->
+                    partners.firstOrNull { it.id == rule.partnerId }?.let { p ->
+                        p to rule.percent
+                    }
+                }
+                if (allocations.isNotEmpty() && kotlin.math.abs(allocations.sumOf { it.second } - 100.0) < 0.01) {
+                    if (db.saveProfitDistribution(date, allocations)) {
+                        onChanged()
+                    }
+                }
+            }
+        }
+    }
     val history = remember(dataVersion) { db.getRecentCashSettlements(20) }
 
     LazyColumn(
