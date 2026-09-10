@@ -1,0 +1,20 @@
+天鲜果业 V1 FIX1
+
+修复 GitHub Actions:
+:app:checkReleaseAarMetadata
+
+原因：
+Compose BOM 2026.08.00 会解析到 Compose 1.12.0。
+Compose 1.12.0 要求 compileSdk 37 + AGP 9.1.2+，
+而本项目当前采用 compileSdk 36 + AGP 8.13.2。
+
+本修复将 Compose BOM 固定为：
+androidx.compose:compose-bom:2025.08.00
+
+该 BOM 对应 Compose 1.9.x 系列，适合当前 API 36 构建链。
+
+其他配置保持不变：
+包名 com.tianxian.fruit
+versionCode 1
+versionName 1.0.0
+固定签名 workflow 不变
