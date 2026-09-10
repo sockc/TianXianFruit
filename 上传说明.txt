@@ -1,16 +1,18 @@
-TianXianFruit V1.1.4 PATCH
+TianXianFruit V1.1.5 PATCH
 
-如果 GitHub 当前是 V1.1.3：
-把本压缩包中的文件按原目录覆盖上传即可。
+基于 V1.1.4 FIX1。
 
-覆盖：
-.github/workflows/build-apk.yml
-app/build.gradle
-app/src/main/java/com/tianxian/fruit/ui/AppUi.kt
-app/src/main/java/com/tianxian/fruit/data/AppDatabase.kt
-README.md
+把本包文件保持原目录覆盖上传到 GitHub。
 
-不要修改 GitHub Secrets，不要更换 keystore。
+不要修改 GitHub Secrets。
+不要更换 keystore。
 
-Actions 产物：
-TianXianFruit-v1.1.4.apk
+Actions 预期产物：
+TianXianFruit-v1.1.5.apk
+
+重点测试：
+1. 删除一个以前收过款的合伙人。
+2. 打开旧营业记录，应显示“原姓名（已删除）”。
+3. 不改收款人，只修改营业额后保存，应成功。
+4. 再编辑，把收款人换成现有合伙人，应成功。
+5. 旧进货单的进货人已删除时，也应能编辑保存。

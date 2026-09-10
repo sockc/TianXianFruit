@@ -571,6 +571,13 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         if (c.moveToFirst()) StoreOption(c.long("id"), c.str("name"), c.str("address")) else null
     }
 
+    fun getStoreByIdIncludingDeleted(id: Long): StoreOption? = readableDatabase.rawQuery(
+        "SELECT id,name,address FROM store WHERE id=? LIMIT 1",
+        arrayOf(id.toString())
+    ).use { c ->
+        if (c.moveToFirst()) StoreOption(c.long("id"), c.str("name"), c.str("address")) else null
+    }
+
     fun addStore(name: String, address: String): Long {
         val clean = name.trim()
         if (clean.isBlank()) return -1
@@ -591,6 +598,13 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
 
     fun getPartnerById(id: Long): PartnerOption? = readableDatabase.rawQuery(
         "SELECT id,name FROM partner WHERE id=? AND enabled=1 AND deleted=0 LIMIT 1",
+        arrayOf(id.toString())
+    ).use { c ->
+        if (c.moveToFirst()) PartnerOption(c.long("id"), c.str("name")) else null
+    }
+
+    fun getPartnerByIdIncludingDeleted(id: Long): PartnerOption? = readableDatabase.rawQuery(
+        "SELECT id,name FROM partner WHERE id=? LIMIT 1",
         arrayOf(id.toString())
     ).use { c ->
         if (c.moveToFirst()) PartnerOption(c.long("id"), c.str("name")) else null
@@ -634,13 +648,14 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         remark: String
     ): Long {
         if (lines.isEmpty()) return -1
+        val activeBuyer = getPartnerById(buyer.id) ?: return -1
         val db = writableDatabase
         db.beginTransaction()
         try {
             val total = lines.sumOf { it.totalCost }
             val orderId = db.insert("purchase_order", null, baseSyncValues().apply {
                 put("date", date)
-                put("buyer_id", buyer.id); put("buyer_name", buyer.name)
+                put("buyer_id", activeBuyer.id); put("buyer_name", activeBuyer.name)
                 put("store_id", 0); put("store_name", "共用货品")
                 put("total_cost", total); put("remark", remark.trim()); put("deleted", 0)
             })
@@ -670,6 +685,21 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         remark: String
     ): Boolean {
         if (lines.isEmpty()) return false
+
+        val oldBuyer = readableDatabase.rawQuery(
+            "SELECT buyer_id,buyer_name FROM purchase_order WHERE id=? AND deleted=0 LIMIT 1",
+            arrayOf(id.toString())
+        ).use { c ->
+            if (c.moveToFirst()) PartnerOption(c.long("buyer_id"), c.str("buyer_name")) else null
+        } ?: return false
+
+        val activeBuyer = getPartnerById(buyer.id)
+        val resolvedBuyer = when {
+            activeBuyer != null -> activeBuyer
+            buyer.id == oldBuyer.id -> oldBuyer
+            else -> return false
+        }
+
         val db = writableDatabase
         db.beginTransaction()
         try {
@@ -677,8 +707,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
             val total = lines.sumOf { it.totalCost }
             val changed = db.update("purchase_order", ContentValues().apply {
                 put("date", date)
-                put("buyer_id", buyer.id)
-                put("buyer_name", buyer.name)
+                put("buyer_id", resolvedBuyer.id)
+                put("buyer_name", resolvedBuyer.name)
                 put("store_id", 0)
                 put("store_name", "共用货品")
                 put("total_cost", total)
@@ -848,18 +878,46 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         newCustomer: Int,
         oldCustomer: Int
     ): StoreDailySaveResult {
-        val freshStore = getStoreById(store.id)
-            ?: return StoreDailySaveResult(false, "保存失败：所选摊位不存在或已被删除")
+        val editingOld = recordId?.let { getStoreDailyRecordById(it) }
 
-        fun freshPartner(p: PartnerOption?): PartnerOption? {
-            if (p == null) return null
-            return getPartnerById(p.id)
+        val activeStore = getStoreById(store.id)
+        val freshStore = when {
+            activeStore != null -> activeStore
+            editingOld != null && editingOld.storeId == store.id ->
+                StoreOption(editingOld.storeId, editingOld.storeName, "")
+            else -> return StoreDailySaveResult(false, "保存失败：所选摊位不存在或已被删除")
         }
 
-        val freshWechatCollector = freshPartner(wechatCollector)
-        val freshAlipayCollector = freshPartner(alipayCollector)
-        val freshCashCollector = freshPartner(cashCollector)
-        val freshExpensePayer = freshPartner(expensePayer)
+        fun freshPartner(p: PartnerOption?, oldId: Long, oldName: String): PartnerOption? {
+            if (p == null) return null
+            val active = getPartnerById(p.id)
+            if (active != null) return active
+            if (editingOld != null && p.id == oldId && oldId > 0) {
+                return PartnerOption(oldId, oldName)
+            }
+            return null
+        }
+
+        val freshWechatCollector = freshPartner(
+            wechatCollector,
+            editingOld?.wechatCollectorId ?: 0L,
+            editingOld?.wechatCollectorName ?: "未指定"
+        )
+        val freshAlipayCollector = freshPartner(
+            alipayCollector,
+            editingOld?.alipayCollectorId ?: 0L,
+            editingOld?.alipayCollectorName ?: "未指定"
+        )
+        val freshCashCollector = freshPartner(
+            cashCollector,
+            editingOld?.cashCollectorId ?: 0L,
+            editingOld?.cashCollectorName ?: "未指定"
+        )
+        val freshExpensePayer = freshPartner(
+            expensePayer,
+            editingOld?.expensePayerId ?: 0L,
+            editingOld?.expensePayerName ?: "未指定"
+        )
 
         if (wechat > 0 && wechatCollector != null && freshWechatCollector == null) {
             return StoreDailySaveResult(false, "保存失败：微信收款归属已失效，请重新选择")
@@ -879,20 +937,27 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         val profit = roundMoney(revenue + closingStock - openingStock - expense)
         val now = System.currentTimeMillis()
 
-        // Find the row we are editing, if any.
-        val editingOld = recordId?.let { getStoreDailyRecordById(it) }
-
         // A date+store pair is unique. If another active row already occupies it,
         // editing must not overwrite that other row silently.
-        val activeConflictId = db.rawQuery(
-            """
-            SELECT id FROM store_daily_record
-            WHERE date=? AND store_id=? AND deleted=0
-              AND (? IS NULL OR id<>?)
-            LIMIT 1
-            """.trimIndent(),
-            arrayOf(date, freshStore.id.toString(), recordId?.toString(), recordId?.toString())
-        ).use { c -> if (c.moveToFirst()) c.long("id") else null }
+        val activeConflictId = if (recordId == null) {
+            db.rawQuery(
+                """
+                SELECT id FROM store_daily_record
+                WHERE date=? AND store_id=? AND deleted=0
+                LIMIT 1
+                """.trimIndent(),
+                arrayOf(date, freshStore.id.toString())
+            ).use { c -> if (c.moveToFirst()) c.long("id") else null }
+        } else {
+            db.rawQuery(
+                """
+                SELECT id FROM store_daily_record
+                WHERE date=? AND store_id=? AND deleted=0 AND id<>?
+                LIMIT 1
+                """.trimIndent(),
+                arrayOf(date, freshStore.id.toString(), recordId.toString())
+            ).use { c -> if (c.moveToFirst()) c.long("id") else null }
+        }
 
         if (activeConflictId != null) {
             return StoreDailySaveResult(

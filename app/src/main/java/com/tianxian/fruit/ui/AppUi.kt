@@ -359,7 +359,7 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
     val partners = remember(dataVersion) { db.getPartners() }
 
     var buyerId by remember { mutableStateOf<Long?>(null) }
-    val buyer = partners.firstOrNull { it.id == buyerId } ?: partners.firstOrNull()
+    var historicalBuyerName by remember { mutableStateOf("") }
 
     var fruitId by remember { mutableStateOf<Long?>(null) }
     val fruit = fruits.firstOrNull { it.id == fruitId } ?: fruits.firstOrNull()
@@ -377,6 +377,20 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
     var editingOrderId by remember { mutableStateOf<Long?>(null) }
     var deleteOrder by remember { mutableStateOf<PurchaseOrderDetail?>(null) }
     val history = remember(dataVersion) { db.getPurchaseOrders(50) }
+
+    val activeBuyer = partners.firstOrNull { it.id == buyerId }
+    val historicalBuyer = if (editingOrderId != null && buyerId != null && activeBuyer == null) {
+        PartnerOption(
+            buyerId!!,
+            historicalBuyerName.ifBlank { db.getPartnerByIdIncludingDeleted(buyerId!!)?.name ?: "已删除合伙人" }
+        )
+    } else null
+    val buyer = activeBuyer ?: historicalBuyer ?: if (editingOrderId == null) partners.firstOrNull() else null
+    val buyerDisplayName = when {
+        activeBuyer != null -> activeBuyer.name
+        historicalBuyer != null -> "${historicalBuyer.name}（已删除）"
+        else -> "请先添加"
+    }
 
     LaunchedEffect(dataVersion, partners.size) {
         if (buyerId == null && partners.isNotEmpty()) buyerId = partners.first().id
@@ -397,10 +411,10 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                 CompactDateSelector("日期", date, Modifier.weight(1.05f)) { date = it }
                 Box(Modifier.weight(0.95f)) {
-                    CompactSelectButton("进货人", buyer?.name ?: "请先添加", Modifier.fillMaxWidth()) { buyerMenu = true }
+                    CompactSelectButton("进货人", buyerDisplayName, Modifier.fillMaxWidth()) { buyerMenu = true }
                     DropdownMenu(expanded = buyerMenu, onDismissRequest = { buyerMenu = false }) {
                         partners.forEach { p ->
-                            DropdownMenuItem(text = { Text(p.name) }, onClick = { buyerId = p.id; buyerMenu = false })
+                            DropdownMenuItem(text = { Text(p.name) }, onClick = { buyerId = p.id; historicalBuyerName = ""; buyerMenu = false })
                         }
                     }
                 }
@@ -476,6 +490,7 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
                             unit = "件"
                             date = LocalDate.now().toString()
                             buyerId = partners.firstOrNull()?.id
+                            historicalBuyerName = ""
                             message = "已取消编辑"
                         }) { Text("取消") }
                     }
@@ -520,6 +535,7 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
                                 draft.clear()
                                 remark = ""
                                 editingOrderId = null
+                                historicalBuyerName = ""
                                 quantity = ""
                                 totalCost = ""
                                 unit = "件"
@@ -555,6 +571,7 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
                                 editingOrderId = detail.order.id
                                 date = detail.order.date
                                 buyerId = detail.order.buyerId
+                                historicalBuyerName = detail.order.buyerName
                                 remark = detail.order.remark
                                 draft.clear()
                                 detail.items.forEach { item ->
@@ -605,6 +622,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
     val partners = remember(dataVersion) { db.getPartners() }
 
     var storeId by remember { mutableStateOf<Long?>(null) }
+    var historicalStoreName by remember { mutableStateOf("") }
     var storeMenu by remember { mutableStateOf(false) }
     var addStoreDialog by remember { mutableStateOf(false) }
 
@@ -612,10 +630,12 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
     var alipay by remember { mutableStateOf("") }
     var cash by remember { mutableStateOf("") }
     var collectorId by remember { mutableStateOf<Long?>(null) }
+    var historicalCollectorName by remember { mutableStateOf("") }
     var collectorMenu by remember { mutableStateOf(false) }
 
     var expense by remember { mutableStateOf("") }
     var expensePayerId by remember { mutableStateOf<Long?>(null) }
+    var historicalExpensePayerName by remember { mutableStateOf("") }
     var expensePayerMenu by remember { mutableStateOf(false) }
     var openingStock by remember { mutableStateOf("") }
     var closingStock by remember { mutableStateOf("") }
@@ -627,13 +647,46 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
     var isError by remember { mutableStateOf(false) }
     var deleteRecord by remember { mutableStateOf<StoreDailyRecord?>(null) }
 
-    val selectedStore = stores.firstOrNull { it.id == storeId }
+    val activeSelectedStore = stores.firstOrNull { it.id == storeId }
+    val historicalSelectedStore = if (editingRecordId != null && storeId != null && activeSelectedStore == null) {
+        StoreOption(
+            storeId!!,
+            historicalStoreName.ifBlank { db.getStoreByIdIncludingDeleted(storeId!!)?.name ?: "已删除摊位" },
+            ""
+        )
+    } else null
+    val selectedStore = activeSelectedStore ?: historicalSelectedStore
+    val storeDisplayName = when {
+        activeSelectedStore != null -> activeSelectedStore.name
+        historicalSelectedStore != null -> "${historicalSelectedStore.name}（已删除）"
+        else -> "请添加位置"
+    }
+
+    val activeCollector = partners.firstOrNull { it.id == collectorId }
+    val collectorDisplayName = when {
+        activeCollector != null -> activeCollector.name
+        editingRecordId != null && collectorId != null ->
+            "${historicalCollectorName.ifBlank { db.getPartnerByIdIncludingDeleted(collectorId!!)?.name ?: "已删除合伙人" }}（已删除）"
+        else -> "未指定"
+    }
+
+    val activeExpensePayer = partners.firstOrNull { it.id == expensePayerId }
+    val expensePayerDisplayName = when {
+        activeExpensePayer != null -> activeExpensePayer.name
+        editingRecordId != null && expensePayerId != null ->
+            "${historicalExpensePayerName.ifBlank { db.getPartnerByIdIncludingDeleted(expensePayerId!!)?.name ?: "已删除合伙人" }}（已删除）"
+        else -> "未指定"
+    }
+
     val todayRecords = remember(dataVersion, date) { db.getDailyRecords(date) }
     val sharedPurchase = remember(dataVersion, date) { db.getPurchaseTotal(date) }
 
     fun clearForm(keepDate: Boolean = true) {
         if (!keepDate) date = LocalDate.now().toString()
         editingRecordId = null
+        historicalStoreName = ""
+        historicalCollectorName = ""
+        historicalExpensePayerName = ""
         wechat = ""
         alipay = ""
         cash = ""
@@ -651,13 +704,21 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         editingRecordId = r.id
         date = r.date
         storeId = r.storeId
+        historicalStoreName = r.storeName
         wechat = cleanNumber(r.wechatIncome)
         alipay = cleanNumber(r.alipayIncome)
         cash = cleanNumber(r.cashIncome)
         collectorId = listOf(r.wechatCollectorId, r.alipayCollectorId, r.cashCollectorId)
             .firstOrNull { it > 0 }
+        historicalCollectorName = when (collectorId) {
+            r.wechatCollectorId -> r.wechatCollectorName
+            r.alipayCollectorId -> r.alipayCollectorName
+            r.cashCollectorId -> r.cashCollectorName
+            else -> ""
+        }
         expense = cleanNumber(r.expense)
         expensePayerId = r.expensePayerId.takeIf { it > 0 }
+        historicalExpensePayerName = r.expensePayerName
         openingStock = cleanNumber(r.openingStockValue)
         closingStock = cleanNumber(r.stockLeftValue)
         newCustomer = r.newCustomer.toString()
@@ -666,15 +727,20 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         isError = false
     }
 
-    LaunchedEffect(dataVersion, stores.map { it.id }) {
-        if (storeId == null || stores.none { it.id == storeId }) {
-            storeId = stores.firstOrNull()?.id
-        }
-        if (collectorId != null && partners.none { it.id == collectorId }) {
-            collectorId = partners.firstOrNull()?.id
-        }
-        if (expensePayerId != null && partners.none { it.id == expensePayerId }) {
-            expensePayerId = partners.firstOrNull()?.id
+    LaunchedEffect(dataVersion, stores.map { it.id }, partners.map { it.id }, editingRecordId) {
+        if (editingRecordId == null) {
+            if (storeId == null || stores.none { it.id == storeId }) {
+                storeId = stores.firstOrNull()?.id
+                historicalStoreName = ""
+            }
+            if (collectorId != null && partners.none { it.id == collectorId }) {
+                collectorId = partners.firstOrNull()?.id
+                historicalCollectorName = ""
+            }
+            if (expensePayerId != null && partners.none { it.id == expensePayerId }) {
+                expensePayerId = partners.firstOrNull()?.id
+                historicalExpensePayerName = ""
+            }
         }
     }
 
@@ -730,7 +796,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                 Box(Modifier.weight(1f)) {
                     CompactSelectButton(
                         "摊位",
-                        selectedStore?.name ?: "请添加位置",
+                        storeDisplayName,
                         Modifier.fillMaxWidth()
                     ) { storeMenu = true }
 
@@ -740,6 +806,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                                 text = { Text(s.name) },
                                 onClick = {
                                     storeId = s.id
+                                    historicalStoreName = ""
                                     storeMenu = false
                                 }
                             )
@@ -757,7 +824,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                 Box(Modifier.weight(1f)) {
                     CompactSelectButton(
                         "收款归属",
-                        partners.firstOrNull { it.id == collectorId }?.name ?: "未指定",
+                        collectorDisplayName,
                         Modifier.fillMaxWidth()
                     ) { collectorMenu = true }
 
@@ -767,6 +834,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                                 text = { Text(p.name) },
                                 onClick = {
                                     collectorId = p.id
+                                    historicalCollectorName = ""
                                     collectorMenu = false
                                 }
                             )
@@ -775,6 +843,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                             text = { Text("未指定") },
                             onClick = {
                                 collectorId = null
+                                historicalCollectorName = ""
                                 collectorMenu = false
                             }
                         )
@@ -799,7 +868,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                 Box(Modifier.weight(1f)) {
                     CompactSelectButton(
                         "费用付款人",
-                        partners.firstOrNull { it.id == expensePayerId }?.name ?: "未指定",
+                        expensePayerDisplayName,
                         Modifier.fillMaxWidth()
                     ) { expensePayerMenu = true }
 
@@ -812,6 +881,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                                 text = { Text(p.name) },
                                 onClick = {
                                     expensePayerId = p.id
+                                    historicalExpensePayerName = ""
                                     expensePayerMenu = false
                                 }
                             )
@@ -820,6 +890,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                             text = { Text("未指定") },
                             onClick = {
                                 expensePayerId = null
+                                historicalExpensePayerName = ""
                                 expensePayerMenu = false
                             }
                         )
@@ -859,25 +930,44 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         item {
             Button(
                 onClick = {
-                    val freshStore = storeId?.let { db.getStoreById(it) }
-                    if (freshStore == null) {
+                    val requestedStore = storeId?.let { id ->
+                        db.getStoreById(id) ?: if (editingRecordId != null) {
+                            StoreOption(
+                                id,
+                                historicalStoreName.ifBlank { db.getStoreByIdIncludingDeleted(id)?.name ?: "已删除摊位" },
+                                ""
+                            )
+                        } else null
+                    }
+                    if (requestedStore == null) {
                         message = "保存失败：请选择有效摊位"
                         isError = true
                         return@Button
                     }
 
-                    // Resolve IDs again from SQLite at the moment of saving.
-                    // This prevents stale Compose objects after editing profit rules,
-                    // renaming partners, switching pages, etc.
-                    val freshCollector = collectorId?.let { db.getPartnerById(it) }
-                    if (collectorId != null && freshCollector == null) {
+                    val requestedCollector = collectorId?.let { id ->
+                        db.getPartnerById(id) ?: if (editingRecordId != null) {
+                            PartnerOption(
+                                id,
+                                historicalCollectorName.ifBlank { db.getPartnerByIdIncludingDeleted(id)?.name ?: "已删除合伙人" }
+                            )
+                        } else null
+                    }
+                    if (collectorId != null && requestedCollector == null) {
                         message = "保存失败：收款归属已失效，请重新选择"
                         isError = true
                         return@Button
                     }
 
-                    val freshExpensePayer = expensePayerId?.let { db.getPartnerById(it) }
-                    if (expense > 0 && expensePayerId != null && freshExpensePayer == null) {
+                    val requestedExpensePayer = expensePayerId?.let { id ->
+                        db.getPartnerById(id) ?: if (editingRecordId != null) {
+                            PartnerOption(
+                                id,
+                                historicalExpensePayerName.ifBlank { db.getPartnerByIdIncludingDeleted(id)?.name ?: "已删除合伙人" }
+                            )
+                        } else null
+                    }
+                    if (e > 0 && expensePayerId != null && requestedExpensePayer == null) {
                         message = "保存失败：费用付款人已失效，请重新选择"
                         isError = true
                         return@Button
@@ -886,15 +976,15 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                     val result = db.saveStoreDailyRecord(
                         recordId = editingRecordId,
                         date = date,
-                        store = freshStore,
+                        store = requestedStore,
                         wechat = w,
-                        wechatCollector = freshCollector,
+                        wechatCollector = requestedCollector,
                         alipay = a,
-                        alipayCollector = freshCollector,
+                        alipayCollector = requestedCollector,
                         cash = c,
-                        cashCollector = freshCollector,
+                        cashCollector = requestedCollector,
                         expense = e,
-                        expensePayer = freshExpensePayer,
+                        expensePayer = requestedExpensePayer,
                         openingStock = open,
                         closingStock = close,
                         newCustomer = n,
@@ -1334,7 +1424,7 @@ private fun PartnerContent(db: AppDatabase, dataVersion: Int, onChanged: () -> U
     var edit by remember { mutableStateOf<PartnerOption?>(null) }
     var delete by remember { mutableStateOf<PartnerOption?>(null) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item { Text("当前 ${partners.size} 位合伙人，人数不设上限。改名只影响以后选择，历史记录保留当时姓名。", color = Color.Gray) }
+        item { Text("当前 ${partners.size} 位合伙人，人数不设上限。删除只代表今后不再参与新记录；历史进货、营业、利润和结算仍保留原 ID 与当时姓名，并可继续编辑。", color = Color.Gray) }
         items(partners, key = { it.id }) { p ->
             RecordCard {
                 Text(p.name, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
@@ -1352,7 +1442,7 @@ private fun PartnerContent(db: AppDatabase, dataVersion: Int, onChanged: () -> U
             db.updatePartnerName(p.id, name); edit = null; onChanged()
         }
     }
-    delete?.let { p -> ConfirmDelete("删除合伙人“${p.name}”？历史进货、历史收款和历史分红仍保留原姓名。", { delete = null }) {
+    delete?.let { p -> ConfirmDelete("删除合伙人“${p.name}”？删除后不再出现在新记录选择列表中；已有进货、营业、利润分配和结算历史继续保留，并可编辑原历史记录。", { delete = null }) {
         db.deletePartner(p.id); delete = null; onChanged()
     } }
 }
