@@ -1,8 +1,16 @@
-V1.1.3 PATCH
+TianXianFruit V1.1.4 PATCH
 
-GitHub 当前为 V1.1.2 时，把本包文件按原目录覆盖上传。
+如果 GitHub 当前是 V1.1.3：
+把本压缩包中的文件按原目录覆盖上传即可。
 
-无需修改 GitHub Secrets，也不要更换签名。
+覆盖：
+.github/workflows/build-apk.yml
+app/build.gradle
+app/src/main/java/com/tianxian/fruit/ui/AppUi.kt
+app/src/main/java/com/tianxian/fruit/data/AppDatabase.kt
+README.md
+
+不要修改 GitHub Secrets，不要更换 keystore。
 
 Actions 产物：
-TianXianFruit-v1.1.3.apk
+TianXianFruit-v1.1.4.apk

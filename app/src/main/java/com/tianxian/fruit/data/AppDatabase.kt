@@ -180,6 +180,14 @@ data class CashSettlementResult(
     val bundle: CashSettlementBundle? = null
 )
 
+data class StoreDailySaveResult(
+    val success: Boolean,
+    val message: String,
+    val recordId: Long = -1L,
+    val profitDistributionInvalidated: Boolean = false,
+    val cashSettlementInvalidated: Boolean = false
+)
+
 class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
     override fun onCreate(db: SQLiteDatabase) {
         createFruitTable(db)
@@ -556,6 +564,13 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         "SELECT id,name,address FROM store WHERE enabled=1 AND deleted=0 ORDER BY id DESC", null
     ).use { c -> buildList { while (c.moveToNext()) add(StoreOption(c.long("id"), c.str("name"), c.str("address"))) } }
 
+    fun getStoreById(id: Long): StoreOption? = readableDatabase.rawQuery(
+        "SELECT id,name,address FROM store WHERE id=? AND enabled=1 AND deleted=0 LIMIT 1",
+        arrayOf(id.toString())
+    ).use { c ->
+        if (c.moveToFirst()) StoreOption(c.long("id"), c.str("name"), c.str("address")) else null
+    }
+
     fun addStore(name: String, address: String): Long {
         val clean = name.trim()
         if (clean.isBlank()) return -1
@@ -573,6 +588,13 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
     fun getPartners(): List<PartnerOption> = readableDatabase.rawQuery(
         "SELECT id,name FROM partner WHERE enabled=1 AND deleted=0 ORDER BY id", null
     ).use { c -> buildList { while (c.moveToNext()) add(PartnerOption(c.long("id"), c.str("name"))) } }
+
+    fun getPartnerById(id: Long): PartnerOption? = readableDatabase.rawQuery(
+        "SELECT id,name FROM partner WHERE id=? AND enabled=1 AND deleted=0 LIMIT 1",
+        arrayOf(id.toString())
+    ).use { c ->
+        if (c.moveToFirst()) PartnerOption(c.long("id"), c.str("name")) else null
+    }
 
     fun addPartner(name: String): Long {
         val clean = name.trim()
@@ -763,7 +785,54 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         arrayOf(storeId.toString(), date)
     ).use { c -> if (c.moveToFirst()) c.dbl("stock_left_value") else 0.0 }
 
+    fun getStoreDailyRecordById(id: Long): StoreDailyRecord? = readableDatabase.rawQuery(
+        "SELECT * FROM store_daily_record WHERE id=? AND deleted=0 LIMIT 1",
+        arrayOf(id.toString())
+    ).use { c -> if (c.moveToFirst()) dailyRecord(c) else null }
+
+    private fun invalidateCashSettlementForDate(db: SQLiteDatabase, date: String): Boolean {
+        val now = System.currentTimeMillis()
+        val ids = db.rawQuery(
+            "SELECT id FROM daily_cash_settlement WHERE date=? AND deleted=0",
+            arrayOf(date)
+        ).use { c -> buildList { while (c.moveToNext()) add(c.long("id")) } }
+
+        if (ids.isEmpty()) return false
+
+        ids.forEach { settlementId ->
+            db.update("daily_cash_settlement", ContentValues().apply {
+                put("deleted", 1)
+                put("sync_status", 2)
+                put("updated_at", now)
+            }, "id=?", arrayOf(settlementId.toString()))
+
+            db.update("settlement_partner", ContentValues().apply {
+                put("deleted", 1)
+                put("sync_status", 2)
+                put("updated_at", now)
+            }, "settlement_id=?", arrayOf(settlementId.toString()))
+
+            db.update("settlement_transfer", ContentValues().apply {
+                put("deleted", 1)
+                put("sync_status", 2)
+                put("updated_at", now)
+            }, "settlement_id=?", arrayOf(settlementId.toString()))
+        }
+        return true
+    }
+
+    private fun invalidateProfitDistributionForDate(db: SQLiteDatabase, date: String): Boolean {
+        val now = System.currentTimeMillis()
+        val count = db.update("profit_distribution", ContentValues().apply {
+            put("deleted", 1)
+            put("sync_status", 2)
+            put("updated_at", now)
+        }, "date=? AND deleted=0", arrayOf(date))
+        return count > 0
+    }
+
     fun saveStoreDailyRecord(
+        recordId: Long? = null,
         date: String,
         store: StoreOption,
         wechat: Double,
@@ -778,36 +847,209 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         closingStock: Double,
         newCustomer: Int,
         oldCustomer: Int
-    ) {
-        val purchaseCost = 0.0
-        val revenue = wechat + alipay + cash
-        // 共用进货不直接归属某个摊位；这里只保存该摊的经营贡献。
-        // 每日总利润在 getDailySummary() 中统一扣除当天全部共用进货。
-        val profit = revenue + closingStock - openingStock - expense
-        val old = getStoreDailyRecord(date, store.id)
-        val now = System.currentTimeMillis()
-        val values = ContentValues().apply {
-            put("date", date); put("store_id", store.id); put("store_name", store.name)
-            put("wechat_income", wechat); put("wechat_collector_id", wechatCollector?.id ?: 0); put("wechat_collector_name", wechatCollector?.name ?: "未指定")
-            put("alipay_income", alipay); put("alipay_collector_id", alipayCollector?.id ?: 0); put("alipay_collector_name", alipayCollector?.name ?: "未指定")
-            put("cash_income", cash); put("cash_collector_id", cashCollector?.id ?: 0); put("cash_collector_name", cashCollector?.name ?: "未指定")
-            put("revenue", revenue); put("expense", expense)
-            put("expense_payer_id", expensePayer?.id ?: 0)
-            put("expense_payer_name", expensePayer?.name ?: "未指定")
-            put("opening_stock_value", openingStock); put("stock_left_value", closingStock)
-            put("purchase_cost", purchaseCost); put("profit", profit)
-            put("new_customer", newCustomer); put("old_customer", oldCustomer)
-            put("deleted", 0); put("sync_status", 0); put("updated_at", now)
-            if (old == null) { put("sync_id", UUID.randomUUID().toString()); put("created_at", now) }
+    ): StoreDailySaveResult {
+        val freshStore = getStoreById(store.id)
+            ?: return StoreDailySaveResult(false, "保存失败：所选摊位不存在或已被删除")
+
+        fun freshPartner(p: PartnerOption?): PartnerOption? {
+            if (p == null) return null
+            return getPartnerById(p.id)
         }
-        if (old == null) writableDatabase.insert("store_daily_record", null, values)
-        else writableDatabase.update("store_daily_record", values, "id=?", arrayOf(old.id.toString()))
+
+        val freshWechatCollector = freshPartner(wechatCollector)
+        val freshAlipayCollector = freshPartner(alipayCollector)
+        val freshCashCollector = freshPartner(cashCollector)
+        val freshExpensePayer = freshPartner(expensePayer)
+
+        if (wechat > 0 && wechatCollector != null && freshWechatCollector == null) {
+            return StoreDailySaveResult(false, "保存失败：微信收款归属已失效，请重新选择")
+        }
+        if (alipay > 0 && alipayCollector != null && freshAlipayCollector == null) {
+            return StoreDailySaveResult(false, "保存失败：支付宝收款归属已失效，请重新选择")
+        }
+        if (cash > 0 && cashCollector != null && freshCashCollector == null) {
+            return StoreDailySaveResult(false, "保存失败：现金收款归属已失效，请重新选择")
+        }
+        if (expense > 0 && expensePayer != null && freshExpensePayer == null) {
+            return StoreDailySaveResult(false, "保存失败：费用付款人已失效，请重新选择")
+        }
+
+        val db = writableDatabase
+        val revenue = roundMoney(wechat + alipay + cash)
+        val profit = roundMoney(revenue + closingStock - openingStock - expense)
+        val now = System.currentTimeMillis()
+
+        // Find the row we are editing, if any.
+        val editingOld = recordId?.let { getStoreDailyRecordById(it) }
+
+        // A date+store pair is unique. If another active row already occupies it,
+        // editing must not overwrite that other row silently.
+        val activeConflictId = db.rawQuery(
+            """
+            SELECT id FROM store_daily_record
+            WHERE date=? AND store_id=? AND deleted=0
+              AND (? IS NULL OR id<>?)
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(date, freshStore.id.toString(), recordId?.toString(), recordId?.toString())
+        ).use { c -> if (c.moveToFirst()) c.long("id") else null }
+
+        if (activeConflictId != null) {
+            return StoreDailySaveResult(
+                false,
+                "保存失败：$date 的“${freshStore.name}”已经有营业记录，请点击下方该记录的“编辑”"
+            )
+        }
+
+        // When creating a new entry, an old soft-deleted row with the same
+        // date+store would otherwise violate UNIQUE(date, store_id).
+        val reusableDeletedId = if (recordId == null) {
+            db.rawQuery(
+                "SELECT id FROM store_daily_record WHERE date=? AND store_id=? AND deleted=1 LIMIT 1",
+                arrayOf(date, freshStore.id.toString())
+            ).use { c -> if (c.moveToFirst()) c.long("id") else null }
+        } else null
+
+        val targetId = recordId ?: reusableDeletedId
+        val oldRecord = when {
+            editingOld != null -> editingOld
+            targetId != null -> db.rawQuery(
+                "SELECT * FROM store_daily_record WHERE id=? LIMIT 1",
+                arrayOf(targetId.toString())
+            ).use { c -> if (c.moveToFirst()) dailyRecord(c) else null }
+            else -> null
+        }
+
+        val financialChanged = oldRecord == null ||
+            kotlin.math.abs(oldRecord.revenue - revenue) > 0.005 ||
+            kotlin.math.abs(oldRecord.expense - expense) > 0.005 ||
+            kotlin.math.abs(oldRecord.openingStockValue - openingStock) > 0.005 ||
+            kotlin.math.abs(oldRecord.stockLeftValue - closingStock) > 0.005
+
+        val ownershipChanged = oldRecord == null ||
+            oldRecord.wechatCollectorId != (freshWechatCollector?.id ?: 0L) ||
+            oldRecord.alipayCollectorId != (freshAlipayCollector?.id ?: 0L) ||
+            oldRecord.cashCollectorId != (freshCashCollector?.id ?: 0L) ||
+            oldRecord.expensePayerId != (freshExpensePayer?.id ?: 0L)
+
+        db.beginTransaction()
+        try {
+            val values = ContentValues().apply {
+                put("date", date)
+                put("store_id", freshStore.id)
+                put("store_name", freshStore.name)
+
+                put("wechat_income", wechat)
+                put("wechat_collector_id", freshWechatCollector?.id ?: 0)
+                put("wechat_collector_name", freshWechatCollector?.name ?: "未指定")
+
+                put("alipay_income", alipay)
+                put("alipay_collector_id", freshAlipayCollector?.id ?: 0)
+                put("alipay_collector_name", freshAlipayCollector?.name ?: "未指定")
+
+                put("cash_income", cash)
+                put("cash_collector_id", freshCashCollector?.id ?: 0)
+                put("cash_collector_name", freshCashCollector?.name ?: "未指定")
+
+                put("revenue", revenue)
+                put("expense", expense)
+                put("expense_payer_id", freshExpensePayer?.id ?: 0)
+                put("expense_payer_name", freshExpensePayer?.name ?: "未指定")
+
+                put("opening_stock_value", openingStock)
+                put("stock_left_value", closingStock)
+                put("purchase_cost", 0.0)
+                put("profit", profit)
+                put("new_customer", newCustomer)
+                put("old_customer", oldCustomer)
+
+                put("deleted", 0)
+                put("sync_status", if (targetId == null) 0 else 2)
+                put("updated_at", now)
+            }
+
+            val savedId: Long
+            if (targetId == null) {
+                values.put("sync_id", UUID.randomUUID().toString())
+                values.put("created_at", now)
+                savedId = db.insert("store_daily_record", null, values)
+                if (savedId <= 0) {
+                    return StoreDailySaveResult(false, "保存失败：数据库无法新增营业记录")
+                }
+            } else {
+                val changed = db.update(
+                    "store_daily_record",
+                    values,
+                    "id=?",
+                    arrayOf(targetId.toString())
+                )
+                if (changed <= 0) {
+                    return StoreDailySaveResult(false, "保存失败：找不到要修改的营业记录")
+                }
+                savedId = targetId
+            }
+
+            // Derived results must never block source-data edits.
+            // If money/profit-driving fields changed, old profit distribution
+            // and old cash settlement are stale, so soft-delete them.
+            val profitInvalidated = if (financialChanged) {
+                invalidateProfitDistributionForDate(db, date)
+            } else false
+
+            val cashInvalidated = if (financialChanged || ownershipChanged) {
+                invalidateCashSettlementForDate(db, date)
+            } else false
+
+            // If an edited record was moved to another date, invalidate old date too.
+            var oldDateProfitInvalidated = false
+            var oldDateCashInvalidated = false
+            if (editingOld != null && editingOld.date != date) {
+                oldDateProfitInvalidated = invalidateProfitDistributionForDate(db, editingOld.date)
+                oldDateCashInvalidated = invalidateCashSettlementForDate(db, editingOld.date)
+            }
+
+            db.setTransactionSuccessful()
+
+            val pInvalid = profitInvalidated || oldDateProfitInvalidated
+            val cInvalid = cashInvalidated || oldDateCashInvalidated
+            val extra = when {
+                pInvalid -> "；营业金额/库存/费用有变化，原利润分配和当日结算已自动作废，请重新生成"
+                cInvalid -> "；收款或费用归属有变化，原当日资金结算已自动作废，请重新生成"
+                else -> ""
+            }
+            return StoreDailySaveResult(
+                true,
+                if (recordId == null) "营业记录已保存$extra" else "营业记录已修改$extra",
+                savedId,
+                pInvalid,
+                cInvalid
+            )
+        } finally {
+            db.endTransaction()
+        }
     }
 
-    fun deleteStoreDailyRecord(id: Long) {
-        writableDatabase.update("store_daily_record", ContentValues().apply {
-            put("deleted", 1); put("sync_status", 2); put("updated_at", System.currentTimeMillis())
-        }, "id=?", arrayOf(id.toString()))
+    fun deleteStoreDailyRecord(id: Long): Boolean {
+        val old = getStoreDailyRecordById(id) ?: return false
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val now = System.currentTimeMillis()
+            val changed = db.update("store_daily_record", ContentValues().apply {
+                put("deleted", 1)
+                put("sync_status", 2)
+                put("updated_at", now)
+            }, "id=?", arrayOf(id.toString()))
+            if (changed <= 0) return false
+
+            invalidateProfitDistributionForDate(db, old.date)
+            invalidateCashSettlementForDate(db, old.date)
+
+            db.setTransactionSuccessful()
+            return true
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun getDailyRecords(date: String): List<StoreDailyRecord> = readableDatabase.rawQuery(
@@ -1212,17 +1454,27 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
                     put("deleted", 0)
                 })
             }
+            invalidateCashSettlementForDate(db, date)
             db.setTransactionSuccessful()
             return true
         } finally { db.endTransaction() }
     }
 
     fun deleteProfitDistribution(date: String) {
-        writableDatabase.update("profit_distribution", ContentValues().apply {
-            put("deleted", 1)
-            put("sync_status", 2)
-            put("updated_at", System.currentTimeMillis())
-        }, "date=? AND deleted=0", arrayOf(date))
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val now = System.currentTimeMillis()
+            db.update("profit_distribution", ContentValues().apply {
+                put("deleted", 1)
+                put("sync_status", 2)
+                put("updated_at", now)
+            }, "date=? AND deleted=0", arrayOf(date))
+            invalidateCashSettlementForDate(db, date)
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun getProfitDistribution(date: String): List<ProfitDistributionRecord> = readableDatabase.rawQuery(

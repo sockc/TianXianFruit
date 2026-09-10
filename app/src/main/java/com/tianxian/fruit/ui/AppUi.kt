@@ -605,7 +605,6 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
     val partners = remember(dataVersion) { db.getPartners() }
 
     var storeId by remember { mutableStateOf<Long?>(null) }
-    val store = stores.firstOrNull { it.id == storeId } ?: stores.firstOrNull()
     var storeMenu by remember { mutableStateOf(false) }
     var addStoreDialog by remember { mutableStateOf(false) }
 
@@ -622,37 +621,69 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
     var closingStock by remember { mutableStateOf("") }
     var newCustomer by remember { mutableStateOf("") }
     var oldCustomer by remember { mutableStateOf("") }
+
+    var editingRecordId by remember { mutableStateOf<Long?>(null) }
     var message by remember { mutableStateOf("") }
+    var isError by remember { mutableStateOf(false) }
     var deleteRecord by remember { mutableStateOf<StoreDailyRecord?>(null) }
 
-    LaunchedEffect(dataVersion, stores.size) {
-        if (storeId == null && stores.isNotEmpty()) storeId = stores.first().id
+    val selectedStore = stores.firstOrNull { it.id == storeId }
+    val todayRecords = remember(dataVersion, date) { db.getDailyRecords(date) }
+    val sharedPurchase = remember(dataVersion, date) { db.getPurchaseTotal(date) }
+
+    fun clearForm(keepDate: Boolean = true) {
+        if (!keepDate) date = LocalDate.now().toString()
+        editingRecordId = null
+        wechat = ""
+        alipay = ""
+        cash = ""
+        expense = ""
+        closingStock = ""
+        newCustomer = ""
+        oldCustomer = ""
+        collectorId = partners.firstOrNull()?.id
+        expensePayerId = partners.firstOrNull()?.id
+        val s = storeId?.let { db.getStoreById(it) }
+        openingStock = if (s != null) cleanNumber(db.getPreviousClosingStock(s.id, date)) else ""
     }
-    LaunchedEffect(date, storeId, dataVersion) {
-        val s = store ?: return@LaunchedEffect
-        val saved = db.getStoreDailyRecord(date, s.id)
-        if (saved != null) {
-            wechat = cleanNumber(saved.wechatIncome)
-            alipay = cleanNumber(saved.alipayIncome)
-            cash = cleanNumber(saved.cashIncome)
-            collectorId = listOf(saved.wechatCollectorId, saved.alipayCollectorId, saved.cashCollectorId).firstOrNull { it > 0 }
-            expense = cleanNumber(saved.expense)
-            expensePayerId = saved.expensePayerId.takeIf { it > 0 }
-            openingStock = cleanNumber(saved.openingStockValue)
-            closingStock = cleanNumber(saved.stockLeftValue)
-            newCustomer = saved.newCustomer.toString()
-            oldCustomer = saved.oldCustomer.toString()
-        } else {
-            wechat = ""
-            alipay = ""
-            cash = ""
-            expense = ""
-            closingStock = ""
-            newCustomer = ""
-            oldCustomer = ""
+
+    fun loadRecord(r: StoreDailyRecord) {
+        editingRecordId = r.id
+        date = r.date
+        storeId = r.storeId
+        wechat = cleanNumber(r.wechatIncome)
+        alipay = cleanNumber(r.alipayIncome)
+        cash = cleanNumber(r.cashIncome)
+        collectorId = listOf(r.wechatCollectorId, r.alipayCollectorId, r.cashCollectorId)
+            .firstOrNull { it > 0 }
+        expense = cleanNumber(r.expense)
+        expensePayerId = r.expensePayerId.takeIf { it > 0 }
+        openingStock = cleanNumber(r.openingStockValue)
+        closingStock = cleanNumber(r.stockLeftValue)
+        newCustomer = r.newCustomer.toString()
+        oldCustomer = r.oldCustomer.toString()
+        message = "已载入 ${r.storeName} 的营业记录，可直接修改"
+        isError = false
+    }
+
+    LaunchedEffect(dataVersion, stores.map { it.id }) {
+        if (storeId == null || stores.none { it.id == storeId }) {
+            storeId = stores.firstOrNull()?.id
+        }
+        if (collectorId != null && partners.none { it.id == collectorId }) {
             collectorId = partners.firstOrNull()?.id
+        }
+        if (expensePayerId != null && partners.none { it.id == expensePayerId }) {
             expensePayerId = partners.firstOrNull()?.id
-            openingStock = cleanNumber(db.getPreviousClosingStock(s.id, date))
+        }
+    }
+
+    // For a NEW entry only, change opening stock when the chosen store/date changes.
+    // In edit mode we never overwrite values loaded from history.
+    LaunchedEffect(date, storeId) {
+        if (editingRecordId == null) {
+            val s = storeId?.let { db.getStoreById(it) }
+            openingStock = if (s != null) cleanNumber(db.getPreviousClosingStock(s.id, date)) else ""
         }
     }
 
@@ -665,31 +696,61 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
     val n = newCustomer.toIntOrNull() ?: 0
     val o = oldCustomer.toIntOrNull() ?: 0
     val revenue = w + a + c
-    val sharedPurchase = remember(dataVersion, date) { db.getPurchaseTotal(date) }
     val contribution = revenue + close - open - e
-    val todayRecords = remember(dataVersion, date) { db.getDailyRecords(date) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(7.dp)
     ) {
-        item { PageHeader("摊位营业记录", "共用进货由每日总账统一扣除") }
+        item { PageHeader("摊位营业记录", "营业原始数据优先保存；修改后相关利润分配/结算会按需重新计算") }
+
+        if (editingRecordId != null) {
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF7D9))) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("正在编辑营业记录 #$editingRecordId", Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                        TextButton(onClick = {
+                            clearForm()
+                            message = "已取消编辑"
+                            isError = false
+                        }) { Text("取消编辑") }
+                    }
+                }
+            }
+        }
 
         item { CompactDateSelector("营业日期", date, Modifier.fillMaxWidth()) { date = it } }
 
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                 Box(Modifier.weight(1f)) {
-                    CompactSelectButton("摊位", store?.name ?: "请添加位置", Modifier.fillMaxWidth()) { storeMenu = true }
+                    CompactSelectButton(
+                        "摊位",
+                        selectedStore?.name ?: "请添加位置",
+                        Modifier.fillMaxWidth()
+                    ) { storeMenu = true }
+
                     DropdownMenu(expanded = storeMenu, onDismissRequest = { storeMenu = false }) {
                         stores.forEach { s ->
-                            DropdownMenuItem(text = { Text(s.name) }, onClick = { storeId = s.id; storeMenu = false })
+                            DropdownMenuItem(
+                                text = { Text(s.name) },
+                                onClick = {
+                                    storeId = s.id
+                                    storeMenu = false
+                                }
+                            )
                         }
-                        DropdownMenuItem(text = { Text("＋新增位置") }, onClick = {
-                            storeMenu = false
-                            addStoreDialog = true
-                        })
+                        DropdownMenuItem(
+                            text = { Text("＋新增位置") },
+                            onClick = {
+                                storeMenu = false
+                                addStoreDialog = true
+                            }
+                        )
                     }
                 }
 
@@ -699,11 +760,24 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                         partners.firstOrNull { it.id == collectorId }?.name ?: "未指定",
                         Modifier.fillMaxWidth()
                     ) { collectorMenu = true }
+
                     DropdownMenu(expanded = collectorMenu, onDismissRequest = { collectorMenu = false }) {
                         partners.forEach { p ->
-                            DropdownMenuItem(text = { Text(p.name) }, onClick = { collectorId = p.id; collectorMenu = false })
+                            DropdownMenuItem(
+                                text = { Text(p.name) },
+                                onClick = {
+                                    collectorId = p.id
+                                    collectorMenu = false
+                                }
+                            )
                         }
-                        DropdownMenuItem(text = { Text("未指定") }, onClick = { collectorId = null; collectorMenu = false })
+                        DropdownMenuItem(
+                            text = { Text("未指定") },
+                            onClick = {
+                                collectorId = null
+                                collectorMenu = false
+                            }
+                        )
                     }
                 }
             }
@@ -721,21 +795,40 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
                 CompactNumberField("日常开销", expense, { expense = it }, Modifier.weight(1f))
+
                 Box(Modifier.weight(1f)) {
                     CompactSelectButton(
                         "费用付款人",
                         partners.firstOrNull { it.id == expensePayerId }?.name ?: "未指定",
                         Modifier.fillMaxWidth()
                     ) { expensePayerMenu = true }
-                    DropdownMenu(expanded = expensePayerMenu, onDismissRequest = { expensePayerMenu = false }) {
+
+                    DropdownMenu(
+                        expanded = expensePayerMenu,
+                        onDismissRequest = { expensePayerMenu = false }
+                    ) {
                         partners.forEach { p ->
-                            DropdownMenuItem(text = { Text(p.name) }, onClick = { expensePayerId = p.id; expensePayerMenu = false })
+                            DropdownMenuItem(
+                                text = { Text(p.name) },
+                                onClick = {
+                                    expensePayerId = p.id
+                                    expensePayerMenu = false
+                                }
+                            )
                         }
-                        DropdownMenuItem(text = { Text("未指定") }, onClick = { expensePayerId = null; expensePayerMenu = false })
+                        DropdownMenuItem(
+                            text = { Text("未指定") },
+                            onClick = {
+                                expensePayerId = null
+                                expensePayerMenu = false
+                            }
+                        )
                     }
                 }
             }
+
             Spacer(Modifier.height(5.dp))
+
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 CompactNumberField("开摊库存", openingStock, { openingStock = it }, Modifier.weight(1f))
                 CompactNumberField("收摊库存", closingStock, { closingStock = it }, Modifier.weight(1f))
@@ -766,50 +859,139 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         item {
             Button(
                 onClick = {
-                    val s = store
-                    if (s == null) {
-                        message = "请先添加摆摊位置"
-                    } else {
-                        val collector = partners.firstOrNull { it.id == collectorId }
-                        val expensePayer = partners.firstOrNull { it.id == expensePayerId }
-                        db.saveStoreDailyRecord(date, s, w, collector, a, collector, c, collector, e, expensePayer, open, close, n, o)
-                        message = "${s.name} 营业记录已保存"
+                    val freshStore = storeId?.let { db.getStoreById(it) }
+                    if (freshStore == null) {
+                        message = "保存失败：请选择有效摊位"
+                        isError = true
+                        return@Button
+                    }
+
+                    // Resolve IDs again from SQLite at the moment of saving.
+                    // This prevents stale Compose objects after editing profit rules,
+                    // renaming partners, switching pages, etc.
+                    val freshCollector = collectorId?.let { db.getPartnerById(it) }
+                    if (collectorId != null && freshCollector == null) {
+                        message = "保存失败：收款归属已失效，请重新选择"
+                        isError = true
+                        return@Button
+                    }
+
+                    val freshExpensePayer = expensePayerId?.let { db.getPartnerById(it) }
+                    if (expense > 0 && expensePayerId != null && freshExpensePayer == null) {
+                        message = "保存失败：费用付款人已失效，请重新选择"
+                        isError = true
+                        return@Button
+                    }
+
+                    val result = db.saveStoreDailyRecord(
+                        recordId = editingRecordId,
+                        date = date,
+                        store = freshStore,
+                        wechat = w,
+                        wechatCollector = freshCollector,
+                        alipay = a,
+                        alipayCollector = freshCollector,
+                        cash = c,
+                        cashCollector = freshCollector,
+                        expense = e,
+                        expensePayer = freshExpensePayer,
+                        openingStock = open,
+                        closingStock = close,
+                        newCustomer = n,
+                        oldCustomer = o
+                    )
+
+                    message = result.message
+                    isError = !result.success
+
+                    if (result.success) {
+                        editingRecordId = result.recordId
                         onChanged()
                     }
                 },
                 modifier = Modifier.fillMaxWidth().height(44.dp),
                 contentPadding = PaddingValues(vertical = 5.dp)
-            ) { Text("保存当前摊位") }
-            if (message.isNotBlank()) Text(message, color = BrandGreen, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 3.dp))
+            ) {
+                Text(if (editingRecordId == null) "保存当前摊位" else "保存修改")
+            }
+
+            if (message.isNotBlank()) {
+                Text(
+                    message,
+                    color = if (isError) MaterialTheme.colorScheme.error else BrandGreen,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 3.dp)
+                )
+            }
         }
 
         if (todayRecords.isNotEmpty()) {
-            item { Text("当天已记录摊位", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+            item {
+                Text(
+                    "当天已记录摊位",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
             items(todayRecords, key = { it.id }) { r ->
                 RecordCard {
                     Column(Modifier.weight(1f)) {
-                        Text(r.storeName, fontWeight = FontWeight.Bold)
                         Text(
-                            "营业 ${money(r.revenue)} · 客户 ${r.customerTotal} · 收款 ${r.wechatCollectorName}",
+                            if (r.storeName == "共用货品") "未知摊位（旧数据）" else r.storeName,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "营业 ${money(r.revenue)} · 微信 ${money(r.wechatIncome)} · 支付宝 ${money(r.alipayIncome)} · 现金 ${money(r.cashIncome)}",
                             style = MaterialTheme.typography.bodySmall
                         )
+                        Text(
+                            "客户 ${r.customerTotal} · 收款 ${r.wechatCollectorName}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
                     }
-                    TextButton(onClick = { deleteRecord = r }) { Text("删除") }
+
+                    Column(horizontalAlignment = Alignment.End) {
+                        TextButton(onClick = {
+                            loadRecord(r)
+                        }) { Text("编辑") }
+
+                        TextButton(onClick = {
+                            deleteRecord = r
+                        }) { Text("删除") }
+                    }
                 }
             }
         }
     }
 
-    if (addStoreDialog) AddStoreDialog({ addStoreDialog = false }) { name, address ->
-        db.addStore(name, address)
-        addStoreDialog = false
-        onChanged()
-    }
-    deleteRecord?.let { r ->
-        ConfirmDelete("删除 ${r.date} ${r.storeName} 的营业记录？", { deleteRecord = null }) {
-            db.deleteStoreDailyRecord(r.id)
-            deleteRecord = null
+    if (addStoreDialog) {
+        AddStoreDialog(
+            onDismiss = { addStoreDialog = false }
+        ) { name, address ->
+            val newId = db.addStore(name, address)
+            addStoreDialog = false
+            if (newId > 0) storeId = newId
             onChanged()
+        }
+    }
+
+    deleteRecord?.let { r ->
+        ConfirmDelete(
+            "删除 ${r.date} ${r.storeName} 的营业记录？删除后该日旧利润分配/资金结算也会自动作废。",
+            { deleteRecord = null }
+        ) {
+            if (db.deleteStoreDailyRecord(r.id)) {
+                if (editingRecordId == r.id) clearForm()
+                message = "营业记录已删除；该日需要重新确认利润分配/结算"
+                isError = false
+                onChanged()
+            } else {
+                message = "删除失败：记录不存在"
+                isError = true
+            }
+            deleteRecord = null
         }
     }
 }
