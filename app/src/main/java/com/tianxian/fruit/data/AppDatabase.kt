@@ -188,6 +188,43 @@ data class StoreDailySaveResult(
     val cashSettlementInvalidated: Boolean = false
 )
 
+
+data class FruitAdminRecord(
+    val id: Long,
+    val name: String,
+    val defaultUnit: String,
+    val enabled: Boolean
+)
+
+data class PurchasePlanLineInput(
+    val fruit: FruitOption,
+    val quantity: Double,
+    val unit: String,
+    val remark: String = ""
+)
+
+data class PurchasePlanRecord(
+    val id: Long,
+    val planDate: String,
+    val status: Int,
+    val note: String
+)
+
+data class PurchasePlanItemRecord(
+    val id: Long,
+    val planId: Long,
+    val fruitId: Long,
+    val fruitName: String,
+    val quantity: Double,
+    val unit: String,
+    val remark: String
+)
+
+data class PurchasePlanDetail(
+    val plan: PurchasePlanRecord,
+    val items: List<PurchasePlanItemRecord>
+)
+
 class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
     override fun onCreate(db: SQLiteDatabase) {
         createFruitTable(db)
@@ -195,6 +232,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         createV2Tables(db)
         createV3Tables(db)
         createV4Tables(db)
+        createV5Tables(db)
         seedFruits(db)
         seedPartners(db)
     }
@@ -203,6 +241,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         if (oldVersion < 2) migrateV1ToV2(db)
         if (oldVersion < 3) createV3Tables(db)
         if (oldVersion < 4) createV4Tables(db)
+        if (oldVersion < 5) createV5Tables(db)
     }
 
     private fun createFruitTable(db: SQLiteDatabase) {
@@ -447,6 +486,46 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_settlement_transfer_sid ON settlement_transfer(settlement_id)")
     }
 
+
+    private fun createV5Tables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS purchase_plan(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_date TEXT NOT NULL UNIQUE,
+                status INTEGER NOT NULL DEFAULT 0,
+                note TEXT NOT NULL DEFAULT '',
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_purchase_plan_date ON purchase_plan(plan_date)")
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS purchase_plan_item(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id INTEGER NOT NULL,
+                fruit_id INTEGER NOT NULL,
+                fruit_name TEXT NOT NULL,
+                quantity REAL NOT NULL DEFAULT 0,
+                unit TEXT NOT NULL DEFAULT '件',
+                remark TEXT NOT NULL DEFAULT '',
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_purchase_plan_item_pid ON purchase_plan_item(plan_id)")
+    }
+
     private fun migrateV1ToV2(db: SQLiteDatabase) {
         db.beginTransaction()
         try {
@@ -555,9 +634,35 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
     fun addFruit(name: String, defaultUnit: String): Long {
         val clean = name.trim()
         if (clean.isBlank()) return -1
-        return writableDatabase.insertWithOnConflict("fruit", null, baseSyncValues().apply {
-            put("name", clean); put("default_unit", defaultUnit); put("enabled", 1)
-        }, SQLiteDatabase.CONFLICT_IGNORE)
+
+        val existing = readableDatabase.rawQuery(
+            "SELECT id,enabled FROM fruit WHERE name=? LIMIT 1",
+            arrayOf(clean)
+        ).use { c ->
+            if (c.moveToFirst()) c.long("id") to c.int("enabled") else null
+        }
+
+        if (existing != null) {
+            val id = existing.first
+            writableDatabase.update(
+                "fruit",
+                ContentValues().apply {
+                    put("enabled", 1)
+                    put("default_unit", defaultUnit)
+                    put("sync_status", 2)
+                    put("updated_at", System.currentTimeMillis())
+                },
+                "id=?",
+                arrayOf(id.toString())
+            )
+            return id
+        }
+
+        return writableDatabase.insert("fruit", null, baseSyncValues().apply {
+            put("name", clean)
+            put("default_unit", defaultUnit)
+            put("enabled", 1)
+        })
     }
 
     fun getAllFruits(includeDisabled: Boolean = false): List<FruitOption> =
@@ -574,6 +679,24 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
                 }
             }
         }
+
+    fun getFruitAdminRecords(): List<FruitAdminRecord> = readableDatabase.rawQuery(
+        "SELECT id,name,default_unit,enabled FROM fruit ORDER BY enabled DESC,id",
+        null
+    ).use { c ->
+        buildList {
+            while (c.moveToNext()) {
+                add(
+                    FruitAdminRecord(
+                        c.long("id"),
+                        c.str("name"),
+                        c.str("default_unit"),
+                        c.int("enabled") == 1
+                    )
+                )
+            }
+        }
+    }
 
     fun updateFruit(id: Long, name: String, defaultUnit: String): Boolean {
         val clean = name.trim()
@@ -816,6 +939,172 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
     }
+
+    fun getPurchasePlan(date: String): PurchasePlanDetail? {
+        val plan = readableDatabase.rawQuery(
+            "SELECT * FROM purchase_plan WHERE plan_date=? AND deleted=0 LIMIT 1",
+            arrayOf(date)
+        ).use { c ->
+            if (!c.moveToFirst()) null
+            else PurchasePlanRecord(
+                c.long("id"),
+                c.str("plan_date"),
+                c.int("status"),
+                c.str("note")
+            )
+        } ?: return null
+
+        val items = readableDatabase.rawQuery(
+            "SELECT * FROM purchase_plan_item WHERE plan_id=? AND deleted=0 ORDER BY id",
+            arrayOf(plan.id.toString())
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    add(
+                        PurchasePlanItemRecord(
+                            c.long("id"),
+                            c.long("plan_id"),
+                            c.long("fruit_id"),
+                            c.str("fruit_name"),
+                            c.dbl("quantity"),
+                            c.str("unit"),
+                            c.str("remark")
+                        )
+                    )
+                }
+            }
+        }
+        return PurchasePlanDetail(plan, items)
+    }
+
+    fun savePurchasePlan(
+        date: String,
+        lines: List<PurchasePlanLineInput>,
+        note: String = ""
+    ): Long {
+        if (lines.isEmpty()) return -1
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+
+        db.beginTransaction()
+        try {
+            val existingId = db.rawQuery(
+                "SELECT id FROM purchase_plan WHERE plan_date=? LIMIT 1",
+                arrayOf(date)
+            ).use { c -> if (c.moveToFirst()) c.long("id") else null }
+
+            val planId = if (existingId == null) {
+                db.insert("purchase_plan", null, baseSyncValues().apply {
+                    put("plan_date", date)
+                    put("status", 0)
+                    put("note", note.trim())
+                    put("deleted", 0)
+                })
+            } else {
+                db.update(
+                    "purchase_plan",
+                    ContentValues().apply {
+                        put("status", 0)
+                        put("note", note.trim())
+                        put("deleted", 0)
+                        put("sync_status", 2)
+                        put("updated_at", now)
+                    },
+                    "id=?",
+                    arrayOf(existingId.toString())
+                )
+                existingId
+            }
+
+            if (planId <= 0) return -1
+
+            db.update(
+                "purchase_plan_item",
+                ContentValues().apply {
+                    put("deleted", 1)
+                    put("sync_status", 2)
+                    put("updated_at", now)
+                },
+                "plan_id=? AND deleted=0",
+                arrayOf(planId.toString())
+            )
+
+            lines.forEach { line ->
+                db.insert("purchase_plan_item", null, baseSyncValues().apply {
+                    put("plan_id", planId)
+                    put("fruit_id", line.fruit.id)
+                    put("fruit_name", line.fruit.name)
+                    put("quantity", line.quantity)
+                    put("unit", line.unit)
+                    put("remark", line.remark.trim())
+                    put("deleted", 0)
+                })
+            }
+
+            db.setTransactionSuccessful()
+            return planId
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun updatePurchasePlanStatus(planId: Long, status: Int): Boolean {
+        if (status !in 0..2) return false
+        return writableDatabase.update(
+            "purchase_plan",
+            ContentValues().apply {
+                put("status", status)
+                put("sync_status", 2)
+                put("updated_at", System.currentTimeMillis())
+            },
+            "id=? AND deleted=0",
+            arrayOf(planId.toString())
+        ) > 0
+    }
+
+    fun deletePurchasePlan(planId: Long): Boolean {
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        db.beginTransaction()
+        try {
+            val changed = db.update(
+                "purchase_plan",
+                ContentValues().apply {
+                    put("deleted", 1)
+                    put("sync_status", 2)
+                    put("updated_at", now)
+                },
+                "id=?",
+                arrayOf(planId.toString())
+            )
+            db.update(
+                "purchase_plan_item",
+                ContentValues().apply {
+                    put("deleted", 1)
+                    put("sync_status", 2)
+                    put("updated_at", now)
+                },
+                "plan_id=?",
+                arrayOf(planId.toString())
+            )
+            db.setTransactionSuccessful()
+            return changed > 0
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun getRecentPurchasePlans(limit: Int = 30): List<PurchasePlanDetail> =
+        readableDatabase.rawQuery(
+            "SELECT plan_date FROM purchase_plan WHERE deleted=0 ORDER BY plan_date DESC LIMIT ?",
+            arrayOf(limit.toString())
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    getPurchasePlan(c.str("plan_date"))?.let { add(it) }
+                }
+            }
+        }
 
     fun getPurchaseOrders(limit: Int = 100): List<PurchaseOrderDetail> {
         val orders = readableDatabase.rawQuery(
@@ -1619,7 +1908,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         val root = JSONObject()
         root.put("schemaVersion", DB_VERSION)
         root.put("exportedAt", System.currentTimeMillis())
-        listOf("fruit", "store", "partner", "purchase_order", "purchase_item", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer").forEach { table ->
+        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer").forEach { table ->
             root.put(table, tableAsJson(table))
         }
         return root.toString(2)
@@ -1687,7 +1976,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 4
+        const val DB_VERSION = 5
     }
 }
 
