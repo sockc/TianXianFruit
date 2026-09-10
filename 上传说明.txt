@@ -1,9 +1,8 @@
-V1.1.2 PATCH
+V1.1.3 PATCH
 
-如果 GitHub 当前已经是 V1.1.1：
-将压缩包内文件按原目录覆盖上传即可。
+GitHub 当前为 V1.1.2 时，把本包文件按原目录覆盖上传。
 
-无需修改 GitHub Secrets，不要更换签名。
+无需修改 GitHub Secrets，也不要更换签名。
 
-本版生成：
-TianXianFruit-v1.1.2.apk
+Actions 产物：
+TianXianFruit-v1.1.3.apk

@@ -76,6 +76,8 @@ data class StoreDailyRecord(
     val cashCollectorName: String,
     val revenue: Double,
     val expense: Double,
+    val expensePayerId: Long,
+    val expensePayerName: String,
     val openingStockValue: Double,
     val stockLeftValue: Double,
     val purchaseCost: Double,
@@ -130,12 +132,61 @@ data class ProfitRuleRecord(
     val percent: Double
 )
 
+data class CashSettlementPartnerRecord(
+    val id: Long,
+    val settlementId: Long,
+    val date: String,
+    val partnerId: Long,
+    val partnerName: String,
+    val purchasePaid: Double,
+    val expensePaid: Double,
+    val revenueReceived: Double,
+    val profitShare: Double,
+    val shouldKeep: Double,
+    val balance: Double
+)
+
+data class SettlementTransferRecord(
+    val id: Long,
+    val settlementId: Long,
+    val date: String,
+    val fromPartnerId: Long,
+    val fromPartnerName: String,
+    val toPartnerId: Long,
+    val toPartnerName: String,
+    val amount: Double
+)
+
+data class DailyCashSettlementRecord(
+    val id: Long,
+    val date: String,
+    val revenue: Double,
+    val purchaseCost: Double,
+    val expense: Double,
+    val profit: Double,
+    val status: Int,
+    val createdAt: Long
+)
+
+data class CashSettlementBundle(
+    val settlement: DailyCashSettlementRecord,
+    val partners: List<CashSettlementPartnerRecord>,
+    val transfers: List<SettlementTransferRecord>
+)
+
+data class CashSettlementResult(
+    val success: Boolean,
+    val message: String,
+    val bundle: CashSettlementBundle? = null
+)
+
 class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
     override fun onCreate(db: SQLiteDatabase) {
         createFruitTable(db)
         createStoreTable(db)
         createV2Tables(db)
         createV3Tables(db)
+        createV4Tables(db)
         seedFruits(db)
         seedPartners(db)
     }
@@ -143,6 +194,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) migrateV1ToV2(db)
         if (oldVersion < 3) createV3Tables(db)
+        if (oldVersion < 4) createV4Tables(db)
     }
 
     private fun createFruitTable(db: SQLiteDatabase) {
@@ -151,7 +203,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
             CREATE TABLE IF NOT EXISTS fruit(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
-                default_unit TEXT NOT NULL DEFAULT '斤',
+                default_unit TEXT NOT NULL DEFAULT '件',
                 enabled INTEGER NOT NULL DEFAULT 1,
                 sync_id TEXT NOT NULL,
                 sync_status INTEGER NOT NULL DEFAULT 0,
@@ -313,6 +365,80 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_profit_rule_partner ON profit_rule(partner_id)")
     }
 
+    private fun createV4Tables(db: SQLiteDatabase) {
+        if (!columnExists(db, "store_daily_record", "expense_payer_id")) {
+            db.execSQL("ALTER TABLE store_daily_record ADD COLUMN expense_payer_id INTEGER NOT NULL DEFAULT 0")
+        }
+        if (!columnExists(db, "store_daily_record", "expense_payer_name")) {
+            db.execSQL("ALTER TABLE store_daily_record ADD COLUMN expense_payer_name TEXT NOT NULL DEFAULT '未指定'")
+        }
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS daily_cash_settlement(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                revenue REAL NOT NULL DEFAULT 0,
+                purchase_cost REAL NOT NULL DEFAULT 0,
+                expense REAL NOT NULL DEFAULT 0,
+                profit REAL NOT NULL DEFAULT 0,
+                status INTEGER NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_cash_settlement_date ON daily_cash_settlement(date)")
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS settlement_partner(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                settlement_id INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                partner_id INTEGER NOT NULL,
+                partner_name TEXT NOT NULL,
+                purchase_paid REAL NOT NULL DEFAULT 0,
+                expense_paid REAL NOT NULL DEFAULT 0,
+                revenue_received REAL NOT NULL DEFAULT 0,
+                profit_share REAL NOT NULL DEFAULT 0,
+                should_keep REAL NOT NULL DEFAULT 0,
+                balance REAL NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_settlement_partner_sid ON settlement_partner(settlement_id)")
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS settlement_transfer(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                settlement_id INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                from_partner_id INTEGER NOT NULL,
+                from_partner_name TEXT NOT NULL,
+                to_partner_id INTEGER NOT NULL,
+                to_partner_name TEXT NOT NULL,
+                amount REAL NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_settlement_transfer_sid ON settlement_transfer(settlement_id)")
+    }
+
     private fun migrateV1ToV2(db: SQLiteDatabase) {
         db.beginTransaction()
         try {
@@ -394,7 +520,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         listOf("巨峰葡萄", "阳光玫瑰", "蓝莓", "草莓", "西瓜", "芒果", "荔枝").forEach {
             val values = baseSyncValues().apply {
                 put("name", it)
-                put("default_unit", "斤")
+                put("default_unit", "件")
                 put("enabled", 1)
             }
             db.insertWithOnConflict("fruit", null, values, SQLiteDatabase.CONFLICT_IGNORE)
@@ -514,6 +640,58 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         }
     }
 
+    fun updatePurchaseOrder(
+        id: Long,
+        date: String,
+        buyer: PartnerOption,
+        lines: List<PurchaseLineInput>,
+        remark: String
+    ): Boolean {
+        if (lines.isEmpty()) return false
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val now = System.currentTimeMillis()
+            val total = lines.sumOf { it.totalCost }
+            val changed = db.update("purchase_order", ContentValues().apply {
+                put("date", date)
+                put("buyer_id", buyer.id)
+                put("buyer_name", buyer.name)
+                put("store_id", 0)
+                put("store_name", "共用货品")
+                put("total_cost", total)
+                put("remark", remark.trim())
+                put("sync_status", 2)
+                put("updated_at", now)
+            }, "id=? AND deleted=0", arrayOf(id.toString()))
+            if (changed <= 0) return false
+
+            db.update("purchase_item", ContentValues().apply {
+                put("deleted", 1)
+                put("sync_status", 2)
+                put("updated_at", now)
+            }, "order_id=? AND deleted=0", arrayOf(id.toString()))
+
+            lines.forEach { line ->
+                val price = if (line.quantity > 0) line.totalCost / line.quantity else 0.0
+                db.insert("purchase_item", null, baseSyncValues().apply {
+                    put("order_id", id)
+                    put("fruit_id", line.fruit.id)
+                    put("fruit_name", line.fruit.name)
+                    put("unit", line.unit)
+                    put("quantity", line.quantity)
+                    put("total_cost", line.totalCost)
+                    put("unit_price", price)
+                    put("deleted", 0)
+                })
+            }
+            db.setTransactionSuccessful()
+            return true
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     fun deletePurchaseOrder(id: Long) {
         val now = System.currentTimeMillis()
         val db = writableDatabase
@@ -595,6 +773,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         cash: Double,
         cashCollector: PartnerOption?,
         expense: Double,
+        expensePayer: PartnerOption?,
         openingStock: Double,
         closingStock: Double,
         newCustomer: Int,
@@ -608,11 +787,13 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         val old = getStoreDailyRecord(date, store.id)
         val now = System.currentTimeMillis()
         val values = ContentValues().apply {
-            put("date", date); put("store_id", 0); put("store_name", "共用货品")
+            put("date", date); put("store_id", store.id); put("store_name", store.name)
             put("wechat_income", wechat); put("wechat_collector_id", wechatCollector?.id ?: 0); put("wechat_collector_name", wechatCollector?.name ?: "未指定")
             put("alipay_income", alipay); put("alipay_collector_id", alipayCollector?.id ?: 0); put("alipay_collector_name", alipayCollector?.name ?: "未指定")
             put("cash_income", cash); put("cash_collector_id", cashCollector?.id ?: 0); put("cash_collector_name", cashCollector?.name ?: "未指定")
             put("revenue", revenue); put("expense", expense)
+            put("expense_payer_id", expensePayer?.id ?: 0)
+            put("expense_payer_name", expensePayer?.name ?: "未指定")
             put("opening_stock_value", openingStock); put("stock_left_value", closingStock)
             put("purchase_cost", purchaseCost); put("profit", profit)
             put("new_customer", newCustomer); put("old_customer", oldCustomer)
@@ -716,6 +897,252 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         return map.map { PartnerMoneySummary(it.key, it.value.first, it.value.second) }.sortedByDescending { it.amount }
     }
 
+    fun getExpenseTotalsByPartner(date: String): List<PartnerMoneySummary> = readableDatabase.rawQuery(
+        """
+        SELECT expense_payer_id AS partner_id, expense_payer_name AS partner_name,
+               COALESCE(SUM(expense),0) AS amount
+        FROM store_daily_record
+        WHERE date=? AND deleted=0 AND expense>0
+        GROUP BY expense_payer_id,expense_payer_name
+        ORDER BY amount DESC
+        """.trimIndent(), arrayOf(date)
+    ).use { c -> buildList {
+        while (c.moveToNext()) add(PartnerMoneySummary(c.long("partner_id"), c.str("partner_name"), c.dbl("amount")))
+    } }
+
+    fun getCashSettlement(date: String): CashSettlementBundle? {
+        val settlement = readableDatabase.rawQuery(
+            "SELECT * FROM daily_cash_settlement WHERE date=? AND deleted=0 ORDER BY id DESC LIMIT 1",
+            arrayOf(date)
+        ).use { c ->
+            if (!c.moveToFirst()) null else DailyCashSettlementRecord(
+                c.long("id"), c.str("date"), c.dbl("revenue"), c.dbl("purchase_cost"),
+                c.dbl("expense"), c.dbl("profit"), c.int("status"), c.long("created_at")
+            )
+        } ?: return null
+
+        val partners = readableDatabase.rawQuery(
+            "SELECT * FROM settlement_partner WHERE settlement_id=? AND deleted=0 ORDER BY id",
+            arrayOf(settlement.id.toString())
+        ).use { c -> buildList {
+            while (c.moveToNext()) add(CashSettlementPartnerRecord(
+                c.long("id"), c.long("settlement_id"), c.str("date"),
+                c.long("partner_id"), c.str("partner_name"),
+                c.dbl("purchase_paid"), c.dbl("expense_paid"), c.dbl("revenue_received"),
+                c.dbl("profit_share"), c.dbl("should_keep"), c.dbl("balance")
+            ))
+        } }
+
+        val transfers = readableDatabase.rawQuery(
+            "SELECT * FROM settlement_transfer WHERE settlement_id=? AND deleted=0 ORDER BY id",
+            arrayOf(settlement.id.toString())
+        ).use { c -> buildList {
+            while (c.moveToNext()) add(SettlementTransferRecord(
+                c.long("id"), c.long("settlement_id"), c.str("date"),
+                c.long("from_partner_id"), c.str("from_partner_name"),
+                c.long("to_partner_id"), c.str("to_partner_name"), c.dbl("amount")
+            ))
+        } }
+
+        return CashSettlementBundle(settlement, partners, transfers)
+    }
+
+    fun getRecentCashSettlements(limit: Int = 20): List<DailyCashSettlementRecord> = readableDatabase.rawQuery(
+        "SELECT * FROM daily_cash_settlement WHERE deleted=0 ORDER BY date DESC,id DESC LIMIT ?",
+        arrayOf(limit.toString())
+    ).use { c -> buildList {
+        while (c.moveToNext()) add(DailyCashSettlementRecord(
+            c.long("id"), c.str("date"), c.dbl("revenue"), c.dbl("purchase_cost"),
+            c.dbl("expense"), c.dbl("profit"), c.int("status"), c.long("created_at")
+        ))
+    } }
+
+    fun generateCashSettlement(date: String): CashSettlementResult {
+        val summary = getDailySummary(date)
+        if (summary.revenue <= 0.0) return CashSettlementResult(false, "当天还没有营业额")
+
+        val profitRows = getProfitDistribution(date)
+        if (profitRows.isEmpty()) {
+            return CashSettlementResult(false, "请先到“更多 → 利润分配”保存当天利润分配")
+        }
+
+        val records = getDailyRecords(date)
+        val unassignedReceipts = records.sumOf {
+            (if (it.wechatIncome > 0 && it.wechatCollectorId <= 0) it.wechatIncome else 0.0) +
+            (if (it.alipayIncome > 0 && it.alipayCollectorId <= 0) it.alipayIncome else 0.0) +
+            (if (it.cashIncome > 0 && it.cashCollectorId <= 0) it.cashIncome else 0.0)
+        }
+        if (unassignedReceipts > 0.005) {
+            return CashSettlementResult(false, "还有 ${roundMoney(unassignedReceipts)} 元收款没有指定归属")
+        }
+
+        val unassignedExpense = records.sumOf {
+            if (it.expense > 0 && it.expensePayerId <= 0) it.expense else 0.0
+        }
+        if (unassignedExpense > 0.005) {
+            return CashSettlementResult(false, "还有 ${roundMoney(unassignedExpense)} 元费用没有指定付款人")
+        }
+
+        val inventoryDelta = roundMoney(summary.closingStockValue - summary.openingStockValue)
+        if (kotlin.math.abs(inventoryDelta) > 0.01) {
+            return CashSettlementResult(
+                false,
+                "开摊/收摊库存相差 ${roundMoney(inventoryDelta)} 元。当天现金轧差要求库存差为0；请先核对库存或当天暂不做现金结清。"
+            )
+        }
+
+        val purchaseMap = getPurchaseTotalsByPartner(date).associateBy { it.partnerId }
+        val receiptMap = getReceiptsByPartner(date).associateBy { it.partnerId }
+        val expenseMap = getExpenseTotalsByPartner(date).associateBy { it.partnerId }
+        val profitMap = profitRows.associateBy { it.partnerId }
+
+        val partnerIds = linkedSetOf<Long>().apply {
+            addAll(purchaseMap.keys.filter { it > 0 })
+            addAll(receiptMap.keys.filter { it > 0 })
+            addAll(expenseMap.keys.filter { it > 0 })
+            addAll(profitMap.keys.filter { it > 0 })
+        }
+
+        data class Row(
+            val id: Long, val name: String, val purchase: Double, val expense: Double,
+            val receipt: Double, val profit: Double, val keep: Double, val balance: Double
+        )
+
+        val rows = partnerIds.map { id ->
+            val name = profitMap[id]?.partnerName
+                ?: purchaseMap[id]?.partnerName
+                ?: receiptMap[id]?.partnerName
+                ?: expenseMap[id]?.partnerName
+                ?: "合伙人$id"
+            val purchase = purchaseMap[id]?.amount ?: 0.0
+            val expense = expenseMap[id]?.amount ?: 0.0
+            val receipt = receiptMap[id]?.amount ?: 0.0
+            val profit = profitMap[id]?.allocatedProfit ?: 0.0
+            val keep = roundMoney(purchase + expense + profit)
+            Row(id, name, purchase, expense, receipt, profit, keep, roundMoney(keep - receipt))
+        }
+
+        val balanceTotal = roundMoney(rows.sumOf { it.balance })
+        if (kotlin.math.abs(balanceTotal) > 0.01) {
+            return CashSettlementResult(false, "当前账目还有 ${roundMoney(balanceTotal)} 元无法轧平，请核对进货、收款、费用和利润分配")
+        }
+
+        data class MutableBalance(val id: Long, val name: String, var amount: Double)
+        val payers = rows.filter { it.balance < -0.005 }
+            .map { MutableBalance(it.id, it.name, roundMoney(-it.balance)) }.toMutableList()
+        val receivers = rows.filter { it.balance > 0.005 }
+            .map { MutableBalance(it.id, it.name, roundMoney(it.balance)) }.toMutableList()
+
+        data class TransferTmp(val fromId: Long, val fromName: String, val toId: Long, val toName: String, val amount: Double)
+        val transfers = mutableListOf<TransferTmp>()
+        var i = 0
+        var j = 0
+        while (i < payers.size && j < receivers.size) {
+            val amount = roundMoney(minOf(payers[i].amount, receivers[j].amount))
+            if (amount > 0.0) transfers += TransferTmp(payers[i].id, payers[i].name, receivers[j].id, receivers[j].name, amount)
+            payers[i].amount = roundMoney(payers[i].amount - amount)
+            receivers[j].amount = roundMoney(receivers[j].amount - amount)
+            if (payers[i].amount <= 0.005) i++
+            if (receivers[j].amount <= 0.005) j++
+        }
+
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val now = System.currentTimeMillis()
+            val oldIds = db.rawQuery(
+                "SELECT id FROM daily_cash_settlement WHERE date=? AND deleted=0", arrayOf(date)
+            ).use { c -> buildList { while (c.moveToNext()) add(c.long("id")) } }
+            oldIds.forEach { oldId ->
+                db.update("daily_cash_settlement", ContentValues().apply {
+                    put("deleted", 1); put("sync_status", 2); put("updated_at", now)
+                }, "id=?", arrayOf(oldId.toString()))
+                db.update("settlement_partner", ContentValues().apply {
+                    put("deleted", 1); put("sync_status", 2); put("updated_at", now)
+                }, "settlement_id=?", arrayOf(oldId.toString()))
+                db.update("settlement_transfer", ContentValues().apply {
+                    put("deleted", 1); put("sync_status", 2); put("updated_at", now)
+                }, "settlement_id=?", arrayOf(oldId.toString()))
+            }
+
+            val settlementId = db.insert("daily_cash_settlement", null, baseSyncValues().apply {
+                put("date", date)
+                put("revenue", summary.revenue)
+                put("purchase_cost", summary.purchaseCost)
+                put("expense", summary.expense)
+                put("profit", summary.profit)
+                put("status", 0)
+                put("deleted", 0)
+            })
+            if (settlementId <= 0) return CashSettlementResult(false, "创建结算单失败")
+
+            rows.forEach { r ->
+                db.insert("settlement_partner", null, baseSyncValues().apply {
+                    put("settlement_id", settlementId)
+                    put("date", date)
+                    put("partner_id", r.id)
+                    put("partner_name", r.name)
+                    put("purchase_paid", r.purchase)
+                    put("expense_paid", r.expense)
+                    put("revenue_received", r.receipt)
+                    put("profit_share", r.profit)
+                    put("should_keep", r.keep)
+                    put("balance", r.balance)
+                    put("deleted", 0)
+                })
+            }
+            transfers.forEach { t ->
+                db.insert("settlement_transfer", null, baseSyncValues().apply {
+                    put("settlement_id", settlementId)
+                    put("date", date)
+                    put("from_partner_id", t.fromId)
+                    put("from_partner_name", t.fromName)
+                    put("to_partner_id", t.toId)
+                    put("to_partner_name", t.toName)
+                    put("amount", t.amount)
+                    put("deleted", 0)
+                })
+            }
+
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+
+        return CashSettlementResult(true, "今日结算方案已生成", getCashSettlement(date))
+    }
+
+    fun confirmCashSettlement(id: Long): Boolean = writableDatabase.update(
+        "daily_cash_settlement",
+        ContentValues().apply {
+            put("status", 1)
+            put("sync_status", 2)
+            put("updated_at", System.currentTimeMillis())
+        },
+        "id=? AND deleted=0",
+        arrayOf(id.toString())
+    ) > 0
+
+    fun deleteCashSettlement(id: Long) {
+        val now = System.currentTimeMillis()
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.update("daily_cash_settlement", ContentValues().apply {
+                put("deleted", 1); put("sync_status", 2); put("updated_at", now)
+            }, "id=?", arrayOf(id.toString()))
+            db.update("settlement_partner", ContentValues().apply {
+                put("deleted", 1); put("sync_status", 2); put("updated_at", now)
+            }, "settlement_id=?", arrayOf(id.toString()))
+            db.update("settlement_transfer", ContentValues().apply {
+                put("deleted", 1); put("sync_status", 2); put("updated_at", now)
+            }, "settlement_id=?", arrayOf(id.toString()))
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     fun getProfitRules(): List<ProfitRuleRecord> = readableDatabase.rawQuery(
         """
         SELECT r.partner_id,p.name,r.percent
@@ -817,7 +1244,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         val root = JSONObject()
         root.put("schemaVersion", DB_VERSION)
         root.put("exportedAt", System.currentTimeMillis())
-        listOf("fruit", "store", "partner", "purchase_order", "purchase_item", "store_daily_record", "profit_rule", "profit_distribution").forEach { table ->
+        listOf("fruit", "store", "partner", "purchase_order", "purchase_item", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer").forEach { table ->
             root.put(table, tableAsJson(table))
         }
         return root.toString(2)
@@ -853,7 +1280,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         c.dbl("wechat_income"), c.long("wechat_collector_id"), c.str("wechat_collector_name"),
         c.dbl("alipay_income"), c.long("alipay_collector_id"), c.str("alipay_collector_name"),
         c.dbl("cash_income"), c.long("cash_collector_id"), c.str("cash_collector_name"),
-        c.dbl("revenue"), c.dbl("expense"), c.dbl("opening_stock_value"), c.dbl("stock_left_value"),
+        c.dbl("revenue"), c.dbl("expense"), c.long("expense_payer_id"), c.str("expense_payer_name"),
+        c.dbl("opening_stock_value"), c.dbl("stock_left_value"),
         c.dbl("purchase_cost"), c.dbl("profit"), c.int("new_customer"), c.int("old_customer")
     )
 
@@ -884,7 +1312,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 3
+        const val DB_VERSION = 4
     }
 }
 

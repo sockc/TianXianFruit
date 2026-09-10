@@ -83,7 +83,7 @@ fun TianXianApp(db: AppDatabase) {
                     )
                     AppPage.PURCHASE -> PurchaseScreen(db, dataVersion) { dataVersion++ }
                     AppPage.SESSION -> SessionScreen(db, dataVersion) { dataVersion++ }
-                    AppPage.SETTLEMENT -> SettlementScreen(db, dataVersion)
+                    AppPage.SETTLEMENT -> SettlementScreen(db, dataVersion) { dataVersion++ }
                     AppPage.MORE -> MoreScreen(db, dataVersion, moreTarget) { dataVersion++ }
                 }
             }
@@ -363,7 +363,7 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
 
     var fruitId by remember { mutableStateOf<Long?>(null) }
     val fruit = fruits.firstOrNull { it.id == fruitId } ?: fruits.firstOrNull()
-    var unit by remember(fruit?.id) { mutableStateOf(fruit?.defaultUnit ?: "斤") }
+    var unit by remember(fruit?.id) { mutableStateOf("件") }
     var quantity by remember { mutableStateOf("") }
     var totalCost by remember { mutableStateOf("") }
     var remark by remember { mutableStateOf("") }
@@ -374,6 +374,7 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
     var addFruitDialog by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     val draft = remember { mutableStateListOf<PurchaseLineInput>() }
+    var editingOrderId by remember { mutableStateOf<Long?>(null) }
     var deleteOrder by remember { mutableStateOf<PurchaseOrderDetail?>(null) }
     val history = remember(dataVersion) { db.getPurchaseOrders(50) }
 
@@ -414,7 +415,7 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
                         fruits.forEach { f ->
                             DropdownMenuItem(
                                 text = { Text(f.name) },
-                                onClick = { fruitId = f.id; unit = f.defaultUnit; fruitMenu = false }
+                                onClick = { fruitId = f.id; unit = "件"; fruitMenu = false }
                             )
                         }
                         DropdownMenuItem(text = { Text("＋新增水果") }, onClick = {
@@ -452,12 +453,34 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
                         draft.add(PurchaseLineInput(fruit, unit, q, cost))
                         quantity = ""
                         totalCost = ""
+                        unit = "件"
                         message = "已加入，可继续录入下一种水果"
                     }
                 },
                 modifier = Modifier.fillMaxWidth().height(42.dp),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
             ) { Text("＋ 加入本次进货") }
+        }
+
+        if (editingOrderId != null) {
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF7D9))) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("正在编辑进货单 #$editingOrderId", Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                        TextButton(onClick = {
+                            editingOrderId = null
+                            draft.clear()
+                            remark = ""
+                            quantity = ""
+                            totalCost = ""
+                            unit = "件"
+                            date = LocalDate.now().toString()
+                            buyerId = partners.firstOrNull()?.id
+                            message = "已取消编辑"
+                        }) { Text("取消") }
+                    }
+                }
+            }
         }
 
         if (draft.isNotEmpty()) {
@@ -487,15 +510,28 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
                         if (buyer == null) message = "请先在更多页面添加合伙人"
                         else if (draft.isEmpty()) message = "请先添加商品"
                         else {
-                            db.addPurchaseOrder(date, buyer, draft.toList(), remark)
-                            draft.clear()
-                            remark = ""
-                            message = "整张进货单已保存"
-                            onChanged()
+                            val editId = editingOrderId
+                            val ok = if (editId == null) {
+                                db.addPurchaseOrder(date, buyer, draft.toList(), remark) > 0
+                            } else {
+                                db.updatePurchaseOrder(editId, date, buyer, draft.toList(), remark)
+                            }
+                            if (ok) {
+                                draft.clear()
+                                remark = ""
+                                editingOrderId = null
+                                quantity = ""
+                                totalCost = ""
+                                unit = "件"
+                                message = if (editId == null) "整张进货单已保存" else "进货单已更新"
+                                onChanged()
+                            } else {
+                                message = "保存失败，请检查内容"
+                            }
                         }
                     },
                     modifier = Modifier.fillMaxWidth().padding(top = 7.dp)
-                ) { Text("保存整张进货单") }
+                ) { Text(if (editingOrderId == null) "保存整张进货单" else "保存修改") }
             }
         }
 
@@ -514,7 +550,25 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
                             Text("${detail.order.date} · ${detail.order.buyerName}", fontWeight = FontWeight.Bold)
                             Text("合计 ${money(detail.order.totalCost)}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                         }
-                        TextButton(onClick = { deleteOrder = detail }) { Text("删除") }
+                        Row {
+                            TextButton(onClick = {
+                                editingOrderId = detail.order.id
+                                date = detail.order.date
+                                buyerId = detail.order.buyerId
+                                remark = detail.order.remark
+                                draft.clear()
+                                detail.items.forEach { item ->
+                                    val f = fruits.firstOrNull { it.id == item.fruitId }
+                                        ?: FruitOption(item.fruitId, item.fruitName, item.unit)
+                                    draft.add(PurchaseLineInput(f, item.unit, item.quantity, item.totalCost))
+                                }
+                                quantity = ""
+                                totalCost = ""
+                                unit = "件"
+                                message = "已载入历史进货单，可在上方修改"
+                            }) { Text("编辑") }
+                            TextButton(onClick = { deleteOrder = detail }) { Text("删除") }
+                        }
                     }
                     detail.items.forEach { item ->
                         Text(
@@ -562,6 +616,8 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
     var collectorMenu by remember { mutableStateOf(false) }
 
     var expense by remember { mutableStateOf("") }
+    var expensePayerId by remember { mutableStateOf<Long?>(null) }
+    var expensePayerMenu by remember { mutableStateOf(false) }
     var openingStock by remember { mutableStateOf("") }
     var closingStock by remember { mutableStateOf("") }
     var newCustomer by remember { mutableStateOf("") }
@@ -581,6 +637,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
             cash = cleanNumber(saved.cashIncome)
             collectorId = listOf(saved.wechatCollectorId, saved.alipayCollectorId, saved.cashCollectorId).firstOrNull { it > 0 }
             expense = cleanNumber(saved.expense)
+            expensePayerId = saved.expensePayerId.takeIf { it > 0 }
             openingStock = cleanNumber(saved.openingStockValue)
             closingStock = cleanNumber(saved.stockLeftValue)
             newCustomer = saved.newCustomer.toString()
@@ -594,6 +651,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
             newCustomer = ""
             oldCustomer = ""
             collectorId = partners.firstOrNull()?.id
+            expensePayerId = partners.firstOrNull()?.id
             openingStock = cleanNumber(db.getPreviousClosingStock(s.id, date))
         }
     }
@@ -661,8 +719,24 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         }
 
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
                 CompactNumberField("日常开销", expense, { expense = it }, Modifier.weight(1f))
+                Box(Modifier.weight(1f)) {
+                    CompactSelectButton(
+                        "费用付款人",
+                        partners.firstOrNull { it.id == expensePayerId }?.name ?: "未指定",
+                        Modifier.fillMaxWidth()
+                    ) { expensePayerMenu = true }
+                    DropdownMenu(expanded = expensePayerMenu, onDismissRequest = { expensePayerMenu = false }) {
+                        partners.forEach { p ->
+                            DropdownMenuItem(text = { Text(p.name) }, onClick = { expensePayerId = p.id; expensePayerMenu = false })
+                        }
+                        DropdownMenuItem(text = { Text("未指定") }, onClick = { expensePayerId = null; expensePayerMenu = false })
+                    }
+                }
+            }
+            Spacer(Modifier.height(5.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 CompactNumberField("开摊库存", openingStock, { openingStock = it }, Modifier.weight(1f))
                 CompactNumberField("收摊库存", closingStock, { closingStock = it }, Modifier.weight(1f))
             }
@@ -697,7 +771,8 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                         message = "请先添加摆摊位置"
                     } else {
                         val collector = partners.firstOrNull { it.id == collectorId }
-                        db.saveStoreDailyRecord(date, s, w, collector, a, collector, c, collector, e, open, close, n, o)
+                        val expensePayer = partners.firstOrNull { it.id == expensePayerId }
+                        db.saveStoreDailyRecord(date, s, w, collector, a, collector, c, collector, e, expensePayer, open, close, n, o)
                         message = "${s.name} 营业记录已保存"
                         onChanged()
                     }
@@ -765,54 +840,177 @@ private fun MoneyCollectorRow(
 }
 
 @Composable
-private fun SettlementScreen(db: AppDatabase, dataVersion: Int) {
+private fun SettlementScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Unit) {
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
+    var message by remember { mutableStateOf("") }
+    var deleteId by remember { mutableStateOf<Long?>(null) }
+
     val summary = remember(dataVersion, date) { db.getDailySummary(date) }
     val purchases = remember(dataVersion, date) { db.getPurchaseTotalsByPartner(date) }
     val receipts = remember(dataVersion, date) { db.getReceiptsByPartner(date) }
-    val records = remember(dataVersion, date) { db.getDailyRecords(date) }
+    val expenses = remember(dataVersion, date) { db.getExpenseTotalsByPartner(date) }
+    val profitRows = remember(dataVersion, date) { db.getProfitDistribution(date) }
+    val bundle = remember(dataVersion, date) { db.getCashSettlement(date) }
+    val history = remember(dataVersion) { db.getRecentCashSettlements(20) }
 
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { PageHeader("每日总账结算", "这里只汇总经营数据；利润分配在“更多 → 利润分配”独立处理") }
-        item { DateField("结算日期", date) { date = it } }
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        item {
+            PageHeader(
+                "当日资金结算",
+                "进货垫付 + 费用垫付 + 应得利润 − 实际收款，最后一次性轧差"
+            )
+        }
+        item { CompactDateSelector("结算日期", date, Modifier.fillMaxWidth()) { date = it } }
+
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                MetricCard("总营业额", money(summary.revenue), Modifier.weight(1f), SoftGreen, "${summary.storeCount} 个摊位")
-                MetricCard("总利润", money(summary.profit), Modifier.weight(1f), SoftOrange)
+                MiniSummaryCard("营业额", money(summary.revenue), Modifier.weight(1f), SoftGreen)
+                MiniSummaryCard("进货", money(summary.purchaseCost), Modifier.weight(1f), SoftPurple)
+                MiniSummaryCard("利润", money(summary.profit), Modifier.weight(1f), SoftOrange)
             }
         }
+
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                MetricCard("总进货", money(summary.purchaseCost), Modifier.weight(1f), SoftPurple)
-                MetricCard("总费用", money(summary.expense), Modifier.weight(1f), SoftBlue)
-            }
-        }
-        item {
-            Text("各自进货金额", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            if (purchases.isEmpty()) Text("暂无进货", color = Color.Gray)
-            purchases.forEach { p -> SummaryRow(p.partnerName, money(p.amount)) }
-            HorizontalDivider(Modifier.padding(vertical = 6.dp))
-            SummaryRow("合计", money(purchases.sumOf { it.amount }), true)
-        }
-        item {
-            Text("各自实际收款", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            if (receipts.isEmpty()) Text("暂无收款", color = Color.Gray)
-            receipts.forEach { p -> SummaryRow(p.partnerName, money(p.amount)) }
-            HorizontalDivider(Modifier.padding(vertical = 6.dp))
-            SummaryRow("合计", money(receipts.sumOf { it.amount }), true)
-        }
-        item {
-            Text("各摊位明细", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            if (records.isEmpty()) Text("暂无营业记录", color = Color.Gray)
-            records.forEach { r ->
-                Card(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                    Column(Modifier.padding(12.dp)) {
-                        Text(r.storeName, fontWeight = FontWeight.Bold)
-                        Text("营业 ${money(r.revenue)} · 进货 ${money(r.purchaseCost)} · 费用 ${money(r.expense)}")
-                        Text("利润 ${money(r.profit)} · 客户 ${r.customerTotal} 人")
+            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC))) {
+                Column(Modifier.padding(12.dp)) {
+                    Text("结算前核对", fontWeight = FontWeight.Bold)
+                    SummaryRow("进货垫付合计", money(purchases.sumOf { it.amount }))
+                    SummaryRow("实际收款合计", money(receipts.sumOf { it.amount }))
+                    SummaryRow("费用垫付合计", money(expenses.sumOf { it.amount }))
+                    SummaryRow("已保存利润分配", money(profitRows.sumOf { it.allocatedProfit }))
+                    if (profitRows.isEmpty()) {
+                        Text(
+                            "尚未保存当天利润分配，请先到：更多 → 利润分配。",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
             }
+        }
+
+        item {
+            Button(
+                onClick = {
+                    val result = db.generateCashSettlement(date)
+                    message = result.message
+                    if (result.success) onChanged()
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (bundle == null) "生成今日结算方案" else "重新生成今日结算方案")
+            }
+            if (message.isNotBlank()) {
+                Text(
+                    message,
+                    color = if (message.contains("已生成") || message.contains("已结清")) BrandGreen else MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        }
+
+        bundle?.let { b ->
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("每人最终余额", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    AssistChip(
+                        onClick = {},
+                        label = { Text(if (b.settlement.status == 1) "已结清" else "待结清") }
+                    )
+                }
+            }
+
+            items(b.partners, key = { "cp${it.id}" }) { p ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(11.dp)) {
+                        Row {
+                            Text(p.partnerName, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Text(
+                                when {
+                                    p.balance > 0.005 -> "应收 ${money(p.balance)}"
+                                    p.balance < -0.005 -> "应转出 ${money(-p.balance)}"
+                                    else -> "已平"
+                                },
+                                fontWeight = FontWeight.Bold,
+                                color = if (p.balance >= -0.005) BrandGreen else MaterialTheme.colorScheme.error
+                            )
+                        }
+                        Text(
+                            "进货 ${money(p.purchasePaid)} + 费用 ${money(p.expensePaid)} + 利润 ${money(p.profitShare)} − 已收 ${money(p.revenueReceived)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+                        Text("最终应留 ${money(p.shouldKeep)}", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+
+            item {
+                Text("最少转账方案", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                if (b.transfers.isEmpty()) {
+                    Text("无需转账，已经平账。", color = BrandGreen)
+                }
+            }
+
+            items(b.transfers, key = { "ct${it.id}" }) { t ->
+                Card(colors = CardDefaults.cardColors(containerColor = SoftGreen), modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("${t.fromPartnerName}  →  ${t.toPartnerName}", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                        Text(money(t.amount), fontWeight = FontWeight.Bold, color = BrandGreen)
+                    }
+                }
+            }
+
+            item {
+                if (b.settlement.status == 0) {
+                    Button(
+                        onClick = {
+                            if (db.confirmCashSettlement(b.settlement.id)) {
+                                message = "今日账目已确认结清"
+                                onChanged()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("确认今日已结清") }
+                }
+                TextButton(
+                    onClick = { deleteId = b.settlement.id },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("删除本次结算记录") }
+            }
+        }
+
+        if (history.isNotEmpty()) {
+            item {
+                HorizontalDivider()
+                Text("最近结算历史", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+            items(history, key = { "cash${it.id}" }) { h ->
+                RecordCard {
+                    Column(Modifier.weight(1f)) {
+                        Text(h.date, fontWeight = FontWeight.Bold)
+                        Text(
+                            "营业 ${money(h.revenue)} · 进货 ${money(h.purchaseCost)} · 利润 ${money(h.profit)}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Text(if (h.status == 1) "已结清" else "待结清", color = if (h.status == 1) BrandGreen else MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+    }
+
+    deleteId?.let { id ->
+        ConfirmDelete("删除这张当日资金结算？不会删除进货、营业或利润分配。", { deleteId = null }) {
+            db.deleteCashSettlement(id)
+            deleteId = null
+            message = "结算记录已删除"
+            onChanged()
         }
     }
 }
@@ -871,7 +1069,7 @@ private fun HistoryContent(db: AppDatabase, dataVersion: Int, onChanged: () -> U
                 TextButton(onClick = { deleteSession = s }) { Text("删除") }
             }
         }
-        item { HorizontalDivider(); Text("进货历史", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+        item { HorizontalDivider(); Text("进货历史", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold); Text("修改进货记录请到“进货”页点击对应记录的“编辑”。", style = MaterialTheme.typography.bodySmall, color = Color.Gray) }
         if (purchases.isEmpty()) item { Text("暂无", color = Color.Gray) }
         items(purchases, key = { "p${it.order.id}" }) { p ->
             Card(Modifier.fillMaxWidth()) {
@@ -1359,7 +1557,7 @@ private fun RecordCard(content: @Composable RowScope.() -> Unit) {
 @Composable
 private fun AddFruitDialog(onDismiss: () -> Unit, onSave: (String, String) -> Unit) {
     var name by remember { mutableStateOf("") }
-    var unit by remember { mutableStateOf("斤") }
+    var unit by remember { mutableStateOf("件") }
     AlertDialog(
         onDismissRequest = onDismiss, title = { Text("新增水果") },
         text = {
