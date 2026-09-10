@@ -482,7 +482,6 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
     fun addPurchaseOrder(
         date: String,
         buyer: PartnerOption,
-        store: StoreOption,
         lines: List<PurchaseLineInput>,
         remark: String
     ): Long {
@@ -494,7 +493,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
             val orderId = db.insert("purchase_order", null, baseSyncValues().apply {
                 put("date", date)
                 put("buyer_id", buyer.id); put("buyer_name", buyer.name)
-                put("store_id", store.id); put("store_name", store.name)
+                put("store_id", 0); put("store_name", "共用货品")
                 put("total_cost", total); put("remark", remark.trim()); put("deleted", 0)
             })
             if (orderId <= 0) return -1
@@ -601,13 +600,15 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         newCustomer: Int,
         oldCustomer: Int
     ) {
-        val purchaseCost = getPurchaseTotalByStore(date, store.id)
+        val purchaseCost = 0.0
         val revenue = wechat + alipay + cash
-        val profit = revenue + closingStock - openingStock - purchaseCost - expense
+        // 共用进货不直接归属某个摊位；这里只保存该摊的经营贡献。
+        // 每日总利润在 getDailySummary() 中统一扣除当天全部共用进货。
+        val profit = revenue + closingStock - openingStock - expense
         val old = getStoreDailyRecord(date, store.id)
         val now = System.currentTimeMillis()
         val values = ContentValues().apply {
-            put("date", date); put("store_id", store.id); put("store_name", store.name)
+            put("date", date); put("store_id", 0); put("store_name", "共用货品")
             put("wechat_income", wechat); put("wechat_collector_id", wechatCollector?.id ?: 0); put("wechat_collector_name", wechatCollector?.name ?: "未指定")
             put("alipay_income", alipay); put("alipay_collector_id", alipayCollector?.id ?: 0); put("alipay_collector_name", alipayCollector?.name ?: "未指定")
             put("cash_income", cash); put("cash_collector_id", cashCollector?.id ?: 0); put("cash_collector_name", cashCollector?.name ?: "未指定")
@@ -644,21 +645,49 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
     }
 
     fun getRankings(start: String? = null, end: String? = null): List<RankingRecord> {
-        val where = if (start != null && end != null) "AND date>=? AND date<=?" else ""
-        val args = if (start != null && end != null) arrayOf(start, end) else emptyArray()
-        return readableDatabase.rawQuery(
-            """
-            SELECT store_name,
-                   COALESCE(SUM(revenue),0) revenue_sum,
-                   COALESCE(SUM(profit),0) profit_sum,
-                   COALESCE(SUM(new_customer+old_customer),0) customer_sum,
-                   COUNT(DISTINCT date) day_count
-            FROM store_daily_record WHERE deleted=0 $where
-            GROUP BY store_id,store_name
-            """.trimIndent(), args
-        ).use { c -> buildList {
-            while (c.moveToNext()) add(RankingRecord(c.str("store_name"), c.dbl("revenue_sum"), c.dbl("profit_sum"), c.int("customer_sum"), c.int("day_count")))
-        } }
+        val records = getDailyRecordsBetween(start, end)
+        if (records.isEmpty()) return emptyList()
+
+        data class Acc(
+            var revenue: Double = 0.0,
+            var profit: Double = 0.0,
+            var customers: Int = 0,
+            val days: MutableSet<String> = mutableSetOf()
+        )
+
+        val acc = linkedMapOf<Pair<Long, String>, Acc>()
+        records.groupBy { it.date }.forEach { (date, dayRecords) ->
+            val commonPurchase = getPurchaseTotal(date)
+            val dayRevenue = dayRecords.sumOf { it.revenue }
+
+            dayRecords.forEach { r ->
+                val allocatedPurchase = when {
+                    commonPurchase == 0.0 -> 0.0
+                    dayRevenue > 0.0 -> commonPurchase * (r.revenue / dayRevenue)
+                    dayRecords.isNotEmpty() -> commonPurchase / dayRecords.size
+                    else -> 0.0
+                }
+                val attributedProfit =
+                    r.revenue + r.stockLeftValue - r.openingStockValue - r.expense - allocatedPurchase
+
+                val key = r.storeId to r.storeName
+                val a = acc.getOrPut(key) { Acc() }
+                a.revenue += r.revenue
+                a.profit += attributedProfit
+                a.customers += r.customerTotal
+                a.days += date
+            }
+        }
+
+        return acc.map { (key, a) ->
+            RankingRecord(
+                storeName = key.second,
+                revenue = roundMoney(a.revenue),
+                profit = roundMoney(a.profit),
+                customers = a.customers,
+                days = a.days.size
+            )
+        }
     }
 
     fun getDailySummary(date: String): DailySummary {
