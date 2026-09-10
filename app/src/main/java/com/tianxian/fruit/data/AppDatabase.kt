@@ -560,6 +560,64 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         }, SQLiteDatabase.CONFLICT_IGNORE)
     }
 
+    fun getAllFruits(includeDisabled: Boolean = false): List<FruitOption> =
+        readableDatabase.rawQuery(
+            if (includeDisabled)
+                "SELECT id,name,default_unit FROM fruit ORDER BY id"
+            else
+                "SELECT id,name,default_unit FROM fruit WHERE enabled=1 ORDER BY id",
+            null
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    add(FruitOption(c.long("id"), c.str("name"), c.str("default_unit")))
+                }
+            }
+        }
+
+    fun updateFruit(id: Long, name: String, defaultUnit: String): Boolean {
+        val clean = name.trim()
+        if (clean.isBlank()) return false
+        return writableDatabase.update(
+            "fruit",
+            ContentValues().apply {
+                put("name", clean)
+                put("default_unit", defaultUnit)
+                put("updated_at", System.currentTimeMillis())
+                put("sync_status", 2)
+            },
+            "id=?",
+            arrayOf(id.toString())
+        ) > 0
+    }
+
+    // 商品删除采用停用，不删除历史账。
+    fun disableFruit(id: Long): Boolean {
+        return writableDatabase.update(
+            "fruit",
+            ContentValues().apply {
+                put("enabled", 0)
+                put("sync_status", 2)
+                put("updated_at", System.currentTimeMillis())
+            },
+            "id=?",
+            arrayOf(id.toString())
+        ) > 0
+    }
+
+    fun restoreFruit(id: Long): Boolean {
+        return writableDatabase.update(
+            "fruit",
+            ContentValues().apply {
+                put("enabled", 1)
+                put("sync_status", 2)
+                put("updated_at", System.currentTimeMillis())
+            },
+            "id=?",
+            arrayOf(id.toString())
+        ) > 0
+    }
+
     fun getStores(): List<StoreOption> = readableDatabase.rawQuery(
         "SELECT id,name,address FROM store WHERE enabled=1 AND deleted=0 ORDER BY id DESC", null
     ).use { c -> buildList { while (c.moveToNext()) add(StoreOption(c.long("id"), c.str("name"), c.str("address"))) } }
