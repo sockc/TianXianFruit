@@ -1,18 +1,21 @@
-TianXianFruit V1.1.5 PATCH
+TianXianFruit V1.1.6 PATCH
 
-基于 V1.1.4 FIX1。
+本版只修改 APP 名称与图标。
 
-把本包文件保持原目录覆盖上传到 GitHub。
+覆盖上传这些文件：
+- .github/workflows/build-apk.yml
+- app/build.gradle
+- app/src/main/AndroidManifest.xml
+- app/src/main/res/values/strings.xml
+- app/src/main/res/mipmap-mdpi/ic_launcher.png
+- app/src/main/res/mipmap-hdpi/ic_launcher.png
+- app/src/main/res/mipmap-xhdpi/ic_launcher.png
+- app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+- app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+- README.md
 
 不要修改 GitHub Secrets。
 不要更换 keystore。
 
 Actions 预期产物：
-TianXianFruit-v1.1.5.apk
-
-重点测试：
-1. 删除一个以前收过款的合伙人。
-2. 打开旧营业记录，应显示“原姓名（已删除）”。
-3. 不改收款人，只修改营业额后保存，应成功。
-4. 再编辑，把收款人换成现有合伙人，应成功。
-5. 旧进货单的进货人已删除时，也应能编辑保存。
+TianXianFruit-v1.1.6.apk

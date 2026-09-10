@@ -50,11 +50,11 @@ jobs:
         run: gradle :app:assembleRelease --stacktrace
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk TianXianFruit-v1.1.5.apk
+        run: cp app/build/outputs/apk/release/app-release.apk TianXianFruit-v1.1.6.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: TianXianFruit-v1.1.5
-          path: TianXianFruit-v1.1.5.apk
+          name: TianXianFruit-v1.1.6
+          path: TianXianFruit-v1.1.6.apk
           if-no-files-found: error
