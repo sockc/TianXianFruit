@@ -124,17 +124,25 @@ data class ProfitDistributionRecord(
     val allocatedProfit: Double
 )
 
+data class ProfitRuleRecord(
+    val partnerId: Long,
+    val partnerName: String,
+    val percent: Double
+)
+
 class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
     override fun onCreate(db: SQLiteDatabase) {
         createFruitTable(db)
         createStoreTable(db)
         createV2Tables(db)
+        createV3Tables(db)
         seedFruits(db)
         seedPartners(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) migrateV1ToV2(db)
+        if (oldVersion < 3) createV3Tables(db)
     }
 
     private fun createFruitTable(db: SQLiteDatabase) {
@@ -287,6 +295,24 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_profit_distribution_date ON profit_distribution(date)")
     }
 
+    private fun createV3Tables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS profit_rule(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                partner_id INTEGER NOT NULL,
+                percent REAL NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_profit_rule_partner ON profit_rule(partner_id)")
+    }
+
     private fun migrateV1ToV2(db: SQLiteDatabase) {
         db.beginTransaction()
         try {
@@ -430,6 +456,21 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         return writableDatabase.insert("partner", null, baseSyncValues().apply {
             put("name", clean); put("enabled", 1); put("deleted", 0)
         })
+    }
+
+    fun updatePartnerName(id: Long, name: String): Boolean {
+        val clean = name.trim()
+        if (clean.isBlank()) return false
+        val duplicate = readableDatabase.rawQuery(
+            "SELECT id FROM partner WHERE name=? AND deleted=0 AND id<>? LIMIT 1",
+            arrayOf(clean, id.toString())
+        ).use { it.moveToFirst() }
+        if (duplicate) return false
+        return writableDatabase.update("partner", ContentValues().apply {
+            put("name", clean)
+            put("sync_status", 2)
+            put("updated_at", System.currentTimeMillis())
+        }, "id=?", arrayOf(id.toString())) > 0
     }
 
     fun deletePartner(id: Long) {
@@ -646,21 +687,48 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         return map.map { PartnerMoneySummary(it.key, it.value.first, it.value.second) }.sortedByDescending { it.amount }
     }
 
-    fun saveProfitDistribution(date: String, primary: PartnerOption, small: PartnerOption, others: List<PartnerOption>): Boolean {
-        if (others.size != 2 || primary.id == small.id || others.any { it.id == primary.id || it.id == small.id }) return false
+    fun getProfitRules(): List<ProfitRuleRecord> = readableDatabase.rawQuery(
+        """
+        SELECT r.partner_id,p.name,r.percent
+        FROM profit_rule r
+        JOIN partner p ON p.id=r.partner_id
+        WHERE r.deleted=0 AND p.deleted=0 AND p.enabled=1
+        ORDER BY p.id
+        """.trimIndent(), null
+    ).use { c -> buildList {
+        while (c.moveToNext()) add(ProfitRuleRecord(c.long("partner_id"), c.str("name"), c.dbl("percent")))
+    } }
+
+    fun saveProfitRules(rules: List<Pair<PartnerOption, Double>>): Boolean {
+        if (rules.isEmpty()) return false
+        val total = rules.sumOf { it.second }
+        if (kotlin.math.abs(total - 100.0) >= 0.01) return false
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val now = System.currentTimeMillis()
+            db.update("profit_rule", ContentValues().apply {
+                put("deleted", 1); put("sync_status", 2); put("updated_at", now)
+            }, "deleted=0", null)
+            rules.forEach { (partner, percent) ->
+                db.insert("profit_rule", null, baseSyncValues().apply {
+                    put("partner_id", partner.id)
+                    put("percent", percent)
+                    put("deleted", 0)
+                })
+            }
+            db.setTransactionSuccessful()
+            return true
+        } finally { db.endTransaction() }
+    }
+
+    fun saveProfitDistribution(date: String, allocations: List<Pair<PartnerOption, Double>>): Boolean {
+        if (allocations.isEmpty()) return false
+        val totalPercent = allocations.sumOf { it.second }
+        if (kotlin.math.abs(totalPercent - 100.0) >= 0.01) return false
         val profit = getDailySummary(date).profit
         if (profit <= 0) return false
-        val primaryAmount = roundMoney(profit * 0.33)
-        val pool = roundMoney(profit - primaryAmount)
-        val smallAmount = roundMoney(pool / 5.0)
-        val large1Amount = roundMoney(pool * 2.0 / 5.0)
-        val large2Amount = roundMoney(profit - primaryAmount - smallAmount - large1Amount)
-        val rows = listOf(
-            Triple(primary, "PRIMARY_33", Triple(0.33, 0, primaryAmount)),
-            Triple(small, "SMALL_1", Triple(0.134, 1, smallAmount)),
-            Triple(others[0], "LARGE_2", Triple(0.268, 2, large1Amount)),
-            Triple(others[1], "LARGE_2", Triple(0.268, 2, large2Amount))
-        )
+
         val db = writableDatabase
         db.beginTransaction()
         try {
@@ -668,16 +736,37 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
             db.update("profit_distribution", ContentValues().apply {
                 put("deleted", 1); put("sync_status", 2); put("updated_at", now)
             }, "date=? AND deleted=0", arrayOf(date))
-            rows.forEach { (partner, role, spec) ->
+
+            var allocatedSoFar = 0.0
+            allocations.forEachIndexed { index, (partner, percent) ->
+                val amount = if (index == allocations.lastIndex) {
+                    roundMoney(profit - allocatedSoFar)
+                } else {
+                    roundMoney(profit * percent / 100.0).also { allocatedSoFar += it }
+                }
                 db.insert("profit_distribution", null, baseSyncValues().apply {
-                    put("date", date); put("partner_id", partner.id); put("partner_name", partner.name)
-                    put("role", role); put("ratio", spec.first); put("weight", spec.second)
-                    put("source_profit", profit); put("allocated_profit", spec.third); put("deleted", 0)
+                    put("date", date)
+                    put("partner_id", partner.id)
+                    put("partner_name", partner.name)
+                    put("role", "CUSTOM_PERCENT")
+                    put("ratio", percent / 100.0)
+                    put("weight", 0)
+                    put("source_profit", profit)
+                    put("allocated_profit", amount)
+                    put("deleted", 0)
                 })
             }
             db.setTransactionSuccessful()
             return true
         } finally { db.endTransaction() }
+    }
+
+    fun deleteProfitDistribution(date: String) {
+        writableDatabase.update("profit_distribution", ContentValues().apply {
+            put("deleted", 1)
+            put("sync_status", 2)
+            put("updated_at", System.currentTimeMillis())
+        }, "date=? AND deleted=0", arrayOf(date))
     }
 
     fun getProfitDistribution(date: String): List<ProfitDistributionRecord> = readableDatabase.rawQuery(
@@ -699,7 +788,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         val root = JSONObject()
         root.put("schemaVersion", DB_VERSION)
         root.put("exportedAt", System.currentTimeMillis())
-        listOf("fruit", "store", "partner", "purchase_order", "purchase_item", "store_daily_record", "profit_distribution").forEach { table ->
+        listOf("fruit", "store", "partner", "purchase_order", "purchase_item", "store_daily_record", "profit_rule", "profit_distribution").forEach { table ->
             root.put(table, tableAsJson(table))
         }
         return root.toString(2)
@@ -766,7 +855,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 2
+        const val DB_VERSION = 3
     }
 }
 

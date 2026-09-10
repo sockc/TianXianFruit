@@ -2,6 +2,7 @@ package com.tianxian.fruit.ui
 
 import android.app.DatePickerDialog
 import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -36,6 +37,7 @@ private enum class MorePage { MENU, HISTORY, STATS, PARTNERS, STORES, PROFIT }
 fun TianXianApp(db: AppDatabase) {
     var page by remember { mutableStateOf(AppPage.HOME) }
     var dataVersion by remember { mutableIntStateOf(0) }
+    BackHandler(enabled = page != AppPage.HOME) { page = AppPage.HOME }
     MaterialTheme(colorScheme = lightColorScheme(primary = BrandGreen, secondary = BrandGreen)) {
         Scaffold(
             bottomBar = {
@@ -301,9 +303,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
     var wechat by remember { mutableStateOf("") }
     var alipay by remember { mutableStateOf("") }
     var cash by remember { mutableStateOf("") }
-    var wechatCollectorId by remember { mutableStateOf<Long?>(null) }
-    var alipayCollectorId by remember { mutableStateOf<Long?>(null) }
-    var cashCollectorId by remember { mutableStateOf<Long?>(null) }
+    var collectorId by remember { mutableStateOf<Long?>(null) }
     var expense by remember { mutableStateOf("") }
     var openingStock by remember { mutableStateOf("") }
     var closingStock by remember { mutableStateOf("") }
@@ -319,13 +319,18 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         val s = store ?: return@LaunchedEffect
         val saved = db.getStoreDailyRecord(date, s.id)
         if (saved != null) {
-            wechat = cleanNumber(saved.wechatIncome); alipay = cleanNumber(saved.alipayIncome); cash = cleanNumber(saved.cashIncome)
-            wechatCollectorId = saved.wechatCollectorId.takeIf { it > 0 }; alipayCollectorId = saved.alipayCollectorId.takeIf { it > 0 }; cashCollectorId = saved.cashCollectorId.takeIf { it > 0 }
-            expense = cleanNumber(saved.expense); openingStock = cleanNumber(saved.openingStockValue); closingStock = cleanNumber(saved.stockLeftValue)
-            newCustomer = saved.newCustomer.toString(); oldCustomer = saved.oldCustomer.toString()
+            wechat = cleanNumber(saved.wechatIncome)
+            alipay = cleanNumber(saved.alipayIncome)
+            cash = cleanNumber(saved.cashIncome)
+            collectorId = listOf(saved.wechatCollectorId, saved.alipayCollectorId, saved.cashCollectorId).firstOrNull { it > 0 }
+            expense = cleanNumber(saved.expense)
+            openingStock = cleanNumber(saved.openingStockValue)
+            closingStock = cleanNumber(saved.stockLeftValue)
+            newCustomer = saved.newCustomer.toString()
+            oldCustomer = saved.oldCustomer.toString()
         } else {
             wechat = ""; alipay = ""; cash = ""; expense = ""; closingStock = ""; newCustomer = ""; oldCustomer = ""
-            wechatCollectorId = partners.firstOrNull()?.id; alipayCollectorId = partners.firstOrNull()?.id; cashCollectorId = partners.firstOrNull()?.id
+            collectorId = partners.firstOrNull()?.id
             openingStock = cleanNumber(db.getPreviousClosingStock(s.id, date))
         }
     }
@@ -344,43 +349,49 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
     val todayRecords = remember(dataVersion, date) { db.getDailyRecords(date) }
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        item { PageHeader("摊位营业记录", "同一天可以分别保存多个摊位；每种收款可指定钱进入谁的账户") }
+        item { PageHeader("摊位营业记录", "同一天可保存多个摊位；一个摊位只选择一次收款归属") }
         item { DateField("营业日期", date) { date = it } }
         item {
             Box {
-                OutlinedButton(onClick = { storeMenu = true }, modifier = Modifier.fillMaxWidth()) { Text(store?.name ?: "请添加摆摊位置", Modifier.weight(1f)); Text("▼") }
+                OutlinedButton(onClick = { storeMenu = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text(store?.name ?: "请添加摆摊位置", Modifier.weight(1f)); Text("▼")
+                }
                 DropdownMenu(expanded = storeMenu, onDismissRequest = { storeMenu = false }) {
                     stores.forEach { s -> DropdownMenuItem(text = { Text(s.name) }, onClick = { storeId = s.id; storeMenu = false }) }
                     DropdownMenuItem(text = { Text("＋新增位置") }, onClick = { storeMenu = false; addStoreDialog = true })
                 }
             }
         }
-        item { Text("收款金额与归属", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
         item {
-            MoneyCollectorRow("微信", wechat, { wechat = it }, partners, wechatCollectorId, { wechatCollectorId = it })
-            Spacer(Modifier.height(8.dp))
-            MoneyCollectorRow("支付宝", alipay, { alipay = it }, partners, alipayCollectorId, { alipayCollectorId = it })
-            Spacer(Modifier.height(8.dp))
-            MoneyCollectorRow("现金", cash, { cash = it }, partners, cashCollectorId, { cashCollectorId = it })
+            CollectorSelector(partners, collectorId) { collectorId = it }
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                NumberField("日常开销", expense, { expense = it }, Modifier.weight(1f))
-                OutlinedTextField(money(purchase), {}, readOnly = true, label = { Text("该摊今日进货") }, modifier = Modifier.weight(1f), singleLine = true)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                CompactNumberField("微信", wechat, { wechat = it }, Modifier.weight(1f))
+                CompactNumberField("支付宝", alipay, { alipay = it }, Modifier.weight(1f))
+                CompactNumberField("现金", cash, { cash = it }, Modifier.weight(1f))
             }
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                NumberField("开摊库存", openingStock, { openingStock = it }, Modifier.weight(1f))
-                NumberField("收摊库存", closingStock, { closingStock = it }, Modifier.weight(1f))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                CompactNumberField("日常开销", expense, { expense = it }, Modifier.weight(1f))
+                CompactReadOnlyField("该摊今日进货", money(purchase), Modifier.weight(1f))
             }
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                IntegerField("新客", newCustomer, { newCustomer = it }, Modifier.weight(1f))
-                IntegerField("老客", oldCustomer, { oldCustomer = it }, Modifier.weight(1f))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                CompactNumberField("开摊库存", openingStock, { openingStock = it }, Modifier.weight(1f))
+                CompactNumberField("收摊库存", closingStock, { closingStock = it }, Modifier.weight(1f))
+            }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                CompactIntegerField("新客", newCustomer, { newCustomer = it }, Modifier.weight(1f))
+                CompactIntegerField("老客", oldCustomer, { oldCustomer = it }, Modifier.weight(1f))
             }
         }
         item {
@@ -394,27 +405,24 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                 val s = store
                 if (s == null) message = "请先添加摆摊位置"
                 else {
-                    db.saveStoreDailyRecord(
-                        date, s, w, partners.firstOrNull { it.id == wechatCollectorId },
-                        a, partners.firstOrNull { it.id == alipayCollectorId },
-                        c, partners.firstOrNull { it.id == cashCollectorId },
-                        e, open, close, n, o
-                    )
-                    message = "${s.name} 营业记录已保存"; onChanged()
+                    val collector = partners.firstOrNull { it.id == collectorId }
+                    db.saveStoreDailyRecord(date, s, w, collector, a, collector, c, collector, e, open, close, n, o)
+                    message = "${s.name} 营业记录已保存"
+                    onChanged()
                 }
             }, modifier = Modifier.fillMaxWidth()) { Text("保存当前摊位") }
-            if (message.isNotBlank()) Text(message, color = BrandGreen, modifier = Modifier.padding(top = 6.dp))
+            if (message.isNotBlank()) Text(message, color = BrandGreen, modifier = Modifier.padding(top = 4.dp))
         }
-        item { Text("当天已保存摊位", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-        if (todayRecords.isEmpty()) item { Text("暂无", color = Color.Gray) }
-        items(todayRecords, key = { it.id }) { r ->
-            RecordCard {
-                Column(Modifier.weight(1f)) {
-                    Text(r.storeName, fontWeight = FontWeight.Bold)
-                    Text("营业 ${money(r.revenue)} · 进货 ${money(r.purchaseCost)} · 利润 ${money(r.profit)}", style = MaterialTheme.typography.bodySmall)
+        if (todayRecords.isNotEmpty()) {
+            item { Text("当天已记录摊位", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+            items(todayRecords, key = { it.id }) { r ->
+                RecordCard {
+                    Column(Modifier.weight(1f)) {
+                        Text(r.storeName, fontWeight = FontWeight.Bold)
+                        Text("营业 ${money(r.revenue)} · 利润 ${money(r.profit)} · 收款 ${r.wechatCollectorName}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    TextButton(onClick = { deleteRecord = r }) { Text("删除") }
                 }
-                TextButton(onClick = { storeId = r.storeId }) { Text("编辑") }
-                TextButton(onClick = { deleteRecord = r }) { Text("删除") }
             }
         }
     }
@@ -508,14 +516,15 @@ private fun SettlementScreen(db: AppDatabase, dataVersion: Int) {
 @Composable
 private fun MoreScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Unit) {
     var sub by remember { mutableStateOf(MorePage.MENU) }
+    BackHandler(enabled = sub != MorePage.MENU) { sub = MorePage.MENU }
     when (sub) {
         MorePage.MENU -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             item { PageHeader("更多", "历史、统计、合伙人、位置和独立利润分配") }
             item { MenuCard("🕘 历史记录", "查看并删除历史进货、历史营业") { sub = MorePage.HISTORY } }
             item { MenuCard("📊 经营统计", "营业额 / 利润 / 客户排行榜，水果历史进价") { sub = MorePage.STATS } }
-            item { MenuCard("👥 合伙人", "当前按4位合伙人设计") { sub = MorePage.PARTNERS } }
+            item { MenuCard("👥 合伙人", "人数不设上限，可新增、改名或删除") { sub = MorePage.PARTNERS } }
             item { MenuCard("📍 摆摊位置", "新增或删除位置；删除不影响历史记录") { sub = MorePage.STORES } }
-            item { MenuCard("💰 利润分配", "独立利润分配表：33% + 剩余67%按1:2:2") { sub = MorePage.PROFIT } }
+            item { MenuCard("💰 利润分配", "独立利润分配表；每位合伙人的百分比可自定义") { sub = MorePage.PROFIT } }
         }
         MorePage.HISTORY -> SubPage("历史记录", { sub = MorePage.MENU }) { HistoryContent(db, dataVersion, onChanged) }
         MorePage.STATS -> SubPage("经营统计", { sub = MorePage.MENU }) { StatsContent(db, dataVersion) }
@@ -635,14 +644,30 @@ private fun StatsContent(db: AppDatabase, dataVersion: Int) {
 private fun PartnerContent(db: AppDatabase, dataVersion: Int, onChanged: () -> Unit) {
     val partners = remember(dataVersion) { db.getPartners() }
     var addDialog by remember { mutableStateOf(false) }
+    var edit by remember { mutableStateOf<PartnerOption?>(null) }
     var delete by remember { mutableStateOf<PartnerOption?>(null) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item { Text("当前 ${partners.size}/4 人。利润分配按4位合伙人设计。", color = Color.Gray) }
-        items(partners, key = { it.id }) { p -> RecordCard { Text(p.name, Modifier.weight(1f), fontWeight = FontWeight.SemiBold); TextButton(onClick = { delete = p }) { Text("删除") } } }
-        item { Button(onClick = { addDialog = true }, enabled = partners.size < 4, modifier = Modifier.fillMaxWidth()) { Text("＋ 添加合伙人") } }
+        item { Text("当前 ${partners.size} 位合伙人，人数不设上限。改名只影响以后选择，历史记录保留当时姓名。", color = Color.Gray) }
+        items(partners, key = { it.id }) { p ->
+            RecordCard {
+                Text(p.name, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                TextButton(onClick = { edit = p }) { Text("改名") }
+                TextButton(onClick = { delete = p }) { Text("删除") }
+            }
+        }
+        item { Button(onClick = { addDialog = true }, modifier = Modifier.fillMaxWidth()) { Text("＋ 添加合伙人") } }
     }
-    if (addDialog) AddPartnerDialog({ addDialog = false }) { name -> db.addPartner(name); addDialog = false; onChanged() }
-    delete?.let { p -> ConfirmDelete("删除合伙人“${p.name}”？历史进货、历史收款和历史分红仍保留原姓名。", { delete = null }) { db.deletePartner(p.id); delete = null; onChanged() } }
+    if (addDialog) PartnerNameDialog("添加合伙人", "", { addDialog = false }) { name ->
+        db.addPartner(name); addDialog = false; onChanged()
+    }
+    edit?.let { p ->
+        PartnerNameDialog("修改合伙人名称", p.name, { edit = null }) { name ->
+            db.updatePartnerName(p.id, name); edit = null; onChanged()
+        }
+    }
+    delete?.let { p -> ConfirmDelete("删除合伙人“${p.name}”？历史进货、历史收款和历史分红仍保留原姓名。", { delete = null }) {
+        db.deletePartner(p.id); delete = null; onChanged()
+    } }
 }
 
 @Composable
@@ -667,93 +692,128 @@ private fun StoreContent(db: AppDatabase, dataVersion: Int, onChanged: () -> Uni
 private fun ProfitContent(db: AppDatabase, dataVersion: Int, onChanged: () -> Unit) {
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
     val partners = remember(dataVersion) { db.getPartners() }
+    val savedRules = remember(dataVersion) { db.getProfitRules() }
     val summary = remember(dataVersion, date) { db.getDailySummary(date) }
-    var primaryId by remember { mutableStateOf<Long?>(null) }
-    var smallId by remember { mutableStateOf<Long?>(null) }
-    var primaryMenu by remember { mutableStateOf(false) }
-    var smallMenu by remember { mutableStateOf(false) }
+    val percentages = remember { mutableStateMapOf<Long, String>() }
     var message by remember { mutableStateOf("") }
-    val primary = partners.firstOrNull { it.id == primaryId } ?: partners.firstOrNull()
-    val smallCandidates = partners.filter { it.id != primary?.id }
-    val small = smallCandidates.firstOrNull { it.id == smallId } ?: smallCandidates.firstOrNull()
-    val others = partners.filter { it.id != primary?.id && it.id != small?.id }
+    var deleteDate by remember { mutableStateOf<String?>(null) }
     val saved = remember(dataVersion, date) { db.getProfitDistribution(date) }
-    val history = remember(dataVersion) { db.getRecentProfitDistributions(60).groupBy { it.date }.toSortedMap(reverseOrder()) }
+    val history = remember(dataVersion) { db.getRecentProfitDistributions(200).groupBy { it.date }.toSortedMap(reverseOrder()) }
 
-    val primaryAmount = summary.profit * 0.33
-    val pool = summary.profit - primaryAmount
-    val smallAmount = pool / 5.0
-    val largeAmount = pool * 2.0 / 5.0
+    LaunchedEffect(dataVersion, partners.map { it.id }) {
+        val ruleMap = savedRules.associate { it.partnerId to it.percent }
+        percentages.keys.retainAll(partners.map { it.id }.toSet())
+        if (ruleMap.isNotEmpty()) {
+            partners.forEach { p -> percentages[p.id] = cleanPercent(ruleMap[p.id] ?: 0.0) }
+        } else if (partners.size == 4) {
+            val defaults = listOf(33.0, 13.4, 26.8, 26.8)
+            partners.forEachIndexed { index, p -> percentages[p.id] = cleanPercent(defaults[index]) }
+        } else if (partners.isNotEmpty()) {
+            val equal = 100.0 / partners.size
+            var used = 0.0
+            partners.forEachIndexed { index, p ->
+                val value = if (index == partners.lastIndex) 100.0 - used else roundPercent(equal)
+                percentages[p.id] = cleanPercent(value)
+                used += value
+            }
+        }
+    }
 
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Text("本表与营业、收款、总账分开保存。只读取当天最终利润作为分配基数。", color = Color.Gray) }
+    val totalPercent = partners.sumOf { percentages[it.id]?.toDoubleOrNull() ?: 0.0 }
+    val allocations = partners.map { p -> p to (percentages[p.id]?.toDoubleOrNull() ?: 0.0) }
+
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item { Text("本表与营业、收款、总账完全分开。百分比规则可自定义并保存；历史分配冻结当时比例。", color = Color.Gray) }
         item { DateField("分配日期", date) { date = it } }
         item { MetricCard("当天可分利润", money(summary.profit), Modifier.fillMaxWidth(), SoftOrange) }
         item {
-            if (partners.size != 4) {
-                Text("需要正好4位有效合伙人，当前 ${partners.size} 位。请先到“合伙人管理”调整。", color = MaterialTheme.colorScheme.error)
-            } else {
-                Text("第一层：谁拿总利润33%", fontWeight = FontWeight.Bold)
-                Box {
-                    OutlinedButton(onClick = { primaryMenu = true }, modifier = Modifier.fillMaxWidth()) { Text(primary?.name ?: "选择", Modifier.weight(1f)); Text("▼") }
-                    DropdownMenu(expanded = primaryMenu, onDismissRequest = { primaryMenu = false }) {
-                        partners.forEach { p -> DropdownMenuItem(text = { Text(p.name) }, onClick = { primaryId = p.id; if (smallId == p.id) smallId = null; primaryMenu = false }) }
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                Text("第二层：67%利润池中谁拿小份（1份）", fontWeight = FontWeight.Bold)
-                Box {
-                    OutlinedButton(onClick = { smallMenu = true }, modifier = Modifier.fillMaxWidth()) { Text(small?.name ?: "选择", Modifier.weight(1f)); Text("▼") }
-                    DropdownMenu(expanded = smallMenu, onDismissRequest = { smallMenu = false }) {
-                        smallCandidates.forEach { p -> DropdownMenuItem(text = { Text(p.name) }, onClick = { smallId = p.id; smallMenu = false }) }
-                    }
-                }
+            Text("分配百分比", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("当前合计：${String.format(Locale.CHINA, "%.2f", totalPercent)}%（必须等于100%）", color = if (kotlin.math.abs(totalPercent - 100.0) < 0.01) BrandGreen else MaterialTheme.colorScheme.error)
+        }
+        items(partners, key = { "rule${it.id}" }) { p ->
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(p.name, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                OutlinedTextField(
+                    value = percentages[p.id] ?: "",
+                    onValueChange = { v -> if (v.matches(Regex("^\\d*(\\.\\d{0,2})?$"))) percentages[p.id] = v },
+                    modifier = Modifier.width(110.dp).height(50.dp),
+                    suffix = { Text("%") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    textStyle = MaterialTheme.typography.bodyMedium
+                )
             }
         }
-        if (partners.size == 4 && primary != null && small != null && others.size == 2) {
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = {
+                    if (partners.isEmpty()) message = "请先添加合伙人"
+                    else if (kotlin.math.abs(totalPercent - 100.0) >= 0.01) message = "百分比合计必须等于100%"
+                    else {
+                        db.saveProfitRules(allocations)
+                        message = "利润分配百分比规则已保存"
+                        onChanged()
+                    }
+                }, modifier = Modifier.weight(1f)) { Text("保存百分比规则") }
+                Button(onClick = {
+                    if (summary.profit <= 0) message = "当天利润必须大于0才能生成利润分配"
+                    else if (partners.isEmpty()) message = "请先添加合伙人"
+                    else if (kotlin.math.abs(totalPercent - 100.0) >= 0.01) message = "百分比合计必须等于100%"
+                    else {
+                        val ok = db.saveProfitDistribution(date, allocations)
+                        message = if (ok) "利润分配表已独立保存" else "保存失败"
+                        if (ok) onChanged()
+                    }
+                }, modifier = Modifier.weight(1f)) { Text("保存当日分配") }
+            }
+            if (message.isNotBlank()) Text(message, color = BrandGreen, modifier = Modifier.padding(top = 6.dp))
+        }
+        if (summary.profit > 0 && partners.isNotEmpty()) {
             item {
                 Card(colors = CardDefaults.cardColors(containerColor = SoftGreen)) {
                     Column(Modifier.padding(14.dp)) {
                         Text("分配预览", fontWeight = FontWeight.Bold)
-                        SummaryRow("${primary.name} · 33%", money(primaryAmount))
-                        SummaryRow("${small.name} · 67%池×1/5", money(smallAmount))
-                        SummaryRow("${others[0].name} · 67%池×2/5", money(largeAmount))
-                        SummaryRow("${others[1].name} · 67%池×2/5", money(largeAmount))
+                        allocations.forEach { (p, pct) -> SummaryRow("${p.name} · ${cleanPercent(pct)}%", money(summary.profit * pct / 100.0)) }
                     }
                 }
-                Button(onClick = {
-                    if (summary.profit <= 0) message = "当天利润必须大于0才能生成利润分配"
-                    else {
-                        val ok = db.saveProfitDistribution(date, primary, small, others)
-                        message = if (ok) "利润分配表已独立保存" else "保存失败"
-                        if (ok) onChanged()
-                    }
-                }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("保存利润分配表") }
-                if (message.isNotBlank()) Text(message, color = BrandGreen, modifier = Modifier.padding(top = 6.dp))
             }
         }
         if (saved.isNotEmpty()) {
             item {
-                Text("当前日期已保存", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text("利润基数：${money(saved.first().sourceProfit)}")
-                saved.forEach { r -> SummaryRow("${r.partnerName} · ${roleLabel(r.role)}", money(r.allocatedProfit)) }
+                RecordCard {
+                    Column(Modifier.weight(1f)) {
+                        Text("当前日期已保存", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text("利润基数：${money(saved.first().sourceProfit)}", style = MaterialTheme.typography.bodySmall)
+                        saved.forEach { r -> Text("${r.partnerName} · ${cleanPercent(r.ratio * 100)}%：${money(r.allocatedProfit)}", style = MaterialTheme.typography.bodySmall) }
+                    }
+                    TextButton(onClick = { deleteDate = date }) { Text("删除") }
+                }
             }
         }
         item { HorizontalDivider(); Text("利润分配历史", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-        history.entries.take(15).forEach { (d, rows) ->
+        history.entries.take(30).forEach { (d, rows) ->
             item {
                 Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(12.dp)) {
-                        Text("$d · 利润 ${money(rows.firstOrNull()?.sourceProfit ?: 0.0)}", fontWeight = FontWeight.Bold)
-                        rows.forEach { r -> Text("${r.partnerName}：${money(r.allocatedProfit)}", style = MaterialTheme.typography.bodySmall) }
+                    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("$d · 利润 ${money(rows.firstOrNull()?.sourceProfit ?: 0.0)}", fontWeight = FontWeight.Bold)
+                            rows.forEach { r -> Text("${r.partnerName} ${cleanPercent(r.ratio * 100)}%：${money(r.allocatedProfit)}", style = MaterialTheme.typography.bodySmall) }
+                        }
+                        TextButton(onClick = { deleteDate = d }) { Text("删除") }
                     }
                 }
             }
         }
     }
+    deleteDate?.let { d ->
+        ConfirmDelete("删除 $d 的整张利润分配历史？不会删除当天营业和总账。", { deleteDate = null }) {
+            db.deleteProfitDistribution(d); deleteDate = null; onChanged()
+        }
+    }
 }
 
 private fun roleLabel(role: String): String = when (role) {
+    "CUSTOM_PERCENT" -> "自定义比例"
     "PRIMARY_33" -> "33%"
     "SMALL_1" -> "小份1"
     "LARGE_2" -> "大份2"
@@ -823,6 +883,64 @@ private fun IntegerField(label: String, value: String, onValue: (String) -> Unit
 }
 
 @Composable
+private fun CollectorSelector(partners: List<PartnerOption>, selectedId: Long?, onSelected: (Long?) -> Unit) {
+    var menu by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(onClick = { menu = true }, modifier = Modifier.fillMaxWidth()) {
+            Text("收款归属", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+            Spacer(Modifier.width(10.dp))
+            Text(partners.firstOrNull { it.id == selectedId }?.name ?: "未指定", Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+            Text("▼")
+        }
+        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            partners.forEach { p -> DropdownMenuItem(text = { Text(p.name) }, onClick = { onSelected(p.id); menu = false }) }
+            DropdownMenuItem(text = { Text("未指定") }, onClick = { onSelected(null); menu = false })
+        }
+    }
+}
+
+@Composable
+private fun CompactNumberField(label: String, value: String, onValue: (String) -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+        OutlinedTextField(
+            value = value,
+            onValueChange = { if (it.matches(Regex("^\\d*(\\.\\d{0,2})?$"))) onValue(it) },
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            textStyle = MaterialTheme.typography.bodyMedium
+        )
+    }
+}
+
+@Composable
+private fun CompactIntegerField(label: String, value: String, onValue: (String) -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+        OutlinedTextField(
+            value = value,
+            onValueChange = { if (it.all(Char::isDigit)) onValue(it) },
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            textStyle = MaterialTheme.typography.bodyMedium
+        )
+    }
+}
+
+@Composable
+private fun CompactReadOnlyField(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+        OutlinedTextField(value = value, onValueChange = {}, modifier = Modifier.fillMaxWidth().height(48.dp), readOnly = true, singleLine = true, textStyle = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+private fun cleanPercent(v: Double): String = if (kotlin.math.abs(v - v.toLong()) < 0.0001) v.toLong().toString() else String.format(Locale.CHINA, "%.2f", v).trimEnd('0').trimEnd('.')
+private fun roundPercent(v: Double): Double = kotlin.math.round(v * 100.0) / 100.0
+
+@Composable
 private fun RecordCard(content: @Composable RowScope.() -> Unit) {
     Card(Modifier.fillMaxWidth()) { Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically, content = content) }
 }
@@ -861,10 +979,11 @@ private fun AddStoreDialog(onDismiss: () -> Unit, onSave: (String, String) -> Un
 }
 
 @Composable
-private fun AddPartnerDialog(onDismiss: () -> Unit, onSave: (String) -> Unit) {
-    var name by remember { mutableStateOf("") }
+private fun PartnerNameDialog(title: String, initial: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var name by remember(initial) { mutableStateOf(initial) }
     AlertDialog(
-        onDismissRequest = onDismiss, title = { Text("添加合伙人") },
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
         text = { OutlinedTextField(name, { name = it }, label = { Text("姓名/称呼") }, singleLine = true) },
         confirmButton = { Button(onClick = { if (name.isNotBlank()) onSave(name) }) { Text("保存") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }

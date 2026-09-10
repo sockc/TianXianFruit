@@ -1,0 +1,12 @@
+V1.1.1 PATCH
+
+如果你的 GitHub 仓库当前已经是 V1.1.0，只需要把本压缩包中的文件按原目录覆盖上传：
+
+.github/workflows/build-apk.yml
+app/build.gradle
+app/src/main/java/com/tianxian/fruit/ui/AppUi.kt
+app/src/main/java/com/tianxian/fruit/data/AppDatabase.kt
+README.md
+
+不要修改 GitHub Secrets，不要更换签名。
+Actions 成功后生成 TianXianFruit-v1.1.1.apk。
