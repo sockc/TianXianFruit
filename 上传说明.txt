@@ -1,1 +1,0 @@
-覆盖 V1.1.6。保留原 keystore 和 GitHub Secrets。此版自动按默认利润规则生成每日利润分配。
