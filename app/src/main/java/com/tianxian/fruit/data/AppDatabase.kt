@@ -9,29 +9,71 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
 import java.util.UUID
+import kotlin.math.round
 
 data class FruitOption(val id: Long, val name: String, val defaultUnit: String)
 data class StoreOption(val id: Long, val name: String, val address: String)
-data class PurchaseRecord(
+data class PartnerOption(val id: Long, val name: String)
+
+data class PurchaseLineInput(
+    val fruit: FruitOption,
+    val unit: String,
+    val quantity: Double,
+    val totalCost: Double
+)
+
+data class PurchaseOrderRecord(
     val id: Long,
     val date: String,
+    val buyerId: Long,
+    val buyerName: String,
+    val storeId: Long,
+    val storeName: String,
+    val totalCost: Double,
+    val remark: String
+)
+
+data class PurchaseItemRecord(
+    val id: Long,
+    val orderId: Long,
     val fruitId: Long,
     val fruitName: String,
     val unit: String,
     val quantity: Double,
     val totalCost: Double,
-    val unitPrice: Double,
-    val supplier: String,
-    val remark: String
+    val unitPrice: Double
 )
-data class SessionRecord(
+
+data class PurchaseOrderDetail(
+    val order: PurchaseOrderRecord,
+    val items: List<PurchaseItemRecord>
+)
+
+data class PriceHistoryRecord(
+    val date: String,
+    val fruitName: String,
+    val unit: String,
+    val quantity: Double,
+    val totalCost: Double,
+    val unitPrice: Double,
+    val buyerName: String,
+    val storeName: String
+)
+
+data class StoreDailyRecord(
     val id: Long,
     val date: String,
     val storeId: Long,
     val storeName: String,
     val wechatIncome: Double,
+    val wechatCollectorId: Long,
+    val wechatCollectorName: String,
     val alipayIncome: Double,
+    val alipayCollectorId: Long,
+    val alipayCollectorName: String,
     val cashIncome: Double,
+    val cashCollectorId: Long,
+    val cashCollectorName: String,
     val revenue: Double,
     val expense: Double,
     val openingStockValue: Double,
@@ -43,6 +85,7 @@ data class SessionRecord(
 ) {
     val customerTotal: Int get() = newCustomer + oldCustomer
 }
+
 data class RankingRecord(
     val storeName: String,
     val revenue: Double,
@@ -51,11 +94,53 @@ data class RankingRecord(
     val days: Int
 )
 
+data class PartnerMoneySummary(
+    val partnerId: Long,
+    val partnerName: String,
+    val amount: Double
+)
+
+data class DailySummary(
+    val date: String,
+    val revenue: Double,
+    val purchaseCost: Double,
+    val expense: Double,
+    val openingStockValue: Double,
+    val closingStockValue: Double,
+    val profit: Double,
+    val customers: Int,
+    val storeCount: Int
+)
+
+data class ProfitDistributionRecord(
+    val id: Long,
+    val date: String,
+    val partnerId: Long,
+    val partnerName: String,
+    val role: String,
+    val ratio: Double,
+    val weight: Int,
+    val sourceProfit: Double,
+    val allocatedProfit: Double
+)
+
 class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
     override fun onCreate(db: SQLiteDatabase) {
+        createFruitTable(db)
+        createStoreTable(db)
+        createV2Tables(db)
+        seedFruits(db)
+        seedPartners(db)
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) migrateV1ToV2(db)
+    }
+
+    private fun createFruitTable(db: SQLiteDatabase) {
         db.execSQL(
             """
-            CREATE TABLE fruit(
+            CREATE TABLE IF NOT EXISTS fruit(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
                 default_unit TEXT NOT NULL DEFAULT '斤',
@@ -67,13 +152,34 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
             )
             """.trimIndent()
         )
+    }
+
+    private fun createStoreTable(db: SQLiteDatabase) {
         db.execSQL(
             """
-            CREATE TABLE store(
+            CREATE TABLE IF NOT EXISTS store(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
                 address TEXT NOT NULL DEFAULT '',
                 enabled INTEGER NOT NULL DEFAULT 1,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+    }
+
+    private fun createV2Tables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS partner(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                deleted INTEGER NOT NULL DEFAULT 0,
                 sync_id TEXT NOT NULL,
                 sync_status INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
@@ -83,17 +189,38 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         )
         db.execSQL(
             """
-            CREATE TABLE purchase(
+            CREATE TABLE IF NOT EXISTS purchase_order(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 date TEXT NOT NULL,
+                buyer_id INTEGER NOT NULL DEFAULT 0,
+                buyer_name TEXT NOT NULL DEFAULT '未指定',
+                store_id INTEGER NOT NULL DEFAULT 0,
+                store_name TEXT NOT NULL DEFAULT '未指定',
+                total_cost REAL NOT NULL DEFAULT 0,
+                remark TEXT NOT NULL DEFAULT '',
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_purchase_order_date ON purchase_order(date)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_purchase_order_buyer ON purchase_order(buyer_id)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_purchase_order_store ON purchase_order(store_id)")
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS purchase_item(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id INTEGER NOT NULL,
                 fruit_id INTEGER NOT NULL,
                 fruit_name TEXT NOT NULL,
                 unit TEXT NOT NULL,
                 quantity REAL NOT NULL,
                 total_cost REAL NOT NULL,
                 unit_price REAL NOT NULL,
-                supplier TEXT NOT NULL DEFAULT '',
-                remark TEXT NOT NULL DEFAULT '',
+                deleted INTEGER NOT NULL DEFAULT 0,
                 sync_id TEXT NOT NULL,
                 sync_status INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
@@ -101,18 +228,24 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
             )
             """.trimIndent()
         )
-        db.execSQL("CREATE INDEX idx_purchase_date ON purchase(date)")
-        db.execSQL("CREATE INDEX idx_purchase_fruit ON purchase(fruit_id)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_purchase_item_order ON purchase_item(order_id)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_purchase_item_fruit ON purchase_item(fruit_id)")
         db.execSQL(
             """
-            CREATE TABLE daily_session(
+            CREATE TABLE IF NOT EXISTS store_daily_record(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date TEXT NOT NULL UNIQUE,
+                date TEXT NOT NULL,
                 store_id INTEGER NOT NULL,
                 store_name TEXT NOT NULL,
                 wechat_income REAL NOT NULL DEFAULT 0,
+                wechat_collector_id INTEGER NOT NULL DEFAULT 0,
+                wechat_collector_name TEXT NOT NULL DEFAULT '未指定',
                 alipay_income REAL NOT NULL DEFAULT 0,
+                alipay_collector_id INTEGER NOT NULL DEFAULT 0,
+                alipay_collector_name TEXT NOT NULL DEFAULT '未指定',
                 cash_income REAL NOT NULL DEFAULT 0,
+                cash_collector_id INTEGER NOT NULL DEFAULT 0,
+                cash_collector_name TEXT NOT NULL DEFAULT '未指定',
                 revenue REAL NOT NULL DEFAULT 0,
                 expense REAL NOT NULL DEFAULT 0,
                 opening_stock_value REAL NOT NULL DEFAULT 0,
@@ -121,6 +254,29 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
                 profit REAL NOT NULL DEFAULT 0,
                 new_customer INTEGER NOT NULL DEFAULT 0,
                 old_customer INTEGER NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(date, store_id)
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_store_daily_date ON store_daily_record(date)")
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS profit_distribution(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                partner_id INTEGER NOT NULL,
+                partner_name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                ratio REAL NOT NULL DEFAULT 0,
+                weight INTEGER NOT NULL DEFAULT 0,
+                source_profit REAL NOT NULL DEFAULT 0,
+                allocated_profit REAL NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
                 sync_id TEXT NOT NULL,
                 sync_status INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
@@ -128,187 +284,326 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
             )
             """.trimIndent()
         )
-        seed(db)
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_profit_distribution_date ON profit_distribution(date)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // V1 目前没有迁移。后续版本必须只做 ALTER/MIGRATION，不能删除用户数据。
+    private fun migrateV1ToV2(db: SQLiteDatabase) {
+        db.beginTransaction()
+        try {
+            if (!columnExists(db, "store", "deleted")) {
+                db.execSQL("ALTER TABLE store ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+            }
+            createV2Tables(db)
+            seedPartners(db)
+
+            if (tableExists(db, "purchase")) {
+                db.rawQuery("SELECT * FROM purchase ORDER BY id", null).use { c ->
+                    while (c.moveToNext()) {
+                        val now = System.currentTimeMillis()
+                        val orderValues = baseSyncValues().apply {
+                            put("date", c.str("date"))
+                            put("buyer_id", 0)
+                            put("buyer_name", "历史未指定")
+                            put("store_id", 0)
+                            put("store_name", "历史未指定")
+                            put("total_cost", c.dbl("total_cost"))
+                            put("remark", c.str("remark"))
+                            put("deleted", 0)
+                        }
+                        val orderId = db.insert("purchase_order", null, orderValues)
+                        if (orderId > 0) {
+                            val itemValues = baseSyncValues().apply {
+                                put("order_id", orderId)
+                                put("fruit_id", c.long("fruit_id"))
+                                put("fruit_name", c.str("fruit_name"))
+                                put("unit", c.str("unit"))
+                                put("quantity", c.dbl("quantity"))
+                                put("total_cost", c.dbl("total_cost"))
+                                put("unit_price", c.dbl("unit_price"))
+                                put("deleted", 0)
+                            }
+                            db.insert("purchase_item", null, itemValues)
+                        }
+                    }
+                }
+            }
+
+            if (tableExists(db, "daily_session")) {
+                db.rawQuery("SELECT * FROM daily_session ORDER BY id", null).use { c ->
+                    while (c.moveToNext()) {
+                        val values = baseSyncValues().apply {
+                            put("date", c.str("date"))
+                            put("store_id", c.long("store_id"))
+                            put("store_name", c.str("store_name"))
+                            put("wechat_income", c.dbl("wechat_income"))
+                            put("wechat_collector_id", 0)
+                            put("wechat_collector_name", "历史未指定")
+                            put("alipay_income", c.dbl("alipay_income"))
+                            put("alipay_collector_id", 0)
+                            put("alipay_collector_name", "历史未指定")
+                            put("cash_income", c.dbl("cash_income"))
+                            put("cash_collector_id", 0)
+                            put("cash_collector_name", "历史未指定")
+                            put("revenue", c.dbl("revenue"))
+                            put("expense", c.dbl("expense"))
+                            put("opening_stock_value", c.dbl("opening_stock_value"))
+                            put("stock_left_value", c.dbl("stock_left_value"))
+                            put("purchase_cost", c.dbl("purchase_cost"))
+                            put("profit", c.dbl("profit"))
+                            put("new_customer", c.int("new_customer"))
+                            put("old_customer", c.int("old_customer"))
+                            put("deleted", 0)
+                        }
+                        db.insertWithOnConflict("store_daily_record", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+                    }
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
-    private fun seed(db: SQLiteDatabase) {
+    private fun seedFruits(db: SQLiteDatabase) {
         listOf("巨峰葡萄", "阳光玫瑰", "蓝莓", "草莓", "西瓜", "芒果", "荔枝").forEach {
             val values = baseSyncValues().apply {
                 put("name", it)
                 put("default_unit", "斤")
                 put("enabled", 1)
             }
-            db.insert("fruit", null, values)
+            db.insertWithOnConflict("fruit", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+        }
+    }
+
+    private fun seedPartners(db: SQLiteDatabase) {
+        val count = db.rawQuery("SELECT COUNT(*) AS c FROM partner WHERE deleted=0", null).use { c -> if (c.moveToFirst()) c.int("c") else 0 }
+        if (count == 0) {
+            listOf("合伙人1", "合伙人2", "合伙人3", "合伙人4").forEach { name ->
+                db.insert("partner", null, baseSyncValues().apply {
+                    put("name", name)
+                    put("enabled", 1)
+                    put("deleted", 0)
+                })
+            }
         }
     }
 
     fun getFruits(): List<FruitOption> = readableDatabase.rawQuery(
-        "SELECT id,name,default_unit FROM fruit WHERE enabled=1 ORDER BY id",
-        null
+        "SELECT id,name,default_unit FROM fruit WHERE enabled=1 ORDER BY id", null
     ).use { c -> buildList { while (c.moveToNext()) add(FruitOption(c.long("id"), c.str("name"), c.str("default_unit"))) } }
 
     fun addFruit(name: String, defaultUnit: String): Long {
         val clean = name.trim()
         if (clean.isBlank()) return -1
-        val values = baseSyncValues().apply {
-            put("name", clean)
-            put("default_unit", defaultUnit)
-            put("enabled", 1)
-        }
-        return writableDatabase.insertWithOnConflict("fruit", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+        return writableDatabase.insertWithOnConflict("fruit", null, baseSyncValues().apply {
+            put("name", clean); put("default_unit", defaultUnit); put("enabled", 1)
+        }, SQLiteDatabase.CONFLICT_IGNORE)
     }
 
     fun getStores(): List<StoreOption> = readableDatabase.rawQuery(
-        "SELECT id,name,address FROM store WHERE enabled=1 ORDER BY id DESC",
-        null
+        "SELECT id,name,address FROM store WHERE enabled=1 AND deleted=0 ORDER BY id DESC", null
     ).use { c -> buildList { while (c.moveToNext()) add(StoreOption(c.long("id"), c.str("name"), c.str("address"))) } }
 
     fun addStore(name: String, address: String): Long {
         val clean = name.trim()
         if (clean.isBlank()) return -1
-        val values = baseSyncValues().apply {
-            put("name", clean)
-            put("address", address.trim())
-            put("enabled", 1)
-        }
-        return writableDatabase.insertWithOnConflict("store", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+        return writableDatabase.insertWithOnConflict("store", null, baseSyncValues().apply {
+            put("name", clean); put("address", address.trim()); put("enabled", 1); put("deleted", 0)
+        }, SQLiteDatabase.CONFLICT_IGNORE)
     }
 
-    fun addPurchase(
+    fun deleteStore(id: Long) {
+        writableDatabase.update("store", ContentValues().apply {
+            put("enabled", 0); put("deleted", 1); put("sync_status", 2); put("updated_at", System.currentTimeMillis())
+        }, "id=?", arrayOf(id.toString()))
+    }
+
+    fun getPartners(): List<PartnerOption> = readableDatabase.rawQuery(
+        "SELECT id,name FROM partner WHERE enabled=1 AND deleted=0 ORDER BY id", null
+    ).use { c -> buildList { while (c.moveToNext()) add(PartnerOption(c.long("id"), c.str("name"))) } }
+
+    fun addPartner(name: String): Long {
+        val clean = name.trim()
+        if (clean.isBlank()) return -1
+        val duplicate = readableDatabase.rawQuery("SELECT id FROM partner WHERE name=? AND deleted=0 LIMIT 1", arrayOf(clean)).use { it.moveToFirst() }
+        if (duplicate) return -1
+        return writableDatabase.insert("partner", null, baseSyncValues().apply {
+            put("name", clean); put("enabled", 1); put("deleted", 0)
+        })
+    }
+
+    fun deletePartner(id: Long) {
+        writableDatabase.update("partner", ContentValues().apply {
+            put("enabled", 0); put("deleted", 1); put("sync_status", 2); put("updated_at", System.currentTimeMillis())
+        }, "id=?", arrayOf(id.toString()))
+    }
+
+    fun addPurchaseOrder(
         date: String,
-        fruit: FruitOption,
-        unit: String,
-        quantity: Double,
-        totalCost: Double,
-        supplier: String,
+        buyer: PartnerOption,
+        store: StoreOption,
+        lines: List<PurchaseLineInput>,
         remark: String
     ): Long {
-        val price = if (quantity > 0) totalCost / quantity else 0.0
-        val values = baseSyncValues().apply {
-            put("date", date)
-            put("fruit_id", fruit.id)
-            put("fruit_name", fruit.name)
-            put("unit", unit)
-            put("quantity", quantity)
-            put("total_cost", totalCost)
-            put("unit_price", price)
-            put("supplier", supplier.trim())
-            put("remark", remark.trim())
+        if (lines.isEmpty()) return -1
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val total = lines.sumOf { it.totalCost }
+            val orderId = db.insert("purchase_order", null, baseSyncValues().apply {
+                put("date", date)
+                put("buyer_id", buyer.id); put("buyer_name", buyer.name)
+                put("store_id", store.id); put("store_name", store.name)
+                put("total_cost", total); put("remark", remark.trim()); put("deleted", 0)
+            })
+            if (orderId <= 0) return -1
+            lines.forEach { line ->
+                val price = if (line.quantity > 0) line.totalCost / line.quantity else 0.0
+                db.insert("purchase_item", null, baseSyncValues().apply {
+                    put("order_id", orderId)
+                    put("fruit_id", line.fruit.id); put("fruit_name", line.fruit.name)
+                    put("unit", line.unit); put("quantity", line.quantity)
+                    put("total_cost", line.totalCost); put("unit_price", price)
+                    put("deleted", 0)
+                })
+            }
+            db.setTransactionSuccessful()
+            return orderId
+        } finally {
+            db.endTransaction()
         }
-        return writableDatabase.insert("purchase", null, values)
     }
 
-    fun deletePurchase(id: Long) {
-        writableDatabase.delete("purchase", "id=?", arrayOf(id.toString()))
+    fun deletePurchaseOrder(id: Long) {
+        val now = System.currentTimeMillis()
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.update("purchase_order", ContentValues().apply {
+                put("deleted", 1); put("sync_status", 2); put("updated_at", now)
+            }, "id=?", arrayOf(id.toString()))
+            db.update("purchase_item", ContentValues().apply {
+                put("deleted", 1); put("sync_status", 2); put("updated_at", now)
+            }, "order_id=?", arrayOf(id.toString()))
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
     }
+
+    fun getPurchaseOrders(limit: Int = 100): List<PurchaseOrderDetail> {
+        val orders = readableDatabase.rawQuery(
+            "SELECT * FROM purchase_order WHERE deleted=0 ORDER BY date DESC,id DESC LIMIT ?", arrayOf(limit.toString())
+        ).use { c -> buildList { while (c.moveToNext()) add(order(c)) } }
+        return orders.map { PurchaseOrderDetail(it, getPurchaseItems(it.id)) }
+    }
+
+    private fun getPurchaseItems(orderId: Long): List<PurchaseItemRecord> = readableDatabase.rawQuery(
+        "SELECT * FROM purchase_item WHERE order_id=? AND deleted=0 ORDER BY id", arrayOf(orderId.toString())
+    ).use { c -> buildList {
+        while (c.moveToNext()) add(PurchaseItemRecord(
+            c.long("id"), c.long("order_id"), c.long("fruit_id"), c.str("fruit_name"), c.str("unit"),
+            c.dbl("quantity"), c.dbl("total_cost"), c.dbl("unit_price")
+        ))
+    } }
 
     fun getPurchaseTotal(date: String): Double = readableDatabase.rawQuery(
-        "SELECT COALESCE(SUM(total_cost),0) AS total FROM purchase WHERE date=?",
-        arrayOf(date)
+        "SELECT COALESCE(SUM(total_cost),0) AS total FROM purchase_order WHERE date=? AND deleted=0", arrayOf(date)
     ).use { c -> if (c.moveToFirst()) c.dbl("total") else 0.0 }
 
-    fun getRecentPurchases(limit: Int = 100): List<PurchaseRecord> = readableDatabase.rawQuery(
-        "SELECT * FROM purchase ORDER BY date DESC,id DESC LIMIT ?",
-        arrayOf(limit.toString())
-    ).use { c -> purchaseList(c) }
+    fun getPurchaseTotalByStore(date: String, storeId: Long): Double = readableDatabase.rawQuery(
+        "SELECT COALESCE(SUM(total_cost),0) AS total FROM purchase_order WHERE date=? AND store_id=? AND deleted=0",
+        arrayOf(date, storeId.toString())
+    ).use { c -> if (c.moveToFirst()) c.dbl("total") else 0.0 }
 
-    fun getFruitPriceHistory(fruitId: Long, limit: Int = 8): List<PurchaseRecord> = readableDatabase.rawQuery(
-        "SELECT * FROM purchase WHERE fruit_id=? ORDER BY date DESC,id DESC LIMIT ?",
-        arrayOf(fruitId.toString(), limit.toString())
-    ).use { c -> purchaseList(c) }
+    fun getPurchaseTotalsByPartner(date: String): List<PartnerMoneySummary> = readableDatabase.rawQuery(
+        """
+        SELECT buyer_id,buyer_name,COALESCE(SUM(total_cost),0) amount
+        FROM purchase_order WHERE date=? AND deleted=0
+        GROUP BY buyer_id,buyer_name ORDER BY amount DESC
+        """.trimIndent(), arrayOf(date)
+    ).use { c -> buildList { while (c.moveToNext()) add(PartnerMoneySummary(c.long("buyer_id"), c.str("buyer_name"), c.dbl("amount"))) } }
 
-    private fun purchaseList(c: Cursor): List<PurchaseRecord> = buildList {
-        while (c.moveToNext()) {
-            add(
-                PurchaseRecord(
-                    c.long("id"), c.str("date"), c.long("fruit_id"), c.str("fruit_name"), c.str("unit"),
-                    c.dbl("quantity"), c.dbl("total_cost"), c.dbl("unit_price"), c.str("supplier"), c.str("remark")
-                )
-            )
-        }
-    }
+    fun getFruitPriceHistory(fruitId: Long, limit: Int = 20): List<PriceHistoryRecord> = readableDatabase.rawQuery(
+        """
+        SELECT po.date,pi.fruit_name,pi.unit,pi.quantity,pi.total_cost,pi.unit_price,po.buyer_name,po.store_name
+        FROM purchase_item pi JOIN purchase_order po ON po.id=pi.order_id
+        WHERE pi.fruit_id=? AND pi.deleted=0 AND po.deleted=0
+        ORDER BY po.date DESC,pi.id DESC LIMIT ?
+        """.trimIndent(), arrayOf(fruitId.toString(), limit.toString())
+    ).use { c -> buildList {
+        while (c.moveToNext()) add(PriceHistoryRecord(
+            c.str("date"), c.str("fruit_name"), c.str("unit"), c.dbl("quantity"), c.dbl("total_cost"),
+            c.dbl("unit_price"), c.str("buyer_name"), c.str("store_name")
+        ))
+    } }
 
-    fun getSession(date: String): SessionRecord? = readableDatabase.rawQuery(
-        "SELECT * FROM daily_session WHERE date=? LIMIT 1",
-        arrayOf(date)
-    ).use { c -> if (c.moveToFirst()) session(c) else null }
+    fun getStoreDailyRecord(date: String, storeId: Long): StoreDailyRecord? = readableDatabase.rawQuery(
+        "SELECT * FROM store_daily_record WHERE date=? AND store_id=? AND deleted=0 LIMIT 1", arrayOf(date, storeId.toString())
+    ).use { c -> if (c.moveToFirst()) dailyRecord(c) else null }
 
-    fun getPreviousClosingStock(date: String): Double = readableDatabase.rawQuery(
-        "SELECT stock_left_value FROM daily_session WHERE date<? ORDER BY date DESC LIMIT 1",
-        arrayOf(date)
+    fun getPreviousClosingStock(storeId: Long, date: String): Double = readableDatabase.rawQuery(
+        "SELECT stock_left_value FROM store_daily_record WHERE store_id=? AND date<? AND deleted=0 ORDER BY date DESC LIMIT 1",
+        arrayOf(storeId.toString(), date)
     ).use { c -> if (c.moveToFirst()) c.dbl("stock_left_value") else 0.0 }
 
-    fun saveSession(
+    fun saveStoreDailyRecord(
         date: String,
         store: StoreOption,
         wechat: Double,
+        wechatCollector: PartnerOption?,
         alipay: Double,
+        alipayCollector: PartnerOption?,
         cash: Double,
+        cashCollector: PartnerOption?,
         expense: Double,
         openingStock: Double,
         closingStock: Double,
         newCustomer: Int,
         oldCustomer: Int
     ) {
-        val purchaseCost = getPurchaseTotal(date)
+        val purchaseCost = getPurchaseTotalByStore(date, store.id)
         val revenue = wechat + alipay + cash
         val profit = revenue + closingStock - openingStock - purchaseCost - expense
-        val old = getSession(date)
+        val old = getStoreDailyRecord(date, store.id)
         val now = System.currentTimeMillis()
         val values = ContentValues().apply {
-            put("date", date)
-            put("store_id", store.id)
-            put("store_name", store.name)
-            put("wechat_income", wechat)
-            put("alipay_income", alipay)
-            put("cash_income", cash)
-            put("revenue", revenue)
-            put("expense", expense)
-            put("opening_stock_value", openingStock)
-            put("stock_left_value", closingStock)
-            put("purchase_cost", purchaseCost)
-            put("profit", profit)
-            put("new_customer", newCustomer)
-            put("old_customer", oldCustomer)
-            put("sync_status", 0)
-            put("updated_at", now)
-            if (old == null) {
-                put("sync_id", UUID.randomUUID().toString())
-                put("created_at", now)
-            }
+            put("date", date); put("store_id", store.id); put("store_name", store.name)
+            put("wechat_income", wechat); put("wechat_collector_id", wechatCollector?.id ?: 0); put("wechat_collector_name", wechatCollector?.name ?: "未指定")
+            put("alipay_income", alipay); put("alipay_collector_id", alipayCollector?.id ?: 0); put("alipay_collector_name", alipayCollector?.name ?: "未指定")
+            put("cash_income", cash); put("cash_collector_id", cashCollector?.id ?: 0); put("cash_collector_name", cashCollector?.name ?: "未指定")
+            put("revenue", revenue); put("expense", expense)
+            put("opening_stock_value", openingStock); put("stock_left_value", closingStock)
+            put("purchase_cost", purchaseCost); put("profit", profit)
+            put("new_customer", newCustomer); put("old_customer", oldCustomer)
+            put("deleted", 0); put("sync_status", 0); put("updated_at", now)
+            if (old == null) { put("sync_id", UUID.randomUUID().toString()); put("created_at", now) }
         }
-        if (old == null) writableDatabase.insert("daily_session", null, values)
-        else writableDatabase.update("daily_session", values, "id=?", arrayOf(old.id.toString()))
+        if (old == null) writableDatabase.insert("store_daily_record", null, values)
+        else writableDatabase.update("store_daily_record", values, "id=?", arrayOf(old.id.toString()))
     }
 
-    fun deleteSession(id: Long) {
-        writableDatabase.delete("daily_session", "id=?", arrayOf(id.toString()))
+    fun deleteStoreDailyRecord(id: Long) {
+        writableDatabase.update("store_daily_record", ContentValues().apply {
+            put("deleted", 1); put("sync_status", 2); put("updated_at", System.currentTimeMillis())
+        }, "id=?", arrayOf(id.toString()))
     }
 
-    fun getRecentSessions(limit: Int = 120): List<SessionRecord> = readableDatabase.rawQuery(
-        "SELECT * FROM daily_session ORDER BY date DESC LIMIT ?",
-        arrayOf(limit.toString())
-    ).use { c -> buildList { while (c.moveToNext()) add(session(c)) } }
+    fun getDailyRecords(date: String): List<StoreDailyRecord> = readableDatabase.rawQuery(
+        "SELECT * FROM store_daily_record WHERE date=? AND deleted=0 ORDER BY id", arrayOf(date)
+    ).use { c -> buildList { while (c.moveToNext()) add(dailyRecord(c)) } }
 
-    fun getSessionsBetween(start: String?, end: String?): List<SessionRecord> {
-        val sql: String
-        val args: Array<String>
-        if (start == null || end == null) {
-            sql = "SELECT * FROM daily_session ORDER BY date DESC"
-            args = emptyArray()
-        } else {
-            sql = "SELECT * FROM daily_session WHERE date>=? AND date<=? ORDER BY date DESC"
-            args = arrayOf(start, end)
-        }
-        return readableDatabase.rawQuery(sql, args).use { c -> buildList { while (c.moveToNext()) add(session(c)) } }
+    fun getRecentDailyRecords(limit: Int = 120): List<StoreDailyRecord> = readableDatabase.rawQuery(
+        "SELECT * FROM store_daily_record WHERE deleted=0 ORDER BY date DESC,id DESC LIMIT ?", arrayOf(limit.toString())
+    ).use { c -> buildList { while (c.moveToNext()) add(dailyRecord(c)) } }
+
+    fun getDailyRecordsBetween(start: String?, end: String?): List<StoreDailyRecord> {
+        val where = if (start != null && end != null) "AND date>=? AND date<=?" else ""
+        val args = if (start != null && end != null) arrayOf(start, end) else emptyArray()
+        return readableDatabase.rawQuery("SELECT * FROM store_daily_record WHERE deleted=0 $where ORDER BY date DESC,id DESC", args)
+            .use { c -> buildList { while (c.moveToNext()) add(dailyRecord(c)) } }
     }
 
     fun getRankings(start: String? = null, end: String? = null): List<RankingRecord> {
-        val where = if (start != null && end != null) "WHERE date>=? AND date<=?" else ""
+        val where = if (start != null && end != null) "AND date>=? AND date<=?" else ""
         val args = if (start != null && end != null) arrayOf(start, end) else emptyArray()
         return readableDatabase.rawQuery(
             """
@@ -316,29 +611,97 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
                    COALESCE(SUM(revenue),0) revenue_sum,
                    COALESCE(SUM(profit),0) profit_sum,
                    COALESCE(SUM(new_customer+old_customer),0) customer_sum,
-                   COUNT(*) day_count
-            FROM daily_session
-            $where
-            GROUP BY store_name
+                   COUNT(DISTINCT date) day_count
+            FROM store_daily_record WHERE deleted=0 $where
+            GROUP BY store_id,store_name
             """.trimIndent(), args
         ).use { c -> buildList {
-            while (c.moveToNext()) add(
-                RankingRecord(
-                    c.str("store_name"), c.dbl("revenue_sum"), c.dbl("profit_sum"),
-                    c.int("customer_sum"), c.int("day_count")
-                )
-            )
+            while (c.moveToNext()) add(RankingRecord(c.str("store_name"), c.dbl("revenue_sum"), c.dbl("profit_sum"), c.int("customer_sum"), c.int("day_count")))
         } }
+    }
+
+    fun getDailySummary(date: String): DailySummary {
+        val records = getDailyRecords(date)
+        val revenue = records.sumOf { it.revenue }
+        val expense = records.sumOf { it.expense }
+        val opening = records.sumOf { it.openingStockValue }
+        val closing = records.sumOf { it.stockLeftValue }
+        val purchase = getPurchaseTotal(date)
+        val profit = revenue + closing - opening - purchase - expense
+        return DailySummary(date, revenue, purchase, expense, opening, closing, profit, records.sumOf { it.customerTotal }, records.size)
+    }
+
+    fun getReceiptsByPartner(date: String): List<PartnerMoneySummary> {
+        val map = linkedMapOf<Long, Pair<String, Double>>()
+        fun add(id: Long, name: String, amount: Double) {
+            if (amount == 0.0) return
+            val old = map[id]
+            map[id] = name to ((old?.second ?: 0.0) + amount)
+        }
+        getDailyRecords(date).forEach { r ->
+            add(r.wechatCollectorId, r.wechatCollectorName, r.wechatIncome)
+            add(r.alipayCollectorId, r.alipayCollectorName, r.alipayIncome)
+            add(r.cashCollectorId, r.cashCollectorName, r.cashIncome)
+        }
+        return map.map { PartnerMoneySummary(it.key, it.value.first, it.value.second) }.sortedByDescending { it.amount }
+    }
+
+    fun saveProfitDistribution(date: String, primary: PartnerOption, small: PartnerOption, others: List<PartnerOption>): Boolean {
+        if (others.size != 2 || primary.id == small.id || others.any { it.id == primary.id || it.id == small.id }) return false
+        val profit = getDailySummary(date).profit
+        if (profit <= 0) return false
+        val primaryAmount = roundMoney(profit * 0.33)
+        val pool = roundMoney(profit - primaryAmount)
+        val smallAmount = roundMoney(pool / 5.0)
+        val large1Amount = roundMoney(pool * 2.0 / 5.0)
+        val large2Amount = roundMoney(profit - primaryAmount - smallAmount - large1Amount)
+        val rows = listOf(
+            Triple(primary, "PRIMARY_33", Triple(0.33, 0, primaryAmount)),
+            Triple(small, "SMALL_1", Triple(0.134, 1, smallAmount)),
+            Triple(others[0], "LARGE_2", Triple(0.268, 2, large1Amount)),
+            Triple(others[1], "LARGE_2", Triple(0.268, 2, large2Amount))
+        )
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val now = System.currentTimeMillis()
+            db.update("profit_distribution", ContentValues().apply {
+                put("deleted", 1); put("sync_status", 2); put("updated_at", now)
+            }, "date=? AND deleted=0", arrayOf(date))
+            rows.forEach { (partner, role, spec) ->
+                db.insert("profit_distribution", null, baseSyncValues().apply {
+                    put("date", date); put("partner_id", partner.id); put("partner_name", partner.name)
+                    put("role", role); put("ratio", spec.first); put("weight", spec.second)
+                    put("source_profit", profit); put("allocated_profit", spec.third); put("deleted", 0)
+                })
+            }
+            db.setTransactionSuccessful()
+            return true
+        } finally { db.endTransaction() }
+    }
+
+    fun getProfitDistribution(date: String): List<ProfitDistributionRecord> = readableDatabase.rawQuery(
+        "SELECT * FROM profit_distribution WHERE date=? AND deleted=0 ORDER BY allocated_profit DESC,id", arrayOf(date)
+    ).use { c -> profitList(c) }
+
+    fun getRecentProfitDistributions(limit: Int = 80): List<ProfitDistributionRecord> = readableDatabase.rawQuery(
+        "SELECT * FROM profit_distribution WHERE deleted=0 ORDER BY date DESC,id LIMIT ?", arrayOf(limit.toString())
+    ).use { c -> profitList(c) }
+
+    private fun profitList(c: Cursor): List<ProfitDistributionRecord> = buildList {
+        while (c.moveToNext()) add(ProfitDistributionRecord(
+            c.long("id"), c.str("date"), c.long("partner_id"), c.str("partner_name"), c.str("role"),
+            c.dbl("ratio"), c.int("weight"), c.dbl("source_profit"), c.dbl("allocated_profit")
+        ))
     }
 
     fun exportJson(): String {
         val root = JSONObject()
         root.put("schemaVersion", DB_VERSION)
         root.put("exportedAt", System.currentTimeMillis())
-        root.put("fruit", tableAsJson("fruit"))
-        root.put("store", tableAsJson("store"))
-        root.put("purchase", tableAsJson("purchase"))
-        root.put("daily_session", tableAsJson("daily_session"))
+        listOf("fruit", "store", "partner", "purchase_order", "purchase_item", "store_daily_record", "profit_distribution").forEach { table ->
+            root.put(table, tableAsJson(table))
+        }
         return root.toString(2)
     }
 
@@ -363,10 +726,16 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         return array
     }
 
-    private fun session(c: Cursor) = SessionRecord(
+    private fun order(c: Cursor) = PurchaseOrderRecord(
+        c.long("id"), c.str("date"), c.long("buyer_id"), c.str("buyer_name"), c.long("store_id"), c.str("store_name"), c.dbl("total_cost"), c.str("remark")
+    )
+
+    private fun dailyRecord(c: Cursor) = StoreDailyRecord(
         c.long("id"), c.str("date"), c.long("store_id"), c.str("store_name"),
-        c.dbl("wechat_income"), c.dbl("alipay_income"), c.dbl("cash_income"), c.dbl("revenue"),
-        c.dbl("expense"), c.dbl("opening_stock_value"), c.dbl("stock_left_value"),
+        c.dbl("wechat_income"), c.long("wechat_collector_id"), c.str("wechat_collector_name"),
+        c.dbl("alipay_income"), c.long("alipay_collector_id"), c.str("alipay_collector_name"),
+        c.dbl("cash_income"), c.long("cash_collector_id"), c.str("cash_collector_name"),
+        c.dbl("revenue"), c.dbl("expense"), c.dbl("opening_stock_value"), c.dbl("stock_left_value"),
         c.dbl("purchase_cost"), c.dbl("profit"), c.int("new_customer"), c.int("old_customer")
     )
 
@@ -380,6 +749,16 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         }
     }
 
+    private fun tableExists(db: SQLiteDatabase, table: String): Boolean = db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?", arrayOf(table)
+    ).use { it.moveToFirst() }
+
+    private fun columnExists(db: SQLiteDatabase, table: String, column: String): Boolean = db.rawQuery("PRAGMA table_info($table)", null).use { c ->
+        var found = false
+        while (c.moveToNext()) if (c.str("name") == column) { found = true; break }
+        found
+    }
+
     private fun Cursor.str(name: String): String = getString(getColumnIndexOrThrow(name)) ?: ""
     private fun Cursor.long(name: String): Long = getLong(getColumnIndexOrThrow(name))
     private fun Cursor.int(name: String): Int = getInt(getColumnIndexOrThrow(name))
@@ -387,10 +766,11 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 1
+        const val DB_VERSION = 2
     }
 }
 
-fun currentMonthRange(today: LocalDate = LocalDate.now()): Pair<String, String> {
-    return today.withDayOfMonth(1).toString() to today.withDayOfMonth(today.lengthOfMonth()).toString()
-}
+private fun roundMoney(v: Double): Double = round(v * 100.0) / 100.0
+
+fun currentMonthRange(today: LocalDate = LocalDate.now()): Pair<String, String> =
+    today.withDayOfMonth(1).toString() to today.withDayOfMonth(today.lengthOfMonth()).toString()
