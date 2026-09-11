@@ -1216,9 +1216,34 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
             }
         }
 
+    fun getPurchasePlansBetween(start: String?, end: String?): List<PurchasePlanDetail> {
+        val where = if (start != null && end != null) "AND plan_date>=? AND plan_date<=?" else ""
+        val args = if (start != null && end != null) arrayOf(start, end) else emptyArray()
+        return readableDatabase.rawQuery(
+            "SELECT plan_date FROM purchase_plan WHERE deleted=0 $where ORDER BY plan_date DESC",
+            args
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    getPurchasePlan(c.str("plan_date"))?.let { add(it) }
+                }
+            }
+        }
+    }
+
     fun getPurchaseOrders(limit: Int = 100): List<PurchaseOrderDetail> {
         val orders = readableDatabase.rawQuery(
             "SELECT * FROM purchase_order WHERE deleted=0 ORDER BY date DESC,id DESC LIMIT ?", arrayOf(limit.toString())
+        ).use { c -> buildList { while (c.moveToNext()) add(order(c)) } }
+        return orders.map { PurchaseOrderDetail(it, getPurchaseItems(it.id)) }
+    }
+
+    fun getPurchaseOrdersBetween(start: String?, end: String?): List<PurchaseOrderDetail> {
+        val where = if (start != null && end != null) "AND date>=? AND date<=?" else ""
+        val args = if (start != null && end != null) arrayOf(start, end) else emptyArray()
+        val orders = readableDatabase.rawQuery(
+            "SELECT * FROM purchase_order WHERE deleted=0 $where ORDER BY date DESC,id DESC",
+            args
         ).use { c -> buildList { while (c.moveToNext()) add(order(c)) } }
         return orders.map { PurchaseOrderDetail(it, getPurchaseItems(it.id)) }
     }
@@ -2006,6 +2031,15 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
     fun getRecentProfitDistributions(limit: Int = 80): List<ProfitDistributionRecord> = readableDatabase.rawQuery(
         "SELECT * FROM profit_distribution WHERE deleted=0 ORDER BY date DESC,id LIMIT ?", arrayOf(limit.toString())
     ).use { c -> profitList(c) }
+
+    fun getProfitDistributionsBetween(start: String?, end: String?): List<ProfitDistributionRecord> {
+        val where = if (start != null && end != null) "AND date>=? AND date<=?" else ""
+        val args = if (start != null && end != null) arrayOf(start, end) else emptyArray()
+        return readableDatabase.rawQuery(
+            "SELECT * FROM profit_distribution WHERE deleted=0 $where ORDER BY date DESC,id",
+            args
+        ).use { c -> profitList(c) }
+    }
 
     private fun profitList(c: Cursor): List<ProfitDistributionRecord> = buildList {
         while (c.moveToNext()) add(ProfitDistributionRecord(
