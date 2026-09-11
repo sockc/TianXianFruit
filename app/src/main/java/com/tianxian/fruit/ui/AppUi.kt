@@ -253,11 +253,21 @@ private fun HomeScreen(
                                 Spacer(Modifier.width(9.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text("明日采购", fontWeight = FontWeight.Bold)
-                                    val planText = when {
-                                        tomorrowPlan == null -> "暂无计划，点击添加"
-                                        tomorrowPlan.plan.status == 1 -> "已完成 · ${tomorrowPlan.items.size} 项"
-                                        tomorrowPlan.plan.status == 2 -> "已取消 · ${tomorrowPlan.items.size} 项"
-                                        else -> "${tomorrowPlan.items.size} 种水果待采购"
+                                    val planText = if (tomorrowPlan == null) {
+                                        "暂无计划，点击添加"
+                                    } else {
+                                        val pendingCount = tomorrowPlan.items.count { it.status == 0 }
+                                        val purchasedCount = tomorrowPlan.items.count { it.status == 1 }
+                                        val cancelledCount = tomorrowPlan.items.count { it.status == 2 }
+                                        when {
+                                            tomorrowPlan.items.isEmpty() -> "暂无商品"
+                                            pendingCount > 0 ->
+                                                "待采购 $pendingCount · 已采购 $purchasedCount · 取消 $cancelledCount"
+                                            purchasedCount > 0 ->
+                                                "已完成 $purchasedCount 项" +
+                                                    if (cancelledCount > 0) " · 取消 $cancelledCount" else ""
+                                            else -> "已全部取消"
+                                        }
                                     }
                                     Text(planText, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                                 }
@@ -396,7 +406,7 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
     val fruits = remember(dataVersion) { db.getFruits() }
 
     var fruitId by remember { mutableStateOf<Long?>(null) }
-    val fruit = fruits.firstOrNull { it.id == fruitId } ?: fruits.firstOrNull()
+    val fruit = fruits.firstOrNull { it.id == fruitId }
     var fruitMenu by remember { mutableStateOf(false) }
     var unit by remember { mutableStateOf("件") }
     var unitMenu by remember { mutableStateOf(false) }
@@ -423,22 +433,28 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
                         fruit = f,
                         quantity = item.quantity,
                         unit = item.unit,
-                        remark = item.remark
+                        remark = item.remark,
+                        status = item.status
                     )
                 )
             }
         } else {
             note = ""
         }
+        fruitId = null
+        quantity = ""
+        itemRemark = ""
+        unit = "件"
         message = ""
     }
 
     val q = quantity.toDoubleOrNull() ?: 0.0
-    val statusText = when (saved?.plan?.status) {
-        1 -> "已采购"
-        2 -> "已取消"
-        else -> "待采购"
-    }
+
+    val statusSource = saved?.items
+    val totalCount = statusSource?.size ?: draft.size
+    val pendingCount = statusSource?.count { it.status == 0 } ?: draft.count { it.status == 0 }
+    val purchasedCount = statusSource?.count { it.status == 1 } ?: draft.count { it.status == 1 }
+    val cancelledCount = statusSource?.count { it.status == 2 } ?: draft.count { it.status == 2 }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -446,20 +462,33 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         item {
-            PageHeader("采购计划", "由你自主决定第二天采购哪些水果；这里只做清单和提醒，不自动推荐")
+            PageHeader("采购计划", "每种水果独立管理：待采购、已采购、取消")
         }
 
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                CompactDateSelector("采购日期", date, Modifier.weight(1f)) { date = it }
-                CompactReadOnlyField("状态", statusText, Modifier.width(90.dp))
+            CompactDateSelector("采购日期", date, Modifier.fillMaxWidth()) { date = it }
+        }
+
+        if (totalCount > 0) {
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F8F6))) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("总计 $totalCount 项", fontWeight = FontWeight.Bold)
+                        Text("待采购 $pendingCount", color = Color(0xFF9A6A00))
+                        Text("已采购 $purchasedCount", color = BrandGreen)
+                        Text("取消 $cancelledCount", color = Color.Gray)
+                    }
+                }
             }
         }
 
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                 Box(Modifier.weight(1f)) {
-                    CompactSelectButton("水果", fruit?.name ?: "请先添加水果", Modifier.fillMaxWidth()) {
+                    CompactSelectButton("水果", fruit?.name ?: "请选择水果", Modifier.fillMaxWidth()) {
                         fruitMenu = true
                     }
                     DropdownMenu(expanded = fruitMenu, onDismissRequest = { fruitMenu = false }) {
@@ -513,8 +542,17 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
                     if (fruit == null || q <= 0) {
                         message = "请选择水果并填写正确数量"
                     } else {
-                        val existingIndex = draft.indexOfFirst { it.fruit.id == fruit.id && it.unit == unit }
-                        val newLine = PurchasePlanLineInput(fruit, q, unit, itemRemark.trim())
+                        val existingIndex =
+                            draft.indexOfFirst { it.fruit.id == fruit.id && it.unit == unit }
+                        val oldStatus =
+                            if (existingIndex >= 0) draft[existingIndex].status else 0
+                        val newLine = PurchasePlanLineInput(
+                            fruit = fruit,
+                            quantity = q,
+                            unit = unit,
+                            remark = itemRemark.trim(),
+                            status = oldStatus
+                        )
                         if (existingIndex >= 0) {
                             draft[existingIndex] = newLine
                             message = "已更新 ${fruit.name}"
@@ -522,6 +560,7 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
                             draft.add(newLine)
                             message = "已加入 ${fruit.name}"
                         }
+                        fruitId = null
                         quantity = ""
                         itemRemark = ""
                         unit = "件"
@@ -529,7 +568,7 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
                 },
                 modifier = Modifier.fillMaxWidth().height(42.dp)
             ) {
-                Text("＋ 加入采购清单")
+                Text("＋ 添加采购商品")
             }
         }
 
@@ -543,25 +582,85 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
 
             items(draft.indices.toList()) { index ->
                 val line = draft[index]
-                RecordCard {
-                    Column(Modifier.weight(1f)) {
-                        Text(line.fruit.name, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "${fmt(line.quantity)}${line.unit}" +
-                                if (line.remark.isBlank()) "" else " · ${line.remark}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.Gray
-                        )
-                    }
-                    TextButton(
-                        onClick = {
-                            fruitId = line.fruit.id
-                            unit = line.unit
-                            quantity = cleanNumber(line.quantity)
-                            itemRemark = line.remark
+                val savedItem = saved?.items?.firstOrNull {
+                    it.fruitId == line.fruit.id && it.unit == line.unit
+                }
+                val effectiveStatus = savedItem?.status ?: line.status
+
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.fillMaxWidth().padding(11.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(line.fruit.name, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "${fmt(line.quantity)}${line.unit}" +
+                                        if (line.remark.isBlank()) "" else " · ${line.remark}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.Gray
+                                )
+                            }
+                            Text(
+                                when (effectiveStatus) {
+                                    1 -> "已采购"
+                                    2 -> "已取消"
+                                    else -> "待采购"
+                                },
+                                color = when (effectiveStatus) {
+                                    1 -> BrandGreen
+                                    2 -> Color.Gray
+                                    else -> Color(0xFF9A6A00)
+                                },
+                                fontWeight = FontWeight.Bold
+                            )
                         }
-                    ) { Text("修改") }
-                    TextButton(onClick = { draft.removeAt(index) }) { Text("移除") }
+
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    fruitId = line.fruit.id
+                                    unit = line.unit
+                                    quantity = cleanNumber(line.quantity)
+                                    itemRemark = line.remark
+                                }
+                            ) { Text("修改") }
+
+                            if (savedItem != null) {
+                                when (effectiveStatus) {
+                                    0 -> {
+                                        TextButton(
+                                            onClick = {
+                                                db.updatePurchasePlanItemStatus(savedItem.id, 1)
+                                                message = "${line.fruit.name} 已完成采购"
+                                                onChanged()
+                                            }
+                                        ) { Text("完成") }
+                                        TextButton(
+                                            onClick = {
+                                                db.updatePurchasePlanItemStatus(savedItem.id, 2)
+                                                message = "${line.fruit.name} 已取消"
+                                                onChanged()
+                                            }
+                                        ) { Text("取消") }
+                                    }
+                                    1, 2 -> {
+                                        TextButton(
+                                            onClick = {
+                                                db.updatePurchasePlanItemStatus(savedItem.id, 0)
+                                                message = "${line.fruit.name} 已恢复待采购"
+                                                onChanged()
+                                            }
+                                        ) { Text("待采购") }
+                                    }
+                                }
+                            }
+
+                            TextButton(onClick = { draft.removeAt(index) }) { Text("移除") }
+                        }
+                    }
                 }
             }
 
@@ -584,14 +683,14 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
                     },
                     modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
                 ) {
-                    Text(if (saved == null) "保存采购计划" else "保存修改")
+                    Text(if (saved == null) "保存采购计划" else "保存采购计划修改")
                 }
             }
         } else {
             item {
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F8FA))) {
                     Text(
-                        "暂未添加采购商品。选择水果和数量后加入清单。",
+                        "暂未添加采购商品。选择水果和数量后添加。",
                         modifier = Modifier.fillMaxWidth().padding(14.dp),
                         color = Color.Gray
                     )
@@ -601,37 +700,6 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
 
         if (saved != null) {
             item {
-                HorizontalDivider()
-                Text("计划状态", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 5.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    OutlinedButton(
-                        onClick = {
-                            db.updatePurchasePlanStatus(saved.plan.id, 0)
-                            message = "已标记为待采购"
-                            onChanged()
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("待采购") }
-
-                    OutlinedButton(
-                        onClick = {
-                            db.updatePurchasePlanStatus(saved.plan.id, 1)
-                            message = "已标记为已采购"
-                            onChanged()
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("已采购") }
-
-                    OutlinedButton(
-                        onClick = {
-                            db.updatePurchasePlanStatus(saved.plan.id, 2)
-                            message = "已取消该采购计划"
-                            onChanged()
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("取消") }
-                }
-
                 TextButton(
                     onClick = { deletePlanConfirm = true },
                     modifier = Modifier.fillMaxWidth()
@@ -647,7 +715,11 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
 
         item {
             HorizontalDivider()
-            Text("最近采购计划", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                "最近采购计划",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
         }
 
         val recent = db.getRecentPurchasePlans(12)
@@ -655,6 +727,10 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
             item { Text("暂无历史采购计划", color = Color.Gray) }
         } else {
             items(recent, key = { it.plan.id }) { detail ->
+                val p = detail.items.count { it.status == 0 }
+                val done = detail.items.count { it.status == 1 }
+                val cancel = detail.items.count { it.status == 2 }
+
                 Card(
                     onClick = { date = detail.plan.planDate },
                     modifier = Modifier.fillMaxWidth()
@@ -674,12 +750,11 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
                             )
                         }
                         Text(
-                            when (detail.plan.status) {
-                                1 -> "已采购"
-                                2 -> "已取消"
-                                else -> "待采购"
-                            },
-                            color = BrandGreen
+                            if (p > 0) "待 $p · 已 $done · 取消 $cancel"
+                            else if (done > 0) "已完成 $done"
+                            else "已取消",
+                            color = BrandGreen,
+                            style = MaterialTheme.typography.bodySmall
                         )
                     }
                 }
@@ -724,8 +799,8 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
     var historicalBuyerName by remember { mutableStateOf("") }
 
     var fruitId by remember { mutableStateOf<Long?>(null) }
-    val fruit = fruits.firstOrNull { it.id == fruitId } ?: fruits.firstOrNull()
-    var unit by remember(fruit?.id) { mutableStateOf("件") }
+    val fruit = fruits.firstOrNull { it.id == fruitId }
+    var unit by remember { mutableStateOf("件") }
     var quantity by remember { mutableStateOf("") }
     var totalCost by remember { mutableStateOf("") }
     var remark by remember { mutableStateOf("") }
@@ -736,6 +811,8 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
     var addFruitDialog by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     val draft = remember { mutableStateListOf<PurchaseLineInput>() }
+
+    var editingDraftIndex by remember { mutableStateOf<Int?>(null) }
     var editingOrderId by remember { mutableStateOf<Long?>(null) }
     var deleteOrder by remember { mutableStateOf<PurchaseOrderDetail?>(null) }
     val history = remember(dataVersion) { db.getPurchaseOrders(50) }
@@ -744,10 +821,14 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
     val historicalBuyer = if (editingOrderId != null && buyerId != null && activeBuyer == null) {
         PartnerOption(
             buyerId!!,
-            historicalBuyerName.ifBlank { db.getPartnerByIdIncludingDeleted(buyerId!!)?.name ?: "已删除合伙人" }
+            historicalBuyerName.ifBlank {
+                db.getPartnerByIdIncludingDeleted(buyerId!!)?.name ?: "已删除合伙人"
+            }
         )
     } else null
+
     val buyer = activeBuyer ?: historicalBuyer ?: if (editingOrderId == null) partners.firstOrNull() else null
+
     val buyerDisplayName = when {
         activeBuyer != null -> activeBuyer.name
         historicalBuyer != null -> "${historicalBuyer.name}（已删除）"
@@ -762,94 +843,41 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
     val cost = totalCost.toDoubleOrNull() ?: 0.0
     val price = if (q > 0) cost / q else 0.0
 
+    val planForDate = remember(dataVersion, date) { db.getPurchasePlan(date) }
+    val purchasedPlanItems = planForDate?.items?.filter { it.status == 1 }.orEmpty()
+
+    fun clearProductEditor() {
+        fruitId = null
+        unit = "件"
+        quantity = ""
+        totalCost = ""
+        editingDraftIndex = null
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        item { PageHeader("批量进货", "共用一批货，不再区分供货摊位") }
-
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                CompactDateSelector("日期", date, Modifier.weight(1.05f)) { date = it }
-                Box(Modifier.weight(0.95f)) {
-                    CompactSelectButton("进货人", buyerDisplayName, Modifier.fillMaxWidth()) { buyerMenu = true }
-                    DropdownMenu(expanded = buyerMenu, onDismissRequest = { buyerMenu = false }) {
-                        partners.forEach { p ->
-                            DropdownMenuItem(text = { Text(p.name) }, onClick = { buyerId = p.id; historicalBuyerName = ""; buyerMenu = false })
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                Box(Modifier.weight(1f)) {
-                    CompactSelectButton("水果", fruit?.name ?: "请选择", Modifier.fillMaxWidth()) { fruitMenu = true }
-                    DropdownMenu(expanded = fruitMenu, onDismissRequest = { fruitMenu = false }) {
-                        fruits.forEach { f ->
-                            DropdownMenuItem(
-                                text = { Text(f.name) },
-                                onClick = { fruitId = f.id; unit = "件"; fruitMenu = false }
-                            )
-                        }
-                        DropdownMenuItem(text = { Text("＋新增水果") }, onClick = {
-                            fruitMenu = false
-                            addFruitDialog = true
-                        })
-                    }
-                }
-
-                Box(Modifier.width(78.dp)) {
-                    CompactSelectButton("单位", unit, Modifier.fillMaxWidth()) { unitMenu = true }
-                    DropdownMenu(expanded = unitMenu, onDismissRequest = { unitMenu = false }) {
-                        listOf("斤", "筐", "箱", "件").forEach { u ->
-                            DropdownMenuItem(text = { Text(u) }, onClick = { unit = u; unitMenu = false })
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.Bottom) {
-                CompactNumberField("数量", quantity, { quantity = it }, Modifier.weight(0.85f))
-                CompactNumberField("总价", totalCost, { totalCost = it }, Modifier.weight(1f))
-                CompactReadOnlyField("单价/$unit", if (q > 0) money(price) else "—", Modifier.weight(1f))
-            }
-        }
-
-        item {
-            Button(
-                onClick = {
-                    if (fruit == null || q <= 0 || cost < 0) {
-                        message = "请正确填写水果、数量和总价"
-                    } else {
-                        draft.add(PurchaseLineInput(fruit, unit, q, cost))
-                        quantity = ""
-                        totalCost = ""
-                        unit = "件"
-                        message = "已加入，可继续录入下一种水果"
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().height(42.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-            ) { Text("＋ 加入本次进货") }
-        }
+        item { PageHeader("批量进货", "连续添加商品，最后一次保存整张进货单") }
 
         if (editingOrderId != null) {
             item {
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF7D9))) {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("正在编辑进货单 #$editingOrderId", Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "正在编辑进货单 #$editingOrderId",
+                            Modifier.weight(1f),
+                            fontWeight = FontWeight.Bold
+                        )
                         TextButton(onClick = {
                             editingOrderId = null
                             draft.clear()
                             remark = ""
-                            quantity = ""
-                            totalCost = ""
-                            unit = "件"
+                            clearProductEditor()
                             date = LocalDate.now().toString()
                             buyerId = partners.firstOrNull()?.id
                             historicalBuyerName = ""
@@ -860,74 +888,296 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
             }
         }
 
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                CompactDateSelector("日期", date, Modifier.weight(1.05f)) { date = it }
+                Box(Modifier.weight(0.95f)) {
+                    CompactSelectButton(
+                        "进货人",
+                        buyerDisplayName,
+                        Modifier.fillMaxWidth()
+                    ) { buyerMenu = true }
+
+                    DropdownMenu(expanded = buyerMenu, onDismissRequest = { buyerMenu = false }) {
+                        partners.forEach { p ->
+                            DropdownMenuItem(
+                                text = { Text(p.name) },
+                                onClick = {
+                                    buyerId = p.id
+                                    historicalBuyerName = ""
+                                    buyerMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (editingOrderId == null && purchasedPlanItems.isNotEmpty()) {
+            item {
+                OutlinedButton(
+                    onClick = {
+                        var added = 0
+                        purchasedPlanItems.forEach { item ->
+                            val f = fruits.firstOrNull { it.id == item.fruitId }
+                                ?: FruitOption(item.fruitId, item.fruitName, item.unit)
+
+                            val existingIndex = draft.indexOfFirst {
+                                it.fruit.id == item.fruitId && it.unit == item.unit
+                            }
+
+                            val imported = PurchaseLineInput(
+                                fruit = f,
+                                unit = item.unit,
+                                quantity = item.quantity,
+                                totalCost = 0.0
+                            )
+
+                            if (existingIndex >= 0) {
+                                draft[existingIndex] = imported
+                            } else {
+                                draft.add(imported)
+                            }
+                            added++
+                        }
+                        message = "已导入 $added 项已采购商品，请逐项填写实际总价"
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("🛒 从采购计划导入已采购商品（${purchasedPlanItems.size}项）")
+                }
+            }
+        }
+
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                Box(Modifier.weight(1f)) {
+                    CompactSelectButton(
+                        "水果",
+                        fruit?.name ?: "请选择水果",
+                        Modifier.fillMaxWidth()
+                    ) { fruitMenu = true }
+
+                    DropdownMenu(expanded = fruitMenu, onDismissRequest = { fruitMenu = false }) {
+                        fruits.forEach { f ->
+                            DropdownMenuItem(
+                                text = { Text(f.name) },
+                                onClick = {
+                                    fruitId = f.id
+                                    unit = "件"
+                                    fruitMenu = false
+                                }
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = { Text("＋新增水果") },
+                            onClick = {
+                                fruitMenu = false
+                                addFruitDialog = true
+                            }
+                        )
+                    }
+                }
+
+                Box(Modifier.width(78.dp)) {
+                    CompactSelectButton("单位", unit, Modifier.fillMaxWidth()) { unitMenu = true }
+                    DropdownMenu(expanded = unitMenu, onDismissRequest = { unitMenu = false }) {
+                        listOf("斤", "筐", "箱", "件").forEach { u ->
+                            DropdownMenuItem(
+                                text = { Text(u) },
+                                onClick = {
+                                    unit = u
+                                    unitMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.Bottom) {
+                CompactNumberField("数量", quantity, { quantity = it }, Modifier.weight(0.85f))
+                CompactNumberField("总价", totalCost, { totalCost = it }, Modifier.weight(1f))
+                CompactReadOnlyField(
+                    "单价/$unit",
+                    if (q > 0 && cost > 0) money(price) else "—",
+                    Modifier.weight(1f)
+                )
+            }
+        }
+
+        item {
+            Button(
+                onClick = {
+                    if (fruit == null || q <= 0 || cost <= 0) {
+                        message = "请选择水果，并填写正确的数量和总价"
+                    } else {
+                        val line = PurchaseLineInput(fruit, unit, q, cost)
+                        val editIndex = editingDraftIndex
+
+                        if (editIndex != null && editIndex in draft.indices) {
+                            draft[editIndex] = line
+                            message = "${fruit.name} 已修改，可继续选择下一种水果"
+                        } else {
+                            draft.add(line)
+                            message = "${fruit.name} 已添加，可继续选择下一种水果"
+                        }
+
+                        clearProductEditor()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().height(42.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+            ) {
+                Text(if (editingDraftIndex == null) "＋ 添加商品" else "保存商品修改")
+            }
+        }
+
         if (draft.isNotEmpty()) {
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("本次进货 ${draft.size} 项", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    Text("合计 ${money(draft.sumOf { it.totalCost })}", fontWeight = FontWeight.Bold, color = BrandGreen)
+                    Text(
+                        "本次进货 ${draft.size} 项",
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        "合计 ${money(draft.sumOf { it.totalCost })}",
+                        fontWeight = FontWeight.Bold,
+                        color = BrandGreen
+                    )
                 }
             }
+
             items(draft.indices.toList()) { index ->
                 val d = draft[index]
-                RecordCard {
-                    Column(Modifier.weight(1f)) {
-                        Text(d.fruit.name, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "${fmt(d.quantity)}${d.unit} · ${money(d.totalCost)} · ${money(d.totalCost / d.quantity)}/${d.unit}",
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                Card(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 11.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(d.fruit.name, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "${fmt(d.quantity)}${d.unit} · ${money(d.totalCost)} · " +
+                                    if (d.quantity > 0) "${money(d.totalCost / d.quantity)}/${d.unit}"
+                                    else "—",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (d.totalCost > 0) Color.Unspecified else MaterialTheme.colorScheme.error
+                            )
+                            if (d.totalCost <= 0) {
+                                Text(
+                                    "请编辑填写实际总价",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+
+                        TextButton(
+                            onClick = {
+                                editingDraftIndex = index
+                                fruitId = d.fruit.id
+                                unit = d.unit
+                                quantity = cleanNumber(d.quantity)
+                                totalCost = if (d.totalCost > 0) cleanNumber(d.totalCost) else ""
+                                message = "正在修改 ${d.fruit.name}"
+                            }
+                        ) { Text("编辑") }
+
+                        TextButton(
+                            onClick = {
+                                draft.removeAt(index)
+                                val current = editingDraftIndex
+                                if (current == index) {
+                                    clearProductEditor()
+                                } else if (current != null && current > index) {
+                                    editingDraftIndex = current - 1
+                                }
+                            }
+                        ) { Text("删除") }
                     }
-                    TextButton(onClick = { draft.removeAt(index) }) { Text("移除") }
                 }
             }
+
             item {
                 CompactTextField("备注（可选）", remark, { remark = it }, Modifier.fillMaxWidth())
+
                 Button(
                     onClick = {
-                        if (buyer == null) message = "请先在更多页面添加合伙人"
-                        else if (draft.isEmpty()) message = "请先添加商品"
-                        else {
-                            val editId = editingOrderId
-                            val ok = if (editId == null) {
-                                db.addPurchaseOrder(date, buyer, draft.toList(), remark) > 0
-                            } else {
-                                db.updatePurchaseOrder(editId, date, buyer, draft.toList(), remark)
-                            }
-                            if (ok) {
-                                draft.clear()
-                                remark = ""
-                                editingOrderId = null
-                                historicalBuyerName = ""
-                                quantity = ""
-                                totalCost = ""
-                                unit = "件"
-                                message = if (editId == null) "整张进货单已保存" else "进货单已更新"
-                                onChanged()
-                            } else {
-                                message = "保存失败，请检查内容"
+                        when {
+                            buyer == null -> message = "请先在更多页面添加合伙人"
+                            draft.isEmpty() -> message = "请先添加商品"
+                            draft.any { it.quantity <= 0 || it.totalCost <= 0 } ->
+                                message = "还有商品未填写正确的数量或总价，请先编辑补充"
+                            else -> {
+                                val editId = editingOrderId
+                                val ok = if (editId == null) {
+                                    db.addPurchaseOrder(date, buyer, draft.toList(), remark) > 0
+                                } else {
+                                    db.updatePurchaseOrder(editId, date, buyer, draft.toList(), remark)
+                                }
+
+                                if (ok) {
+                                    draft.clear()
+                                    remark = ""
+                                    editingOrderId = null
+                                    historicalBuyerName = ""
+                                    clearProductEditor()
+                                    message =
+                                        if (editId == null) "整张进货单已保存"
+                                        else "进货单已更新"
+                                    onChanged()
+                                } else {
+                                    message = "保存失败，请检查内容"
+                                }
                             }
                         }
                     },
                     modifier = Modifier.fillMaxWidth().padding(top = 7.dp)
-                ) { Text(if (editingOrderId == null) "保存整张进货单" else "保存修改") }
+                ) {
+                    Text(if (editingOrderId == null) "保存整张进货单" else "保存修改")
+                }
             }
         }
 
-        if (message.isNotBlank()) item { Text(message, color = BrandGreen, style = MaterialTheme.typography.bodySmall) }
+        if (message.isNotBlank()) {
+            item { Text(message, color = BrandGreen, style = MaterialTheme.typography.bodySmall) }
+        }
 
         item {
             HorizontalDivider()
-            Text("进货历史", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
+            Text(
+                "进货历史",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 6.dp)
+            )
         }
-        if (history.isEmpty()) item { Text("暂无进货记录", color = Color.Gray) }
+
+        if (history.isEmpty()) {
+            item { Text("暂无进货记录", color = Color.Gray) }
+        }
+
         items(history, key = { it.order.id }) { detail ->
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(11.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text("${detail.order.date} · ${detail.order.buyerName}", fontWeight = FontWeight.Bold)
-                            Text("合计 ${money(detail.order.totalCost)}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                            Text(
+                                "${detail.order.date} · ${detail.order.buyerName}",
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                "合计 ${money(detail.order.totalCost)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray
+                            )
                         }
+
                         Row {
                             TextButton(onClick = {
                                 editingOrderId = detail.order.id
@@ -936,22 +1186,32 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
                                 historicalBuyerName = detail.order.buyerName
                                 remark = detail.order.remark
                                 draft.clear()
+
                                 detail.items.forEach { item ->
                                     val f = fruits.firstOrNull { it.id == item.fruitId }
                                         ?: FruitOption(item.fruitId, item.fruitName, item.unit)
-                                    draft.add(PurchaseLineInput(f, item.unit, item.quantity, item.totalCost))
+                                    draft.add(
+                                        PurchaseLineInput(
+                                            f,
+                                            item.unit,
+                                            item.quantity,
+                                            item.totalCost
+                                        )
+                                    )
                                 }
-                                quantity = ""
-                                totalCost = ""
-                                unit = "件"
+
+                                clearProductEditor()
                                 message = "已载入历史进货单，可在上方修改"
                             }) { Text("编辑") }
+
                             TextButton(onClick = { deleteOrder = detail }) { Text("删除") }
                         }
                     }
+
                     detail.items.forEach { item ->
                         Text(
-                            "• ${item.fruitName}  ${fmt(item.quantity)}${item.unit}  ${money(item.totalCost)}  (${money(item.unitPrice)}/${item.unit})",
+                            "• ${item.fruitName}  ${fmt(item.quantity)}${item.unit}  " +
+                                "${money(item.totalCost)}  (${money(item.unitPrice)}/${item.unit})",
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
@@ -960,17 +1220,33 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
         }
     }
 
-    if (addFruitDialog) AddFruitDialog(
-        onDismiss = { addFruitDialog = false },
-        onSave = { name, defaultUnit ->
-            db.addFruit(name, defaultUnit)
-            addFruitDialog = false
-            onChanged()
-        }
-    )
+    if (addFruitDialog) {
+        AddFruitDialog(
+            onDismiss = { addFruitDialog = false },
+            onSave = { name, defaultUnit ->
+                val id = db.addFruit(name, defaultUnit)
+                addFruitDialog = false
+                if (id > 0) {
+                    fruitId = id
+                    unit = "件"
+                }
+                onChanged()
+            }
+        )
+    }
+
     deleteOrder?.let { detail ->
-        ConfirmDelete("删除 ${detail.order.date} 的整张进货单？历史价格也会同步隐藏。", { deleteOrder = null }) {
+        ConfirmDelete(
+            "删除 ${detail.order.date} 的整张进货单？历史价格也会同步隐藏。",
+            { deleteOrder = null }
+        ) {
             db.deletePurchaseOrder(detail.order.id)
+            if (editingOrderId == detail.order.id) {
+                editingOrderId = null
+                draft.clear()
+                remark = ""
+                clearProductEditor()
+            }
             deleteOrder = null
             onChanged()
         }
@@ -1357,7 +1633,8 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                     isError = !result.success
 
                     if (result.success) {
-                        editingRecordId = result.recordId
+                        // 保存完成后立即退出编辑模式，避免继续显示“正在编辑营业记录”。
+                        clearForm()
                         onChanged()
                     }
                 },

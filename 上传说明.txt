@@ -1,0 +1,22 @@
+TianXianFruit / 天鲜账本 V1.2.0 Phase5
+
+基于 Phase3 源码，并已经把 Phase4 的“采购商品独立状态”正式合并进代码。
+
+覆盖上传：
+.github/workflows/build-apk.yml
+app/build.gradle
+app/src/main/java/com/tianxian/fruit/data/AppDatabase.kt
+app/src/main/java/com/tianxian/fruit/ui/AppUi.kt
+README.md
+
+数据库自动升级到 DB_VERSION 6，现有数据保留。
+已有采购计划商品升级后默认“待采购”。
+
+不要修改：
+SIGNING_KEY_BASE64
+KEYSTORE_PASSWORD
+KEY_ALIAS
+不要更换 keystore。
+
+Actions 预期产物：
+TianXianFruit-v1.2.0.apk

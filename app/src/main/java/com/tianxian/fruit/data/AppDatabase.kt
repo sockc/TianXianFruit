@@ -200,7 +200,8 @@ data class PurchasePlanLineInput(
     val fruit: FruitOption,
     val quantity: Double,
     val unit: String,
-    val remark: String = ""
+    val remark: String = "",
+    val status: Int = 0
 )
 
 data class PurchasePlanRecord(
@@ -217,7 +218,8 @@ data class PurchasePlanItemRecord(
     val fruitName: String,
     val quantity: Double,
     val unit: String,
-    val remark: String
+    val remark: String,
+    val status: Int
 )
 
 data class PurchasePlanDetail(
@@ -242,6 +244,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         if (oldVersion < 3) createV3Tables(db)
         if (oldVersion < 4) createV4Tables(db)
         if (oldVersion < 5) createV5Tables(db)
+        if (oldVersion < 6) migrateV5ToV6(db)
     }
 
     private fun createFruitTable(db: SQLiteDatabase) {
@@ -305,6 +308,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
                 store_name TEXT NOT NULL DEFAULT '未指定',
                 total_cost REAL NOT NULL DEFAULT 0,
                 remark TEXT NOT NULL DEFAULT '',
+                status INTEGER NOT NULL DEFAULT 0,
                 deleted INTEGER NOT NULL DEFAULT 0,
                 sync_id TEXT NOT NULL,
                 sync_status INTEGER NOT NULL DEFAULT 0,
@@ -524,6 +528,14 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
             """.trimIndent()
         )
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_purchase_plan_item_pid ON purchase_plan_item(plan_id)")
+    }
+
+    private fun migrateV5ToV6(db: SQLiteDatabase) {
+        if (!columnExists(db, "purchase_plan_item", "status")) {
+            db.execSQL(
+                "ALTER TABLE purchase_plan_item ADD COLUMN status INTEGER NOT NULL DEFAULT 0"
+            )
+        }
     }
 
     private fun migrateV1ToV2(db: SQLiteDatabase) {
@@ -968,7 +980,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
                             c.str("fruit_name"),
                             c.dbl("quantity"),
                             c.str("unit"),
-                            c.str("remark")
+                            c.str("remark"),
+                            c.int("status")
                         )
                     )
                 }
@@ -1037,10 +1050,12 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
                     put("quantity", line.quantity)
                     put("unit", line.unit)
                     put("remark", line.remark.trim())
+                    put("status", line.status.coerceIn(0, 2))
                     put("deleted", 0)
                 })
             }
 
+            refreshPurchasePlanStatus(db, planId)
             db.setTransactionSuccessful()
             return planId
         } finally {
@@ -1048,18 +1063,113 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         }
     }
 
-    fun updatePurchasePlanStatus(planId: Long, status: Int): Boolean {
-        if (status !in 0..2) return false
-        return writableDatabase.update(
+    private fun refreshPurchasePlanStatus(db: SQLiteDatabase, planId: Long) {
+        val counts = db.rawQuery(
+            """
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN status=0 THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN status=1 THEN 1 ELSE 0 END) AS purchased,
+                SUM(CASE WHEN status=2 THEN 1 ELSE 0 END) AS cancelled
+            FROM purchase_plan_item
+            WHERE plan_id=? AND deleted=0
+            """.trimIndent(),
+            arrayOf(planId.toString())
+        ).use { c ->
+            if (c.moveToFirst()) {
+                intArrayOf(
+                    c.int("total"),
+                    c.int("pending"),
+                    c.int("purchased"),
+                    c.int("cancelled")
+                )
+            } else intArrayOf(0, 0, 0, 0)
+        }
+
+        val total = counts[0]
+        val pending = counts[1]
+        val purchased = counts[2]
+        val cancelled = counts[3]
+
+        val aggregateStatus = when {
+            total == 0 -> 0
+            cancelled == total -> 2
+            pending == 0 && purchased > 0 -> 1
+            else -> 0
+        }
+
+        db.update(
             "purchase_plan",
             ContentValues().apply {
-                put("status", status)
+                put("status", aggregateStatus)
                 put("sync_status", 2)
                 put("updated_at", System.currentTimeMillis())
             },
-            "id=? AND deleted=0",
+            "id=?",
             arrayOf(planId.toString())
-        ) > 0
+        )
+    }
+
+    fun updatePurchasePlanItemStatus(itemId: Long, status: Int): Boolean {
+        if (status !in 0..2) return false
+        val db = writableDatabase
+        val planId = db.rawQuery(
+            "SELECT plan_id FROM purchase_plan_item WHERE id=? AND deleted=0 LIMIT 1",
+            arrayOf(itemId.toString())
+        ).use { c -> if (c.moveToFirst()) c.long("plan_id") else null } ?: return false
+
+        db.beginTransaction()
+        try {
+            val changed = db.update(
+                "purchase_plan_item",
+                ContentValues().apply {
+                    put("status", status)
+                    put("sync_status", 2)
+                    put("updated_at", System.currentTimeMillis())
+                },
+                "id=? AND deleted=0",
+                arrayOf(itemId.toString())
+            )
+            if (changed <= 0) return false
+            refreshPurchasePlanStatus(db, planId)
+            db.setTransactionSuccessful()
+            return true
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun updatePurchasePlanStatus(planId: Long, status: Int): Boolean {
+        if (status !in 0..2) return false
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val now = System.currentTimeMillis()
+            val changed = db.update(
+                "purchase_plan",
+                ContentValues().apply {
+                    put("status", status)
+                    put("sync_status", 2)
+                    put("updated_at", now)
+                },
+                "id=? AND deleted=0",
+                arrayOf(planId.toString())
+            )
+            db.update(
+                "purchase_plan_item",
+                ContentValues().apply {
+                    put("status", status)
+                    put("sync_status", 2)
+                    put("updated_at", now)
+                },
+                "plan_id=? AND deleted=0",
+                arrayOf(planId.toString())
+            )
+            db.setTransactionSuccessful()
+            return changed > 0
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun deletePurchasePlan(planId: Long): Boolean {
@@ -1976,7 +2086,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 5
+        const val DB_VERSION = 6
     }
 }
 
