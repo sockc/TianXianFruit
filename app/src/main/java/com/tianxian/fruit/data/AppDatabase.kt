@@ -180,6 +180,52 @@ data class CashSettlementResult(
     val bundle: CashSettlementBundle? = null
 )
 
+data class ProfitSettlementBatchRecord(
+    val id: Long,
+    val settlementDate: String,
+    val periodStart: String,
+    val periodEnd: String,
+    val totalAmount: Double,
+    val note: String,
+    val createdAt: Long
+)
+
+data class ProfitSettlementItemRecord(
+    val id: Long,
+    val batchId: Long,
+    val profitDate: String,
+    val partnerId: Long,
+    val partnerName: String,
+    val profitAmount: Double,
+    val createdAt: Long
+)
+
+data class DailyPartnerProfitSettlement(
+    val date: String,
+    val partnerId: Long,
+    val partnerName: String,
+    val earnedProfit: Double,
+    val settledProfit: Double,
+    val pendingProfit: Double,
+    val lastSettlementDate: String
+)
+
+data class PartnerProfitSettlementSummary(
+    val partnerId: Long,
+    val partnerName: String,
+    val earnedProfit: Double,
+    val settledProfit: Double,
+    val pendingProfit: Double
+)
+
+data class ProfitSettlementCreateResult(
+    val success: Boolean,
+    val message: String,
+    val batchId: Long = -1L,
+    val totalAmount: Double = 0.0,
+    val itemCount: Int = 0
+)
+
 data class StoreDailySaveResult(
     val success: Boolean,
     val message: String,
@@ -235,6 +281,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         createV3Tables(db)
         createV4Tables(db)
         createV5Tables(db)
+        migrateV5ToV6(db)
+        createV7Tables(db)
         seedFruits(db)
         seedPartners(db)
     }
@@ -245,6 +293,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         if (oldVersion < 4) createV4Tables(db)
         if (oldVersion < 5) createV5Tables(db)
         if (oldVersion < 6) migrateV5ToV6(db)
+        if (oldVersion < 7) createV7Tables(db)
     }
 
     private fun createFruitTable(db: SQLiteDatabase) {
@@ -613,6 +662,60 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         } finally {
             db.endTransaction()
         }
+    }
+
+    private fun createV7Tables(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS profit_settlement_batch(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                settlement_date TEXT NOT NULL,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                total_amount REAL NOT NULL DEFAULT 0,
+                note TEXT NOT NULL DEFAULT '',
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_profit_settlement_batch_date " +
+                "ON profit_settlement_batch(settlement_date)"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_profit_settlement_batch_period " +
+                "ON profit_settlement_batch(period_start,period_end)"
+        )
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS profit_settlement_item(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id INTEGER NOT NULL,
+                profit_date TEXT NOT NULL,
+                partner_id INTEGER NOT NULL,
+                partner_name TEXT NOT NULL,
+                profit_amount REAL NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_profit_settlement_item_batch " +
+                "ON profit_settlement_item(batch_id)"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_profit_settlement_item_date_partner " +
+                "ON profit_settlement_item(profit_date,partner_id)"
+        )
     }
 
     private fun seedFruits(db: SQLiteDatabase) {
@@ -1287,6 +1390,52 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
             c.dbl("unit_price"), c.str("buyer_name"), c.str("store_name")
         ))
     } }
+
+    fun getFruitPriceHistoryBetween(
+        fruitId: Long,
+        start: String?,
+        end: String?,
+        limit: Int = 100
+    ): List<PriceHistoryRecord> {
+        val rangeWhere =
+            if (start != null && end != null) "AND po.date>=? AND po.date<=?" else ""
+        val args =
+            if (start != null && end != null) {
+                arrayOf(fruitId.toString(), start, end, limit.toString())
+            } else {
+                arrayOf(fruitId.toString(), limit.toString())
+            }
+
+        return readableDatabase.rawQuery(
+            """
+            SELECT po.date,pi.fruit_name,pi.unit,pi.quantity,pi.total_cost,pi.unit_price,
+                   po.buyer_name,po.store_name
+            FROM purchase_item pi
+            JOIN purchase_order po ON po.id=pi.order_id
+            WHERE pi.fruit_id=? AND pi.deleted=0 AND po.deleted=0 $rangeWhere
+            ORDER BY po.date DESC,pi.id DESC
+            LIMIT ?
+            """.trimIndent(),
+            args
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    add(
+                        PriceHistoryRecord(
+                            c.str("date"),
+                            c.str("fruit_name"),
+                            c.str("unit"),
+                            c.dbl("quantity"),
+                            c.dbl("total_cost"),
+                            c.dbl("unit_price"),
+                            c.str("buyer_name"),
+                            c.str("store_name")
+                        )
+                    )
+                }
+            }
+        }
+    }
 
     fun getStoreDailyRecord(date: String, storeId: Long): StoreDailyRecord? = readableDatabase.rawQuery(
         "SELECT * FROM store_daily_record WHERE date=? AND store_id=? AND deleted=0 LIMIT 1", arrayOf(date, storeId.toString())
@@ -2048,11 +2197,373 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         ))
     }
 
+    fun getProfitSettlementDaily(
+        start: String?,
+        end: String?
+    ): List<DailyPartnerProfitSettlement> {
+        val rangeWhere =
+            if (start != null && end != null) "AND pd.date>=? AND pd.date<=?" else ""
+        val args =
+            if (start != null && end != null) arrayOf(start, end) else emptyArray()
+
+        return readableDatabase.rawQuery(
+            """
+            SELECT
+                pd.date AS profit_date,
+                pd.partner_id AS partner_id,
+                MAX(pd.partner_name) AS partner_name,
+                COALESCE(SUM(pd.allocated_profit),0) AS earned_profit,
+                COALESCE((
+                    SELECT SUM(psi.profit_amount)
+                    FROM profit_settlement_item psi
+                    WHERE psi.deleted=0
+                      AND psi.profit_date=pd.date
+                      AND psi.partner_id=pd.partner_id
+                ),0) AS settled_profit,
+                COALESCE((
+                    SELECT MAX(psb.settlement_date)
+                    FROM profit_settlement_item psi2
+                    JOIN profit_settlement_batch psb ON psb.id=psi2.batch_id
+                    WHERE psi2.deleted=0
+                      AND psb.deleted=0
+                      AND psi2.profit_date=pd.date
+                      AND psi2.partner_id=pd.partner_id
+                ),'') AS last_settlement_date
+            FROM profit_distribution pd
+            WHERE pd.deleted=0 $rangeWhere
+            GROUP BY pd.date,pd.partner_id
+            ORDER BY pd.date DESC,pd.partner_id
+            """.trimIndent(),
+            args
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    val earned = roundMoney(c.dbl("earned_profit"))
+                    val settled = roundMoney(c.dbl("settled_profit"))
+                    add(
+                        DailyPartnerProfitSettlement(
+                            date = c.str("profit_date"),
+                            partnerId = c.long("partner_id"),
+                            partnerName = c.str("partner_name"),
+                            earnedProfit = earned,
+                            settledProfit = settled,
+                            pendingProfit = roundMoney(earned - settled),
+                            lastSettlementDate = c.str("last_settlement_date")
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun getPartnerProfitSettlementSummary(
+        start: String?,
+        end: String?
+    ): List<PartnerProfitSettlementSummary> {
+        val daily = getProfitSettlementDaily(start, end)
+        if (daily.isEmpty()) return emptyList()
+
+        data class Acc(
+            var name: String = "",
+            var earned: Double = 0.0,
+            var settled: Double = 0.0
+        )
+
+        val map = linkedMapOf<Long, Acc>()
+        daily.forEach { row ->
+            val acc = map.getOrPut(row.partnerId) {
+                Acc(name = row.partnerName)
+            }
+            if (row.partnerName.isNotBlank()) acc.name = row.partnerName
+            acc.earned += row.earnedProfit
+            acc.settled += row.settledProfit
+        }
+
+        return map.map { (partnerId, acc) ->
+            val earned = roundMoney(acc.earned)
+            val settled = roundMoney(acc.settled)
+            PartnerProfitSettlementSummary(
+                partnerId = partnerId,
+                partnerName = acc.name.ifBlank { "合伙人$partnerId" },
+                earnedProfit = earned,
+                settledProfit = settled,
+                pendingProfit = roundMoney(earned - settled)
+            )
+        }.sortedBy { it.partnerId }
+    }
+
+    fun createProfitSettlementBatch(
+        start: String,
+        end: String,
+        partnerIds: Set<Long>,
+        settlementDate: String = LocalDate.now().toString(),
+        note: String = ""
+    ): ProfitSettlementCreateResult {
+        if (start > end) {
+            return ProfitSettlementCreateResult(false, "开始日期不能晚于结束日期")
+        }
+        if (partnerIds.isEmpty()) {
+            return ProfitSettlementCreateResult(false, "请至少选择一位合伙人")
+        }
+
+        val pendingRows =
+            getProfitSettlementDaily(start, end)
+                .filter { it.partnerId in partnerIds && it.pendingProfit > 0.005 }
+
+        if (pendingRows.isEmpty()) {
+            return ProfitSettlementCreateResult(false, "所选范围没有待结算利润")
+        }
+
+        val total = roundMoney(pendingRows.sumOf { it.pendingProfit })
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val batchId =
+                db.insert(
+                    "profit_settlement_batch",
+                    null,
+                    baseSyncValues().apply {
+                        put("settlement_date", settlementDate)
+                        put("period_start", start)
+                        put("period_end", end)
+                        put("total_amount", total)
+                        put("note", note)
+                        put("deleted", 0)
+                    }
+                )
+
+            if (batchId <= 0) {
+                return ProfitSettlementCreateResult(false, "创建利润结算批次失败")
+            }
+
+            pendingRows.forEach { row ->
+                val itemId =
+                    db.insert(
+                        "profit_settlement_item",
+                        null,
+                        baseSyncValues().apply {
+                            put("batch_id", batchId)
+                            put("profit_date", row.date)
+                            put("partner_id", row.partnerId)
+                            put("partner_name", row.partnerName)
+                            put("profit_amount", row.pendingProfit)
+                            put("deleted", 0)
+                        }
+                    )
+                if (itemId <= 0) {
+                    throw IllegalStateException("创建利润结算明细失败")
+                }
+            }
+
+            db.setTransactionSuccessful()
+            return ProfitSettlementCreateResult(
+                success = true,
+                message = "已确认 ${pendingRows.size} 条利润结算，共 ${roundMoney(total)} 元",
+                batchId = batchId,
+                totalAmount = total,
+                itemCount = pendingRows.size
+            )
+        } catch (e: Exception) {
+            return ProfitSettlementCreateResult(
+                false,
+                "利润结算失败：${e.message ?: "未知错误"}"
+            )
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun getProfitSettlementBatches(
+        startSettlementDate: String? = null,
+        endSettlementDate: String? = null,
+        limit: Int = 100
+    ): List<ProfitSettlementBatchRecord> {
+        val where =
+            if (startSettlementDate != null && endSettlementDate != null) {
+                "AND settlement_date>=? AND settlement_date<=?"
+            } else {
+                ""
+            }
+        val args =
+            if (startSettlementDate != null && endSettlementDate != null) {
+                arrayOf(
+                    startSettlementDate,
+                    endSettlementDate,
+                    limit.toString()
+                )
+            } else {
+                arrayOf(limit.toString())
+            }
+
+        return readableDatabase.rawQuery(
+            """
+            SELECT *
+            FROM profit_settlement_batch
+            WHERE deleted=0 $where
+            ORDER BY settlement_date DESC,id DESC
+            LIMIT ?
+            """.trimIndent(),
+            args
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    add(
+                        ProfitSettlementBatchRecord(
+                            id = c.long("id"),
+                            settlementDate = c.str("settlement_date"),
+                            periodStart = c.str("period_start"),
+                            periodEnd = c.str("period_end"),
+                            totalAmount = c.dbl("total_amount"),
+                            note = c.str("note"),
+                            createdAt = c.long("created_at")
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun getProfitSettlementBatchesForProfitPeriod(
+        startProfitDate: String?,
+        endProfitDate: String?,
+        limit: Int = 100
+    ): List<ProfitSettlementBatchRecord> {
+        val where =
+            if (startProfitDate != null && endProfitDate != null) {
+                "AND psi.profit_date>=? AND psi.profit_date<=?"
+            } else {
+                ""
+            }
+        val args =
+            if (startProfitDate != null && endProfitDate != null) {
+                arrayOf(
+                    startProfitDate,
+                    endProfitDate,
+                    limit.toString()
+                )
+            } else {
+                arrayOf(limit.toString())
+            }
+
+        return readableDatabase.rawQuery(
+            """
+            SELECT
+                psb.id,
+                psb.settlement_date,
+                psb.period_start,
+                psb.period_end,
+                COALESCE(SUM(psi.profit_amount),0) AS total_amount,
+                psb.note,
+                psb.created_at
+            FROM profit_settlement_batch psb
+            JOIN profit_settlement_item psi
+              ON psi.batch_id=psb.id
+             AND psi.deleted=0
+            WHERE psb.deleted=0 $where
+            GROUP BY
+                psb.id,
+                psb.settlement_date,
+                psb.period_start,
+                psb.period_end,
+                psb.note,
+                psb.created_at
+            ORDER BY psb.settlement_date DESC,psb.id DESC
+            LIMIT ?
+            """.trimIndent(),
+            args
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    add(
+                        ProfitSettlementBatchRecord(
+                            id = c.long("id"),
+                            settlementDate =
+                                c.str("settlement_date"),
+                            periodStart =
+                                c.str("period_start"),
+                            periodEnd =
+                                c.str("period_end"),
+                            totalAmount =
+                                c.dbl("total_amount"),
+                            note = c.str("note"),
+                            createdAt =
+                                c.long("created_at")
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun getProfitSettlementItems(
+        batchId: Long
+    ): List<ProfitSettlementItemRecord> =
+        readableDatabase.rawQuery(
+            """
+            SELECT *
+            FROM profit_settlement_item
+            WHERE batch_id=? AND deleted=0
+            ORDER BY profit_date DESC,partner_id,id
+            """.trimIndent(),
+            arrayOf(batchId.toString())
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    add(
+                        ProfitSettlementItemRecord(
+                            id = c.long("id"),
+                            batchId = c.long("batch_id"),
+                            profitDate = c.str("profit_date"),
+                            partnerId = c.long("partner_id"),
+                            partnerName = c.str("partner_name"),
+                            profitAmount = c.dbl("profit_amount"),
+                            createdAt = c.long("created_at")
+                        )
+                    )
+                }
+            }
+        }
+
+    fun deleteProfitSettlementBatch(batchId: Long): Boolean {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val now = System.currentTimeMillis()
+            val batchChanged =
+                db.update(
+                    "profit_settlement_batch",
+                    ContentValues().apply {
+                        put("deleted", 1)
+                        put("sync_status", 2)
+                        put("updated_at", now)
+                    },
+                    "id=? AND deleted=0",
+                    arrayOf(batchId.toString())
+                )
+
+            db.update(
+                "profit_settlement_item",
+                ContentValues().apply {
+                    put("deleted", 1)
+                    put("sync_status", 2)
+                    put("updated_at", now)
+                },
+                "batch_id=? AND deleted=0",
+                arrayOf(batchId.toString())
+            )
+
+            db.setTransactionSuccessful()
+            return batchChanged > 0
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     fun exportJson(): String {
         val root = JSONObject()
         root.put("schemaVersion", DB_VERSION)
         root.put("exportedAt", System.currentTimeMillis())
-        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer").forEach { table ->
+        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item").forEach { table ->
             root.put(table, tableAsJson(table))
         }
         return root.toString(2)
@@ -2120,7 +2631,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 6
+        const val DB_VERSION = 7
     }
 }
 

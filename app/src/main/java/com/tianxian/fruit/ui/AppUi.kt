@@ -60,6 +60,12 @@ private enum class HistoryTimeFilter(val label: String) {
     CUSTOM("自定义")
 }
 
+private enum class SettlementView(val label: String) {
+    DAY("当日结算"),
+    BATCH("批量结算"),
+    STATS("结算统计")
+}
+
 private data class PurchaseDraftRow(
     val rowId: Long,
     val fruitId: Long? = null,
@@ -2210,50 +2216,159 @@ private fun MoneyCollectorRow(
 }
 
 @Composable
-private fun SettlementScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Unit) {
+private fun SettlementScreen(
+    db: AppDatabase,
+    dataVersion: Int,
+    onChanged: () -> Unit
+) {
+    var view by remember { mutableStateOf(SettlementView.DAY) }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            SettlementView.entries.forEach { item ->
+                if (view == item) {
+                    Button(
+                        onClick = { view = item },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 4.dp)
+                    ) {
+                        Text(item.label, fontSize = 12.sp)
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = { view = item },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 4.dp)
+                    ) {
+                        Text(item.label, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
+        when (view) {
+            SettlementView.DAY ->
+                SettlementDayContent(
+                    db = db,
+                    dataVersion = dataVersion,
+                    onChanged = onChanged
+                )
+
+            SettlementView.BATCH ->
+                SettlementBatchContent(
+                    db = db,
+                    dataVersion = dataVersion,
+                    onChanged = onChanged
+                )
+
+            SettlementView.STATS ->
+                SettlementStatsContent(
+                    db = db,
+                    dataVersion = dataVersion,
+                    onChanged = onChanged
+                )
+        }
+    }
+}
+
+@Composable
+private fun SettlementDayContent(
+    db: AppDatabase,
+    dataVersion: Int,
+    onChanged: () -> Unit
+) {
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
     var message by remember { mutableStateOf("") }
     var deleteId by remember { mutableStateOf<Long?>(null) }
 
-    val summary = remember(dataVersion, date) { db.getDailySummary(date) }
-    val purchases = remember(dataVersion, date) { db.getPurchaseTotalsByPartner(date) }
-    val receipts = remember(dataVersion, date) { db.getReceiptsByPartner(date) }
-    val expenses = remember(dataVersion, date) { db.getExpenseTotalsByPartner(date) }
-    val profitRows = remember(dataVersion, date) { db.getProfitDistribution(date) }
-    val bundle = remember(dataVersion, date) { db.getCashSettlement(date) }
+    val summary = remember(dataVersion, date) {
+        db.getDailySummary(date)
+    }
+    val purchases = remember(dataVersion, date) {
+        db.getPurchaseTotalsByPartner(date)
+    }
+    val receipts = remember(dataVersion, date) {
+        db.getReceiptsByPartner(date)
+    }
+    val expenses = remember(dataVersion, date) {
+        db.getExpenseTotalsByPartner(date)
+    }
+    val profitRows = remember(dataVersion, date) {
+        db.getProfitDistribution(date)
+    }
+    val bundle = remember(dataVersion, date) {
+        db.getCashSettlement(date)
+    }
 
-    // V1.2.0: 使用默认利润规则自动生成当天分配，不再要求每天进入“利润分配”手动保存。
-    LaunchedEffect(dataVersion, date, summary.profit, profitRows.size) {
+    LaunchedEffect(
+        dataVersion,
+        date,
+        summary.profit,
+        profitRows.size
+    ) {
         if (profitRows.isEmpty() && summary.profit > 0) {
             val rules = db.getProfitRules()
             if (rules.isNotEmpty()) {
                 val partners = db.getPartners()
-                val allocations = rules.mapNotNull { rule ->
-                    partners.firstOrNull { it.id == rule.partnerId }?.let { p ->
-                        p to rule.percent
+                val allocations =
+                    rules.mapNotNull { rule ->
+                        partners
+                            .firstOrNull { it.id == rule.partnerId }
+                            ?.let { p -> p to rule.percent }
                     }
-                }
-                if (allocations.isNotEmpty() && kotlin.math.abs(allocations.sumOf { it.second } - 100.0) < 0.01) {
-                    if (db.saveProfitDistribution(date, allocations)) {
+
+                if (
+                    allocations.isNotEmpty() &&
+                    kotlin.math.abs(
+                        allocations.sumOf { it.second } - 100.0
+                    ) < 0.01
+                ) {
+                    if (
+                        db.saveProfitDistribution(
+                            date,
+                            allocations
+                        )
+                    ) {
                         onChanged()
                     }
                 }
             }
         }
     }
-    val history = remember(dataVersion) { db.getRecentCashSettlements(20) }
+
+    val profitSettlementRows =
+        remember(dataVersion, date) {
+            db.getProfitSettlementDaily(date, date)
+        }
+    val pendingProfitRows =
+        profitSettlementRows.filter {
+            it.pendingProfit > 0.005
+        }
+    val history =
+        remember(dataVersion) {
+            db.getRecentCashSettlements(20)
+        }
 
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+        contentPadding = PaddingValues(
+            horizontal = 14.dp,
+            vertical = 4.dp
+        ),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         item {
             PageHeader(
-                "当日资金结算",
-                "进货垫付 + 费用垫付 + 应得利润 − 实际收款，最后一次性轧差"
+                "当日结算",
+                "利润是否已发放按“日期 + 合伙人”分别确认；资金轧差方案独立保留"
             )
         }
+
         item {
             CompactDateNavigator(
                 label = "结算日期",
@@ -2261,32 +2376,268 @@ private fun SettlementScreen(db: AppDatabase, dataVersion: Int, onChanged: () ->
                 modifier = Modifier.fillMaxWidth(),
                 chineseDisplay = true,
                 showWeekday = true
-            ) { date = it }
-        }
-
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                MiniSummaryCard("营业额", money(summary.revenue), Modifier.weight(1f), SoftGreen)
-                MiniSummaryCard("进货", money(summary.purchaseCost), Modifier.weight(1f), SoftPurple)
-                MiniSummaryCard("利润", money(summary.profit), Modifier.weight(1f), SoftOrange)
+            ) {
+                date = it
+                message = ""
             }
         }
 
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC))) {
-                Column(Modifier.padding(12.dp)) {
-                    Text("结算前核对", fontWeight = FontWeight.Bold)
-                    SummaryRow("进货垫付合计", money(purchases.sumOf { it.amount }))
-                    SummaryRow("实际收款合计", money(receipts.sumOf { it.amount }))
-                    SummaryRow("费用垫付合计", money(expenses.sumOf { it.amount }))
-                    SummaryRow("已保存利润分配", money(profitRows.sumOf { it.allocatedProfit }))
-                    if (profitRows.isEmpty()) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                MiniSummaryCard(
+                    "营业额",
+                    money(summary.revenue),
+                    Modifier.weight(1f),
+                    SoftGreen
+                )
+                MiniSummaryCard(
+                    "进货",
+                    money(summary.purchaseCost),
+                    Modifier.weight(1f),
+                    SoftPurple
+                )
+                MiniSummaryCard(
+                    "利润",
+                    money(summary.profit),
+                    Modifier.weight(1f),
+                    SoftOrange
+                )
+            }
+        }
+
+        item {
+            Text(
+                "利润结算状态",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        if (profitSettlementRows.isEmpty()) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFFF8FAFC)
+                    )
+                ) {
+                    Text(
+                        if (summary.profit > 0) {
+                            "当天利润分配正在生成或尚未保存。"
+                        } else {
+                            "当天没有可结算的正利润。"
+                        },
+                        modifier = Modifier.padding(12.dp),
+                        color = Color.Gray
+                    )
+                }
+            }
+        }
+
+        items(
+            profitSettlementRows,
+            key = {
+                "profit_status_${it.date}_${it.partnerId}"
+            }
+        ) { row ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(
+                    Modifier.padding(
+                        horizontal = 12.dp,
+                        vertical = 10.dp
+                    )
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                row.partnerName,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                "应得 ${money(row.earnedProfit)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray
+                            )
+                        }
+
+                        when {
+                            row.pendingProfit > 0.005 -> {
+                                Text(
+                                    "待结算 ${money(row.pendingProfit)}",
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            row.pendingProfit < -0.005 -> {
+                                Text(
+                                    "多结算 ${money(-row.pendingProfit)}",
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            else -> {
+                                Text(
+                                    "已结算",
+                                    color = BrandGreen,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    if (row.settledProfit > 0.005) {
                         Text(
-                            "尚未保存当天利润分配，请先到：更多 → 利润分配。",
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall
+                            buildString {
+                                append(
+                                    "累计已结算 ${money(row.settledProfit)}"
+                                )
+                                if (
+                                    row.lastSettlementDate.isNotBlank()
+                                ) {
+                                    append(
+                                        " · 最近 ${row.lastSettlementDate}"
+                                    )
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
                         )
                     }
+
+                    if (row.pendingProfit > 0.005) {
+                        OutlinedButton(
+                            onClick = {
+                                val result =
+                                    db.createProfitSettlementBatch(
+                                        start = date,
+                                        end = date,
+                                        partnerIds =
+                                            setOf(row.partnerId),
+                                        note =
+                                            "单人单日利润结算"
+                                    )
+                                message = result.message
+                                if (result.success) {
+                                    onChanged()
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp)
+                        ) {
+                            Text(
+                                "确认 ${row.partnerName} 利润已结算"
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (pendingProfitRows.isNotEmpty()) {
+            item {
+                Button(
+                    onClick = {
+                        val result =
+                            db.createProfitSettlementBatch(
+                                start = date,
+                                end = date,
+                                partnerIds =
+                                    pendingProfitRows
+                                        .map { it.partnerId }
+                                        .toSet(),
+                                note = "当日全部利润结算"
+                            )
+                        message = result.message
+                        if (result.success) onChanged()
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        "全部确认利润已结算 · " +
+                            money(
+                                pendingProfitRows.sumOf {
+                                    it.pendingProfit
+                                }
+                            )
+                    )
+                }
+            }
+        }
+
+        if (message.isNotBlank()) {
+            item {
+                Text(
+                    message,
+                    color =
+                        if (
+                            message.contains("已确认") ||
+                            message.contains("已生成") ||
+                            message.contains("成功")
+                        ) {
+                            BrandGreen
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        },
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+
+        item {
+            HorizontalDivider()
+
+            Text(
+                "资金轧差方案",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                "这里计算进货垫付、费用垫付、应得利润和实际收款的资金差额。" +
+                    "它与上面的“利润已发放确认”是两套状态。" +
+                    "如果利润每3～7天才发一次，可只使用利润结算/批量结算；" +
+                    "资金轧差方案仍按当天全部应得利润计算。",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray
+            )
+        }
+
+        item {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFFF8FAFC)
+                )
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(
+                        "结算前核对",
+                        fontWeight = FontWeight.Bold
+                    )
+                    SummaryRow(
+                        "进货垫付合计",
+                        money(purchases.sumOf { it.amount })
+                    )
+                    SummaryRow(
+                        "实际收款合计",
+                        money(receipts.sumOf { it.amount })
+                    )
+                    SummaryRow(
+                        "费用垫付合计",
+                        money(expenses.sumOf { it.amount })
+                    )
+                    SummaryRow(
+                        "已保存利润分配",
+                        money(
+                            profitRows.sumOf {
+                                it.allocatedProfit
+                            }
+                        )
+                    )
                 }
             }
         }
@@ -2294,72 +2645,144 @@ private fun SettlementScreen(db: AppDatabase, dataVersion: Int, onChanged: () ->
         item {
             Button(
                 onClick = {
-                    val result = db.generateCashSettlement(date)
+                    val result =
+                        db.generateCashSettlement(date)
                     message = result.message
                     if (result.success) onChanged()
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text(if (bundle == null) "生成今日结算方案" else "重新生成今日结算方案")
-            }
-            if (message.isNotBlank()) {
                 Text(
-                    message,
-                    color = if (message.contains("已生成") || message.contains("已结清")) BrandGreen else MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(top = 4.dp)
+                    if (bundle == null) {
+                        "生成当日资金轧差方案"
+                    } else {
+                        "重新生成资金轧差方案"
+                    }
                 )
             }
         }
 
         bundle?.let { b ->
             item {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("每人最终余额", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "每人最终余额",
+                        style =
+                            MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
                     AssistChip(
                         onClick = {},
-                        label = { Text(if (b.settlement.status == 1) "已结清" else "待结清") }
+                        label = {
+                            Text(
+                                if (b.settlement.status == 1) {
+                                    "资金已确认"
+                                } else {
+                                    "待确认"
+                                }
+                            )
+                        }
                     )
                 }
             }
 
-            items(b.partners, key = { "cp${it.id}" }) { p ->
+            items(
+                b.partners,
+                key = { "cp${it.id}" }
+            ) { p ->
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(11.dp)) {
                         Row {
-                            Text(p.partnerName, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Text(
+                                p.partnerName,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
                             Text(
                                 when {
-                                    p.balance > 0.005 -> "应收 ${money(p.balance)}"
-                                    p.balance < -0.005 -> "应转出 ${money(-p.balance)}"
-                                    else -> "已平"
+                                    p.balance > 0.005 ->
+                                        "应收 ${money(p.balance)}"
+
+                                    p.balance < -0.005 ->
+                                        "应转出 ${money(-p.balance)}"
+
+                                    else ->
+                                        "已平"
                                 },
                                 fontWeight = FontWeight.Bold,
-                                color = if (p.balance >= -0.005) BrandGreen else MaterialTheme.colorScheme.error
+                                color =
+                                    if (p.balance >= -0.005) {
+                                        BrandGreen
+                                    } else {
+                                        MaterialTheme.colorScheme.error
+                                    }
                             )
                         }
+
                         Text(
-                            "进货 ${money(p.purchasePaid)} + 费用 ${money(p.expensePaid)} + 利润 ${money(p.profitShare)} − 已收 ${money(p.revenueReceived)}",
-                            style = MaterialTheme.typography.bodySmall,
+                            "进货 ${money(p.purchasePaid)} + " +
+                                "费用 ${money(p.expensePaid)} + " +
+                                "利润 ${money(p.profitShare)} − " +
+                                "已收 ${money(p.revenueReceived)}",
+                            style =
+                                MaterialTheme.typography.bodySmall,
                             color = Color.Gray
                         )
-                        Text("最终应留 ${money(p.shouldKeep)}", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            "最终应留 ${money(p.shouldKeep)}",
+                            style =
+                                MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
             }
 
             item {
-                Text("最少转账方案", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "最少转账方案",
+                    style =
+                        MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
                 if (b.transfers.isEmpty()) {
-                    Text("无需转账，已经平账。", color = BrandGreen)
+                    Text(
+                        "无需转账，已经平账。",
+                        color = BrandGreen
+                    )
                 }
             }
 
-            items(b.transfers, key = { "ct${it.id}" }) { t ->
-                Card(colors = CardDefaults.cardColors(containerColor = SoftGreen), modifier = Modifier.fillMaxWidth()) {
-                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("${t.fromPartnerName}  →  ${t.toPartnerName}", modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
-                        Text(money(t.amount), fontWeight = FontWeight.Bold, color = BrandGreen)
+            items(
+                b.transfers,
+                key = { "ct${it.id}" }
+            ) { t ->
+                Card(
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor = SoftGreen
+                        ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        Modifier.padding(12.dp),
+                        verticalAlignment =
+                            Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "${t.fromPartnerName}  →  " +
+                                t.toPartnerName,
+                            modifier = Modifier.weight(1f),
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            money(t.amount),
+                            fontWeight = FontWeight.Bold,
+                            color = BrandGreen
+                        )
                     }
                 }
             }
@@ -2368,50 +2791,822 @@ private fun SettlementScreen(db: AppDatabase, dataVersion: Int, onChanged: () ->
                 if (b.settlement.status == 0) {
                     Button(
                         onClick = {
-                            if (db.confirmCashSettlement(b.settlement.id)) {
-                                message = "今日账目已确认结清"
+                            if (
+                                db.confirmCashSettlement(
+                                    b.settlement.id
+                                )
+                            ) {
+                                message =
+                                    "资金轧差方案已确认执行"
                                 onChanged()
                             }
                         },
                         modifier = Modifier.fillMaxWidth()
-                    ) { Text("确认今日已结清") }
+                    ) {
+                        Text("确认资金轧差方案已执行")
+                    }
                 }
+
                 TextButton(
-                    onClick = { deleteId = b.settlement.id },
+                    onClick = {
+                        deleteId = b.settlement.id
+                    },
                     modifier = Modifier.fillMaxWidth()
-                ) { Text("删除本次结算记录") }
+                ) {
+                    Text("删除本次资金轧差记录")
+                }
             }
         }
 
         if (history.isNotEmpty()) {
             item {
                 HorizontalDivider()
-                Text("最近结算历史", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "最近资金轧差记录",
+                    style =
+                        MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
             }
-            items(history, key = { "cash${it.id}" }) { h ->
+
+            items(
+                history,
+                key = { "cash${it.id}" }
+            ) { h ->
                 RecordCard {
                     Column(Modifier.weight(1f)) {
-                        Text(h.date, fontWeight = FontWeight.Bold)
                         Text(
-                            "营业 ${money(h.revenue)} · 进货 ${money(h.purchaseCost)} · 利润 ${money(h.profit)}",
-                            style = MaterialTheme.typography.bodySmall
+                            h.date,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "营业 ${money(h.revenue)} · " +
+                                "进货 ${money(h.purchaseCost)} · " +
+                                "利润 ${money(h.profit)}",
+                            style =
+                                MaterialTheme.typography.bodySmall
                         )
                     }
-                    Text(if (h.status == 1) "已结清" else "待结清", color = if (h.status == 1) BrandGreen else MaterialTheme.colorScheme.error)
+                    Text(
+                        if (h.status == 1) {
+                            "已确认"
+                        } else {
+                            "待确认"
+                        },
+                        color =
+                            if (h.status == 1) {
+                                BrandGreen
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            }
+                    )
                 }
             }
         }
     }
 
     deleteId?.let { id ->
-        ConfirmDelete("删除这张当日资金结算？不会删除进货、营业或利润分配。", { deleteId = null }) {
+        ConfirmDelete(
+            "删除这张资金轧差记录？不会删除进货、营业、利润分配或利润结算确认。",
+            { deleteId = null }
+        ) {
             db.deleteCashSettlement(id)
             deleteId = null
-            message = "结算记录已删除"
+            message = "资金轧差记录已删除"
             onChanged()
         }
     }
 }
+
+@Composable
+private fun SettlementBatchContent(
+    db: AppDatabase,
+    dataVersion: Int,
+    onChanged: () -> Unit
+) {
+    var filter by remember {
+        mutableStateOf(HistoryTimeFilter.LAST_7)
+    }
+    val today = LocalDate.now()
+    var customStart by remember {
+        mutableStateOf(today.minusDays(6).toString())
+    }
+    var customEnd by remember {
+        mutableStateOf(today.toString())
+    }
+    var message by remember {
+        mutableStateOf("")
+    }
+
+    val invalidCustom =
+        filter == HistoryTimeFilter.CUSTOM &&
+            customStart > customEnd
+    val range =
+        resolveTimeRange(
+            filter,
+            customStart,
+            customEnd,
+            today
+        )
+    val queryStart =
+        if (invalidCustom) "9999-12-31" else range.first
+    val queryEnd =
+        if (invalidCustom) "0000-01-01" else range.second
+
+    val dailyRows =
+        remember(dataVersion, queryStart, queryEnd) {
+            db.getProfitSettlementDaily(
+                queryStart,
+                queryEnd
+            )
+        }
+    val partnerStats =
+        remember(dataVersion, queryStart, queryEnd) {
+            db.getPartnerProfitSettlementSummary(
+                queryStart,
+                queryEnd
+            )
+        }
+
+    val actualStart =
+        dailyRows.minOfOrNull { it.date }
+    val actualEnd =
+        dailyRows.maxOfOrNull { it.date }
+
+    val selected =
+        remember {
+            mutableStateMapOf<Long, Boolean>()
+        }
+
+    LaunchedEffect(
+        queryStart,
+        queryEnd,
+        partnerStats.map {
+            "${it.partnerId}:${it.pendingProfit}"
+        }
+    ) {
+        selected.clear()
+        partnerStats
+            .filter { it.pendingProfit > 0.005 }
+            .forEach {
+                selected[it.partnerId] = true
+            }
+    }
+
+    val selectedIds =
+        partnerStats
+            .filter {
+                selected[it.partnerId] == true &&
+                    it.pendingProfit > 0.005
+            }
+            .map { it.partnerId }
+            .toSet()
+
+    val selectedPending =
+        partnerStats
+            .filter {
+                it.partnerId in selectedIds
+            }
+            .sumOf { it.pendingProfit }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            horizontal = 14.dp,
+            vertical = 4.dp
+        ),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        item {
+            PageHeader(
+                "批量利润结算",
+                "适合每3～7天或任意时间范围统一结算；只会结算当前仍待结算的利润"
+            )
+        }
+
+        item {
+            TimeFilterSelector(
+                filter = filter,
+                onFilterChange = {
+                    filter = it
+                    message = ""
+                },
+                customStart = customStart,
+                onCustomStart = {
+                    customStart = it
+                    message = ""
+                },
+                customEnd = customEnd,
+                onCustomEnd = {
+                    customEnd = it
+                    message = ""
+                }
+            )
+        }
+
+        if (invalidCustom) {
+            item {
+                Text(
+                    "开始日期不能晚于结束日期",
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        }
+
+        if (partnerStats.isEmpty()) {
+            item {
+                Text(
+                    "当前时间范围没有可结算的利润分配记录。",
+                    color = Color.Gray
+                )
+            }
+        }
+
+        items(
+            partnerStats,
+            key = { "batch_partner_${it.partnerId}" }
+        ) { stat ->
+            val canSettle =
+                stat.pendingProfit > 0.005
+
+            Card(Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier.padding(
+                        horizontal = 10.dp,
+                        vertical = 8.dp
+                    ),
+                    verticalAlignment =
+                        Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked =
+                            selected[stat.partnerId] == true,
+                        enabled = canSettle,
+                        onCheckedChange = { checked ->
+                            selected[stat.partnerId] =
+                                checked
+                        }
+                    )
+
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            stat.partnerName,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "应得 ${money(stat.earnedProfit)} · " +
+                                "已结算 ${money(stat.settledProfit)}",
+                            style =
+                                MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+                    }
+
+                    Text(
+                        when {
+                            stat.pendingProfit > 0.005 ->
+                                "待结算 ${money(stat.pendingProfit)}"
+
+                            stat.pendingProfit < -0.005 ->
+                                "多结算 ${money(-stat.pendingProfit)}"
+
+                            else ->
+                                "已结清"
+                        },
+                        color =
+                            if (
+                                kotlin.math.abs(
+                                    stat.pendingProfit
+                                ) <= 0.005
+                            ) {
+                                BrandGreen
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            },
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        if (partnerStats.any {
+                it.pendingProfit > 0.005
+            }
+        ) {
+            item {
+                Row(
+                    horizontalArrangement =
+                        Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            partnerStats
+                                .filter {
+                                    it.pendingProfit > 0.005
+                                }
+                                .forEach {
+                                    selected[it.partnerId] = true
+                                }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("全选")
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            selected.clear()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("取消全选")
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        val start =
+                            range.first ?: actualStart
+                        val end =
+                            range.second ?: actualEnd
+
+                        if (
+                            start == null ||
+                            end == null
+                        ) {
+                            message =
+                                "当前范围没有利润记录"
+                        } else {
+                            val result =
+                                db.createProfitSettlementBatch(
+                                    start = start,
+                                    end = end,
+                                    partnerIds = selectedIds,
+                                    note =
+                                        "批量利润结算"
+                                )
+                            message = result.message
+                            if (result.success) {
+                                onChanged()
+                            }
+                        }
+                    },
+                    enabled =
+                        selectedIds.isNotEmpty() &&
+                            !invalidCustom,
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp)
+                ) {
+                    Text(
+                        "确认选中合伙人已结算 · " +
+                            money(selectedPending)
+                    )
+                }
+            }
+        }
+
+        if (message.isNotBlank()) {
+            item {
+                Text(
+                    message,
+                    color =
+                        if (message.contains("已确认")) {
+                            BrandGreen
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        },
+                    style =
+                        MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettlementStatsContent(
+    db: AppDatabase,
+    dataVersion: Int,
+    onChanged: () -> Unit
+) {
+    var filter by remember {
+        mutableStateOf(HistoryTimeFilter.THIS_MONTH)
+    }
+    val today = LocalDate.now()
+    var customStart by remember {
+        mutableStateOf(
+            today.withDayOfMonth(1).toString()
+        )
+    }
+    var customEnd by remember {
+        mutableStateOf(today.toString())
+    }
+    var undoBatch by remember {
+        mutableStateOf<ProfitSettlementBatchRecord?>(null)
+    }
+    var message by remember {
+        mutableStateOf("")
+    }
+
+    val invalidCustom =
+        filter == HistoryTimeFilter.CUSTOM &&
+            customStart > customEnd
+    val range =
+        resolveTimeRange(
+            filter,
+            customStart,
+            customEnd,
+            today
+        )
+    val queryStart =
+        if (invalidCustom) "9999-12-31" else range.first
+    val queryEnd =
+        if (invalidCustom) "0000-01-01" else range.second
+
+    val partnerStats =
+        remember(dataVersion, queryStart, queryEnd) {
+            db.getPartnerProfitSettlementSummary(
+                queryStart,
+                queryEnd
+            )
+        }
+    val dailyRows =
+        remember(dataVersion, queryStart, queryEnd) {
+            db.getProfitSettlementDaily(
+                queryStart,
+                queryEnd
+            )
+        }
+    val batches =
+        remember(dataVersion, queryStart, queryEnd) {
+            db.getProfitSettlementBatchesForProfitPeriod(
+                queryStart,
+                queryEnd,
+                80
+            )
+        }
+
+    val totalEarned =
+        partnerStats.sumOf { it.earnedProfit }
+    val totalSettled =
+        partnerStats.sumOf { it.settledProfit }
+    val totalPending =
+        partnerStats.sumOf { it.pendingProfit }
+
+    val dailyGroups =
+        dailyRows
+            .groupBy { it.date }
+            .toList()
+            .sortedByDescending { it.first }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            horizontal = 14.dp,
+            vertical = 4.dp
+        ),
+        verticalArrangement =
+            Arrangement.spacedBy(8.dp)
+    ) {
+        item {
+            PageHeader(
+                "利润结算统计",
+                "统计每位合伙人每天应得、已结算和待结算利润"
+            )
+        }
+
+        item {
+            TimeFilterSelector(
+                filter = filter,
+                onFilterChange = {
+                    filter = it
+                    message = ""
+                },
+                customStart = customStart,
+                onCustomStart = {
+                    customStart = it
+                    message = ""
+                },
+                customEnd = customEnd,
+                onCustomEnd = {
+                    customEnd = it
+                    message = ""
+                }
+            )
+        }
+
+        if (invalidCustom) {
+            item {
+                Text(
+                    "开始日期不能晚于结束日期",
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        }
+
+        item {
+            Row(
+                horizontalArrangement =
+                    Arrangement.spacedBy(8.dp)
+            ) {
+                MiniSummaryCard(
+                    "应得利润",
+                    money(totalEarned),
+                    Modifier.weight(1f),
+                    SoftOrange
+                )
+                MiniSummaryCard(
+                    "已结算",
+                    money(totalSettled),
+                    Modifier.weight(1f),
+                    SoftGreen
+                )
+                MiniSummaryCard(
+                    "待结算",
+                    money(totalPending),
+                    Modifier.weight(1f),
+                    SoftPurple
+                )
+            }
+        }
+
+        item {
+            Text(
+                "合伙人统计",
+                style =
+                    MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        if (partnerStats.isEmpty()) {
+            item {
+                Text(
+                    "当前时间范围暂无利润分配记录。",
+                    color = Color.Gray
+                )
+            }
+        }
+
+        items(
+            partnerStats,
+            key = { "settlement_stat_${it.partnerId}" }
+        ) { stat ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(
+                        stat.partnerName,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                    SummaryRow(
+                        "应得利润",
+                        money(stat.earnedProfit)
+                    )
+                    SummaryRow(
+                        "已结算利润",
+                        money(stat.settledProfit)
+                    )
+                    SummaryRow(
+                        if (stat.pendingProfit >= 0) {
+                            "待结算利润"
+                        } else {
+                            "多结算"
+                        },
+                        money(
+                            kotlin.math.abs(
+                                stat.pendingProfit
+                            )
+                        )
+                    )
+                }
+            }
+        }
+
+        item {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFFEAF8F0)
+                )
+            ) {
+                Column(Modifier.padding(14.dp)) {
+                    Text(
+                        "期间合计结算利润",
+                        color = Color.Gray,
+                        style =
+                            MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        money(totalSettled),
+                        color = BrandGreen,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 28.sp
+                    )
+                    Text(
+                        "期间应得 ${money(totalEarned)} · " +
+                            if (totalPending >= 0) {
+                                "待结算 ${money(totalPending)}"
+                            } else {
+                                "多结算 ${money(-totalPending)}"
+                            },
+                        style =
+                            MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+
+        item {
+            HorizontalDivider()
+            Text(
+                "每天每人利润明细",
+                style =
+                    MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        dailyGroups.forEach { entry ->
+            val day = entry.first
+            val rows = entry.second
+
+            item(
+                key = "settlement_day_detail_$day"
+            ) {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row {
+                            Text(
+                                day,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                "当日应得 " +
+                                    money(
+                                        rows.sumOf {
+                                            it.earnedProfit
+                                        }
+                                    ),
+                                style =
+                                    MaterialTheme.typography.bodySmall,
+                                color = Color.Gray
+                            )
+                        }
+
+                        rows.forEach { row ->
+                            Row(
+                                Modifier.padding(
+                                    top = 6.dp
+                                ),
+                                verticalAlignment =
+                                    Alignment.CenterVertically
+                            ) {
+                                Column(
+                                    Modifier.weight(1f)
+                                ) {
+                                    Text(
+                                        row.partnerName,
+                                        fontWeight =
+                                            FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        "应得 ${money(row.earnedProfit)} · " +
+                                            "已结算 ${money(row.settledProfit)}",
+                                        style =
+                                            MaterialTheme.typography.bodySmall,
+                                        color = Color.Gray
+                                    )
+                                }
+
+                                Text(
+                                    when {
+                                        row.pendingProfit > 0.005 ->
+                                            "待 ${money(row.pendingProfit)}"
+
+                                        row.pendingProfit < -0.005 ->
+                                            "多 ${money(-row.pendingProfit)}"
+
+                                        else ->
+                                            "已结算"
+                                    },
+                                    color =
+                                        if (
+                                            kotlin.math.abs(
+                                                row.pendingProfit
+                                            ) <= 0.005
+                                        ) {
+                                            BrandGreen
+                                        } else {
+                                            MaterialTheme.colorScheme.error
+                                        },
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (batches.isNotEmpty()) {
+            item {
+                HorizontalDivider()
+                Text(
+                    "结算批次",
+                    style =
+                        MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "误确认时可撤销整个批次，利润会重新变成待结算。",
+                    style =
+                        MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+            }
+
+            items(
+                batches,
+                key = { "profit_batch_${it.id}" }
+            ) { batch ->
+                Card(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier.padding(12.dp),
+                        verticalAlignment =
+                            Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "结算于 ${batch.settlementDate}",
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                "利润期间 " +
+                                    "${batch.periodStart} ～ " +
+                                    batch.periodEnd,
+                                style =
+                                    MaterialTheme.typography.bodySmall,
+                                color = Color.Gray
+                            )
+                            Text(
+                                money(batch.totalAmount),
+                                color = BrandGreen,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        TextButton(
+                            onClick = {
+                                undoBatch = batch
+                            }
+                        ) {
+                            Text("撤销")
+                        }
+                    }
+                }
+            }
+        }
+
+        if (message.isNotBlank()) {
+            item {
+                Text(
+                    message,
+                    color = BrandGreen,
+                    style =
+                        MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+
+    undoBatch?.let { batch ->
+        ConfirmActionDialog(
+            title = "撤销利润结算",
+            text =
+                "撤销 ${batch.settlementDate} 的结算批次？" +
+                    "该批次 ${money(batch.totalAmount)} " +
+                    "会重新计入待结算利润。",
+            confirmText = "确认撤销",
+            onDismiss = {
+                undoBatch = null
+            }
+        ) {
+            if (
+                db.deleteProfitSettlementBatch(
+                    batch.id
+                )
+            ) {
+                message = "利润结算批次已撤销"
+                onChanged()
+            }
+            undoBatch = null
+        }
+    }
+}
+
 
 @Composable
 private fun MoreScreen(
@@ -3099,59 +4294,406 @@ private fun HistoryContent(
 }
 
 @Composable
-private fun StatsContent(db: AppDatabase, dataVersion: Int) {
-    var thisMonth by remember { mutableStateOf(true) }
-    val month = currentMonthRange()
-    val rankings = remember(dataVersion, thisMonth) { if (thisMonth) db.getRankings(month.first, month.second) else db.getRankings() }
-    val records = remember(dataVersion, thisMonth) { if (thisMonth) db.getDailyRecordsBetween(month.first, month.second) else db.getDailyRecordsBetween(null, null) }
-    val fruits = remember(dataVersion) { db.getFruits() }
-    var fruitId by remember { mutableStateOf<Long?>(null) }
-    val fruit = fruits.firstOrNull { it.id == fruitId } ?: fruits.firstOrNull()
-    var fruitMenu by remember { mutableStateOf(false) }
-    val prices = remember(dataVersion, fruit?.id) { fruit?.let { db.getFruitPriceHistory(it.id, 30) } ?: emptyList() }
-    val context = androidx.compose.ui.platform.LocalContext.current
-    var exportMessage by remember { mutableStateOf("") }
-    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
-        if (uri != null) runCatching { context.contentResolver.openOutputStream(uri)?.bufferedWriter(Charsets.UTF_8)?.use { it.write(db.exportJson()) } }
-            .onSuccess { exportMessage = "备份已导出" }.onFailure { exportMessage = "导出失败：${it.message}" }
+private fun StatsContent(
+    db: AppDatabase,
+    dataVersion: Int
+) {
+    var filter by remember {
+        mutableStateOf(HistoryTimeFilter.THIS_MONTH)
     }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (thisMonth) Button(onClick = {}) { Text("本月") } else OutlinedButton(onClick = { thisMonth = true }) { Text("本月") }
-                if (!thisMonth) Button(onClick = {}) { Text("全部") } else OutlinedButton(onClick = { thisMonth = false }) { Text("全部") }
+    val today = LocalDate.now()
+    var customStart by remember {
+        mutableStateOf(
+            today.withDayOfMonth(1).toString()
+        )
+    }
+    var customEnd by remember {
+        mutableStateOf(today.toString())
+    }
+
+    val invalidCustom =
+        filter == HistoryTimeFilter.CUSTOM &&
+            customStart > customEnd
+    val range =
+        resolveTimeRange(
+            filter,
+            customStart,
+            customEnd,
+            today
+        )
+    val queryStart =
+        if (invalidCustom) "9999-12-31" else range.first
+    val queryEnd =
+        if (invalidCustom) "0000-01-01" else range.second
+
+    val rankings =
+        remember(
+            dataVersion,
+            queryStart,
+            queryEnd
+        ) {
+            db.getRankings(
+                queryStart,
+                queryEnd
+            )
+        }
+
+    val records =
+        remember(
+            dataVersion,
+            queryStart,
+            queryEnd
+        ) {
+            db.getDailyRecordsBetween(
+                queryStart,
+                queryEnd
+            )
+        }
+
+    val purchases =
+        remember(
+            dataVersion,
+            queryStart,
+            queryEnd
+        ) {
+            db.getPurchaseOrdersBetween(
+                queryStart,
+                queryEnd
+            )
+        }
+
+    val activityDates =
+        remember(records, purchases) {
+            (
+                records.map { it.date } +
+                    purchases.map { it.order.date }
+                )
+                .distinct()
+                .sorted()
+        }
+
+    val summaries =
+        remember(
+            dataVersion,
+            activityDates
+        ) {
+            activityDates.map {
+                db.getDailySummary(it)
             }
         }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                MetricCard("营业额", money(records.sumOf { it.revenue }), Modifier.weight(1f), SoftGreen)
-                MetricCard("利润", money(records.sumOf { it.profit }), Modifier.weight(1f), SoftOrange)
+
+    val totalRevenue =
+        summaries.sumOf { it.revenue }
+    val totalProfit =
+        summaries.sumOf { it.profit }
+    val totalPurchase =
+        summaries.sumOf { it.purchaseCost }
+    val totalCustomers =
+        summaries.sumOf { it.customers }
+    val activeDays =
+        activityDates.size
+
+    val fruits =
+        remember(dataVersion) {
+            db.getFruits()
+        }
+    var fruitId by remember {
+        mutableStateOf<Long?>(null)
+    }
+    val fruit =
+        fruits.firstOrNull {
+            it.id == fruitId
+        } ?: fruits.firstOrNull()
+    var fruitMenu by remember {
+        mutableStateOf(false)
+    }
+
+    val prices =
+        remember(
+            dataVersion,
+            fruit?.id,
+            queryStart,
+            queryEnd
+        ) {
+            fruit?.let {
+                db.getFruitPriceHistoryBetween(
+                    fruitId = it.id,
+                    start = queryStart,
+                    end = queryEnd,
+                    limit = 100
+                )
+            } ?: emptyList()
+        }
+
+    val context =
+        androidx.compose.ui.platform.LocalContext.current
+    var exportMessage by remember {
+        mutableStateOf("")
+    }
+    val exportLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.CreateDocument(
+                "application/json"
+            )
+        ) { uri ->
+            if (uri != null) {
+                runCatching {
+                    context.contentResolver
+                        .openOutputStream(uri)
+                        ?.bufferedWriter(Charsets.UTF_8)
+                        ?.use {
+                            it.write(db.exportJson())
+                        }
+                }
+                    .onSuccess {
+                        exportMessage = "备份已导出"
+                    }
+                    .onFailure {
+                        exportMessage =
+                            "导出失败：${it.message}"
+                    }
             }
         }
-        item { RankingSection("营业额排行榜", rankings.sortedByDescending { it.revenue }) { money(it.revenue) } }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement =
+            Arrangement.spacedBy(10.dp)
+    ) {
         item {
-            Text("利润排行中的共用进货按各摊位营业额比例分摊。", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-            RankingSection("利润排行榜", rankings.sortedByDescending { it.profit }) { money(it.profit) }
+            TimeFilterSelector(
+                filter = filter,
+                onFilterChange = {
+                    filter = it
+                },
+                customStart = customStart,
+                onCustomStart = {
+                    customStart = it
+                },
+                customEnd = customEnd,
+                onCustomEnd = {
+                    customEnd = it
+                }
+            )
         }
-        item { RankingSection("客户数排行榜", rankings.sortedByDescending { it.customers }) { "${it.customers} 人" } }
+
+        if (invalidCustom) {
+            item {
+                Text(
+                    "开始日期不能晚于结束日期",
+                    color =
+                        MaterialTheme.colorScheme.error
+                )
+            }
+        }
+
         item {
-            Text("商品历史进价", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Row(
+                horizontalArrangement =
+                    Arrangement.spacedBy(8.dp)
+            ) {
+                MetricCard(
+                    "营业额",
+                    money(totalRevenue),
+                    Modifier.weight(1f),
+                    SoftGreen
+                )
+                MetricCard(
+                    "利润",
+                    money(totalProfit),
+                    Modifier.weight(1f),
+                    SoftOrange
+                )
+            }
+        }
+
+        item {
+            Row(
+                horizontalArrangement =
+                    Arrangement.spacedBy(8.dp)
+            ) {
+                MetricCard(
+                    "进货金额",
+                    money(totalPurchase),
+                    Modifier.weight(1f),
+                    SoftPurple
+                )
+                MetricCard(
+                    "客户数",
+                    "$totalCustomers 人",
+                    Modifier.weight(1f),
+                    SoftBlue
+                )
+            }
+        }
+
+        item {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor =
+                        Color(0xFFF8FAFC)
+                )
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    SummaryRow(
+                        "经营天数",
+                        "$activeDays 天"
+                    )
+                    SummaryRow(
+                        "日均营业额",
+                        money(
+                            if (activeDays > 0) {
+                                totalRevenue / activeDays
+                            } else {
+                                0.0
+                            }
+                        )
+                    )
+                    SummaryRow(
+                        "日均利润",
+                        money(
+                            if (activeDays > 0) {
+                                totalProfit / activeDays
+                            } else {
+                                0.0
+                            }
+                        )
+                    )
+                }
+            }
+        }
+
+        item {
+            RankingSection(
+                "营业额排行榜",
+                rankings.sortedByDescending {
+                    it.revenue
+                }
+            ) {
+                money(it.revenue)
+            }
+        }
+
+        item {
+            Text(
+                "利润排行中的共用进货按各摊位营业额比例分摊。",
+                style =
+                    MaterialTheme.typography.labelSmall,
+                color = Color.Gray
+            )
+            RankingSection(
+                "利润排行榜",
+                rankings.sortedByDescending {
+                    it.profit
+                }
+            ) {
+                money(it.profit)
+            }
+        }
+
+        item {
+            RankingSection(
+                "客户数排行榜",
+                rankings.sortedByDescending {
+                    it.customers
+                }
+            ) {
+                "${it.customers} 人"
+            }
+        }
+
+        item {
+            Text(
+                "商品历史进价",
+                style =
+                    MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
             Box {
-                OutlinedButton(onClick = { fruitMenu = true }, modifier = Modifier.fillMaxWidth()) { Text(fruit?.name ?: "请选择水果", Modifier.weight(1f)); Text("▼") }
-                DropdownMenu(expanded = fruitMenu, onDismissRequest = { fruitMenu = false }) {
-                    fruits.forEach { f -> DropdownMenuItem(text = { Text(f.name) }, onClick = { fruitId = f.id; fruitMenu = false }) }
+                OutlinedButton(
+                    onClick = {
+                        fruitMenu = true
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        fruit?.name ?: "请选择商品",
+                        Modifier.weight(1f)
+                    )
+                    Text("▼")
+                }
+
+                DropdownMenu(
+                    expanded = fruitMenu,
+                    onDismissRequest = {
+                        fruitMenu = false
+                    }
+                ) {
+                    fruits.forEach { f ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(f.name)
+                            },
+                            onClick = {
+                                fruitId = f.id
+                                fruitMenu = false
+                            }
+                        )
+                    }
                 }
             }
+
+            if (prices.isEmpty()) {
+                Text(
+                    "当前时间范围没有该商品的进货记录。",
+                    color = Color.Gray,
+                    style =
+                        MaterialTheme.typography.bodySmall
+                )
+            }
+
             prices.forEach { p ->
-                Column(Modifier.padding(vertical = 4.dp)) {
-                    Text("${p.date} · ${money(p.unitPrice)}/${p.unit}", fontWeight = FontWeight.SemiBold)
-                    Text("${p.buyerName} · ${fmt(p.quantity)}${p.unit}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Column(
+                    Modifier.padding(vertical = 4.dp)
+                ) {
+                    Text(
+                        "${p.date} · " +
+                            "${money(p.unitPrice)}/${p.unit}",
+                        fontWeight =
+                            FontWeight.SemiBold
+                    )
+                    Text(
+                        "${p.buyerName} · " +
+                            "${fmt(p.quantity)}${p.unit}",
+                        style =
+                            MaterialTheme.typography.bodySmall,
+                        color = Color.Gray
+                    )
                 }
             }
         }
+
         item {
-            Button(onClick = { exportLauncher.launch("天鲜果业备份_${LocalDate.now()}.json") }, modifier = Modifier.fillMaxWidth()) { Text("导出 JSON 备份") }
-            if (exportMessage.isNotBlank()) Text(exportMessage, color = BrandGreen)
+            Button(
+                onClick = {
+                    exportLauncher.launch(
+                        "天鲜果业备份_" +
+                            "${LocalDate.now()}.json"
+                    )
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("导出 JSON 备份")
+            }
+
+            if (exportMessage.isNotBlank()) {
+                Text(
+                    exportMessage,
+                    color = BrandGreen
+                )
+            }
         }
     }
 }
@@ -3535,6 +5077,139 @@ private fun CompactSelectButton(label: String, value: String, modifier: Modifier
     }
 }
 
+private fun resolveTimeRange(
+    filter: HistoryTimeFilter,
+    customStart: String,
+    customEnd: String,
+    today: LocalDate = LocalDate.now()
+): Pair<String?, String?> =
+    when (filter) {
+        HistoryTimeFilter.ALL ->
+            null to null
+
+        HistoryTimeFilter.TODAY ->
+            today.toString() to today.toString()
+
+        HistoryTimeFilter.YESTERDAY -> {
+            val d = today.minusDays(1)
+            d.toString() to d.toString()
+        }
+
+        HistoryTimeFilter.LAST_7 ->
+            today.minusDays(6).toString() to
+                today.toString()
+
+        HistoryTimeFilter.LAST_30 ->
+            today.minusDays(29).toString() to
+                today.toString()
+
+        HistoryTimeFilter.THIS_MONTH ->
+            today.withDayOfMonth(1).toString() to
+                today.toString()
+
+        HistoryTimeFilter.LAST_MONTH -> {
+            val firstThisMonth =
+                today.withDayOfMonth(1)
+            val firstLastMonth =
+                firstThisMonth.minusMonths(1)
+            firstLastMonth.toString() to
+                firstThisMonth
+                    .minusDays(1)
+                    .toString()
+        }
+
+        HistoryTimeFilter.CUSTOM ->
+            customStart to customEnd
+    }
+
+@Composable
+private fun TimeFilterSelector(
+    filter: HistoryTimeFilter,
+    onFilterChange: (HistoryTimeFilter) -> Unit,
+    customStart: String,
+    onCustomStart: (String) -> Unit,
+    customEnd: String,
+    onCustomEnd: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var menu by remember {
+        mutableStateOf(false)
+    }
+
+    val range =
+        resolveTimeRange(
+            filter,
+            customStart,
+            customEnd
+        )
+
+    Column(
+        modifier,
+        verticalArrangement =
+            Arrangement.spacedBy(6.dp)
+    ) {
+        Box(Modifier.fillMaxWidth()) {
+            CompactSelectButton(
+                "时间范围",
+                filter.label,
+                Modifier.fillMaxWidth()
+            ) {
+                menu = true
+            }
+
+            DropdownMenu(
+                expanded = menu,
+                onDismissRequest = {
+                    menu = false
+                }
+            ) {
+                HistoryTimeFilter.entries.forEach {
+                    option ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(option.label)
+                        },
+                        onClick = {
+                            onFilterChange(option)
+                            menu = false
+                        }
+                    )
+                }
+            }
+        }
+
+        if (filter == HistoryTimeFilter.CUSTOM) {
+            Row(
+                horizontalArrangement =
+                    Arrangement.spacedBy(8.dp)
+            ) {
+                CompactDateSelector(
+                    "开始日期",
+                    customStart,
+                    Modifier.weight(1f),
+                    onCustomStart
+                )
+                CompactDateSelector(
+                    "结束日期",
+                    customEnd,
+                    Modifier.weight(1f),
+                    onCustomEnd
+                )
+            }
+        } else if (
+            range.first != null &&
+            range.second != null
+        ) {
+            Text(
+                "${range.first} ～ ${range.second}",
+                color = Color.Gray,
+                style =
+                    MaterialTheme.typography.bodySmall
+            )
+        }
+    }
+}
+
 @Composable
 private fun CompactDateNavigator(
     label: String?,
@@ -3854,6 +5529,35 @@ private fun PartnerNameDialog(title: String, initial: String, onDismiss: () -> U
         text = { OutlinedTextField(name, { name = it }, label = { Text("姓名/称呼") }, singleLine = true) },
         confirmButton = { Button(onClick = { if (name.isNotBlank()) onSave(name) }) { Text("保存") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+}
+
+@Composable
+private fun ConfirmActionDialog(
+    title: String,
+    text: String,
+    confirmText: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(title)
+        },
+        text = {
+            Text(text)
+        },
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text(confirmText)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
     )
 }
 
