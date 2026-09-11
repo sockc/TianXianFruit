@@ -1,26 +1,32 @@
-天鲜账本 V1.2.2 PATCH
+天鲜账本 V1.2.3 PATCH
 
-本补丁基于上一版 V1.2.1 界面优化源码继续修改。
+基于 V1.2.2 最新源码。
 
-需要覆盖的核心代码：
-app/src/main/java/com/tianxian/fruit/data/AppDatabase.kt
-app/src/main/java/com/tianxian/fruit/ui/AppUi.kt
-app/build.gradle
+请保持目录结构覆盖 GitHub：
+
 .github/workflows/build-apk.yml
+app/build.gradle
+app/src/main/AndroidManifest.xml
+app/src/main/java/com/tianxian/fruit/ui/AppUi.kt
+app/src/main/java/com/tianxian/fruit/report/ReportGenerator.kt
+app/src/main/res/xml/file_paths.xml
 
-重要：
-1. 本版 DB_VERSION 从 6 升到 7。
-2. 只新增利润结算批次/明细两张表，不删除旧表和旧数据。
-3. 原 GitHub Secrets 不变：
-   SIGNING_KEY_BASE64
-   KEYSTORE_PASSWORD
-   KEY_ALIAS
-4. 不要更换 keystore。
+不要修改 GitHub Secrets：
+SIGNING_KEY_BASE64
+KEYSTORE_PASSWORD
+KEY_ALIAS
 
-主要功能：
-- 经营分析时间筛选
-- 当日每位合伙人独立确认利润是否已结算
-- 当天全部利润结算
-- 3～7天/自定义时间批量结算
-- 结算统计：应得/已结算/待结算/每日明细/期间合计
-- 结算批次撤销
+不要更换 keystore。
+
+DB_VERSION 仍为 7，
+本版没有新增数据库结构。
+
+新增入口：
+更多 → 生成报表
+
+测试建议：
+1. 利润分配报表，本月，全部合伙人，详细版 → PDF 分享。
+2. 单选一个合伙人 → PNG 分享。
+3. 利润结算报表 → 检查应得/已结算/待结算。
+4. 经营汇总报表 → 检查营业额/利润/摊位排行。
+5. 保存 PDF / 保存图片。

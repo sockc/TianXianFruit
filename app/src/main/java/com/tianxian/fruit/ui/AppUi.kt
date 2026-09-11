@@ -28,6 +28,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tianxian.fruit.data.*
+import com.tianxian.fruit.report.GeneratedReport
+import com.tianxian.fruit.report.ReportGenerator
+import com.tianxian.fruit.report.ReportLine
+import com.tianxian.fruit.report.ReportLineStyle
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -47,7 +51,7 @@ enum class AppPage(val title: String, val emoji: String) {
     PLAN("采购", "🛒")
 }
 
-private enum class MorePage { MENU, DATA_CENTER, HISTORY, STATS, PARTNERS, STORES, PROFIT, FRUITS }
+private enum class MorePage { MENU, DATA_CENTER, HISTORY, STATS, PARTNERS, STORES, PROFIT, FRUITS, REPORT }
 
 private enum class HistoryTimeFilter(val label: String) {
     ALL("全部时间"),
@@ -64,6 +68,17 @@ private enum class SettlementView(val label: String) {
     DAY("当日结算"),
     BATCH("批量结算"),
     STATS("结算统计")
+}
+
+private enum class ReportType(val label: String) {
+    PROFIT("利润分配报表"),
+    SETTLEMENT("利润结算报表"),
+    BUSINESS("经营汇总报表")
+}
+
+private enum class ReportDetail(val label: String) {
+    SIMPLE("简洁版"),
+    DETAILED("详细版")
 }
 
 private data class PurchaseDraftRow(
@@ -3677,6 +3692,12 @@ private fun MoreScreen(
                         onPlan()
                     }
                 }
+
+                item {
+                    MenuCard("📄 生成报表") {
+                        sub = MorePage.REPORT
+                    }
+                }
             }
         }
 
@@ -3781,7 +3802,1429 @@ private fun MoreScreen(
                 )
             }
         }
+
+        MorePage.REPORT -> {
+            SubPage(
+                "生成报表",
+                { sub = MorePage.MENU }
+            ) {
+                ReportContent(
+                    db = db,
+                    dataVersion = dataVersion
+                )
+            }
+        }
     }
+}
+
+
+@Composable
+private fun ReportContent(
+    db: AppDatabase,
+    dataVersion: Int
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    var reportType by remember {
+        mutableStateOf(ReportType.PROFIT)
+    }
+    var reportTypeMenu by remember {
+        mutableStateOf(false)
+    }
+    var detail by remember {
+        mutableStateOf(ReportDetail.DETAILED)
+    }
+    var detailMenu by remember {
+        mutableStateOf(false)
+    }
+
+    var filter by remember {
+        mutableStateOf(HistoryTimeFilter.THIS_MONTH)
+    }
+    val today = LocalDate.now()
+    var customStart by remember {
+        mutableStateOf(today.withDayOfMonth(1).toString())
+    }
+    var customEnd by remember {
+        mutableStateOf(today.toString())
+    }
+
+    var message by remember {
+        mutableStateOf("")
+    }
+    var pendingSave by remember {
+        mutableStateOf<GeneratedReport?>(null)
+    }
+
+    val invalidCustom =
+        filter == HistoryTimeFilter.CUSTOM &&
+            customStart > customEnd
+
+    val range =
+        resolveTimeRange(
+            filter,
+            customStart,
+            customEnd,
+            today
+        )
+
+    val queryStart =
+        if (invalidCustom) {
+            "9999-12-31"
+        } else {
+            range.first
+        }
+
+    val queryEnd =
+        if (invalidCustom) {
+            "0000-01-01"
+        } else {
+            range.second
+        }
+
+    val periodLabel =
+        when {
+            invalidCustom ->
+                "日期范围无效"
+
+            queryStart == null || queryEnd == null ->
+                "全部时间"
+
+            queryStart == queryEnd ->
+                queryStart
+
+            else ->
+                "$queryStart ～ $queryEnd"
+        }
+
+    val profitRows =
+        remember(
+            dataVersion,
+            queryStart,
+            queryEnd
+        ) {
+            db.getProfitDistributionsBetween(
+                queryStart,
+                queryEnd
+            )
+        }
+
+    val settlementDaily =
+        remember(
+            dataVersion,
+            queryStart,
+            queryEnd
+        ) {
+            db.getProfitSettlementDaily(
+                queryStart,
+                queryEnd
+            )
+        }
+
+    val settlementSummary =
+        remember(
+            dataVersion,
+            queryStart,
+            queryEnd
+        ) {
+            db.getPartnerProfitSettlementSummary(
+                queryStart,
+                queryEnd
+            )
+        }
+
+    val businessRecords =
+        remember(
+            dataVersion,
+            queryStart,
+            queryEnd
+        ) {
+            db.getDailyRecordsBetween(
+                queryStart,
+                queryEnd
+            )
+        }
+
+    val purchaseOrders =
+        remember(
+            dataVersion,
+            queryStart,
+            queryEnd
+        ) {
+            db.getPurchaseOrdersBetween(
+                queryStart,
+                queryEnd
+            )
+        }
+
+    val businessDates =
+        remember(
+            businessRecords,
+            purchaseOrders
+        ) {
+            (
+                businessRecords.map { it.date } +
+                    purchaseOrders.map {
+                        it.order.date
+                    }
+                )
+                .distinct()
+                .sorted()
+        }
+
+    val businessSummaries =
+        remember(
+            dataVersion,
+            businessDates
+        ) {
+            businessDates.map {
+                db.getDailySummary(it)
+            }
+        }
+
+    val rankings =
+        remember(
+            dataVersion,
+            queryStart,
+            queryEnd
+        ) {
+            db.getRankings(
+                queryStart,
+                queryEnd
+            )
+        }
+
+    val availablePartners =
+        remember(
+            profitRows,
+            settlementDaily
+        ) {
+            val map =
+                linkedMapOf<Long, String>()
+
+            profitRows.forEach {
+                map[it.partnerId] =
+                    it.partnerName
+            }
+
+            settlementDaily.forEach {
+                map[it.partnerId] =
+                    it.partnerName
+            }
+
+            map.map {
+                PartnerOption(
+                    id = it.key,
+                    name = it.value
+                )
+            }
+        }
+
+    val selectedPartners =
+        remember {
+            mutableStateMapOf<Long, Boolean>()
+        }
+
+    LaunchedEffect(
+        availablePartners.map { it.id }
+    ) {
+        availablePartners.forEach {
+            if (!selectedPartners.containsKey(it.id)) {
+                selectedPartners[it.id] = true
+            }
+        }
+    }
+
+    val selectedPartnerIds =
+        selectedPartners
+            .filterValues { it }
+            .keys
+            .toSet()
+
+    val allPartnersSelected =
+        availablePartners.isNotEmpty() &&
+            availablePartners.all {
+                selectedPartners[it.id] == true
+            }
+
+    val reportLines =
+        remember(
+            reportType,
+            detail,
+            periodLabel,
+            selectedPartnerIds,
+            profitRows,
+            settlementDaily,
+            settlementSummary,
+            businessSummaries,
+            rankings
+        ) {
+            buildReportLines(
+                reportType = reportType,
+                detail = detail,
+                periodLabel = periodLabel,
+                selectedPartnerIds =
+                    selectedPartnerIds,
+                profitRows = profitRows,
+                settlementDaily =
+                    settlementDaily,
+                settlementSummary =
+                    settlementSummary,
+                businessSummaries =
+                    businessSummaries,
+                rankings = rankings
+            )
+        }
+
+    val pdfSaveLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.CreateDocument(
+                "application/pdf"
+            )
+        ) { uri ->
+            val report = pendingSave
+            if (uri != null && report != null) {
+                runCatching {
+                    ReportGenerator.copyToUri(
+                        context,
+                        report,
+                        uri
+                    )
+                }
+                    .onSuccess {
+                        message = "PDF 已保存"
+                    }
+                    .onFailure {
+                        message =
+                            "保存失败：${it.message}"
+                    }
+            }
+            pendingSave = null
+        }
+
+    val pngSaveLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.CreateDocument(
+                "image/png"
+            )
+        ) { uri ->
+            val report = pendingSave
+            if (uri != null && report != null) {
+                runCatching {
+                    ReportGenerator.copyToUri(
+                        context,
+                        report,
+                        uri
+                    )
+                }
+                    .onSuccess {
+                        message = "图片已保存"
+                    }
+                    .onFailure {
+                        message =
+                            "保存失败：${it.message}"
+                    }
+            }
+            pendingSave = null
+        }
+
+    fun reportBaseName(): String {
+        val suffix =
+            when (reportType) {
+                ReportType.PROFIT ->
+                    "利润分配"
+
+                ReportType.SETTLEMENT ->
+                    "利润结算"
+
+                ReportType.BUSINESS ->
+                    "经营汇总"
+            }
+
+        val datePart =
+            when {
+                queryStart == null ||
+                    queryEnd == null ->
+                    "全部"
+
+                queryStart == queryEnd ->
+                    queryStart.replace("-", "")
+
+                else ->
+                    queryStart.replace("-", "") +
+                        "_" +
+                        queryEnd.replace("-", "")
+            }
+
+        return "天鲜果业_${suffix}_$datePart"
+    }
+
+    fun validateBeforeGenerate(): Boolean {
+        if (invalidCustom) {
+            message = "开始日期不能晚于结束日期"
+            return false
+        }
+
+        if (
+            reportType != ReportType.BUSINESS &&
+            availablePartners.isNotEmpty() &&
+            selectedPartnerIds.isEmpty()
+        ) {
+            message = "请至少选择一位合伙人"
+            return false
+        }
+
+        if (reportLines.isEmpty()) {
+            message = "当前条件没有可以生成的报表数据"
+            return false
+        }
+
+        return true
+    }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding =
+            PaddingValues(
+                horizontal = 14.dp,
+                vertical = 6.dp
+            ),
+        verticalArrangement =
+            Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            PageHeader(
+                "生成报表",
+                "按时间和合伙人生成 PDF / 图片，可直接分享到微信等应用"
+            )
+        }
+
+        item {
+            Box(Modifier.fillMaxWidth()) {
+                CompactSelectButton(
+                    "报表类型",
+                    reportType.label,
+                    Modifier.fillMaxWidth()
+                ) {
+                    reportTypeMenu = true
+                }
+
+                DropdownMenu(
+                    expanded =
+                        reportTypeMenu,
+                    onDismissRequest = {
+                        reportTypeMenu = false
+                    }
+                ) {
+                    ReportType.entries.forEach {
+                        option ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(option.label)
+                            },
+                            onClick = {
+                                reportType = option
+                                reportTypeMenu = false
+                                message = ""
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            TimeFilterSelector(
+                filter = filter,
+                onFilterChange = {
+                    filter = it
+                    message = ""
+                },
+                customStart = customStart,
+                onCustomStart = {
+                    customStart = it
+                    message = ""
+                },
+                customEnd = customEnd,
+                onCustomEnd = {
+                    customEnd = it
+                    message = ""
+                }
+            )
+        }
+
+        if (invalidCustom) {
+            item {
+                Text(
+                    "开始日期不能晚于结束日期",
+                    color =
+                        MaterialTheme.colorScheme.error
+                )
+            }
+        }
+
+        if (
+            reportType != ReportType.BUSINESS
+        ) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement =
+                            Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment =
+                                Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "合伙人",
+                                fontWeight =
+                                    FontWeight.Bold,
+                                modifier =
+                                    Modifier.weight(1f)
+                            )
+
+                            Checkbox(
+                                checked =
+                                    allPartnersSelected,
+                                onCheckedChange = {
+                                    checked ->
+                                    availablePartners
+                                        .forEach {
+                                            selectedPartners[
+                                                it.id
+                                            ] =
+                                                checked
+                                        }
+                                }
+                            )
+
+                            Text("全部")
+                        }
+
+                        if (
+                            availablePartners.isEmpty()
+                        ) {
+                            Text(
+                                "当前时间范围暂无合伙人利润记录",
+                                color = Color.Gray,
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .bodySmall
+                            )
+                        }
+
+                        availablePartners.forEach {
+                            partner ->
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment =
+                                    Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked =
+                                        selectedPartners[
+                                            partner.id
+                                        ] == true,
+                                    onCheckedChange = {
+                                        checked ->
+                                        selectedPartners[
+                                            partner.id
+                                        ] =
+                                            checked
+                                    }
+                                )
+                                Text(partner.name)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            Box(Modifier.fillMaxWidth()) {
+                CompactSelectButton(
+                    "报表详细程度",
+                    detail.label,
+                    Modifier.fillMaxWidth()
+                ) {
+                    detailMenu = true
+                }
+
+                DropdownMenu(
+                    expanded = detailMenu,
+                    onDismissRequest = {
+                        detailMenu = false
+                    }
+                ) {
+                    ReportDetail.entries.forEach {
+                        option ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(option.label)
+                            },
+                            onClick = {
+                                detail = option
+                                detailMenu = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor =
+                            Color(0xFFF7FAF8)
+                    )
+            ) {
+                Column(
+                    Modifier.padding(12.dp),
+                    verticalArrangement =
+                        Arrangement.spacedBy(5.dp)
+                ) {
+                    Text(
+                        "报表预览",
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        reportType.label,
+                        color = BrandGreen,
+                        fontWeight =
+                            FontWeight.SemiBold
+                    )
+                    Text(
+                        "统计期间：$periodLabel",
+                        style =
+                            MaterialTheme.typography
+                                .bodySmall
+                    )
+
+                    if (
+                        reportType !=
+                        ReportType.BUSINESS
+                    ) {
+                        val names =
+                            availablePartners
+                                .filter {
+                                    it.id in
+                                        selectedPartnerIds
+                                }
+                                .joinToString("、") {
+                                    it.name
+                                }
+
+                        Text(
+                            "合伙人：" +
+                                if (names.isBlank()) {
+                                    "暂无"
+                                } else {
+                                    names
+                                },
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall
+                        )
+                    }
+
+                    Text(
+                        "格式：${detail.label}",
+                        style =
+                            MaterialTheme.typography
+                                .bodySmall
+                    )
+
+                    HorizontalDivider()
+
+                    reportLines
+                        .filter {
+                            it.style !=
+                                ReportLineStyle.SPACER
+                        }
+                        .take(8)
+                        .forEach {
+                            line ->
+                            Text(
+                                line.text,
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .bodySmall,
+                                fontWeight =
+                                    if (
+                                        line.style ==
+                                        ReportLineStyle
+                                            .SECTION ||
+                                        line.style ==
+                                        ReportLineStyle
+                                            .TOTAL
+                                    ) {
+                                        FontWeight.Bold
+                                    } else {
+                                        FontWeight.Normal
+                                    }
+                            )
+                        }
+
+                    if (
+                        reportLines.count {
+                            it.style !=
+                                ReportLineStyle.SPACER
+                        } > 8
+                    ) {
+                        Text(
+                            "……完整内容将在生成的报表中显示",
+                            color = Color.Gray,
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            Text(
+                "生成并分享",
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        item {
+            Row(
+                horizontalArrangement =
+                    Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = {
+                        if (
+                            validateBeforeGenerate()
+                        ) {
+                            runCatching {
+                                ReportGenerator.createPdf(
+                                    context = context,
+                                    baseName =
+                                        reportBaseName(),
+                                    lines = reportLines
+                                )
+                            }
+                                .onSuccess {
+                                    ReportGenerator.share(
+                                        context,
+                                        it
+                                    )
+                                    message =
+                                        "已打开系统分享面板"
+                                }
+                                .onFailure {
+                                    message =
+                                        "PDF生成失败：${it.message}"
+                                }
+                        }
+                    },
+                    modifier =
+                        Modifier.weight(1f)
+                ) {
+                    Text("PDF 分享")
+                }
+
+                Button(
+                    onClick = {
+                        if (
+                            validateBeforeGenerate()
+                        ) {
+                            runCatching {
+                                ReportGenerator.createPng(
+                                    context = context,
+                                    baseName =
+                                        reportBaseName(),
+                                    lines = reportLines
+                                )
+                            }
+                                .onSuccess {
+                                    ReportGenerator.share(
+                                        context,
+                                        it
+                                    )
+                                    message =
+                                        "已打开系统分享面板"
+                                }
+                                .onFailure {
+                                    message =
+                                        "图片生成失败：${it.message}"
+                                }
+                        }
+                    },
+                    modifier =
+                        Modifier.weight(1f)
+                ) {
+                    Text("图片分享")
+                }
+            }
+        }
+
+        item {
+            Row(
+                horizontalArrangement =
+                    Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        if (
+                            validateBeforeGenerate()
+                        ) {
+                            runCatching {
+                                ReportGenerator.createPdf(
+                                    context = context,
+                                    baseName =
+                                        reportBaseName(),
+                                    lines = reportLines
+                                )
+                            }
+                                .onSuccess {
+                                    pendingSave = it
+                                    pdfSaveLauncher.launch(
+                                        it.displayName
+                                    )
+                                }
+                                .onFailure {
+                                    message =
+                                        "PDF生成失败：${it.message}"
+                                }
+                        }
+                    },
+                    modifier =
+                        Modifier.weight(1f)
+                ) {
+                    Text("保存PDF")
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        if (
+                            validateBeforeGenerate()
+                        ) {
+                            runCatching {
+                                ReportGenerator.createPng(
+                                    context = context,
+                                    baseName =
+                                        reportBaseName(),
+                                    lines = reportLines
+                                )
+                            }
+                                .onSuccess {
+                                    pendingSave = it
+                                    pngSaveLauncher.launch(
+                                        it.displayName
+                                    )
+                                }
+                                .onFailure {
+                                    message =
+                                        "图片生成失败：${it.message}"
+                                }
+                        }
+                    },
+                    modifier =
+                        Modifier.weight(1f)
+                ) {
+                    Text("保存图片")
+                }
+            }
+        }
+
+        if (message.isNotBlank()) {
+            item {
+                Text(
+                    message,
+                    color =
+                        if (
+                            message.contains("失败") ||
+                            message.contains("请")
+                        ) {
+                            MaterialTheme
+                                .colorScheme
+                                .error
+                        } else {
+                            BrandGreen
+                        },
+                    style =
+                        MaterialTheme.typography
+                            .bodySmall
+                )
+            }
+        }
+
+        item {
+            Text(
+                "说明：利润报表中的“已结算/待结算”按利润结算记录统计；实际资金转账、进货垫款和费用报销不计入“结算利润”。",
+                color = Color.Gray,
+                style =
+                    MaterialTheme.typography
+                        .bodySmall
+            )
+        }
+    }
+}
+
+private fun buildReportLines(
+    reportType: ReportType,
+    detail: ReportDetail,
+    periodLabel: String,
+    selectedPartnerIds: Set<Long>,
+    profitRows: List<ProfitDistributionRecord>,
+    settlementDaily:
+        List<DailyPartnerProfitSettlement>,
+    settlementSummary:
+        List<PartnerProfitSettlementSummary>,
+    businessSummaries:
+        List<DailySummary>,
+    rankings: List<RankingRecord>
+): List<ReportLine> {
+    return when (reportType) {
+        ReportType.PROFIT ->
+            buildProfitReportLines(
+                periodLabel = periodLabel,
+                detail = detail,
+                selectedPartnerIds =
+                    selectedPartnerIds,
+                profitRows = profitRows,
+                settlementDaily =
+                    settlementDaily
+            )
+
+        ReportType.SETTLEMENT ->
+            buildSettlementReportLines(
+                periodLabel = periodLabel,
+                detail = detail,
+                selectedPartnerIds =
+                    selectedPartnerIds,
+                settlementDaily =
+                    settlementDaily,
+                settlementSummary =
+                    settlementSummary
+            )
+
+        ReportType.BUSINESS ->
+            buildBusinessReportLines(
+                periodLabel = periodLabel,
+                detail = detail,
+                summaries =
+                    businessSummaries,
+                rankings = rankings
+            )
+    }
+}
+
+private fun buildProfitReportLines(
+    periodLabel: String,
+    detail: ReportDetail,
+    selectedPartnerIds: Set<Long>,
+    profitRows: List<ProfitDistributionRecord>,
+    settlementDaily:
+        List<DailyPartnerProfitSettlement>
+): List<ReportLine> {
+    val rows =
+        profitRows.filter {
+            selectedPartnerIds.isEmpty() ||
+                it.partnerId in selectedPartnerIds
+        }
+
+    if (rows.isEmpty()) {
+        return emptyList()
+    }
+
+    val settlementMap =
+        settlementDaily.associateBy {
+            it.date to it.partnerId
+        }
+
+    val partnerGroups =
+        rows.groupBy { it.partnerId }
+            .toList()
+            .sortedBy { it.first }
+
+    val lines = mutableListOf<ReportLine>()
+
+    lines +=
+        ReportLine(
+            "天鲜果业",
+            ReportLineStyle.TITLE
+        )
+    lines +=
+        ReportLine(
+            "合伙人利润分配报表",
+            ReportLineStyle.SUBTITLE
+        )
+    lines +=
+        ReportLine(
+            "统计期间：$periodLabel",
+            ReportLineStyle.MUTED
+        )
+    lines +=
+        ReportLine(
+            "",
+            ReportLineStyle.SPACER
+        )
+
+    lines +=
+        ReportLine(
+            "期间汇总",
+            ReportLineStyle.SECTION
+        )
+
+    var totalEarned = 0.0
+    var totalSettled = 0.0
+
+    partnerGroups.forEach {
+        (_, partnerRows) ->
+        val name =
+            partnerRows.first()
+                .partnerName
+        val earned =
+            partnerRows.sumOf {
+                it.allocatedProfit
+            }
+        val settled =
+            partnerRows.sumOf {
+                settlementMap[
+                    it.date to
+                        it.partnerId
+                ]?.settledProfit
+                    ?: 0.0
+            }
+        val pending =
+            earned - settled
+
+        totalEarned += earned
+        totalSettled += settled
+
+        lines +=
+            ReportLine(
+                "$name  应得 ${money(earned)}  已结算 ${money(settled)}  待结算 ${money(pending)}"
+            )
+    }
+
+    lines +=
+        ReportLine(
+            "期间应得利润：${money(totalEarned)}",
+            ReportLineStyle.TOTAL
+        )
+    lines +=
+        ReportLine(
+            "期间已结算利润：${money(totalSettled)}",
+            ReportLineStyle.TOTAL
+        )
+    lines +=
+        ReportLine(
+            "期间待结算利润：${money(totalEarned - totalSettled)}",
+            ReportLineStyle.TOTAL
+        )
+
+    if (detail == ReportDetail.DETAILED) {
+        lines +=
+            ReportLine(
+                "",
+                ReportLineStyle.SPACER
+            )
+        lines +=
+            ReportLine(
+                "每日明细",
+                ReportLineStyle.SECTION
+            )
+
+        rows.groupBy { it.date }
+            .toList()
+            .sortedByDescending {
+                it.first
+            }
+            .forEach {
+                (date, dayRows) ->
+
+                val sourceProfit =
+                    dayRows.firstOrNull()
+                        ?.sourceProfit
+                        ?: 0.0
+
+                lines +=
+                    ReportLine(
+                        "$date  当日利润 ${money(sourceProfit)}",
+                        ReportLineStyle.SECTION
+                    )
+
+                dayRows.sortedBy {
+                    it.partnerId
+                }.forEach {
+                    row ->
+                    val settlement =
+                        settlementMap[
+                            row.date to
+                                row.partnerId
+                        ]
+
+                    val settled =
+                        settlement
+                            ?.settledProfit
+                            ?: 0.0
+
+                    val pending =
+                        row.allocatedProfit -
+                            settled
+
+                    val status =
+                        when {
+                            pending <= 0.005 ->
+                                if (
+                                    settlement
+                                        ?.lastSettlementDate
+                                        .orEmpty()
+                                        .isNotBlank()
+                                ) {
+                                    "已结算(${settlement!!.lastSettlementDate})"
+                                } else {
+                                    "已结算"
+                                }
+
+                            settled > 0.005 ->
+                                "部分结算"
+
+                            else ->
+                                "待结算"
+                        }
+
+                    lines +=
+                        ReportLine(
+                            "${row.partnerName}  ${fmt(row.ratio)}%  ${money(row.allocatedProfit)}  $status"
+                        )
+                }
+
+                lines +=
+                    ReportLine(
+                        "",
+                        ReportLineStyle.SPACER
+                    )
+            }
+    }
+
+    return lines
+}
+
+private fun buildSettlementReportLines(
+    periodLabel: String,
+    detail: ReportDetail,
+    selectedPartnerIds: Set<Long>,
+    settlementDaily:
+        List<DailyPartnerProfitSettlement>,
+    settlementSummary:
+        List<PartnerProfitSettlementSummary>
+): List<ReportLine> {
+    val summaries =
+        settlementSummary.filter {
+            selectedPartnerIds.isEmpty() ||
+                it.partnerId in
+                    selectedPartnerIds
+        }
+
+    if (summaries.isEmpty()) {
+        return emptyList()
+    }
+
+    val daily =
+        settlementDaily.filter {
+            selectedPartnerIds.isEmpty() ||
+                it.partnerId in
+                    selectedPartnerIds
+        }
+
+    val lines = mutableListOf<ReportLine>()
+
+    lines +=
+        ReportLine(
+            "天鲜果业",
+            ReportLineStyle.TITLE
+        )
+    lines +=
+        ReportLine(
+            "利润结算报表",
+            ReportLineStyle.SUBTITLE
+        )
+    lines +=
+        ReportLine(
+            "统计期间：$periodLabel",
+            ReportLineStyle.MUTED
+        )
+    lines +=
+        ReportLine(
+            "",
+            ReportLineStyle.SPACER
+        )
+
+    lines +=
+        ReportLine(
+            "合伙人结算汇总",
+            ReportLineStyle.SECTION
+        )
+
+    summaries.forEach {
+        stat ->
+        lines +=
+            ReportLine(
+                "${stat.partnerName}  应得 ${money(stat.earnedProfit)}  已结算 ${money(stat.settledProfit)}  待结算 ${money(stat.pendingProfit)}"
+            )
+    }
+
+    val totalEarned =
+        summaries.sumOf {
+            it.earnedProfit
+        }
+    val totalSettled =
+        summaries.sumOf {
+            it.settledProfit
+        }
+    val totalPending =
+        summaries.sumOf {
+            it.pendingProfit
+        }
+
+    lines +=
+        ReportLine(
+            "合计应得利润：${money(totalEarned)}",
+            ReportLineStyle.TOTAL
+        )
+    lines +=
+        ReportLine(
+            "合计已结算利润：${money(totalSettled)}",
+            ReportLineStyle.TOTAL
+        )
+    lines +=
+        ReportLine(
+            "合计待结算利润：${money(totalPending)}",
+            ReportLineStyle.TOTAL
+        )
+
+    if (detail == ReportDetail.DETAILED) {
+        lines +=
+            ReportLine(
+                "",
+                ReportLineStyle.SPACER
+            )
+        lines +=
+            ReportLine(
+                "每日结算明细",
+                ReportLineStyle.SECTION
+            )
+
+        daily.groupBy { it.date }
+            .toList()
+            .sortedByDescending {
+                it.first
+            }
+            .forEach {
+                (date, rows) ->
+
+                lines +=
+                    ReportLine(
+                        date,
+                        ReportLineStyle.SECTION
+                    )
+
+                rows.sortedBy {
+                    it.partnerId
+                }.forEach {
+                    row ->
+                    val status =
+                        when {
+                            row.pendingProfit <=
+                                0.005 ->
+                                if (
+                                    row.lastSettlementDate
+                                        .isNotBlank()
+                                ) {
+                                    "已结算于 ${row.lastSettlementDate}"
+                                } else {
+                                    "已结算"
+                                }
+
+                            row.settledProfit >
+                                0.005 ->
+                                "部分结算"
+
+                            else ->
+                                "待结算"
+                        }
+
+                    lines +=
+                        ReportLine(
+                            "${row.partnerName}  应得 ${money(row.earnedProfit)}  已结算 ${money(row.settledProfit)}  待结算 ${money(row.pendingProfit)}  $status"
+                        )
+                }
+
+                lines +=
+                    ReportLine(
+                        "",
+                        ReportLineStyle.SPACER
+                    )
+            }
+    }
+
+    return lines
+}
+
+private fun buildBusinessReportLines(
+    periodLabel: String,
+    detail: ReportDetail,
+    summaries: List<DailySummary>,
+    rankings: List<RankingRecord>
+): List<ReportLine> {
+    if (
+        summaries.isEmpty() &&
+        rankings.isEmpty()
+    ) {
+        return emptyList()
+    }
+
+    val totalRevenue =
+        summaries.sumOf {
+            it.revenue
+        }
+    val totalProfit =
+        summaries.sumOf {
+            it.profit
+        }
+    val totalPurchase =
+        summaries.sumOf {
+            it.purchaseCost
+        }
+    val totalExpense =
+        summaries.sumOf {
+            it.expense
+        }
+    val totalCustomers =
+        summaries.sumOf {
+            it.customers
+        }
+
+    val lines = mutableListOf<ReportLine>()
+
+    lines +=
+        ReportLine(
+            "天鲜果业",
+            ReportLineStyle.TITLE
+        )
+    lines +=
+        ReportLine(
+            "经营汇总报表",
+            ReportLineStyle.SUBTITLE
+        )
+    lines +=
+        ReportLine(
+            "统计期间：$periodLabel",
+            ReportLineStyle.MUTED
+        )
+    lines +=
+        ReportLine(
+            "",
+            ReportLineStyle.SPACER
+        )
+
+    lines +=
+        ReportLine(
+            "经营汇总",
+            ReportLineStyle.SECTION
+        )
+    lines +=
+        ReportLine(
+            "营业额：${money(totalRevenue)}"
+        )
+    lines +=
+        ReportLine(
+            "利润：${money(totalProfit)}"
+        )
+    lines +=
+        ReportLine(
+            "进货金额：${money(totalPurchase)}"
+        )
+    lines +=
+        ReportLine(
+            "业务费用：${money(totalExpense)}"
+        )
+    lines +=
+        ReportLine(
+            "客户数：$totalCustomers 人"
+        )
+
+    if (summaries.isNotEmpty()) {
+        lines +=
+            ReportLine(
+                "经营天数：${summaries.size} 天"
+            )
+        lines +=
+            ReportLine(
+                "日均营业额：${money(totalRevenue / summaries.size)}"
+            )
+        lines +=
+            ReportLine(
+                "日均利润：${money(totalProfit / summaries.size)}"
+            )
+    }
+
+    if (rankings.isNotEmpty()) {
+        lines +=
+            ReportLine(
+                "",
+                ReportLineStyle.SPACER
+            )
+        lines +=
+            ReportLine(
+                "摊位排行",
+                ReportLineStyle.SECTION
+            )
+
+        rankings.sortedByDescending {
+            it.revenue
+        }.forEachIndexed {
+            index,
+            row ->
+            lines +=
+                ReportLine(
+                    "${index + 1}. ${row.storeName}  营业额 ${money(row.revenue)}  利润 ${money(row.profit)}  客户 ${row.customers}"
+                )
+        }
+    }
+
+    if (detail == ReportDetail.DETAILED) {
+        lines +=
+            ReportLine(
+                "",
+                ReportLineStyle.SPACER
+            )
+        lines +=
+            ReportLine(
+                "每日经营明细",
+                ReportLineStyle.SECTION
+            )
+
+        summaries.sortedByDescending {
+            it.date
+        }.forEach {
+            row ->
+            lines +=
+                ReportLine(
+                    "${row.date}  营业额 ${money(row.revenue)}  利润 ${money(row.profit)}  进货 ${money(row.purchaseCost)}  费用 ${money(row.expense)}  客户 ${row.customers}"
+                )
+        }
+    }
+
+    return lines
 }
 
 @Composable
