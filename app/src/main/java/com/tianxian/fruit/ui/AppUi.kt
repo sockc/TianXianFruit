@@ -47,7 +47,7 @@ enum class AppPage(val title: String, val emoji: String) {
     PLAN("采购", "🛒")
 }
 
-private enum class MorePage { MENU, HISTORY, STATS, PARTNERS, STORES, PROFIT, FRUITS }
+private enum class MorePage { MENU, DATA_CENTER, HISTORY, STATS, PARTNERS, STORES, PROFIT, FRUITS }
 
 private enum class HistoryTimeFilter(val label: String) {
     ALL("全部时间"),
@@ -118,7 +118,13 @@ fun TianXianApp(db: AppDatabase) {
                     AppPage.PLAN -> PurchasePlanScreen(db, dataVersion) { dataVersion++ }
                     AppPage.SESSION -> SessionScreen(db, dataVersion) { dataVersion++ }
                     AppPage.SETTLEMENT -> SettlementScreen(db, dataVersion) { dataVersion++ }
-                    AppPage.MORE -> MoreScreen(db, dataVersion, moreTarget) { dataVersion++ }
+                    AppPage.MORE -> MoreScreen(
+                        db = db,
+                        dataVersion = dataVersion,
+                        initialSub = moreTarget,
+                        onPlan = { page = AppPage.PLAN },
+                        onChanged = { dataVersion++ }
+                    )
                 }
             }
         }
@@ -157,27 +163,52 @@ private fun HomeScreen(
     onFruits: () -> Unit,
     onMore: () -> Unit
 ) {
-    val todayDate = LocalDate.now()
-    val today = todayDate.toString()
-    val summary = remember(dataVersion, today) { db.getDailySummary(today) }
-    val records = remember(dataVersion, today) { db.getDailyRecords(today) }
-    val tomorrow = todayDate.plusDays(1).toString()
-    val tomorrowPlan = remember(dataVersion, tomorrow) { db.getPurchasePlan(tomorrow) }
-    val trend = remember(dataVersion, today) {
+    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
+    val selectedDateString = selectedDate.toString()
+
+    val summary = remember(dataVersion, selectedDateString) {
+        db.getDailySummary(selectedDateString)
+    }
+    val records = remember(dataVersion, selectedDateString) {
+        db.getDailyRecords(selectedDateString)
+    }
+
+    val nextDate = selectedDate.plusDays(1)
+    val nextDateString = nextDate.toString()
+    val nextPlan = remember(dataVersion, nextDateString) {
+        db.getPurchasePlan(nextDateString)
+    }
+
+    val trend = remember(dataVersion, selectedDateString) {
         (6 downTo 0).map { offset ->
-            val d = todayDate.minusDays(offset.toLong())
+            val d = selectedDate.minusDays(offset.toLong())
             d to db.getDailySummary(d.toString()).revenue
         }
     }
-    val month = currentMonthRange()
-    val rankings = remember(dataVersion, month) {
-        db.getRankings(month.first, month.second).sortedByDescending { it.revenue }
+
+    val monthRange = remember(selectedDate) {
+        selectedDate.withDayOfMonth(1).toString() to
+            selectedDate.withDayOfMonth(selectedDate.lengthOfMonth()).toString()
+    }
+    val rankings = remember(dataVersion, monthRange) {
+        db.getRankings(monthRange.first, monthRange.second)
+            .sortedByDescending { it.revenue }
     }
 
-    val dateText = todayDate.format(DateTimeFormatter.ofPattern("yyyy年M月d日"))
-    val weekText = chineseWeekday(todayDate)
-    val locationText = if (records.isEmpty()) "今日未记录摊位"
-    else records.joinToString("、") { it.storeName }.take(24)
+    val locationText =
+        if (records.isEmpty()) {
+            "当日未记录摊位"
+        } else {
+            records.joinToString("、") { it.storeName }.take(30)
+        }
+
+    val isToday = selectedDate == LocalDate.now()
+    val nextPlanTitle =
+        if (isToday) {
+            "明日采购"
+        } else {
+            "${nextDate.monthValue}月${nextDate.dayOfMonth}日采购"
+        }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -191,21 +222,46 @@ private fun HomeScreen(
                     .height(150.dp)
                     .background(
                         Brush.linearGradient(
-                            listOf(Color(0xFF0A6E3A), Color(0xFF148E51), Color(0xFF0B5E34))
+                            listOf(
+                                Color(0xFF0A6E3A),
+                                Color(0xFF148E51),
+                                Color(0xFF0B5E34)
+                            )
                         )
                     )
                     .padding(horizontal = 20.dp, vertical = 18.dp)
             ) {
                 Column(Modifier.align(Alignment.CenterStart)) {
-                    Text("天鲜果业", color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        "天鲜果业",
+                        color = Color.White,
+                        fontSize = 30.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                     Spacer(Modifier.height(6.dp))
-                    Text("每一天努力，收获更甜的生活", color = Color.White.copy(alpha = 0.88f), fontSize = 13.sp)
+                    Text(
+                        "每一天努力，收获更甜的生活",
+                        color = Color.White.copy(alpha = 0.88f),
+                        fontSize = 13.sp
+                    )
                 }
-                Column(Modifier.align(Alignment.BottomEnd), horizontalAlignment = Alignment.End) {
+
+                Column(
+                    Modifier.align(Alignment.BottomEnd),
+                    horizontalAlignment = Alignment.End
+                ) {
                     Text("🍇🍊🍓", fontSize = 24.sp)
-                    Text("新鲜水果 · 从这里开始！", color = Color.White.copy(alpha = 0.9f), fontSize = 12.sp)
+                    Text(
+                        "新鲜水果 · 从这里开始！",
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontSize = 12.sp
+                    )
                 }
-                TextButton(onClick = onMore, modifier = Modifier.align(Alignment.TopEnd)) {
+
+                TextButton(
+                    onClick = onMore,
+                    modifier = Modifier.align(Alignment.TopEnd)
+                ) {
                     Text("⚙", color = Color.White, fontSize = 24.sp)
                 }
             }
@@ -221,123 +277,313 @@ private fun HomeScreen(
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(22.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.White)
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color.White
+                    )
                 ) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("📅", fontSize = 17.sp)
-                            Spacer(Modifier.width(6.dp))
-                            Text("$dateText  $weekText", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                            Text("📍", fontSize = 17.sp)
-                            Spacer(Modifier.width(4.dp))
-                            Text(locationText, maxLines = 1, style = MaterialTheme.typography.bodyMedium)
+                    Column(
+                        Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        CompactDateNavigator(
+                            label = null,
+                            date = selectedDateString,
+                            modifier = Modifier.fillMaxWidth(),
+                            chineseDisplay = true,
+                            showWeekday = true
+                        ) {
+                            selectedDate =
+                                runCatching { LocalDate.parse(it) }
+                                    .getOrElse { LocalDate.now() }
+                        }
+
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text("📍", fontSize = 16.sp)
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                locationText,
+                                maxLines = 1,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (records.isEmpty()) Color.Gray else Color.DarkGray
+                            )
                         }
 
                         Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                            DashboardTile("💰", "今日营业额", money(summary.revenue), SoftOrange, Modifier.weight(1f))
-                            DashboardTile("📈", "今日利润", money(summary.profit), SoftGreen, Modifier.weight(1f))
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                            DashboardTile("🛒", "今日进货成本", money(summary.purchaseCost), SoftBlue, Modifier.weight(1f))
-                            DashboardTile("📦", "剩余库存价值", money(summary.closingStockValue), Color(0xFFFFF7D9), Modifier.weight(1f))
+                            DashboardTile(
+                                "💰",
+                                "营业额",
+                                money(summary.revenue),
+                                SoftOrange,
+                                Modifier.weight(1f)
+                            )
+                            DashboardTile(
+                                "📈",
+                                "利润",
+                                money(summary.profit),
+                                SoftGreen,
+                                Modifier.weight(1f)
+                            )
                         }
 
-                        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F9FC))) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                            DashboardTile(
+                                "🛒",
+                                "进货成本",
+                                money(summary.purchaseCost),
+                                SoftBlue,
+                                Modifier.weight(1f)
+                            )
+                            DashboardTile(
+                                "📦",
+                                "剩余库存价值",
+                                money(summary.closingStockValue),
+                                Color(0xFFFFF7D9),
+                                Modifier.weight(1f)
+                            )
+                        }
+
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = Color(0xFFF7F9FC)
+                            )
+                        ) {
                             Row(
-                                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp),
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 9.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("👥 今日客户", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "👥 客户",
+                                    fontWeight = FontWeight.SemiBold
+                                )
                                 Spacer(Modifier.weight(1f))
-                                Text("${summary.customers} 人", fontWeight = FontWeight.Bold, color = BrandGreen)
+                                Text(
+                                    "${summary.customers} 人",
+                                    fontWeight = FontWeight.Bold,
+                                    color = BrandGreen
+                                )
                                 if (records.isNotEmpty()) {
                                     Spacer(Modifier.width(12.dp))
-                                    Text("新 ${records.sumOf { it.newCustomer }}  ·  老 ${records.sumOf { it.oldCustomer }}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                                    Text(
+                                        "新 ${records.sumOf { it.newCustomer }}  ·  " +
+                                            "老 ${records.sumOf { it.oldCustomer }}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color.Gray
+                                    )
                                 }
                             }
                         }
 
                         Text("快捷操作", fontWeight = FontWeight.Bold)
+
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            QuickActionTile("🛒", "新增进货", onPurchase, Modifier.weight(1f), Color(0xFFEAF8F0))
-                            QuickActionTile("🏪", "记录营业", onSession, Modifier.weight(1f), Color(0xFFEAF3FF))
-                            QuickActionTile("🛒", "采购计划", onPlan, Modifier.weight(1f), Color(0xFFFFEFE5))
-                            QuickActionTile("🧾", "查看历史", onHistory, Modifier.weight(1f), Color(0xFFF2ECFF))
+                            QuickActionTile(
+                                "🛒",
+                                "新增进货",
+                                onPurchase,
+                                Modifier.weight(1f),
+                                Color(0xFFEAF8F0)
+                            )
+                            QuickActionTile(
+                                "🏪",
+                                "记录营业",
+                                onSession,
+                                Modifier.weight(1f),
+                                Color(0xFFEAF3FF)
+                            )
+                            QuickActionTile(
+                                "🛒",
+                                "采购计划",
+                                onPlan,
+                                Modifier.weight(1f),
+                                Color(0xFFFFEFE5)
+                            )
+                            QuickActionTile(
+                                "🧾",
+                                "查看历史",
+                                onHistory,
+                                Modifier.weight(1f),
+                                Color(0xFFF2ECFF)
+                            )
                         }
 
                         Card(
                             onClick = onPlan,
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFFF4FAF6)),
+                            colors = CardDefaults.cardColors(
+                                containerColor = Color(0xFFF4FAF6)
+                            ),
                             shape = RoundedCornerShape(14.dp)
                         ) {
                             Row(
-                                Modifier.fillMaxWidth().padding(horizontal = 13.dp, vertical = 10.dp),
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 13.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text("🛒", fontSize = 22.sp)
                                 Spacer(Modifier.width(9.dp))
+
                                 Column(Modifier.weight(1f)) {
-                                    Text("明日采购", fontWeight = FontWeight.Bold)
-                                    val planText = if (tomorrowPlan == null) {
-                                        "暂无计划，点击添加"
-                                    } else {
-                                        val pendingCount = tomorrowPlan.items.count { it.status == 0 }
-                                        val purchasedCount = tomorrowPlan.items.count { it.status == 1 }
-                                        val cancelledCount = tomorrowPlan.items.count { it.status == 2 }
-                                        when {
-                                            tomorrowPlan.items.isEmpty() -> "暂无商品"
-                                            pendingCount > 0 ->
-                                                "待采购 $pendingCount · 已采购 $purchasedCount · 取消 $cancelledCount"
-                                            purchasedCount > 0 ->
-                                                "已完成 $purchasedCount 项" +
-                                                    if (cancelledCount > 0) " · 取消 $cancelledCount" else ""
-                                            else -> "已全部取消"
+                                    Text(
+                                        nextPlanTitle,
+                                        fontWeight = FontWeight.Bold
+                                    )
+
+                                    val planText =
+                                        if (nextPlan == null) {
+                                            "暂无计划，点击添加"
+                                        } else {
+                                            val pendingCount =
+                                                nextPlan.items.count { it.status == 0 }
+                                            val purchasedCount =
+                                                nextPlan.items.count { it.status == 1 }
+                                            val cancelledCount =
+                                                nextPlan.items.count { it.status == 2 }
+
+                                            when {
+                                                nextPlan.items.isEmpty() ->
+                                                    "暂无商品"
+
+                                                pendingCount > 0 ->
+                                                    "待采购 $pendingCount · " +
+                                                        "已采购 $purchasedCount · " +
+                                                        "取消 $cancelledCount"
+
+                                                purchasedCount > 0 ->
+                                                    "已完成 $purchasedCount 项" +
+                                                        if (cancelledCount > 0) {
+                                                            " · 取消 $cancelledCount"
+                                                        } else {
+                                                            ""
+                                                        }
+
+                                                else ->
+                                                    "已全部取消"
+                                            }
                                         }
-                                    }
-                                    Text(planText, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+
+                                    Text(
+                                        planText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color.Gray
+                                    )
                                 }
-                                Text("›", color = BrandGreen, fontSize = 24.sp)
+
+                                Text(
+                                    "›",
+                                    color = BrandGreen,
+                                    fontSize = 24.sp
+                                )
                             }
                         }
 
-                        Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFCFCFD))) {
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = Color(0xFFFCFCFD)
+                            )
+                        ) {
                             Column(Modifier.padding(12.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("最近7天营业额趋势", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                                    TextButton(onClick = onStats) { Text("查看详情 ›") }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        "最近7天营业额趋势",
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    TextButton(onClick = onStats) {
+                                        Text("查看详情 ›")
+                                    }
                                 }
+
                                 RevenueTrendChart(trend)
+
                                 Row(Modifier.fillMaxWidth()) {
-                                    trend.forEach { (d, _) ->
-                                        Text(
-                                            "${d.monthValue}/${d.dayOfMonth}",
+                                    trend.forEach { (d, revenue) ->
+                                        Column(
                                             modifier = Modifier.weight(1f),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = Color.Gray
-                                        )
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            Text(
+                                                "${d.monthValue}/${d.dayOfMonth}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = Color.Gray,
+                                                fontSize = 9.sp,
+                                                maxLines = 1
+                                            )
+                                            Text(
+                                                fmt(revenue),
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = BrandGreen,
+                                                fontSize = 9.sp,
+                                                maxLines = 1
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
 
                         Text("常用功能", fontWeight = FontWeight.Bold)
+
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            UtilityTile("🍎", "水果管理", onFruits, Modifier.weight(1f))
-                            UtilityTile("📍", "位置管理", onStores, Modifier.weight(1f))
-                            UtilityTile("📊", "统计分析", onStats, Modifier.weight(1f))
-                            UtilityTile("☁", "数据备份", onStats, Modifier.weight(1f))
+                            UtilityTile(
+                                "📦",
+                                "商品管理",
+                                onFruits,
+                                Modifier.weight(1f)
+                            )
+                            UtilityTile(
+                                "📍",
+                                "摊位管理",
+                                onStores,
+                                Modifier.weight(1f)
+                            )
+                            UtilityTile(
+                                "📊",
+                                "经营分析",
+                                onStats,
+                                Modifier.weight(1f)
+                            )
+                            UtilityTile(
+                                "☁",
+                                "数据备份",
+                                onStats,
+                                Modifier.weight(1f)
+                            )
                         }
 
                         if (rankings.isNotEmpty()) {
-                            Text("本月营业额前三", fontWeight = FontWeight.Bold)
+                            Text(
+                                "${selectedDate.monthValue}月营业额前三",
+                                fontWeight = FontWeight.Bold
+                            )
+
                             rankings.take(3).forEachIndexed { index, r ->
                                 Row(
-                                    Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 3.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("${index + 1}.", Modifier.width(28.dp), fontWeight = FontWeight.Bold)
-                                    Text(r.storeName, Modifier.weight(1f))
-                                    Text(money(r.revenue), fontWeight = FontWeight.SemiBold)
+                                    Text(
+                                        "${index + 1}.",
+                                        Modifier.width(28.dp),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        r.storeName,
+                                        Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        money(r.revenue),
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                 }
                             }
                         }
@@ -934,10 +1180,10 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
-                CompactDateSelector(
-                    "日期",
-                    date,
-                    Modifier.weight(1.05f)
+                CompactDateNavigator(
+                    label = "日期",
+                    date = date,
+                    modifier = Modifier.weight(1.15f)
                 ) { date = it }
 
                 Box(Modifier.weight(0.95f)) {
@@ -1632,7 +1878,15 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
             }
         }
 
-        item { CompactDateSelector("营业日期", date, Modifier.fillMaxWidth()) { date = it } }
+        item {
+            CompactDateNavigator(
+                label = "营业日期",
+                date = date,
+                modifier = Modifier.fillMaxWidth(),
+                chineseDisplay = true,
+                showWeekday = true
+            ) { date = it }
+        }
 
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
@@ -2000,7 +2254,15 @@ private fun SettlementScreen(db: AppDatabase, dataVersion: Int, onChanged: () ->
                 "进货垫付 + 费用垫付 + 应得利润 − 实际收款，最后一次性轧差"
             )
         }
-        item { CompactDateSelector("结算日期", date, Modifier.fillMaxWidth()) { date = it } }
+        item {
+            CompactDateNavigator(
+                label = "结算日期",
+                date = date,
+                modifier = Modifier.fillMaxWidth(),
+                chineseDisplay = true,
+                showWeekday = true
+            ) { date = it }
+        }
 
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2152,32 +2414,209 @@ private fun SettlementScreen(db: AppDatabase, dataVersion: Int, onChanged: () ->
 }
 
 @Composable
-private fun MoreScreen(db: AppDatabase, dataVersion: Int, initialSub: MorePage = MorePage.MENU, onChanged: () -> Unit) {
+private fun MoreScreen(
+    db: AppDatabase,
+    dataVersion: Int,
+    initialSub: MorePage = MorePage.MENU,
+    onPlan: () -> Unit,
+    onChanged: () -> Unit
+) {
     var sub by remember(initialSub) { mutableStateOf(initialSub) }
-    BackHandler(enabled = sub != MorePage.MENU) { sub = MorePage.MENU }
+
+    fun goBack() {
+        sub =
+            when (sub) {
+                MorePage.HISTORY, MorePage.STATS ->
+                    MorePage.DATA_CENTER
+
+                else ->
+                    MorePage.MENU
+            }
+    }
+
+    BackHandler(enabled = sub != MorePage.MENU) {
+        goBack()
+    }
+
     when (sub) {
-        MorePage.MENU -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            item { PageHeader("更多", "历史、统计、合伙人、位置和独立利润分配") }
-            item { MenuCard("🕘 历史记录", "查看并删除历史进货、历史营业") { sub = MorePage.HISTORY } }
-            item { MenuCard("📊 经营统计", "营业额 / 利润 / 客户排行榜，水果历史进价") { sub = MorePage.STATS } }
-            item { MenuCard("👥 合伙人", "人数不设上限，可新增、改名或删除") { sub = MorePage.PARTNERS } }
-            item { MenuCard("📍 摆摊位置", "新增或删除位置；删除不影响历史记录") { sub = MorePage.STORES } }
-            item { MenuCard("🍎 水果商品管理", "新增、修改、停用或恢复商品；历史进货不受影响") { sub = MorePage.FRUITS } }
-            item { MenuCard("💰 利润分配", "独立利润分配表；每位合伙人的百分比可自定义") { sub = MorePage.PROFIT } }
+        MorePage.MENU -> {
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                item { PageHeader("更多") }
+
+                item {
+                    MenuCard("📊 数据中心") {
+                        sub = MorePage.DATA_CENTER
+                    }
+                }
+
+                item {
+                    MenuCard("👥 合伙人管理") {
+                        sub = MorePage.PARTNERS
+                    }
+                }
+
+                item {
+                    MenuCard("📍 摊位管理") {
+                        sub = MorePage.STORES
+                    }
+                }
+
+                item {
+                    MenuCard("📦 商品管理") {
+                        sub = MorePage.FRUITS
+                    }
+                }
+
+                item {
+                    MenuCard("💰 利润分配") {
+                        sub = MorePage.PROFIT
+                    }
+                }
+
+                item {
+                    MenuCard("🛒 采购清单") {
+                        onPlan()
+                    }
+                }
+            }
         }
-        MorePage.HISTORY -> SubPage("历史记录", { sub = MorePage.MENU }) { HistoryContent(db, dataVersion, onChanged) }
-        MorePage.STATS -> SubPage("经营统计", { sub = MorePage.MENU }) { StatsContent(db, dataVersion) }
-        MorePage.PARTNERS -> SubPage("合伙人管理", { sub = MorePage.MENU }) { PartnerContent(db, dataVersion, onChanged) }
-        MorePage.STORES -> SubPage("摆摊位置管理", { sub = MorePage.MENU }) { StoreContent(db, dataVersion, onChanged) }
-        MorePage.FRUITS -> SubPage("水果商品管理", { sub = MorePage.MENU }) { FruitManagementContent(db, dataVersion, onChanged) }
-        MorePage.PROFIT -> SubPage("利润分配", { sub = MorePage.MENU }) { ProfitContent(db, dataVersion, onChanged) }
+
+        MorePage.DATA_CENTER -> {
+            SubPage(
+                "数据中心",
+                { sub = MorePage.MENU }
+            ) {
+                LazyColumn(
+                    Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    item {
+                        MenuCard("🕘 历史记录") {
+                            sub = MorePage.HISTORY
+                        }
+                    }
+
+                    item {
+                        MenuCard("📈 经营分析") {
+                            sub = MorePage.STATS
+                        }
+                    }
+                }
+            }
+        }
+
+        MorePage.HISTORY -> {
+            SubPage(
+                "历史记录",
+                { sub = MorePage.DATA_CENTER }
+            ) {
+                HistoryContent(
+                    db,
+                    dataVersion,
+                    onChanged
+                )
+            }
+        }
+
+        MorePage.STATS -> {
+            SubPage(
+                "经营分析",
+                { sub = MorePage.DATA_CENTER }
+            ) {
+                StatsContent(
+                    db,
+                    dataVersion
+                )
+            }
+        }
+
+        MorePage.PARTNERS -> {
+            SubPage(
+                "合伙人管理",
+                { sub = MorePage.MENU }
+            ) {
+                PartnerContent(
+                    db,
+                    dataVersion,
+                    onChanged
+                )
+            }
+        }
+
+        MorePage.STORES -> {
+            SubPage(
+                "摊位管理",
+                { sub = MorePage.MENU }
+            ) {
+                StoreContent(
+                    db,
+                    dataVersion,
+                    onChanged
+                )
+            }
+        }
+
+        MorePage.FRUITS -> {
+            SubPage(
+                "商品管理",
+                { sub = MorePage.MENU }
+            ) {
+                FruitManagementContent(
+                    db,
+                    dataVersion,
+                    onChanged
+                )
+            }
+        }
+
+        MorePage.PROFIT -> {
+            SubPage(
+                "利润分配",
+                { sub = MorePage.MENU }
+            ) {
+                ProfitContent(
+                    db,
+                    dataVersion,
+                    onChanged
+                )
+            }
+        }
     }
 }
 
 @Composable
-private fun MenuCard(title: String, subtitle: String, onClick: () -> Unit) {
-    Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) { Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold); Text(subtitle, color = Color.Gray) }
+private fun MenuCard(
+    title: String,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 18.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                "›",
+                color = BrandGreen,
+                fontSize = 24.sp
+            )
+        }
     }
 }
 
@@ -2696,7 +3135,7 @@ private fun StatsContent(db: AppDatabase, dataVersion: Int) {
         }
         item { RankingSection("客户数排行榜", rankings.sortedByDescending { it.customers }) { "${it.customers} 人" } }
         item {
-            Text("水果历史进价", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("商品历史进价", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Box {
                 OutlinedButton(onClick = { fruitMenu = true }, modifier = Modifier.fillMaxWidth()) { Text(fruit?.name ?: "请选择水果", Modifier.weight(1f)); Text("▼") }
                 DropdownMenu(expanded = fruitMenu, onDismissRequest = { fruitMenu = false }) {
@@ -2805,7 +3244,7 @@ private fun FruitManagementContent(db: AppDatabase, dataVersion: Int, onChanged:
             Button(
                 onClick = { addDialog = true },
                 modifier = Modifier.fillMaxWidth()
-            ) { Text("＋ 新增水果商品") }
+            ) { Text("＋ 新增商品") }
 
             if (message.isNotBlank()) {
                 Text(message, color = BrandGreen, style = MaterialTheme.typography.bodySmall)
@@ -2819,7 +3258,7 @@ private fun FruitManagementContent(db: AppDatabase, dataVersion: Int, onChanged:
             onSave = { name, unit ->
                 val id = db.addFruit(name, unit)
                 addDialog = false
-                message = if (id > 0) "水果商品已保存" else "保存失败，商品名称可能重复"
+                message = if (id > 0) "商品已保存" else "保存失败，商品名称可能重复"
                 onChanged()
             }
         )
@@ -3097,6 +3536,107 @@ private fun CompactSelectButton(label: String, value: String, modifier: Modifier
 }
 
 @Composable
+private fun CompactDateNavigator(
+    label: String?,
+    date: String,
+    modifier: Modifier = Modifier,
+    chineseDisplay: Boolean = false,
+    showWeekday: Boolean = false,
+    onDate: (String) -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val parsedDate =
+        runCatching { LocalDate.parse(date) }
+            .getOrElse { LocalDate.now() }
+
+    val displayText =
+        if (chineseDisplay) {
+            buildString {
+                append(
+                    parsedDate.format(
+                        DateTimeFormatter.ofPattern("yyyy年M月d日")
+                    )
+                )
+                if (showWeekday) {
+                    append("  ")
+                    append(chineseWeekday(parsedDate))
+                }
+            }
+        } else {
+            parsedDate.toString()
+        }
+
+    Column(modifier) {
+        if (!label.isNullOrBlank()) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.Gray
+            )
+        }
+
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            IconButton(
+                onClick = {
+                    onDate(parsedDate.minusDays(1).toString())
+                },
+                modifier = Modifier.size(36.dp)
+            ) {
+                Text(
+                    "‹",
+                    color = BrandGreen,
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            OutlinedButton(
+                onClick = {
+                    showDatePicker(
+                        context,
+                        parsedDate.toString(),
+                        onDate
+                    )
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(40.dp),
+                contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    displayText,
+                    modifier = Modifier.weight(1f),
+                    fontSize = if (chineseDisplay) 13.sp else 12.sp,
+                    maxLines = 1
+                )
+                Text(
+                    "📅",
+                    fontSize = 11.sp
+                )
+            }
+
+            IconButton(
+                onClick = {
+                    onDate(parsedDate.plusDays(1).toString())
+                },
+                modifier = Modifier.size(36.dp)
+            ) {
+                Text(
+                    "›",
+                    color = BrandGreen,
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun CompactDateSelector(label: String, date: String, modifier: Modifier = Modifier, onDate: (String) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     Column(modifier) {
@@ -3236,10 +3776,10 @@ private fun AddFruitDialog(onDismiss: () -> Unit, onSave: (String, String) -> Un
     var name by remember { mutableStateOf("") }
     var unit by remember { mutableStateOf("件") }
     AlertDialog(
-        onDismissRequest = onDismiss, title = { Text("新增水果") },
+        onDismissRequest = onDismiss, title = { Text("新增商品") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(name, { name = it }, label = { Text("水果名称") }, singleLine = true)
+                OutlinedTextField(name, { name = it }, label = { Text("商品名称") }, singleLine = true)
                 Text("默认单位")
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("斤", "筐", "箱", "件").forEach { u -> FilterChip(selected = unit == u, onClick = { unit = u }, label = { Text(u) }) } }
             }
@@ -3260,13 +3800,13 @@ private fun FruitEditDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("编辑水果商品") },
+        title = { Text("编辑商品") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("水果名称") },
+                    label = { Text("商品名称") },
                     singleLine = true
                 )
                 Text("默认单位")

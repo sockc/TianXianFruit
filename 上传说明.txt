@@ -1,0 +1,25 @@
+天鲜账本 V1.2.1 UI PATCH
+
+如果 GitHub 当前源码就是你这次上传的 TianXianFruit-main(1).zip，
+按原目录覆盖本补丁里的文件即可。
+
+主要代码：
+app/src/main/java/com/tianxian/fruit/ui/AppUi.kt
+
+版本：
+app/build.gradle
+
+GitHub Actions：
+.github/workflows/build-apk.yml
+
+不要修改 GitHub Secrets：
+SIGNING_KEY_BASE64
+KEYSTORE_PASSWORD
+KEY_ALIAS
+
+不要更换 keystore。
+
+DB_VERSION 仍为 6，不需要数据库迁移。
+
+特别说明：
+上一版进货动态商品行的 LazyColumn 唯一 key 修复已保留。
