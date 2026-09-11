@@ -17,6 +17,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -815,6 +816,7 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
 
 @Composable
 private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Unit) {
+    val focusManager = LocalFocusManager.current
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
     val fruits = remember(dataVersion) { db.getFruits() }
     val partners = remember(dataVersion) { db.getPartners() }
@@ -828,7 +830,9 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
     var addFruitDialog by remember { mutableStateOf(false) }
     var pendingFruitRowId by remember { mutableStateOf<Long?>(null) }
 
-    var nextRowId by remember { mutableLongStateOf(2L) }
+    var nextRowId by remember {
+        mutableLongStateOf(System.currentTimeMillis())
+    }
     val rows = remember {
         mutableStateListOf(
             PurchaseDraftRow(rowId = 1L)
@@ -997,7 +1001,10 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
             }
         }
 
-        items(rows, key = { it.rowId }) { row ->
+        items(
+            rows,
+            key = { row -> "purchase_draft_${row.rowId}" }
+        ) { row ->
             PurchaseDraftRowEditor(
                 row = row,
                 fruits = fruits,
@@ -1020,6 +1027,7 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
         item {
             OutlinedButton(
                 onClick = {
+                    focusManager.clearFocus()
                     if (rows.lastOrNull()?.isBlank == true) {
                         message = "下面已经有一组空白商品，直接填写即可"
                     } else {
@@ -1065,6 +1073,7 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
 
             Button(
                 onClick = {
+                    focusManager.clearFocus()
                     val filledRows = meaningfulRows()
 
                     when {
@@ -1185,7 +1194,10 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
             item { Text("暂无进货记录", color = Color.Gray) }
         }
 
-        items(history, key = { it.order.id }) { detail ->
+        items(
+            history,
+            key = { detail -> "purchase_history_${detail.order.id}" }
+        ) { detail ->
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(11.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
