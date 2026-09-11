@@ -1895,6 +1895,41 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         ))
     } }
 
+    fun getCashSettlementsBetween(
+        start: String?,
+        end: String?
+    ): List<CashSettlementBundle> {
+        val where =
+            if (start != null && end != null) {
+                "AND date>=? AND date<=?"
+            } else {
+                ""
+            }
+
+        val args =
+            if (start != null && end != null) {
+                arrayOf(start, end)
+            } else {
+                emptyArray()
+            }
+
+        val dates = readableDatabase.rawQuery(
+            "SELECT DISTINCT date FROM daily_cash_settlement " +
+                "WHERE deleted=0 $where ORDER BY date DESC",
+            args
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    add(c.str("date"))
+                }
+            }
+        }
+
+        return dates.mapNotNull {
+            getCashSettlement(it)
+        }
+    }
+
     fun generateCashSettlement(date: String): CashSettlementResult {
         val summary = getDailySummary(date)
         if (summary.revenue <= 0.0) return CashSettlementResult(false, "当天还没有营业额")
