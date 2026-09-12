@@ -32,6 +32,8 @@ import com.tianxian.fruit.report.GeneratedReport
 import com.tianxian.fruit.report.ReportGenerator
 import com.tianxian.fruit.report.ReportLine
 import com.tianxian.fruit.report.ReportLineStyle
+import com.tianxian.fruit.sync.LedgerBook
+import com.tianxian.fruit.sync.LedgerManager
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -53,7 +55,7 @@ enum class AppPage(val title: String, val emoji: String) {
     PLAN("采购", "🛒")
 }
 
-private enum class MorePage { MENU, DATA_CENTER, HISTORY, STATS, PARTNERS, STORES, PROFIT, FRUITS, REPORT }
+private enum class MorePage { MENU, BOOKS, DATA_CENTER, HISTORY, STATS, PARTNERS, STORES, PROFIT, FRUITS, REPORT }
 
 private enum class HistoryTimeFilter(val label: String) {
     ALL("全部时间"),
@@ -97,7 +99,12 @@ private data class PurchaseDraftRow(
 
 
 @Composable
-fun TianXianApp(db: AppDatabase) {
+fun TianXianApp(
+    db: AppDatabase,
+    ledgerManager: LedgerManager,
+    currentBook: LedgerBook,
+    onSwitchBook: (String) -> Unit
+) {
     var page by remember { mutableStateOf(AppPage.HOME) }
     var moreTarget by remember { mutableStateOf(MorePage.MENU) }
     var dataVersion by remember { mutableIntStateOf(0) }
@@ -128,6 +135,7 @@ fun TianXianApp(db: AppDatabase) {
                     AppPage.HOME -> HomeScreen(
                         db = db,
                         dataVersion = dataVersion,
+                        bookName = currentBook.name,
                         onPurchase = { page = AppPage.PURCHASE },
                         onPlan = { page = AppPage.PLAN },
                         onSession = { page = AppPage.SESSION },
@@ -145,8 +153,18 @@ fun TianXianApp(db: AppDatabase) {
                         db = db,
                         dataVersion = dataVersion,
                         initialSub = moreTarget,
-                        onPlan = { page = AppPage.PLAN },
-                        onChanged = { dataVersion++ }
+                        ledgerManager =
+                            ledgerManager,
+                        currentBook =
+                            currentBook,
+                        onSwitchBook =
+                            onSwitchBook,
+                        onPlan = {
+                            page = AppPage.PLAN
+                        },
+                        onChanged = {
+                            dataVersion++
+                        }
                     )
                 }
             }
@@ -177,6 +195,7 @@ private fun MetricCard(title: String, value: String, modifier: Modifier = Modifi
 private fun HomeScreen(
     db: AppDatabase,
     dataVersion: Int,
+    bookName: String,
     onPurchase: () -> Unit,
     onPlan: () -> Unit,
     onSession: () -> Unit,
@@ -266,6 +285,17 @@ private fun HomeScreen(
                         "每一天努力，收获更甜的生活",
                         color = Color.White.copy(alpha = 0.88f),
                         fontSize = 13.sp
+                    )
+                    Spacer(
+                        Modifier.height(4.dp)
+                    )
+                    Text(
+                        "当前账本 · $bookName",
+                        color =
+                            Color.White.copy(
+                                alpha = 0.78f
+                            ),
+                        fontSize = 11.sp
                     )
                 }
 
@@ -3631,6 +3661,9 @@ private fun MoreScreen(
     db: AppDatabase,
     dataVersion: Int,
     initialSub: MorePage = MorePage.MENU,
+    ledgerManager: LedgerManager,
+    currentBook: LedgerBook,
+    onSwitchBook: (String) -> Unit,
     onPlan: () -> Unit,
     onChanged: () -> Unit
 ) {
@@ -3658,7 +3691,18 @@ private fun MoreScreen(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                item { PageHeader("更多") }
+                item {
+                    PageHeader(
+                        "更多",
+                        "当前账本：${currentBook.name}"
+                    )
+                }
+
+                item {
+                    MenuCard("📚 账本管理") {
+                        sub = MorePage.BOOKS
+                    }
+                }
 
                 item {
                     MenuCard("📊 数据中心") {
@@ -3701,6 +3745,25 @@ private fun MoreScreen(
                         sub = MorePage.REPORT
                     }
                 }
+            }
+        }
+
+        MorePage.BOOKS -> {
+            SubPage(
+                "账本管理",
+                { sub = MorePage.MENU }
+            ) {
+                LedgerManagementContent(
+                    db = db,
+                    ledgerManager =
+                        ledgerManager,
+                    currentBook =
+                        currentBook,
+                    onSwitchBook =
+                        onSwitchBook,
+                    onChanged =
+                        onChanged
+                )
             }
         }
 
@@ -4924,7 +4987,7 @@ private fun buildProfitReportLines(
 
                     lines +=
                         ReportLine(
-                            "${row.partnerName}  ${fmt(row.ratio)}%  ${money(row.allocatedProfit)}  $status"
+                            "${row.partnerName}  ${fmt(profitRatioPercent(row.ratio))}%  ${money(row.allocatedProfit)}  $status"
                         )
                 }
 
@@ -5438,6 +5501,464 @@ private fun buildBusinessReportLines(
     return lines
 }
 
+
+@Composable
+private fun LedgerManagementContent(
+    db: AppDatabase,
+    ledgerManager: LedgerManager,
+    currentBook: LedgerBook,
+    onSwitchBook: (String) -> Unit,
+    onChanged: () -> Unit
+) {
+    var refresh by remember {
+        mutableIntStateOf(0)
+    }
+    val books =
+        remember(refresh) {
+            ledgerManager.books()
+        }
+    val status =
+        remember(refresh) {
+            db.getSyncFoundationStatus()
+        }
+
+    var addDialog by remember {
+        mutableStateOf(false)
+    }
+    var renameBook by remember {
+        mutableStateOf<LedgerBook?>(null)
+    }
+    var deleteBook by remember {
+        mutableStateOf<LedgerBook?>(null)
+    }
+    var message by remember {
+        mutableStateOf("")
+    }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding =
+            PaddingValues(16.dp),
+        verticalArrangement =
+            Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            Card(
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor =
+                            Color(0xFFF2FAF5)
+                    )
+            ) {
+                Column(
+                    Modifier.padding(14.dp),
+                    verticalArrangement =
+                        Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        "当前账本",
+                        color = Color.Gray,
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall
+                    )
+
+                    Text(
+                        currentBook.name,
+                        style =
+                            MaterialTheme
+                                .typography
+                                .titleLarge,
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+
+                    Text(
+                        "权限：" +
+                            ledgerManager
+                                .permissionLabel(
+                                    currentBook
+                                        .permission
+                                )
+                    )
+
+                    Text(
+                        "设备：" +
+                            ledgerManager
+                                .deviceName,
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall
+                    )
+
+                    Text(
+                        "设备ID：" +
+                            status.deviceId
+                                .take(8) +
+                            "…",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall,
+                        color = Color.Gray
+                    )
+
+                    Text(
+                        "待上传变更：" +
+                            "${status.pendingChanges} 条",
+                        color =
+                            if (
+                                status.pendingChanges >
+                                0
+                            ) {
+                                BrandGreen
+                            } else {
+                                Color.Gray
+                            },
+                        fontWeight =
+                            FontWeight.SemiBold
+                    )
+
+                    Text(
+                        "云端同步：尚未连接（V1.3.1 接服务器）",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall,
+                        color = Color.Gray
+                    )
+                }
+            }
+        }
+
+        item {
+            Text(
+                "本机账本",
+                style =
+                    MaterialTheme
+                        .typography
+                        .titleMedium,
+                fontWeight =
+                    FontWeight.Bold
+            )
+        }
+
+        items(
+            books,
+            key = {
+                "ledger_${it.id}"
+            }
+        ) {
+            book ->
+            val isCurrent =
+                book.id ==
+                    currentBook.id
+
+            Card(
+                Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    Modifier.padding(12.dp)
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment =
+                            Alignment.CenterVertically
+                    ) {
+                        Column(
+                            Modifier.weight(1f)
+                        ) {
+                            Text(
+                                book.name,
+                                fontWeight =
+                                    FontWeight.Bold
+                            )
+
+                            Text(
+                                (
+                                    if (isCurrent) {
+                                        "当前账本 · "
+                                    } else {
+                                        ""
+                                    }
+                                ) +
+                                    ledgerManager
+                                        .permissionLabel(
+                                            book.permission
+                                        ),
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .bodySmall,
+                                color =
+                                    if (isCurrent) {
+                                        BrandGreen
+                                    } else {
+                                        Color.Gray
+                                    }
+                            )
+                        }
+
+                        if (!isCurrent) {
+                            TextButton(
+                                onClick = {
+                                    onSwitchBook(
+                                        book.id
+                                    )
+                                }
+                            ) {
+                                Text("切换")
+                            }
+                        }
+                    }
+
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement =
+                            Arrangement.End
+                    ) {
+                        TextButton(
+                            onClick = {
+                                renameBook = book
+                            }
+                        ) {
+                            Text("改名")
+                        }
+
+                        if (
+                            !book.isDefault &&
+                            !isCurrent
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    deleteBook = book
+                                }
+                            ) {
+                                Text("删除")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            Button(
+                onClick = {
+                    addDialog = true
+                },
+                modifier =
+                    Modifier.fillMaxWidth()
+            ) {
+                Text("＋ 新建独立账本")
+            }
+        }
+
+        item {
+            Card(
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor =
+                            Color(0xFFF8F8FA)
+                    )
+            ) {
+                Column(
+                    Modifier.padding(12.dp)
+                ) {
+                    Text(
+                        "V1.3.0 同步基础",
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+
+                    Text(
+                        "• 每个账本使用独立 SQLite 数据库，互不混合。",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall
+                    )
+
+                    Text(
+                        "• 每条业务数据保留全局 sync_id、版本号、修改设备和变更日志。",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall
+                    )
+
+                    Text(
+                        "• 以后云端共享时，以“账本ID + 记录sync_id”进行增量同步，不整库覆盖。",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall
+                    )
+                }
+            }
+        }
+
+        if (message.isNotBlank()) {
+            item {
+                Text(
+                    message,
+                    color = BrandGreen,
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall
+                )
+            }
+        }
+    }
+
+    if (addDialog) {
+        LedgerNameDialog(
+            title = "新建账本",
+            initial = "",
+            onDismiss = {
+                addDialog = false
+            }
+        ) {
+            name ->
+            val book =
+                ledgerManager
+                    .createBook(name)
+
+            addDialog = false
+
+            if (book != null) {
+                message =
+                    "已创建“${book.name}”，切换后会使用独立数据。"
+                refresh++
+                onChanged()
+            } else {
+                message =
+                    "账本名称不能为空"
+            }
+        }
+    }
+
+    renameBook?.let {
+        book ->
+        LedgerNameDialog(
+            title = "修改账本名称",
+            initial = book.name,
+            onDismiss = {
+                renameBook = null
+            }
+        ) {
+            name ->
+            if (
+                ledgerManager.renameBook(
+                    book.id,
+                    name
+                )
+            ) {
+                if (
+                    book.id ==
+                    currentBook.id
+                ) {
+                    db.updateLedgerMetaName(
+                        name
+                    )
+                }
+
+                message =
+                    "账本名称已修改"
+                refresh++
+                onChanged()
+            }
+
+            renameBook = null
+        }
+    }
+
+    deleteBook?.let {
+        book ->
+        ConfirmDelete(
+            "删除账本“${book.name}”？" +
+                "这会删除本机该账本的独立数据库。" +
+                "V1.3.0 尚未连接云端，删除后无法从云端恢复。",
+            {
+                deleteBook = null
+            }
+        ) {
+            if (
+                ledgerManager.deleteBook(
+                    book.id
+                )
+            ) {
+                message =
+                    "账本已删除"
+                refresh++
+                onChanged()
+            } else {
+                message =
+                    "当前账本或默认账本不能删除"
+            }
+
+            deleteBook = null
+        }
+    }
+}
+
+@Composable
+private fun LedgerNameDialog(
+    title: String,
+    initial: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var name by remember(initial) {
+        mutableStateOf(initial)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(title)
+        },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = {
+                    name = it
+                },
+                label = {
+                    Text("账本名称")
+                },
+                singleLine = true
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (
+                        name.trim()
+                            .isNotBlank()
+                    ) {
+                        onSave(
+                            name.trim()
+                        )
+                    }
+                }
+            ) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss
+            ) {
+                Text("取消")
+            }
+        }
+    )
+}
+
 @Composable
 private fun MenuCard(
     title: String,
@@ -5849,7 +6370,7 @@ private fun HistoryContent(
                         rows.forEach { r ->
                             Text(
                                 "• ${r.partnerName} " +
-                                    "${fmt(r.ratio)}%  " +
+                                    "${fmt(profitRatioPercent(r.ratio))}%  " +
                                     money(r.allocatedProfit),
                                 style = MaterialTheme.typography.bodySmall
                             )
@@ -7240,4 +7761,16 @@ private fun settlementTimeText(epochMillis: Long): String {
 }
 
 private fun fmt(v: Double): String = if (kotlin.math.abs(v - v.toLong()) < 0.005) v.toLong().toString() else String.format(Locale.CHINA, "%.2f", v)
+
+private fun profitRatioPercent(
+    ratio: Double
+): Double =
+    if (
+        kotlin.math.abs(ratio) <= 1.000001
+    ) {
+        ratio * 100.0
+    } else {
+        ratio
+    }
+
 private fun cleanNumber(v: Double): String = if (v == 0.0) "" else fmt(v)

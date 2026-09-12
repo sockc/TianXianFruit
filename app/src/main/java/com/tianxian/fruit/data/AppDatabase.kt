@@ -274,7 +274,46 @@ data class PurchasePlanDetail(
     val items: List<PurchasePlanItemRecord>
 )
 
-class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
+data class SyncFoundationStatus(
+    val bookId: String,
+    val bookName: String,
+    val deviceId: String,
+    val pendingChanges: Int,
+    val lastChangeAt: Long
+)
+
+data class SyncChangeRecord(
+    val id: Long,
+    val tableName: String,
+    val recordSyncId: String,
+    val operation: String,
+    val rowVersion: Long,
+    val deviceId: String,
+    val changedAt: Long
+)
+
+class AppDatabase(
+    context: Context,
+    val dbFileName: String = DB_NAME,
+    val ledgerId: String = "local-default",
+    val ledgerName: String = "我的账本",
+    private val deviceId: String = "legacy-device",
+    private val deviceName: String = "Android设备"
+) : SQLiteOpenHelper(
+    context,
+    dbFileName,
+    null,
+    DB_VERSION
+) {
+    override fun onConfigure(
+        db: SQLiteDatabase
+    ) {
+        super.onConfigure(db)
+        db.execSQL(
+            "PRAGMA recursive_triggers=OFF"
+        )
+    }
+
     override fun onCreate(db: SQLiteDatabase) {
         createFruitTable(db)
         createStoreTable(db)
@@ -284,6 +323,10 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         createV5Tables(db)
         migrateV5ToV6(db)
         createV7Tables(db)
+        createV8SyncFoundation(
+            db,
+            initialData = false
+        )
         seedFruits(db)
         seedPartners(db)
     }
@@ -295,6 +338,28 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         if (oldVersion < 5) createV5Tables(db)
         if (oldVersion < 6) migrateV5ToV6(db)
         if (oldVersion < 7) createV7Tables(db)
+        if (oldVersion < 8) {
+            createV8SyncFoundation(
+                db,
+                initialData = true
+            )
+        }
+    }
+
+    override fun onOpen(
+        db: SQLiteDatabase
+    ) {
+        super.onOpen(db)
+
+        if (
+            tableExists(
+                db,
+                "sync_context"
+            )
+        ) {
+            ensureSyncContext(db)
+            ensureBookMeta(db)
+        }
     }
 
     private fun createFruitTable(db: SQLiteDatabase) {
@@ -716,6 +781,576 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS idx_profit_settlement_item_date_partner " +
                 "ON profit_settlement_item(profit_date,partner_id)"
+        )
+    }
+
+    private fun createV8SyncFoundation(
+        db: SQLiteDatabase,
+        initialData: Boolean
+    ) {
+        val now =
+            System.currentTimeMillis()
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS sync_context(
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                book_id TEXT NOT NULL,
+                book_name TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                device_name TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS book_meta(
+                book_id TEXT PRIMARY KEY,
+                book_name TEXT NOT NULL,
+                owner_device_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS sync_change_log(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                table_name TEXT NOT NULL,
+                record_sync_id TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                row_version INTEGER NOT NULL,
+                device_id TEXT NOT NULL,
+                changed_at INTEGER NOT NULL,
+                uploaded INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent()
+        )
+
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS " +
+                "idx_sync_change_pending " +
+                "ON sync_change_log(" +
+                "uploaded,changed_at)"
+        )
+
+        ensureSyncContext(db)
+        ensureBookMeta(db)
+
+        syncableTables().forEach {
+            table ->
+            if (
+                !columnExists(
+                    db,
+                    table,
+                    "row_version"
+                )
+            ) {
+                db.execSQL(
+                    "ALTER TABLE $table " +
+                        "ADD COLUMN row_version " +
+                        "INTEGER NOT NULL DEFAULT 1"
+                )
+            }
+
+            if (
+                !columnExists(
+                    db,
+                    table,
+                    "modified_by"
+                )
+            ) {
+                db.execSQL(
+                    "ALTER TABLE $table " +
+                        "ADD COLUMN modified_by " +
+                        "TEXT NOT NULL DEFAULT ''"
+                )
+            }
+
+            if (
+                !columnExists(
+                    db,
+                    table,
+                    "deleted"
+                )
+            ) {
+                db.execSQL(
+                    "ALTER TABLE $table " +
+                        "ADD COLUMN deleted " +
+                        "INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+
+            ensureSyncIds(
+                db,
+                table
+            )
+
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS " +
+                    "idx_${table}_sync_id " +
+                    "ON $table(sync_id)"
+            )
+        }
+
+        if (initialData) {
+            syncableTables().forEach {
+                table ->
+                db.execSQL(
+                    "UPDATE $table SET " +
+                        "row_version=" +
+                        "CASE WHEN row_version<1 " +
+                        "THEN 1 ELSE row_version END," +
+                        "modified_by=?," +
+                        "sync_status=2," +
+                        "updated_at=" +
+                        "CASE WHEN updated_at<=0 " +
+                        "THEN ? ELSE updated_at END",
+                    arrayOf(
+                        deviceId,
+                        now
+                    )
+                )
+
+                db.execSQL(
+                    """
+                    INSERT INTO sync_change_log(
+                        table_name,
+                        record_sync_id,
+                        operation,
+                        row_version,
+                        device_id,
+                        changed_at,
+                        uploaded
+                    )
+                    SELECT
+                        ?,
+                        sync_id,
+                        CASE
+                            WHEN deleted=1
+                                THEN 'DELETE'
+                            ELSE 'UPSERT'
+                        END,
+                        row_version,
+                        ?,
+                        updated_at,
+                        0
+                    FROM $table
+                    WHERE sync_id<>''
+                    """.trimIndent(),
+                    arrayOf(
+                        table,
+                        deviceId
+                    )
+                )
+            }
+        }
+
+        createSyncTriggers(db)
+    }
+
+    private fun ensureSyncContext(
+        db: SQLiteDatabase
+    ) {
+        val now =
+            System.currentTimeMillis()
+
+        db.execSQL(
+            """
+            INSERT OR REPLACE INTO sync_context(
+                id,
+                book_id,
+                book_name,
+                device_id,
+                device_name,
+                updated_at
+            ) VALUES(1,?,?,?,?,?)
+            """.trimIndent(),
+            arrayOf(
+                ledgerId,
+                ledgerName,
+                deviceId,
+                deviceName,
+                now
+            )
+        )
+    }
+
+    private fun ensureBookMeta(
+        db: SQLiteDatabase
+    ) {
+        val now =
+            System.currentTimeMillis()
+
+        val exists =
+            db.rawQuery(
+                "SELECT book_id " +
+                    "FROM book_meta " +
+                    "WHERE book_id=? LIMIT 1",
+                arrayOf(ledgerId)
+            ).use {
+                it.moveToFirst()
+            }
+
+        if (!exists) {
+            db.execSQL(
+                """
+                INSERT INTO book_meta(
+                    book_id,
+                    book_name,
+                    owner_device_id,
+                    created_at,
+                    updated_at
+                ) VALUES(?,?,?,?,?)
+                """.trimIndent(),
+                arrayOf(
+                    ledgerId,
+                    ledgerName,
+                    deviceId,
+                    now,
+                    now
+                )
+            )
+        } else {
+            db.execSQL(
+                """
+                UPDATE book_meta
+                SET book_name=?,
+                    updated_at=?
+                WHERE book_id=?
+                """.trimIndent(),
+                arrayOf(
+                    ledgerName,
+                    now,
+                    ledgerId
+                )
+            )
+        }
+    }
+
+    private fun ensureSyncIds(
+        db: SQLiteDatabase,
+        table: String
+    ) {
+        db.rawQuery(
+            "SELECT id,sync_id " +
+                "FROM $table " +
+                "WHERE sync_id IS NULL " +
+                "OR sync_id=''",
+            null
+        ).use {
+            c ->
+            while (c.moveToNext()) {
+                db.update(
+                    table,
+                    ContentValues().apply {
+                        put(
+                            "sync_id",
+                            UUID.randomUUID()
+                                .toString()
+                        )
+                    },
+                    "id=?",
+                    arrayOf(
+                        c.long("id")
+                            .toString()
+                    )
+                )
+            }
+        }
+    }
+
+    private fun createSyncTriggers(
+        db: SQLiteDatabase
+    ) {
+        syncableTables().forEach {
+            table ->
+            db.execSQL(
+                "DROP TRIGGER IF EXISTS " +
+                    "sync_${table}_ai"
+            )
+            db.execSQL(
+                "DROP TRIGGER IF EXISTS " +
+                    "sync_${table}_au"
+            )
+
+            db.execSQL(
+                """
+                CREATE TRIGGER sync_${table}_ai
+                AFTER INSERT ON $table
+                BEGIN
+                    UPDATE $table
+                    SET
+                        row_version=
+                            CASE
+                                WHEN NEW.row_version<1
+                                    THEN 1
+                                ELSE NEW.row_version
+                            END,
+                        modified_by=(
+                            SELECT device_id
+                            FROM sync_context
+                            WHERE id=1
+                        ),
+                        sync_status=2,
+                        updated_at=
+                            CAST(
+                                strftime('%s','now')
+                                AS INTEGER
+                            ) * 1000
+                    WHERE id=NEW.id;
+
+                    INSERT INTO sync_change_log(
+                        table_name,
+                        record_sync_id,
+                        operation,
+                        row_version,
+                        device_id,
+                        changed_at,
+                        uploaded
+                    )
+                    SELECT
+                        '$table',
+                        sync_id,
+                        CASE
+                            WHEN deleted=1
+                                THEN 'DELETE'
+                            ELSE 'UPSERT'
+                        END,
+                        row_version,
+                        modified_by,
+                        updated_at,
+                        0
+                    FROM $table
+                    WHERE id=NEW.id;
+                END
+                """.trimIndent()
+            )
+
+            db.execSQL(
+                """
+                CREATE TRIGGER sync_${table}_au
+                AFTER UPDATE ON $table
+                WHEN NEW.row_version=OLD.row_version
+                BEGIN
+                    UPDATE $table
+                    SET
+                        row_version=
+                            OLD.row_version + 1,
+                        modified_by=(
+                            SELECT device_id
+                            FROM sync_context
+                            WHERE id=1
+                        ),
+                        sync_status=2,
+                        updated_at=
+                            CAST(
+                                strftime('%s','now')
+                                AS INTEGER
+                            ) * 1000
+                    WHERE id=NEW.id;
+
+                    INSERT INTO sync_change_log(
+                        table_name,
+                        record_sync_id,
+                        operation,
+                        row_version,
+                        device_id,
+                        changed_at,
+                        uploaded
+                    )
+                    SELECT
+                        '$table',
+                        sync_id,
+                        CASE
+                            WHEN deleted=1
+                                THEN 'DELETE'
+                            ELSE 'UPSERT'
+                        END,
+                        row_version,
+                        modified_by,
+                        updated_at,
+                        0
+                    FROM $table
+                    WHERE id=NEW.id;
+                END
+                """.trimIndent()
+            )
+        }
+    }
+
+    private fun syncableTables(): List<String> =
+        listOf(
+            "fruit",
+            "store",
+            "partner",
+            "purchase_plan",
+            "purchase_plan_item",
+            "purchase_order",
+            "purchase_item",
+            "store_daily_record",
+            "profit_rule",
+            "profit_distribution",
+            "daily_cash_settlement",
+            "settlement_partner",
+            "settlement_transfer",
+            "profit_settlement_batch",
+            "profit_settlement_item"
+        )
+
+    fun getSyncFoundationStatus():
+        SyncFoundationStatus {
+        val pending =
+            readableDatabase.rawQuery(
+                "SELECT COUNT(*) AS c " +
+                    "FROM sync_change_log " +
+                    "WHERE uploaded=0",
+                null
+            ).use {
+                if (it.moveToFirst()) {
+                    it.int("c")
+                } else {
+                    0
+                }
+            }
+
+        val lastChange =
+            readableDatabase.rawQuery(
+                "SELECT COALESCE(" +
+                    "MAX(changed_at),0) AS t " +
+                    "FROM sync_change_log",
+                null
+            ).use {
+                if (it.moveToFirst()) {
+                    it.long("t")
+                } else {
+                    0L
+                }
+            }
+
+        return SyncFoundationStatus(
+            bookId = ledgerId,
+            bookName = ledgerName,
+            deviceId = deviceId,
+            pendingChanges = pending,
+            lastChangeAt = lastChange
+        )
+    }
+
+    fun getPendingSyncChanges(
+        limit: Int = 200
+    ): List<SyncChangeRecord> =
+        readableDatabase.rawQuery(
+            """
+            SELECT
+                id,
+                table_name,
+                record_sync_id,
+                operation,
+                row_version,
+                device_id,
+                changed_at
+            FROM sync_change_log
+            WHERE uploaded=0
+            ORDER BY id
+            LIMIT ?
+            """.trimIndent(),
+            arrayOf(
+                limit.toString()
+            )
+        ).use {
+            c ->
+            buildList {
+                while (c.moveToNext()) {
+                    add(
+                        SyncChangeRecord(
+                            id =
+                                c.long("id"),
+                            tableName =
+                                c.str(
+                                    "table_name"
+                                ),
+                            recordSyncId =
+                                c.str(
+                                    "record_sync_id"
+                                ),
+                            operation =
+                                c.str(
+                                    "operation"
+                                ),
+                            rowVersion =
+                                c.long(
+                                    "row_version"
+                                ),
+                            deviceId =
+                                c.str(
+                                    "device_id"
+                                ),
+                            changedAt =
+                                c.long(
+                                    "changed_at"
+                                )
+                        )
+                    )
+                }
+            }
+        }
+
+    fun markSyncChangesUploaded(
+        ids: List<Long>
+    ) {
+        if (ids.isEmpty()) return
+
+        val placeholders =
+            ids.joinToString(",") {
+                "?"
+            }
+
+        writableDatabase.execSQL(
+            "UPDATE sync_change_log " +
+                "SET uploaded=1 " +
+                "WHERE id IN(" +
+                placeholders +
+                ")",
+            ids.toTypedArray()
+        )
+    }
+
+    fun updateLedgerMetaName(
+        name: String
+    ) {
+        val clean = name.trim()
+        if (clean.isBlank()) return
+
+        writableDatabase.execSQL(
+            """
+            UPDATE book_meta
+            SET book_name=?,
+                updated_at=?
+            WHERE book_id=?
+            """.trimIndent(),
+            arrayOf(
+                clean,
+                System.currentTimeMillis(),
+                ledgerId
+            )
+        )
+
+        writableDatabase.execSQL(
+            """
+            UPDATE sync_context
+            SET book_name=?,
+                updated_at=?
+            WHERE id=1
+            """.trimIndent(),
+            arrayOf(
+                clean,
+                System.currentTimeMillis()
+            )
         )
     }
 
@@ -2601,6 +3236,14 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         val root = JSONObject()
         root.put("schemaVersion", DB_VERSION)
         root.put("exportedAt", System.currentTimeMillis())
+        root.put("bookId", ledgerId)
+        root.put("bookName", ledgerName)
+        root.put("deviceId", deviceId)
+        root.put(
+            "pendingSyncChanges",
+            getSyncFoundationStatus()
+                .pendingChanges
+        )
         listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item").forEach { table ->
             root.put(table, tableAsJson(table))
         }
@@ -2669,7 +3312,7 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 7
+        const val DB_VERSION = 8
     }
 }
 
