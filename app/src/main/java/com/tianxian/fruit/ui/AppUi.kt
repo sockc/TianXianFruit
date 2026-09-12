@@ -32,7 +32,9 @@ import com.tianxian.fruit.report.GeneratedReport
 import com.tianxian.fruit.report.ReportGenerator
 import com.tianxian.fruit.report.ReportLine
 import com.tianxian.fruit.report.ReportLineStyle
+import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -1198,16 +1200,17 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
 
         item {
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
                 CompactDateNavigator(
                     label = "日期",
                     date = date,
-                    modifier = Modifier.weight(1.15f)
+                    modifier = Modifier.weight(1f)
                 ) { date = it }
 
-                Box(Modifier.weight(0.95f)) {
+                Box(Modifier.width(104.dp)) {
                     CompactSelectButton(
                         "进货人",
                         buyerDisplayName,
@@ -5163,9 +5166,39 @@ private fun buildSettlementReportLines(
                             "待确认"
                         }
 
+                    val confirmedTime =
+                        if (
+                            bundle.settlement.status == 1
+                        ) {
+                            settlementTimeText(
+                                bundle.settlement.updatedAt
+                            )
+                        } else {
+                            ""
+                        }
+
                     lines +=
                         ReportLine(
                             "${bundle.settlement.date}  资金轧差  $confirmedText",
+                            ReportLineStyle.SECTION
+                        )
+
+                    lines +=
+                        ReportLine(
+                            "营业额 ${money(bundle.settlement.revenue)}  ·  进货 ${money(bundle.settlement.purchaseCost)}  ·  费用 ${money(bundle.settlement.expense)}  ·  利润 ${money(bundle.settlement.profit)}"
+                        )
+
+                    if (confirmedTime.isNotBlank()) {
+                        lines +=
+                            ReportLine(
+                                "方案确认时间：$confirmedTime",
+                                ReportLineStyle.MUTED
+                            )
+                    }
+
+                    lines +=
+                        ReportLine(
+                            "每人最终余额",
                             ReportLineStyle.SECTION
                         )
 
@@ -5192,49 +5225,45 @@ private fun buildSettlementReportLines(
 
                             lines +=
                                 ReportLine(
-                                    partner.partnerName,
+                                    "${partner.partnerName}  $balanceText",
+                                    ReportLineStyle.TOTAL
+                                )
+                            lines +=
+                                ReportLine(
+                                    "进货 ${money(partner.purchasePaid)} + 费用 ${money(partner.expensePaid)} + 利润 ${money(partner.profitShare)} - 已收 ${money(partner.revenueReceived)}"
+                                )
+                            lines +=
+                                ReportLine(
+                                    "最终应留 ${money(partner.shouldKeep)}",
                                     ReportLineStyle.NORMAL
                                 )
+                        }
+
+                    val visibleTransfers =
+                        bundle.transfers.filter {
+                            it.amount >= 0.01
+                        }
+
+                    lines +=
+                        ReportLine(
+                            "最少转账方案",
+                            ReportLineStyle.SECTION
+                        )
+
+                    if (visibleTransfers.isNotEmpty()) {
+                        visibleTransfers.forEach {
+                            transfer ->
                             lines +=
                                 ReportLine(
-                                    "进货垫付 ${money(partner.purchasePaid)}  +  费用垫付 ${money(partner.expensePaid)}  +  利润 ${money(partner.profitShare)}  -  已收 ${money(partner.revenueReceived)}"
-                                )
-                            lines +=
-                                ReportLine(
-                                    "最终应留 ${money(partner.shouldKeep)}  ·  $balanceText",
+                                    "${transfer.fromPartnerName} → ${transfer.toPartnerName}  ${money(transfer.amount)}",
                                     ReportLineStyle.TOTAL
                                 )
                         }
 
-                    if (
-                        bundle.transfers.isNotEmpty()
-                    ) {
-                        lines +=
-                            ReportLine(
-                                "最少转账方案",
-                                ReportLineStyle.SECTION
-                            )
-
-                        bundle.transfers
-                            .filter {
-                                it.amount >= 0.01
-                            }
-                            .forEach {
-                                transfer ->
-                                lines +=
-                                    ReportLine(
-                                        "${transfer.fromPartnerName} → ${transfer.toPartnerName}  ${money(transfer.amount)}"
-                                    )
-                            }
-
                         val transferTotal =
-                            bundle.transfers
-                                .filter {
-                                    it.amount >= 0.01
-                                }
-                                .sumOf {
-                                    it.amount
-                                }
+                            visibleTransfers.sumOf {
+                                it.amount
+                            }
 
                         lines +=
                             ReportLine(
@@ -5244,7 +5273,7 @@ private fun buildSettlementReportLines(
                     } else {
                         lines +=
                             ReportLine(
-                                "最少转账方案：无需转账",
+                                "无需转账，资金已平衡",
                                 ReportLineStyle.MUTED
                             )
                     }
@@ -6911,6 +6940,7 @@ private fun CompactDateNavigator(
                     displayText,
                     modifier = Modifier.weight(1f),
                     fontSize = if (chineseDisplay) 13.sp else 12.sp,
+                    fontWeight = if (chineseDisplay) FontWeight.Normal else FontWeight.Medium,
                     maxLines = 1
                 )
                 Text(
@@ -7196,5 +7226,18 @@ private fun ConfirmDelete(text: String, onDismiss: () -> Unit, onConfirm: () -> 
 }
 
 private fun money(v: Double): String = "¥" + if (kotlin.math.abs(v - v.toLong()) < 0.005) v.toLong().toString() else String.format(Locale.CHINA, "%.2f", v)
+
+private fun settlementTimeText(epochMillis: Long): String {
+    if (epochMillis <= 0L) return ""
+    return Instant
+        .ofEpochMilli(epochMillis)
+        .atZone(ZoneId.systemDefault())
+        .format(
+            DateTimeFormatter.ofPattern(
+                "yyyy-MM-dd HH:mm"
+            )
+        )
+}
+
 private fun fmt(v: Double): String = if (kotlin.math.abs(v - v.toLong()) < 0.005) v.toLong().toString() else String.format(Locale.CHINA, "%.2f", v)
 private fun cleanNumber(v: Double): String = if (v == 0.0) "" else fmt(v)

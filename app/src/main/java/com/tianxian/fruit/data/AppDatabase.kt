@@ -165,7 +165,8 @@ data class DailyCashSettlementRecord(
     val expense: Double,
     val profit: Double,
     val status: Int,
-    val createdAt: Long
+    val createdAt: Long,
+    val updatedAt: Long
 )
 
 data class CashSettlementBundle(
@@ -1855,7 +1856,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
         ).use { c ->
             if (!c.moveToFirst()) null else DailyCashSettlementRecord(
                 c.long("id"), c.str("date"), c.dbl("revenue"), c.dbl("purchase_cost"),
-                c.dbl("expense"), c.dbl("profit"), c.int("status"), c.long("created_at")
+                c.dbl("expense"), c.dbl("profit"), c.int("status"), c.long("created_at"),
+                c.long("updated_at")
             )
         } ?: return null
 
@@ -1891,7 +1893,8 @@ class AppDatabase(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, D
     ).use { c -> buildList {
         while (c.moveToNext()) add(DailyCashSettlementRecord(
             c.long("id"), c.str("date"), c.dbl("revenue"), c.dbl("purchase_cost"),
-            c.dbl("expense"), c.dbl("profit"), c.int("status"), c.long("created_at")
+            c.dbl("expense"), c.dbl("profit"), c.int("status"), c.long("created_at"),
+            c.long("updated_at")
         ))
     } }
 
