@@ -292,6 +292,12 @@ data class SyncChangeRecord(
     val changedAt: Long
 )
 
+data class CloudSyncLocalStatus(
+    val serverCursor: Long,
+    val lastSyncAt: Long,
+    val lastError: String
+)
+
 class AppDatabase(
     context: Context,
     val dbFileName: String = DB_NAME,
@@ -327,6 +333,7 @@ class AppDatabase(
             db,
             initialData = false
         )
+        createV9CloudSync(db)
         seedFruits(db)
         seedPartners(db)
     }
@@ -343,6 +350,9 @@ class AppDatabase(
                 db,
                 initialData = true
             )
+        }
+        if (oldVersion < 9) {
+            createV9CloudSync(db)
         }
     }
 
@@ -799,7 +809,8 @@ class AppDatabase(
                 book_name TEXT NOT NULL,
                 device_id TEXT NOT NULL,
                 device_name TEXT NOT NULL,
-                updated_at INTEGER NOT NULL
+                updated_at INTEGER NOT NULL,
+                remote_apply INTEGER NOT NULL DEFAULT 0
             )
             """.trimIndent()
         )
@@ -1064,6 +1075,49 @@ class AppDatabase(
         }
     }
 
+    private fun createV9CloudSync(
+        db: SQLiteDatabase
+    ) {
+        if (
+            !columnExists(
+                db,
+                "sync_context",
+                "remote_apply"
+            )
+        ) {
+            db.execSQL(
+                "ALTER TABLE sync_context " +
+                    "ADD COLUMN remote_apply " +
+                    "INTEGER NOT NULL DEFAULT 0"
+            )
+        }
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS sync_cloud_state(
+                book_id TEXT PRIMARY KEY,
+                server_cursor INTEGER NOT NULL DEFAULT 0,
+                last_sync_at INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT ''
+            )
+            """.trimIndent()
+        )
+
+        db.execSQL(
+            """
+            INSERT OR IGNORE INTO sync_cloud_state(
+                book_id,
+                server_cursor,
+                last_sync_at,
+                last_error
+            ) VALUES(?,0,0,'')
+            """.trimIndent(),
+            arrayOf(ledgerId)
+        )
+
+        createSyncTriggers(db)
+    }
+
     private fun createSyncTriggers(
         db: SQLiteDatabase
     ) {
@@ -1082,6 +1136,14 @@ class AppDatabase(
                 """
                 CREATE TRIGGER sync_${table}_ai
                 AFTER INSERT ON $table
+                WHEN COALESCE(
+                    (
+                        SELECT remote_apply
+                        FROM sync_context
+                        WHERE id=1
+                    ),
+                    0
+                )=0
                 BEGIN
                     UPDATE $table
                     SET
@@ -1135,7 +1197,16 @@ class AppDatabase(
                 """
                 CREATE TRIGGER sync_${table}_au
                 AFTER UPDATE ON $table
-                WHEN NEW.row_version=OLD.row_version
+                WHEN
+                    NEW.row_version=OLD.row_version
+                    AND COALESCE(
+                        (
+                            SELECT remote_apply
+                            FROM sync_context
+                            WHERE id=1
+                        ),
+                        0
+                    )=0
                 BEGIN
                     UPDATE $table
                     SET
@@ -1318,6 +1389,537 @@ class AppDatabase(
                 ")",
             ids.toTypedArray()
         )
+    }
+
+    fun getSyncPayload(
+        tableName: String,
+        syncId: String
+    ): JSONObject? {
+        if (
+            tableName !in
+                syncableTables()
+        ) {
+            return null
+        }
+
+        return readableDatabase
+            .rawQuery(
+                "SELECT * FROM $tableName " +
+                    "WHERE sync_id=? LIMIT 1",
+                arrayOf(syncId)
+            )
+            .use {
+                c ->
+                if (!c.moveToFirst()) {
+                    null
+                } else {
+                    cursorRowAsJson(c)
+                }
+            }
+    }
+
+    fun getServerCursor(): Long =
+        readableDatabase.rawQuery(
+            """
+            SELECT server_cursor
+            FROM sync_cloud_state
+            WHERE book_id=?
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(ledgerId)
+        ).use {
+            c ->
+            if (c.moveToFirst()) {
+                c.long(
+                    "server_cursor"
+                )
+            } else {
+                0L
+            }
+        }
+
+    fun setServerCursor(
+        cursor: Long
+    ) {
+        writableDatabase.execSQL(
+            """
+            INSERT INTO sync_cloud_state(
+                book_id,
+                server_cursor,
+                last_sync_at,
+                last_error
+            ) VALUES(?,?,0,'')
+            ON CONFLICT(book_id)
+            DO UPDATE SET
+                server_cursor=excluded.server_cursor
+            """.trimIndent(),
+            arrayOf<Any?>(
+                ledgerId,
+                cursor
+            )
+        )
+    }
+
+    fun getCloudSyncLocalStatus():
+        CloudSyncLocalStatus =
+        readableDatabase.rawQuery(
+            """
+            SELECT
+                server_cursor,
+                last_sync_at,
+                last_error
+            FROM sync_cloud_state
+            WHERE book_id=?
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(ledgerId)
+        ).use {
+            c ->
+            if (c.moveToFirst()) {
+                CloudSyncLocalStatus(
+                    serverCursor =
+                        c.long(
+                            "server_cursor"
+                        ),
+                    lastSyncAt =
+                        c.long(
+                            "last_sync_at"
+                        ),
+                    lastError =
+                        c.str(
+                            "last_error"
+                        )
+                )
+            } else {
+                CloudSyncLocalStatus(
+                    serverCursor = 0L,
+                    lastSyncAt = 0L,
+                    lastError = ""
+                )
+            }
+        }
+
+    fun getLastCloudSyncAt(): Long =
+        getCloudSyncLocalStatus()
+            .lastSyncAt
+
+    fun setLastCloudSync(
+        time: Long,
+        error: String
+    ) {
+        writableDatabase.execSQL(
+            """
+            INSERT INTO sync_cloud_state(
+                book_id,
+                server_cursor,
+                last_sync_at,
+                last_error
+            ) VALUES(
+                ?,
+                COALESCE(
+                    (
+                        SELECT server_cursor
+                        FROM sync_cloud_state
+                        WHERE book_id=?
+                    ),
+                    0
+                ),
+                ?,
+                ?
+            )
+            ON CONFLICT(book_id)
+            DO UPDATE SET
+                last_sync_at=excluded.last_sync_at,
+                last_error=excluded.last_error
+            """.trimIndent(),
+            arrayOf<Any?>(
+                ledgerId,
+                ledgerId,
+                time,
+                error
+            )
+        )
+    }
+
+    fun applyRemoteSyncEvent(
+        tableName: String,
+        syncId: String,
+        rowVersion: Long,
+        operation: String,
+        payload: JSONObject,
+        modifiedBy: String
+    ) {
+        if (
+            tableName !in
+                syncableTables()
+        ) {
+            return
+        }
+
+        val db =
+            writableDatabase
+
+        val existingState =
+            db.rawQuery(
+                "SELECT id,row_version FROM $tableName " +
+                    "WHERE sync_id=? LIMIT 1",
+                arrayOf(syncId)
+            ).use {
+                c ->
+                if (c.moveToFirst()) {
+                    c.long("id") to
+                        c.long("row_version")
+                } else {
+                    null
+                }
+            }
+
+        if (
+            existingState != null &&
+            existingState.second >=
+                rowVersion
+        ) {
+            return
+        }
+
+        db.beginTransaction()
+
+        try {
+            setRemoteApply(
+                db,
+                true
+            )
+
+            val existingId =
+                existingState?.first
+
+            val values =
+                jsonToContentValues(
+                    payload
+                ).apply {
+                    remove("sync_status")
+                    put(
+                        "sync_id",
+                        syncId
+                    )
+                    put(
+                        "row_version",
+                        rowVersion
+                    )
+                    put(
+                        "modified_by",
+                        modifiedBy
+                    )
+                    put(
+                        "sync_status",
+                        0
+                    )
+
+                    if (
+                        operation ==
+                        "DELETE"
+                    ) {
+                        put(
+                            "deleted",
+                            1
+                        )
+                    }
+                }
+
+            if (existingId != null) {
+                values.remove("id")
+
+                db.update(
+                    tableName,
+                    values,
+                    "id=?",
+                    arrayOf(
+                        existingId.toString()
+                    )
+                )
+            } else if (
+                operation != "DELETE" ||
+                payload.length() > 0
+            ) {
+                val inserted =
+                    db.insertWithOnConflict(
+                        tableName,
+                        null,
+                        values,
+                        SQLiteDatabase
+                            .CONFLICT_ABORT
+                    )
+
+                if (inserted < 0) {
+                    throw IllegalStateException(
+                        "云端记录写入失败：$tableName / $syncId"
+                    )
+                }
+            }
+
+            setRemoteApply(
+                db,
+                false
+            )
+
+            db.setTransactionSuccessful()
+        } finally {
+            runCatching {
+                setRemoteApply(
+                    db,
+                    false
+                )
+            }
+            db.endTransaction()
+        }
+    }
+
+    fun prepareCloudIdRanges() {
+        val prefix =
+            deviceIdRangePrefix()
+
+        val base =
+            (prefix + 1L) *
+                1_000_000_000L
+
+        val db =
+            writableDatabase
+
+        syncableTables().forEach {
+            table ->
+            val currentSeq =
+                db.rawQuery(
+                    "SELECT seq FROM sqlite_sequence " +
+                        "WHERE name=? LIMIT 1",
+                    arrayOf(table)
+                ).use {
+                    c ->
+                    if (c.moveToFirst()) {
+                        c.getLong(0)
+                    } else {
+                        0L
+                    }
+                }
+
+            val maxId =
+                db.rawQuery(
+                    "SELECT COALESCE(MAX(id),0) " +
+                        "FROM $table",
+                    null
+                ).use {
+                    c ->
+                    if (c.moveToFirst()) {
+                        c.getLong(0)
+                    } else {
+                        0L
+                    }
+                }
+
+            val target =
+                maxOf(
+                    currentSeq,
+                    maxId,
+                    base
+                )
+
+            val changed =
+                db.update(
+                    "sqlite_sequence",
+                    ContentValues().apply {
+                        put(
+                            "seq",
+                            target
+                        )
+                    },
+                    "name=?",
+                    arrayOf(table)
+                )
+
+            if (changed == 0) {
+                db.insert(
+                    "sqlite_sequence",
+                    null,
+                    ContentValues().apply {
+                        put(
+                            "name",
+                            table
+                        )
+                        put(
+                            "seq",
+                            target
+                        )
+                    }
+                )
+            }
+        }
+    }
+
+    private fun deviceIdRangePrefix():
+        Long {
+        val digest =
+            java.security.MessageDigest
+                .getInstance("SHA-256")
+                .digest(
+                    deviceId.toByteArray(
+                        Charsets.UTF_8
+                    )
+                )
+
+        var value = 0L
+
+        for (i in 0 until 8) {
+            value =
+                (value shl 8) or
+                    (
+                        digest[i]
+                            .toLong() and
+                            0xffL
+                        )
+        }
+
+        return (
+            value and
+                Long.MAX_VALUE
+            ) %
+            100_000_000L
+    }
+
+    private fun setRemoteApply(
+        db: SQLiteDatabase,
+        enabled: Boolean
+    ) {
+        db.execSQL(
+            """
+            UPDATE sync_context
+            SET remote_apply=?,
+                updated_at=?
+            WHERE id=1
+            """.trimIndent(),
+            arrayOf<Any?>(
+                if (enabled) 1 else 0,
+                System.currentTimeMillis()
+            )
+        )
+    }
+
+    private fun cursorRowAsJson(
+        c: Cursor
+    ): JSONObject {
+        val obj =
+            JSONObject()
+
+        for (
+            i in 0 until
+                c.columnCount
+        ) {
+            val name =
+                c.getColumnName(i)
+
+            if (
+                name ==
+                "sync_status"
+            ) {
+                continue
+            }
+
+            when (
+                c.getType(i)
+            ) {
+                Cursor.FIELD_TYPE_INTEGER ->
+                    obj.put(
+                        name,
+                        c.getLong(i)
+                    )
+
+                Cursor.FIELD_TYPE_FLOAT ->
+                    obj.put(
+                        name,
+                        c.getDouble(i)
+                    )
+
+                Cursor.FIELD_TYPE_STRING ->
+                    obj.put(
+                        name,
+                        c.getString(i)
+                    )
+
+                Cursor.FIELD_TYPE_NULL ->
+                    obj.put(
+                        name,
+                        JSONObject.NULL
+                    )
+
+                else ->
+                    obj.put(
+                        name,
+                        c.getString(i)
+                    )
+            }
+        }
+
+        return obj
+    }
+
+    private fun jsonToContentValues(
+        obj: JSONObject
+    ): ContentValues {
+        val values =
+            ContentValues()
+
+        val keys =
+            obj.keys()
+
+        while (keys.hasNext()) {
+            val key =
+                keys.next()
+
+            val value =
+                obj.opt(key)
+
+            when (value) {
+                null,
+                JSONObject.NULL ->
+                    values.putNull(key)
+
+                is Int ->
+                    values.put(
+                        key,
+                        value
+                    )
+
+                is Long ->
+                    values.put(
+                        key,
+                        value
+                    )
+
+                is Double ->
+                    values.put(
+                        key,
+                        value
+                    )
+
+                is Float ->
+                    values.put(
+                        key,
+                        value
+                    )
+
+                is Boolean ->
+                    values.put(
+                        key,
+                        if (value) 1 else 0
+                    )
+
+                else ->
+                    values.put(
+                        key,
+                        value.toString()
+                    )
+            }
+        }
+
+        return values
     }
 
     fun updateLedgerMetaName(
@@ -3312,7 +3914,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 8
+        const val DB_VERSION = 9
     }
 }
 

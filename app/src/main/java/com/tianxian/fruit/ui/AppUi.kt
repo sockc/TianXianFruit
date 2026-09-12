@@ -2,6 +2,8 @@ package com.tianxian.fruit.ui
 
 import android.app.DatePickerDialog
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -17,6 +19,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
@@ -25,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tianxian.fruit.data.*
@@ -34,6 +38,8 @@ import com.tianxian.fruit.report.ReportLine
 import com.tianxian.fruit.report.ReportLineStyle
 import com.tianxian.fruit.sync.LedgerBook
 import com.tianxian.fruit.sync.LedgerManager
+import com.tianxian.fruit.sync.CloudApiException
+import com.tianxian.fruit.sync.CloudSyncManager
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -105,6 +111,16 @@ fun TianXianApp(
     currentBook: LedgerBook,
     onSwitchBook: (String) -> Unit
 ) {
+    val context =
+        LocalContext.current
+    val cloudSyncManager =
+        remember {
+            CloudSyncManager(
+                context.applicationContext,
+                ledgerManager
+            )
+        }
+
     var page by remember { mutableStateOf(AppPage.HOME) }
     var moreTarget by remember { mutableStateOf(MorePage.MENU) }
     var dataVersion by remember { mutableIntStateOf(0) }
@@ -155,6 +171,8 @@ fun TianXianApp(
                         initialSub = moreTarget,
                         ledgerManager =
                             ledgerManager,
+                        cloudSyncManager =
+                            cloudSyncManager,
                         currentBook =
                             currentBook,
                         onSwitchBook =
@@ -3662,6 +3680,7 @@ private fun MoreScreen(
     dataVersion: Int,
     initialSub: MorePage = MorePage.MENU,
     ledgerManager: LedgerManager,
+    cloudSyncManager: CloudSyncManager,
     currentBook: LedgerBook,
     onSwitchBook: (String) -> Unit,
     onPlan: () -> Unit,
@@ -3757,6 +3776,8 @@ private fun MoreScreen(
                     db = db,
                     ledgerManager =
                         ledgerManager,
+                    cloudSyncManager =
+                        cloudSyncManager,
                     currentBook =
                         currentBook,
                     onSwitchBook =
@@ -5506,6 +5527,7 @@ private fun buildBusinessReportLines(
 private fun LedgerManagementContent(
     db: AppDatabase,
     ledgerManager: LedgerManager,
+    cloudSyncManager: CloudSyncManager,
     currentBook: LedgerBook,
     onSwitchBook: (String) -> Unit,
     onChanged: () -> Unit
@@ -5533,6 +5555,106 @@ private fun LedgerManagementContent(
     }
     var message by remember {
         mutableStateOf("")
+    }
+
+    var cloudRefresh by remember {
+        mutableIntStateOf(0)
+    }
+    var cloudBusy by remember {
+        mutableStateOf(false)
+    }
+    var cloudMessage by remember {
+        mutableStateOf("")
+    }
+    var serverUrl by remember {
+        mutableStateOf(
+            cloudSyncManager
+                .defaultBaseUrl()
+        )
+    }
+    var cloudUsername by remember {
+        mutableStateOf(
+            cloudSyncManager
+                .session()
+                ?.username
+                .orEmpty()
+        )
+    }
+    var cloudPassword by remember {
+        mutableStateOf("")
+    }
+
+    val cloudSession =
+        remember(
+            cloudRefresh
+        ) {
+            cloudSyncManager
+                .session()
+        }
+
+    val cloudLocalStatus =
+        remember(
+            refresh,
+            cloudRefresh
+        ) {
+            db.getCloudSyncLocalStatus()
+        }
+
+    val liveCurrentBook =
+        remember(
+            refresh,
+            cloudRefresh
+        ) {
+            ledgerManager
+                .getBook(
+                    currentBook.id
+                )
+                ?: currentBook
+        }
+
+    fun runCloudTask(
+        busyText: String,
+        block: () -> String
+    ) {
+        if (cloudBusy) return
+
+        cloudBusy = true
+        cloudMessage = busyText
+
+        Thread {
+            val result =
+                runCatching {
+                    block()
+                }
+
+            Handler(
+                Looper.getMainLooper()
+            ).post {
+                cloudBusy = false
+
+                cloudMessage =
+                    result.fold(
+                        onSuccess = {
+                            it
+                        },
+                        onFailure = {
+                            error ->
+                            when (error) {
+                                is CloudApiException ->
+                                    "云端错误 ${error.statusCode}：${error.message}"
+
+                                else ->
+                                    "同步失败：${error.message ?: error.javaClass.simpleName}"
+                            }
+                        }
+                    )
+
+                cloudPassword = ""
+                cloudRefresh++
+                refresh++
+                onChanged()
+            }
+        }.start()
     }
 
     LazyColumn(
@@ -5622,13 +5744,314 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "云端同步：尚未连接（V1.3.1 接服务器）",
+                        if (
+                            liveCurrentBook
+                                .cloudEnabled
+                        ) {
+                            "云端同步：已连接"
+                        } else {
+                            "云端同步：未连接"
+                        },
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall,
+                        color =
+                            if (
+                                liveCurrentBook
+                                    .cloudEnabled
+                            ) {
+                                BrandGreen
+                            } else {
+                                Color.Gray
+                            }
+                    )
+
+                    if (
+                        cloudLocalStatus
+                            .lastSyncAt > 0L
+                    ) {
+                        Text(
+                            "最近同步：" +
+                                formatDateTime(
+                                    cloudLocalStatus
+                                        .lastSyncAt
+                                ),
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall,
+                            color = Color.Gray
+                        )
+                    }
+
+                    Text(
+                        "云端游标：" +
+                            cloudLocalStatus
+                                .serverCursor,
                         style =
                             MaterialTheme
                                 .typography
                                 .bodySmall,
                         color = Color.Gray
                     )
+                }
+            }
+        }
+
+        item {
+            Card(
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor =
+                            Color(0xFFF4F7FF)
+                    )
+            ) {
+                Column(
+                    Modifier.padding(14.dp),
+                    verticalArrangement =
+                        Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "云端账号",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .titleMedium,
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+
+                    if (cloudSession == null) {
+                        OutlinedTextField(
+                            value = serverUrl,
+                            onValueChange = {
+                                serverUrl = it
+                            },
+                            label = {
+                                Text("服务器地址")
+                            },
+                            singleLine = true,
+                            modifier =
+                                Modifier.fillMaxWidth()
+                        )
+
+                        OutlinedTextField(
+                            value =
+                                cloudUsername,
+                            onValueChange = {
+                                cloudUsername = it
+                            },
+                            label = {
+                                Text("用户名")
+                            },
+                            singleLine = true,
+                            modifier =
+                                Modifier.fillMaxWidth()
+                        )
+
+                        OutlinedTextField(
+                            value =
+                                cloudPassword,
+                            onValueChange = {
+                                cloudPassword = it
+                            },
+                            label = {
+                                Text("密码")
+                            },
+                            singleLine = true,
+                            visualTransformation =
+                                PasswordVisualTransformation(),
+                            modifier =
+                                Modifier.fillMaxWidth()
+                        )
+
+                        Button(
+                            onClick = {
+                                if (
+                                    cloudUsername
+                                        .trim()
+                                        .isBlank() ||
+                                    cloudPassword
+                                        .isBlank()
+                                ) {
+                                    cloudMessage =
+                                        "请输入用户名和密码"
+                                } else {
+                                    runCloudTask(
+                                        "正在登录云端…"
+                                    ) {
+                                        val session =
+                                            cloudSyncManager
+                                                .login(
+                                                    baseUrl =
+                                                        serverUrl,
+                                                    username =
+                                                        cloudUsername,
+                                                    password =
+                                                        cloudPassword
+                                                )
+
+                                        "登录成功：${session.displayName}"
+                                    }
+                                }
+                            },
+                            enabled =
+                                !cloudBusy,
+                            modifier =
+                                Modifier.fillMaxWidth()
+                        ) {
+                            if (cloudBusy) {
+                                CircularProgressIndicator(
+                                    modifier =
+                                        Modifier.size(
+                                            18.dp
+                                        ),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(
+                                    Modifier.width(
+                                        8.dp
+                                    )
+                                )
+                            }
+                            Text("登录云端")
+                        }
+                    } else {
+                        Text(
+                            "${cloudSession.displayName}（${cloudSession.username}）",
+                            fontWeight =
+                                FontWeight.SemiBold
+                        )
+
+                        Text(
+                            cloudSession.baseUrl,
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall,
+                            color = Color.Gray
+                        )
+
+                        Text(
+                            "本版只同步当前账本，不会自动上传其他本机账本。",
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall,
+                            color = Color.Gray
+                        )
+
+                        Button(
+                            onClick = {
+                                runCloudTask(
+                                    "正在同步“${currentBook.name}”…"
+                                ) {
+                                    cloudSyncManager
+                                        .syncCurrentBook(
+                                            db = db,
+                                            book =
+                                                ledgerManager
+                                                    .getBook(
+                                                        currentBook.id
+                                                    )
+                                                    ?: currentBook
+                                        )
+                                        .message
+                                }
+                            },
+                            enabled =
+                                !cloudBusy,
+                            modifier =
+                                Modifier.fillMaxWidth()
+                        ) {
+                            if (cloudBusy) {
+                                CircularProgressIndicator(
+                                    modifier =
+                                        Modifier.size(
+                                            18.dp
+                                        ),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(
+                                    Modifier.width(
+                                        8.dp
+                                    )
+                                )
+                            }
+                            Text("立即同步当前账本")
+                        }
+
+                        TextButton(
+                            onClick = {
+                                cloudSyncManager
+                                    .logout()
+                                cloudMessage =
+                                    "已退出云端账号"
+                                cloudRefresh++
+                            },
+                            enabled =
+                                !cloudBusy,
+                            modifier =
+                                Modifier.fillMaxWidth()
+                        ) {
+                            Text("退出登录")
+                        }
+                    }
+
+                    if (
+                        cloudMessage
+                            .isNotBlank()
+                    ) {
+                        Text(
+                            cloudMessage,
+                            color =
+                                if (
+                                    cloudMessage
+                                        .contains(
+                                            "失败"
+                                        ) ||
+                                    cloudMessage
+                                        .contains(
+                                            "错误"
+                                        ) ||
+                                    cloudMessage
+                                        .contains(
+                                            "冲突"
+                                        )
+                                ) {
+                                    MaterialTheme
+                                        .colorScheme
+                                        .error
+                                } else {
+                                    BrandGreen
+                                },
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall
+                        )
+                    }
+
+                    if (
+                        cloudLocalStatus
+                            .lastError
+                            .isNotBlank()
+                    ) {
+                        Text(
+                            "上次同步：" +
+                                cloudLocalStatus
+                                    .lastError,
+                            color =
+                                MaterialTheme
+                                    .colorScheme
+                                    .error,
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall
+                        )
+                    }
                 }
             }
         }
@@ -5768,7 +6191,7 @@ private fun LedgerManagementContent(
                     Modifier.padding(12.dp)
                 ) {
                     Text(
-                        "V1.3.0 同步基础",
+                        "V1.3.1 云同步",
                         fontWeight =
                             FontWeight.Bold
                     )
@@ -5790,7 +6213,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• 以后云端共享时，以“账本ID + 记录sync_id”进行增量同步，不整库覆盖。",
+                        "• 当前账本已支持登录、首次上传、增量 push / pull 和服务器 cursor。",
                         style =
                             MaterialTheme
                                 .typography
@@ -7759,6 +8182,26 @@ private fun settlementTimeText(epochMillis: Long): String {
             )
         )
 }
+
+private fun formatDateTime(
+    epochMillis: Long
+): String =
+    if (epochMillis <= 0L) {
+        "从未"
+    } else {
+        Instant
+            .ofEpochMilli(
+                epochMillis
+            )
+            .atZone(
+                ZoneId.systemDefault()
+            )
+            .format(
+                DateTimeFormatter.ofPattern(
+                    "yyyy-MM-dd HH:mm"
+                )
+            )
+    }
 
 private fun fmt(v: Double): String = if (kotlin.math.abs(v - v.toLong()) < 0.005) v.toLong().toString() else String.format(Locale.CHINA, "%.2f", v)
 

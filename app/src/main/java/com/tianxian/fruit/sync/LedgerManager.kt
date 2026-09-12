@@ -229,6 +229,41 @@ class LedgerManager(
         return true
     }
 
+    fun updateCloudState(
+        bookId: String,
+        cloudBookId: String,
+        enabled: Boolean,
+        lastSyncAt: Long
+    ): Boolean {
+        var changed = false
+        val now =
+            System.currentTimeMillis()
+
+        val updated =
+            books().map {
+                if (it.id == bookId) {
+                    changed = true
+                    it.copy(
+                        cloudBookId =
+                            cloudBookId,
+                        cloudEnabled =
+                            enabled,
+                        lastSyncAt =
+                            lastSyncAt,
+                        updatedAt = now
+                    )
+                } else {
+                    it
+                }
+            }
+
+        if (changed) {
+            saveBooks(updated)
+        }
+
+        return changed
+    }
+
     fun permissionLabel(
         permission: String
     ): String =
