@@ -229,6 +229,124 @@ class LedgerManager(
         return true
     }
 
+    fun upsertCloudBook(
+        bookId: String,
+        name: String,
+        permission: String
+    ): LedgerBook {
+        val cleanName =
+            name.trim()
+                .ifBlank {
+                    "云端账本"
+                }
+
+        val existing =
+            getBook(bookId)
+
+        val now =
+            System.currentTimeMillis()
+
+        val updatedBook =
+            if (existing != null) {
+                existing.copy(
+                    name = cleanName,
+                    permission = permission,
+                    cloudBookId = bookId,
+                    cloudEnabled = true,
+                    updatedAt = now
+                )
+            } else {
+                LedgerBook(
+                    id = bookId,
+                    name = cleanName,
+                    databaseName =
+                        "tianxian_cloud_" +
+                            bookId.replace(
+                                "-",
+                                ""
+                            ) +
+                            ".db",
+                    ownerDeviceId = "",
+                    permission =
+                        permission,
+                    cloudBookId =
+                        bookId,
+                    cloudEnabled = true,
+                    createdAt = now,
+                    updatedAt = now,
+                    isDefault = false
+                )
+            }
+
+        val list =
+            books().toMutableList()
+
+        val index =
+            list.indexOfFirst {
+                it.id == bookId
+            }
+
+        if (index >= 0) {
+            list[index] =
+                updatedBook
+        } else {
+            list +=
+                updatedBook
+        }
+
+        saveBooks(list)
+
+        return updatedBook
+    }
+
+    fun updateCloudMetadata(
+        bookId: String,
+        name: String,
+        permission: String
+    ): Boolean {
+        val existing =
+            getBook(bookId)
+                ?: return false
+
+        val now =
+            System.currentTimeMillis()
+
+        val updated =
+            books().map {
+                if (it.id == bookId) {
+                    it.copy(
+                        name =
+                            name.trim()
+                                .ifBlank {
+                                    it.name
+                                },
+                        permission =
+                            permission,
+                        cloudBookId =
+                            bookId,
+                        cloudEnabled =
+                            true,
+                        updatedAt = now
+                    )
+                } else {
+                    it
+                }
+            }
+
+        saveBooks(updated)
+        return existing.id == bookId
+    }
+
+    fun findBookByCloudId(
+        cloudBookId: String
+    ): LedgerBook? =
+        books().firstOrNull {
+            it.cloudBookId ==
+                cloudBookId ||
+                it.id ==
+                cloudBookId
+        }
+
     fun updateCloudState(
         bookId: String,
         cloudBookId: String,

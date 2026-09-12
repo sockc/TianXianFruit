@@ -19,6 +19,21 @@ data class CloudSession(
     val token: String
 )
 
+data class CloudBookInfo(
+    val id: String,
+    val name: String,
+    val role: String,
+    val ownerUserId: String,
+    val deleted: Boolean
+)
+
+data class CloudMemberInfo(
+    val userId: String,
+    val username: String,
+    val displayName: String,
+    val role: String
+)
+
 data class CloudSyncResult(
     val uploaded: Int,
     val downloaded: Int,
@@ -36,8 +51,11 @@ class CloudSyncManager(
     context: Context,
     private val ledgerManager: LedgerManager
 ) {
+    private val appContext =
+        context.applicationContext
+
     private val prefs =
-        context.getSharedPreferences(
+        appContext.getSharedPreferences(
             PREFS_NAME,
             Context.MODE_PRIVATE
         )
@@ -83,9 +101,6 @@ class CloudSyncManager(
         )
     }
 
-    fun isLoggedIn(): Boolean =
-        session() != null
-
     fun login(
         baseUrl: String,
         username: String,
@@ -94,24 +109,23 @@ class CloudSyncManager(
         val cleanBase =
             normalizeBaseUrl(baseUrl)
 
-        val loginBody =
-            JSONObject().apply {
-                put(
-                    "username",
-                    username.trim()
-                )
-                put(
-                    "password",
-                    password
-                )
-            }
-
         val loginJson =
             requestJson(
                 baseUrl = cleanBase,
                 method = "POST",
-                path = "/api/v1/auth/login",
-                body = loginBody,
+                path =
+                    "/api/v1/auth/login",
+                body =
+                    JSONObject().apply {
+                        put(
+                            "username",
+                            username.trim()
+                        )
+                        put(
+                            "password",
+                            password
+                        )
+                    },
                 token = null
             ) as JSONObject
 
@@ -124,14 +138,16 @@ class CloudSyncManager(
             requestJson(
                 baseUrl = cleanBase,
                 method = "GET",
-                path = "/api/v1/auth/me",
+                path =
+                    "/api/v1/auth/me",
                 body = null,
                 token = token
             ) as JSONObject
 
-        val session =
+        val result =
             CloudSession(
-                baseUrl = cleanBase,
+                baseUrl =
+                    cleanBase,
                 username =
                     me.getString(
                         "username"
@@ -150,21 +166,63 @@ class CloudSyncManager(
             )
             .putString(
                 KEY_TOKEN,
-                session.token
+                result.token
             )
             .putString(
                 KEY_USERNAME,
-                session.username
+                result.username
             )
             .putString(
                 KEY_DISPLAY_NAME,
-                session.displayName
+                result.displayName
             )
             .apply()
 
-        registerDevice(session)
+        registerDevice(result)
+        return result
+    }
 
-        return session
+    fun registerAccount(
+        baseUrl: String,
+        username: String,
+        displayName: String,
+        password: String,
+        registrationCode: String
+    ): String {
+        val cleanBase =
+            normalizeBaseUrl(baseUrl)
+
+        val response =
+            requestJson(
+                baseUrl = cleanBase,
+                method = "POST",
+                path =
+                    "/api/v1/auth/register",
+                body =
+                    JSONObject().apply {
+                        put(
+                            "username",
+                            username.trim()
+                        )
+                        put(
+                            "display_name",
+                            displayName.trim()
+                        )
+                        put(
+                            "password",
+                            password
+                        )
+                        put(
+                            "registration_code",
+                            registrationCode.trim()
+                        )
+                    },
+                token = null
+            ) as JSONObject
+
+        return response.getString(
+            "username"
+        )
     }
 
     fun logout() {
@@ -184,7 +242,8 @@ class CloudSyncManager(
                 baseUrl =
                     current.baseUrl,
                 method = "GET",
-                path = "/api/v1/auth/me",
+                path =
+                    "/api/v1/auth/me",
                 body = null,
                 token = current.token
             ) as JSONObject
@@ -215,6 +274,372 @@ class CloudSyncManager(
         return refreshed
     }
 
+    fun listCloudBooks():
+        List<CloudBookInfo> {
+        val current =
+            requireSession()
+
+        val array =
+            requestJson(
+                baseUrl =
+                    current.baseUrl,
+                method = "GET",
+                path = "/api/v1/books",
+                body = null,
+                token = current.token
+            ) as JSONArray
+
+        val result =
+            buildList {
+                for (
+                    i in 0 until
+                        array.length()
+                ) {
+                    val item =
+                        array.getJSONObject(i)
+
+                    add(
+                        CloudBookInfo(
+                            id =
+                                item.getString(
+                                    "id"
+                                ),
+                            name =
+                                item.getString(
+                                    "name"
+                                ),
+                            role =
+                                item.getString(
+                                    "role"
+                                ),
+                            ownerUserId =
+                                item.getString(
+                                    "owner_user_id"
+                                ),
+                            deleted =
+                                item.optBoolean(
+                                    "deleted",
+                                    false
+                                )
+                        )
+                    )
+                }
+            }.filterNot {
+                it.deleted
+            }
+
+        result.forEach {
+            info ->
+            if (
+                ledgerManager
+                    .getBook(
+                        info.id
+                    ) != null
+            ) {
+                ledgerManager
+                    .updateCloudMetadata(
+                        bookId = info.id,
+                        name = info.name,
+                        permission =
+                            info.role
+                    )
+            }
+        }
+
+        return result
+    }
+
+    fun listMembers(
+        bookId: String
+    ): List<CloudMemberInfo> {
+        val current =
+            requireSession()
+
+        val encoded =
+            URLEncoder.encode(
+                bookId,
+                "UTF-8"
+            )
+
+        val array =
+            requestJson(
+                baseUrl =
+                    current.baseUrl,
+                method = "GET",
+                path =
+                    "/api/v1/books/" +
+                        "$encoded/members",
+                body = null,
+                token = current.token
+            ) as JSONArray
+
+        return buildList {
+            for (
+                i in 0 until
+                    array.length()
+            ) {
+                val item =
+                    array.getJSONObject(i)
+
+                add(
+                    CloudMemberInfo(
+                        userId =
+                            item.getString(
+                                "user_id"
+                            ),
+                        username =
+                            item.getString(
+                                "username"
+                            ),
+                        displayName =
+                            item.getString(
+                                "display_name"
+                            ),
+                        role =
+                            item.getString(
+                                "role"
+                            )
+                    )
+                )
+            }
+        }
+    }
+
+    fun addOrUpdateMember(
+        bookId: String,
+        username: String,
+        role: String
+    ): CloudMemberInfo {
+        val current =
+            requireSession()
+
+        val encoded =
+            URLEncoder.encode(
+                bookId,
+                "UTF-8"
+            )
+
+        val item =
+            requestJson(
+                baseUrl =
+                    current.baseUrl,
+                method = "POST",
+                path =
+                    "/api/v1/books/" +
+                        "$encoded/members",
+                body =
+                    JSONObject().apply {
+                        put(
+                            "username",
+                            username.trim()
+                        )
+                        put(
+                            "role",
+                            role
+                        )
+                    },
+                token = current.token
+            ) as JSONObject
+
+        return CloudMemberInfo(
+            userId =
+                item.getString(
+                    "user_id"
+                ),
+            username =
+                item.getString(
+                    "username"
+                ),
+            displayName =
+                item.getString(
+                    "display_name"
+                ),
+            role =
+                item.getString(
+                    "role"
+                )
+        )
+    }
+
+    fun removeMember(
+        bookId: String,
+        userId: String
+    ) {
+        val current =
+            requireSession()
+
+        val encodedBook =
+            URLEncoder.encode(
+                bookId,
+                "UTF-8"
+            )
+        val encodedUser =
+            URLEncoder.encode(
+                userId,
+                "UTF-8"
+            )
+
+        requestJson(
+            baseUrl =
+                current.baseUrl,
+            method = "DELETE",
+            path =
+                "/api/v1/books/" +
+                    "$encodedBook/members/" +
+                    encodedUser,
+            body = null,
+            token = current.token
+        )
+    }
+
+    fun renameCloudBook(
+        bookId: String,
+        name: String
+    ): CloudBookInfo {
+        val current =
+            requireSession()
+
+        val encoded =
+            URLEncoder.encode(
+                bookId,
+                "UTF-8"
+            )
+
+        val item =
+            requestJson(
+                baseUrl =
+                    current.baseUrl,
+                method = "PATCH",
+                path =
+                    "/api/v1/books/$encoded",
+                body =
+                    JSONObject().apply {
+                        put(
+                            "name",
+                            name.trim()
+                        )
+                    },
+                token = current.token
+            ) as JSONObject
+
+        val result =
+            CloudBookInfo(
+                id =
+                    item.getString(
+                        "id"
+                    ),
+                name =
+                    item.getString(
+                        "name"
+                    ),
+                role =
+                    item.getString(
+                        "role"
+                    ),
+                ownerUserId =
+                    item.getString(
+                        "owner_user_id"
+                    ),
+                deleted =
+                    item.optBoolean(
+                        "deleted",
+                        false
+                    )
+            )
+
+        ledgerManager
+            .updateCloudMetadata(
+                result.id,
+                result.name,
+                result.role
+            )
+
+        return result
+    }
+
+    fun downloadCloudBook(
+        info: CloudBookInfo
+    ): CloudSyncResult {
+        val current =
+            requireSession()
+
+        verifyLogin()
+        registerDevice(current)
+
+        val book =
+            ledgerManager
+                .upsertCloudBook(
+                    bookId = info.id,
+                    name = info.name,
+                    permission = info.role
+                )
+
+        val db =
+            AppDatabase(
+                context =
+                    appContext,
+                dbFileName =
+                    book.databaseName,
+                ledgerId =
+                    book.id,
+                ledgerName =
+                    book.name,
+                deviceId =
+                    ledgerManager.deviceId,
+                deviceName =
+                    ledgerManager.deviceName,
+                seedDefaults = false
+            )
+
+        return try {
+            val pullResult =
+                pullAll(
+                    session = current,
+                    db = db,
+                    book = book,
+                    startCursor =
+                        db.getServerCursor()
+                )
+
+            if (
+                info.role == "OWNER" ||
+                info.role == "EDITOR"
+            ) {
+                db.prepareCloudIdRanges()
+            }
+
+            val now =
+                System.currentTimeMillis()
+
+            db.setLastCloudSync(
+                now,
+                ""
+            )
+
+            ledgerManager
+                .updateCloudState(
+                    bookId = book.id,
+                    cloudBookId =
+                        info.id,
+                    enabled = true,
+                    lastSyncAt = now
+                )
+
+            CloudSyncResult(
+                uploaded = 0,
+                downloaded =
+                    pullResult.first,
+                conflicts = 0,
+                serverCursor =
+                    pullResult.second,
+                message =
+                    "已下载“${info.name}”：${pullResult.first} 条云端变化"
+            )
+        } finally {
+            db.close()
+        }
+    }
+
     fun syncCurrentBook(
         db: AppDatabase,
         book: LedgerBook
@@ -224,61 +649,80 @@ class CloudSyncManager(
 
         verifyLogin()
         registerDevice(current)
-        ensureCloudBook(
-            current,
-            book
-        )
 
-        // Once this ledger can be edited from more than one device,
-        // new local INTEGER primary keys must not collide with another
-        // device. V1.3.1 assigns this device its own large ID range.
-        db.prepareCloudIdRanges()
+        val cloudBook =
+            resolveCloudBook(
+                current,
+                book
+            )
+
+        ledgerManager
+            .updateCloudMetadata(
+                bookId =
+                    cloudBook.id,
+                name =
+                    cloudBook.name,
+                permission =
+                    cloudBook.role
+            )
+
+        val canEdit =
+            cloudBook.role ==
+                "OWNER" ||
+                cloudBook.role ==
+                "EDITOR"
+
+        if (canEdit) {
+            db.prepareCloudIdRanges()
+        }
 
         var uploadedCount = 0
         var conflictCount = 0
 
-        while (true) {
-            val pending =
-                db.getPendingSyncChanges(
-                    100
-                )
+        if (canEdit) {
+            while (true) {
+                val pending =
+                    db.getPendingSyncChanges(
+                        100
+                    )
 
-            if (pending.isEmpty()) {
-                break
-            }
+                if (pending.isEmpty()) {
+                    break
+                }
 
-            val pushResult =
-                pushBatch(
-                    current,
-                    db,
-                    book,
-                    pending
-                )
+                val pushResult =
+                    pushBatch(
+                        current,
+                        db,
+                        book,
+                        pending
+                    )
 
-            if (
-                pushResult.acceptedLocalIds
-                    .isNotEmpty()
-            ) {
-                db.markSyncChangesUploaded(
+                if (
+                    pushResult.acceptedLocalIds
+                        .isNotEmpty()
+                ) {
+                    db.markSyncChangesUploaded(
+                        pushResult
+                            .acceptedLocalIds
+                    )
+                    uploadedCount +=
+                        pushResult
+                            .acceptedLocalIds
+                            .size
+                }
+
+                conflictCount +=
+                    pushResult.conflicts
+
+                if (
+                    pushResult.conflicts > 0 ||
                     pushResult
                         .acceptedLocalIds
-                )
-                uploadedCount +=
-                    pushResult
-                        .acceptedLocalIds
-                        .size
-            }
-
-            conflictCount +=
-                pushResult.conflicts
-
-            if (
-                pushResult.conflicts > 0 ||
-                pushResult
-                    .acceptedLocalIds
-                    .isEmpty()
-            ) {
-                break
+                        .isEmpty()
+                ) {
+                    break
+                }
             }
         }
 
@@ -287,42 +731,19 @@ class CloudSyncManager(
             db.getServerCursor()
 
         if (conflictCount == 0) {
-            do {
-                val pull =
-                    pullBatch(
-                        current,
-                        book,
+            val pulled =
+                pullAll(
+                    session = current,
+                    db = db,
+                    book = book,
+                    startCursor =
                         cursor
-                    )
-
-                pull.events.forEach {
-                    event ->
-                    db.applyRemoteSyncEvent(
-                        tableName =
-                            event.tableName,
-                        syncId =
-                            event.syncId,
-                        rowVersion =
-                            event.rowVersion,
-                        operation =
-                            event.operation,
-                        payload =
-                            event.payload,
-                        modifiedBy =
-                            event.modifiedBy
-                    )
-                }
-
-                downloadedCount +=
-                    pull.events.size
-
-                cursor =
-                    pull.nextCursor
-
-                db.setServerCursor(
-                    cursor
                 )
-            } while (pull.hasMore)
+
+            downloadedCount =
+                pulled.first
+            cursor =
+                pulled.second
         }
 
         val now =
@@ -338,7 +759,7 @@ class CloudSyncManager(
                 .updateCloudState(
                     bookId = book.id,
                     cloudBookId =
-                        book.id,
+                        cloudBook.id,
                     enabled = true,
                     lastSyncAt = now
                 )
@@ -349,15 +770,34 @@ class CloudSyncManager(
             )
         }
 
-        val message =
-            if (conflictCount == 0) {
-                "同步完成：上传 $uploadedCount 条，下载 $downloadedCount 条"
+        val pendingReadOnly =
+            if (!canEdit) {
+                db.getPendingSyncChanges(
+                    1
+                ).isNotEmpty()
             } else {
-                "已上传 $uploadedCount 条，但发现 $conflictCount 条冲突，未继续覆盖云端"
+                false
+            }
+
+        val message =
+            when {
+                conflictCount > 0 ->
+                    "已上传 $uploadedCount 条，但发现 $conflictCount 条冲突，未继续覆盖云端"
+
+                !canEdit &&
+                    pendingReadOnly ->
+                    "只读账本已下载 $downloadedCount 条；本机存在不可上传的修改，请不要在只读账本编辑"
+
+                !canEdit ->
+                    "只读同步完成：下载 $downloadedCount 条"
+
+                else ->
+                    "同步完成：上传 $uploadedCount 条，下载 $downloadedCount 条"
             }
 
         return CloudSyncResult(
-            uploaded = uploadedCount,
+            uploaded =
+                uploadedCount,
             downloaded =
                 downloadedCount,
             conflicts =
@@ -368,110 +808,151 @@ class CloudSyncManager(
         )
     }
 
-    private fun registerDevice(
-        session: CloudSession
-    ) {
-        val body =
-            JSONObject().apply {
-                put(
-                    "device_id",
-                    ledgerManager.deviceId
+    private fun resolveCloudBook(
+        session: CloudSession,
+        book: LedgerBook
+    ): CloudBookInfo {
+        val cloudBooks =
+            listCloudBooks()
+
+        val existing =
+            cloudBooks.firstOrNull {
+                it.id == book.id
+            }
+
+        if (existing != null) {
+            return existing
+        }
+
+        if (
+            book.permission != "OWNER"
+        ) {
+            throw CloudApiException(
+                403,
+                "该共享账本已不在你的云端权限列表中"
+            )
+        }
+
+        val item =
+            requestJson(
+                baseUrl =
+                    session.baseUrl,
+                method = "POST",
+                path = "/api/v1/books",
+                body =
+                    JSONObject().apply {
+                        put(
+                            "id",
+                            book.id
+                        )
+                        put(
+                            "name",
+                            book.name
+                        )
+                    },
+                token =
+                    session.token
+            ) as JSONObject
+
+        return CloudBookInfo(
+            id =
+                item.getString("id"),
+            name =
+                item.getString("name"),
+            role =
+                item.getString("role"),
+            ownerUserId =
+                item.getString(
+                    "owner_user_id"
+                ),
+            deleted =
+                item.optBoolean(
+                    "deleted",
+                    false
                 )
-                put(
-                    "name",
-                    ledgerManager.deviceName
+        )
+    }
+
+    private fun pullAll(
+        session: CloudSession,
+        db: AppDatabase,
+        book: LedgerBook,
+        startCursor: Long
+    ): Pair<Int, Long> {
+        var count = 0
+        var cursor =
+            startCursor
+
+        do {
+            val pull =
+                pullBatch(
+                    session,
+                    book,
+                    cursor
                 )
-                put(
-                    "platform",
-                    "android"
-                )
-                put(
-                    "app_version",
-                    APP_VERSION
+
+            pull.events.forEach {
+                event ->
+                db.applyRemoteSyncEvent(
+                    tableName =
+                        event.tableName,
+                    syncId =
+                        event.syncId,
+                    rowVersion =
+                        event.rowVersion,
+                    operation =
+                        event.operation,
+                    payload =
+                        event.payload,
+                    modifiedBy =
+                        event.modifiedBy
                 )
             }
 
+            count +=
+                pull.events.size
+
+            cursor =
+                pull.nextCursor
+
+            db.setServerCursor(
+                cursor
+            )
+        } while (pull.hasMore)
+
+        return count to cursor
+    }
+
+    private fun registerDevice(
+        session: CloudSession
+    ) {
         requestJson(
             baseUrl =
                 session.baseUrl,
             method = "POST",
             path =
                 "/api/v1/devices/register",
-            body = body,
+            body =
+                JSONObject().apply {
+                    put(
+                        "device_id",
+                        ledgerManager.deviceId
+                    )
+                    put(
+                        "name",
+                        ledgerManager.deviceName
+                    )
+                    put(
+                        "platform",
+                        "android"
+                    )
+                    put(
+                        "app_version",
+                        APP_VERSION
+                    )
+                },
             token = session.token
         )
-    }
-
-    private fun ensureCloudBook(
-        session: CloudSession,
-        book: LedgerBook
-    ) {
-        val books =
-            requestJson(
-                baseUrl =
-                    session.baseUrl,
-                method = "GET",
-                path = "/api/v1/books",
-                body = null,
-                token = session.token
-            ) as JSONArray
-
-        for (
-            i in 0 until
-                books.length()
-        ) {
-            val item =
-                books.getJSONObject(i)
-
-            if (
-                item.getString("id")
-                    .equals(
-                        book.id,
-                        ignoreCase = true
-                    )
-            ) {
-                ledgerManager
-                    .updateCloudState(
-                        bookId = book.id,
-                        cloudBookId =
-                            book.id,
-                        enabled = true,
-                        lastSyncAt =
-                            book.lastSyncAt
-                    )
-                return
-            }
-        }
-
-        val createBody =
-            JSONObject().apply {
-                put(
-                    "id",
-                    book.id
-                )
-                put(
-                    "name",
-                    book.name
-                )
-            }
-
-        requestJson(
-            baseUrl =
-                session.baseUrl,
-            method = "POST",
-            path = "/api/v1/books",
-            body = createBody,
-            token = session.token
-        )
-
-        ledgerManager
-            .updateCloudState(
-                bookId = book.id,
-                cloudBookId = book.id,
-                enabled = true,
-                lastSyncAt =
-                    book.lastSyncAt
-            )
     }
 
     private data class PushBatchResult(
@@ -524,29 +1005,28 @@ class CloudSyncManager(
             )
         }
 
-        val body =
-            JSONObject().apply {
-                put(
-                    "book_id",
-                    book.id
-                )
-                put(
-                    "device_id",
-                    ledgerManager.deviceId
-                )
-                put(
-                    "changes",
-                    changes
-                )
-            }
-
         val response =
             requestJson(
                 baseUrl =
                     session.baseUrl,
                 method = "POST",
-                path = "/api/v1/sync/push",
-                body = body,
+                path =
+                    "/api/v1/sync/push",
+                body =
+                    JSONObject().apply {
+                        put(
+                            "book_id",
+                            book.id
+                        )
+                        put(
+                            "device_id",
+                            ledgerManager.deviceId
+                        )
+                        put(
+                            "changes",
+                            changes
+                        )
+                    },
                 token = session.token
             ) as JSONObject
 
@@ -591,17 +1071,15 @@ class CloudSyncManager(
                 it.id
             }
 
-        val conflicts =
-            response
-                .getJSONArray(
-                    "conflicts"
-                )
-                .length()
-
         return PushBatchResult(
             acceptedLocalIds =
                 acceptedLocalIds,
-            conflicts = conflicts
+            conflicts =
+                response
+                    .getJSONArray(
+                        "conflicts"
+                    )
+                    .length()
         )
     }
 
@@ -872,6 +1350,6 @@ class CloudSyncManager(
             "https://sync.830888.xyz"
 
         private const val APP_VERSION =
-            "1.3.1"
+            "1.3.2"
     }
 }

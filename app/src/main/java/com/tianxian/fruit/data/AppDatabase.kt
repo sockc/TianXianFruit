@@ -304,7 +304,8 @@ class AppDatabase(
     val ledgerId: String = "local-default",
     val ledgerName: String = "我的账本",
     private val deviceId: String = "legacy-device",
-    private val deviceName: String = "Android设备"
+    private val deviceName: String = "Android设备",
+    private val seedDefaults: Boolean = true
 ) : SQLiteOpenHelper(
     context,
     dbFileName,
@@ -334,8 +335,12 @@ class AppDatabase(
             initialData = false
         )
         createV9CloudSync(db)
-        seedFruits(db)
-        seedPartners(db)
+        createV10SyncTriggerFix(db)
+
+        if (seedDefaults) {
+            seedFruits(db)
+            seedPartners(db)
+        }
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -353,6 +358,9 @@ class AppDatabase(
         }
         if (oldVersion < 9) {
             createV9CloudSync(db)
+        }
+        if (oldVersion < 10) {
+            createV10SyncTriggerFix(db)
         }
     }
 
@@ -1118,6 +1126,12 @@ class AppDatabase(
         createSyncTriggers(db)
     }
 
+    private fun createV10SyncTriggerFix(
+        db: SQLiteDatabase
+    ) {
+        createSyncTriggers(db)
+    }
+
     private fun createSyncTriggers(
         db: SQLiteDatabase
     ) {
@@ -1199,6 +1213,7 @@ class AppDatabase(
                 AFTER UPDATE ON $table
                 WHEN
                     NEW.row_version=OLD.row_version
+                    AND OLD.modified_by<>''
                     AND COALESCE(
                         (
                             SELECT remote_apply
@@ -3914,7 +3929,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 9
+        const val DB_VERSION = 10
     }
 }
 

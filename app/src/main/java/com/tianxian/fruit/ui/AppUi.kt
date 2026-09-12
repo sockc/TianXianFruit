@@ -39,6 +39,8 @@ import com.tianxian.fruit.report.ReportLineStyle
 import com.tianxian.fruit.sync.LedgerBook
 import com.tianxian.fruit.sync.LedgerManager
 import com.tianxian.fruit.sync.CloudApiException
+import com.tianxian.fruit.sync.CloudBookInfo
+import com.tianxian.fruit.sync.CloudMemberInfo
 import com.tianxian.fruit.sync.CloudSyncManager
 import java.time.Instant
 import java.time.LocalDate
@@ -121,6 +123,10 @@ fun TianXianApp(
             )
         }
 
+    val canEdit =
+        currentBook.permission !=
+            "VIEWER"
+
     var page by remember { mutableStateOf(AppPage.HOME) }
     var moreTarget by remember { mutableStateOf(MorePage.MENU) }
     var dataVersion by remember { mutableIntStateOf(0) }
@@ -133,14 +139,32 @@ fun TianXianApp(
             bottomBar = {
                 NavigationBar {
                     AppPage.entries.filter { it != AppPage.PLAN }.forEach { item ->
+                        val enabled =
+                            canEdit ||
+                                item ==
+                                    AppPage.HOME ||
+                                item ==
+                                    AppPage.MORE
+
                         NavigationBarItem(
                             selected = page == item,
+                            enabled = enabled,
                             onClick = {
-                                if (item == AppPage.MORE) moreTarget = MorePage.MENU
+                                if (
+                                    item ==
+                                    AppPage.MORE
+                                ) {
+                                    moreTarget =
+                                        MorePage.MENU
+                                }
                                 page = item
                             },
-                            icon = { Text(item.emoji) },
-                            label = { Text(item.title) }
+                            icon = {
+                                Text(item.emoji)
+                            },
+                            label = {
+                                Text(item.title)
+                            }
                         )
                     }
                 }
@@ -152,10 +176,48 @@ fun TianXianApp(
                         db = db,
                         dataVersion = dataVersion,
                         bookName = currentBook.name,
-                        onPurchase = { page = AppPage.PURCHASE },
-                        onPlan = { page = AppPage.PLAN },
-                        onSession = { page = AppPage.SESSION },
-                        onStores = { moreTarget = MorePage.STORES; page = AppPage.MORE },
+                        onPurchase = {
+                            if (canEdit) {
+                                page =
+                                    AppPage.PURCHASE
+                            } else {
+                                moreTarget =
+                                    MorePage.HISTORY
+                                page =
+                                    AppPage.MORE
+                            }
+                        },
+                        onPlan = {
+                            if (canEdit) {
+                                page =
+                                    AppPage.PLAN
+                            } else {
+                                moreTarget =
+                                    MorePage.HISTORY
+                                page =
+                                    AppPage.MORE
+                            }
+                        },
+                        onSession = {
+                            if (canEdit) {
+                                page =
+                                    AppPage.SESSION
+                            } else {
+                                moreTarget =
+                                    MorePage.HISTORY
+                                page =
+                                    AppPage.MORE
+                            }
+                        },
+                        onStores = {
+                            moreTarget =
+                                if (canEdit) {
+                                    MorePage.STORES
+                                } else {
+                                    MorePage.STATS
+                                }
+                            page = AppPage.MORE
+                        },
                         onHistory = { moreTarget = MorePage.HISTORY; page = AppPage.MORE },
                         onStats = { moreTarget = MorePage.STATS; page = AppPage.MORE },
                         onFruits = { moreTarget = MorePage.FRUITS; page = AppPage.MORE },
@@ -175,6 +237,8 @@ fun TianXianApp(
                             cloudSyncManager,
                         currentBook =
                             currentBook,
+                        canEdit =
+                            canEdit,
                         onSwitchBook =
                             onSwitchBook,
                         onPlan = {
@@ -3682,6 +3746,7 @@ private fun MoreScreen(
     ledgerManager: LedgerManager,
     cloudSyncManager: CloudSyncManager,
     currentBook: LedgerBook,
+    canEdit: Boolean,
     onSwitchBook: (String) -> Unit,
     onPlan: () -> Unit,
     onChanged: () -> Unit
@@ -3729,33 +3794,57 @@ private fun MoreScreen(
                     }
                 }
 
-                item {
-                    MenuCard("👥 合伙人管理") {
-                        sub = MorePage.PARTNERS
+                if (canEdit) {
+                    item {
+                        MenuCard("👥 合伙人管理") {
+                            sub = MorePage.PARTNERS
+                        }
                     }
-                }
 
-                item {
-                    MenuCard("📍 摊位管理") {
-                        sub = MorePage.STORES
+                    item {
+                        MenuCard("📍 摊位管理") {
+                            sub = MorePage.STORES
+                        }
                     }
-                }
 
-                item {
-                    MenuCard("📦 商品管理") {
-                        sub = MorePage.FRUITS
+                    item {
+                        MenuCard("📦 商品管理") {
+                            sub = MorePage.FRUITS
+                        }
                     }
-                }
 
-                item {
-                    MenuCard("💰 利润分配") {
-                        sub = MorePage.PROFIT
+                    item {
+                        MenuCard("💰 利润分配") {
+                            sub = MorePage.PROFIT
+                        }
                     }
-                }
 
-                item {
-                    MenuCard("🛒 采购清单") {
-                        onPlan()
+                    item {
+                        MenuCard("🛒 采购清单") {
+                            onPlan()
+                        }
+                    }
+                } else {
+                    item {
+                        Card(
+                            colors =
+                                CardDefaults.cardColors(
+                                    containerColor =
+                                        Color(
+                                            0xFFFFF8E8
+                                        )
+                                )
+                        ) {
+                            Text(
+                                "当前为只读共享账本：可查看首页、历史、分析和报表，不能修改经营数据。",
+                                modifier =
+                                    Modifier.padding(
+                                        14.dp
+                                    ),
+                                color =
+                                    Color.DarkGray
+                            )
+                        }
                     }
                 }
 
@@ -3821,6 +3910,7 @@ private fun MoreScreen(
                 HistoryContent(
                     db,
                     dataVersion,
+                    canEdit,
                     onChanged
                 )
             }
@@ -5535,61 +5625,23 @@ private fun LedgerManagementContent(
     var refresh by remember {
         mutableIntStateOf(0)
     }
+    var cloudRefresh by remember {
+        mutableIntStateOf(0)
+    }
+
     val books =
         remember(refresh) {
             ledgerManager.books()
         }
+
     val status =
         remember(refresh) {
             db.getSyncFoundationStatus()
         }
 
-    var addDialog by remember {
-        mutableStateOf(false)
-    }
-    var renameBook by remember {
-        mutableStateOf<LedgerBook?>(null)
-    }
-    var deleteBook by remember {
-        mutableStateOf<LedgerBook?>(null)
-    }
-    var message by remember {
-        mutableStateOf("")
-    }
-
-    var cloudRefresh by remember {
-        mutableIntStateOf(0)
-    }
-    var cloudBusy by remember {
-        mutableStateOf(false)
-    }
-    var cloudMessage by remember {
-        mutableStateOf("")
-    }
-    var serverUrl by remember {
-        mutableStateOf(
-            cloudSyncManager
-                .defaultBaseUrl()
-        )
-    }
-    var cloudUsername by remember {
-        mutableStateOf(
-            cloudSyncManager
-                .session()
-                ?.username
-                .orEmpty()
-        )
-    }
-    var cloudPassword by remember {
-        mutableStateOf("")
-    }
-
     val cloudSession =
-        remember(
-            cloudRefresh
-        ) {
-            cloudSyncManager
-                .session()
+        remember(cloudRefresh) {
+            cloudSyncManager.session()
         }
 
     val cloudLocalStatus =
@@ -5612,9 +5664,72 @@ private fun LedgerManagementContent(
                 ?: currentBook
         }
 
+    var cloudBooks by remember {
+        mutableStateOf<
+            List<CloudBookInfo>
+        >(
+            emptyList()
+        )
+    }
+    var cloudBooksLoaded by remember {
+        mutableStateOf(false)
+    }
+
+    var cloudBusy by remember {
+        mutableStateOf(false)
+    }
+    var cloudMessage by remember {
+        mutableStateOf("")
+    }
+    var message by remember {
+        mutableStateOf("")
+    }
+
+    var serverUrl by remember {
+        mutableStateOf(
+            cloudSyncManager
+                .defaultBaseUrl()
+        )
+    }
+    var cloudUsername by remember {
+        mutableStateOf(
+            cloudSession
+                ?.username
+                .orEmpty()
+        )
+    }
+    var cloudPassword by remember {
+        mutableStateOf("")
+    }
+
+    var addDialog by remember {
+        mutableStateOf(false)
+    }
+    var renameBook by remember {
+        mutableStateOf<LedgerBook?>(null)
+    }
+    var deleteBook by remember {
+        mutableStateOf<LedgerBook?>(null)
+    }
+    var registerDialog by remember {
+        mutableStateOf(false)
+    }
+
+    var memberBook by remember {
+        mutableStateOf<CloudBookInfo?>(null)
+    }
+    var cloudMembers by remember {
+        mutableStateOf<
+            List<CloudMemberInfo>
+        >(
+            emptyList()
+        )
+    }
+
     fun runCloudTask(
         busyText: String,
-        block: () -> String
+        block: () -> String,
+        onSuccess: () -> Unit = {}
     ) {
         if (cloudBusy) return
 
@@ -5632,22 +5747,24 @@ private fun LedgerManagementContent(
             ).post {
                 cloudBusy = false
 
-                cloudMessage =
-                    result.fold(
-                        onSuccess = {
-                            it
-                        },
-                        onFailure = {
-                            error ->
+                result.fold(
+                    onSuccess = {
+                        text ->
+                        cloudMessage = text
+                        onSuccess()
+                    },
+                    onFailure = {
+                        error ->
+                        cloudMessage =
                             when (error) {
                                 is CloudApiException ->
                                     "云端错误 ${error.statusCode}：${error.message}"
 
                                 else ->
-                                    "同步失败：${error.message ?: error.javaClass.simpleName}"
+                                    "操作失败：${error.message ?: error.javaClass.simpleName}"
                             }
-                        }
-                    )
+                    }
+                )
 
                 cloudPassword = ""
                 cloudRefresh++
@@ -5655,6 +5772,55 @@ private fun LedgerManagementContent(
                 onChanged()
             }
         }.start()
+    }
+
+    fun refreshCloudBooks() {
+        var loaded:
+            List<CloudBookInfo> =
+            emptyList()
+
+        runCloudTask(
+            "正在刷新云端账本…",
+            {
+                loaded =
+                    cloudSyncManager
+                        .listCloudBooks()
+
+                "已找到 ${loaded.size} 个可访问的云端账本"
+            },
+            {
+                cloudBooks =
+                    loaded
+                cloudBooksLoaded =
+                    true
+            }
+        )
+    }
+
+    fun loadMembers(
+        info: CloudBookInfo
+    ) {
+        var loaded:
+            List<CloudMemberInfo> =
+            emptyList()
+
+        runCloudTask(
+            "正在读取“${info.name}”成员…",
+            {
+                loaded =
+                    cloudSyncManager
+                        .listMembers(
+                            info.id
+                        )
+                "成员已刷新"
+            },
+            {
+                cloudMembers =
+                    loaded
+                memberBook =
+                    info
+            }
+        )
     }
 
     LazyColumn(
@@ -5687,7 +5853,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        currentBook.name,
+                        liveCurrentBook.name,
                         style =
                             MaterialTheme
                                 .typography
@@ -5700,9 +5866,21 @@ private fun LedgerManagementContent(
                         "权限：" +
                             ledgerManager
                                 .permissionLabel(
-                                    currentBook
+                                    liveCurrentBook
                                         .permission
+                                ),
+                        color =
+                            if (
+                                liveCurrentBook
+                                    .permission ==
+                                    "VIEWER"
+                            ) {
+                                Color(
+                                    0xFFC37B00
                                 )
+                            } else {
+                                Color.Unspecified
+                            }
                     )
 
                     Text(
@@ -5878,22 +6056,37 @@ private fun LedgerManagementContent(
                                     cloudMessage =
                                         "请输入用户名和密码"
                                 } else {
-                                    runCloudTask(
-                                        "正在登录云端…"
-                                    ) {
-                                        val session =
-                                            cloudSyncManager
-                                                .login(
-                                                    baseUrl =
-                                                        serverUrl,
-                                                    username =
-                                                        cloudUsername,
-                                                    password =
-                                                        cloudPassword
-                                                )
+                                    var loaded:
+                                        List<CloudBookInfo> =
+                                        emptyList()
 
-                                        "登录成功：${session.displayName}"
-                                    }
+                                    runCloudTask(
+                                        "正在登录云端…",
+                                        {
+                                            val session =
+                                                cloudSyncManager
+                                                    .login(
+                                                        baseUrl =
+                                                            serverUrl,
+                                                        username =
+                                                            cloudUsername,
+                                                        password =
+                                                            cloudPassword
+                                                    )
+
+                                            loaded =
+                                                cloudSyncManager
+                                                    .listCloudBooks()
+
+                                            "登录成功：${session.displayName}"
+                                        },
+                                        {
+                                            cloudBooks =
+                                                loaded
+                                            cloudBooksLoaded =
+                                                true
+                                        }
+                                    )
                                 }
                             },
                             enabled =
@@ -5917,6 +6110,19 @@ private fun LedgerManagementContent(
                             }
                             Text("登录云端")
                         }
+
+                        TextButton(
+                            onClick = {
+                                registerDialog =
+                                    true
+                            },
+                            enabled =
+                                !cloudBusy,
+                            modifier =
+                                Modifier.fillMaxWidth()
+                        ) {
+                            Text("注册新账号")
+                        }
                     } else {
                         Text(
                             "${cloudSession.displayName}（${cloudSession.username}）",
@@ -5926,15 +6132,6 @@ private fun LedgerManagementContent(
 
                         Text(
                             cloudSession.baseUrl,
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodySmall,
-                            color = Color.Gray
-                        )
-
-                        Text(
-                            "本版只同步当前账本，不会自动上传其他本机账本。",
                             style =
                                 MaterialTheme
                                     .typography
@@ -5979,7 +6176,43 @@ private fun LedgerManagementContent(
                                     )
                                 )
                             }
-                            Text("立即同步当前账本")
+
+                            Text(
+                                if (
+                                    liveCurrentBook
+                                        .permission ==
+                                        "VIEWER"
+                                ) {
+                                    "立即刷新只读账本"
+                                } else {
+                                    "立即同步当前账本"
+                                }
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                refreshCloudBooks()
+                            },
+                            enabled =
+                                !cloudBusy,
+                            modifier =
+                                Modifier.fillMaxWidth()
+                        ) {
+                            Text("刷新云端账本列表")
+                        }
+
+                        TextButton(
+                            onClick = {
+                                registerDialog =
+                                    true
+                            },
+                            enabled =
+                                !cloudBusy,
+                            modifier =
+                                Modifier.fillMaxWidth()
+                        ) {
+                            Text("注册其他账号")
                         }
 
                         TextButton(
@@ -5988,6 +6221,10 @@ private fun LedgerManagementContent(
                                     .logout()
                                 cloudMessage =
                                     "已退出云端账号"
+                                cloudBooks =
+                                    emptyList()
+                                cloudBooksLoaded =
+                                    false
                                 cloudRefresh++
                             },
                             enabled =
@@ -6032,25 +6269,174 @@ private fun LedgerManagementContent(
                                     .bodySmall
                         )
                     }
+                }
+            }
+        }
 
-                    if (
-                        cloudLocalStatus
-                            .lastError
-                            .isNotBlank()
-                    ) {
+        if (cloudSession != null) {
+            item {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment =
+                        Alignment.CenterVertically
+                ) {
+                    Text(
+                        "云端共享账本",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .titleMedium,
+                        fontWeight =
+                            FontWeight.Bold,
+                        modifier =
+                            Modifier.weight(1f)
+                    )
+
+                    if (!cloudBooksLoaded) {
                         Text(
-                            "上次同步：" +
-                                cloudLocalStatus
-                                    .lastError,
-                            color =
-                                MaterialTheme
-                                    .colorScheme
-                                    .error,
+                            "点击上方刷新",
                             style =
                                 MaterialTheme
                                     .typography
-                                    .bodySmall
+                                    .bodySmall,
+                            color = Color.Gray
                         )
+                    }
+                }
+            }
+
+            items(
+                cloudBooks,
+                key = {
+                    "cloud_book_${it.id}"
+                }
+            ) {
+                info ->
+                val localBook =
+                    books.firstOrNull {
+                        it.id == info.id
+                    }
+
+                Card(
+                    Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        Modifier.padding(
+                            12.dp
+                        ),
+                        verticalArrangement =
+                            Arrangement.spacedBy(
+                                6.dp
+                            )
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment =
+                                Alignment.CenterVertically
+                        ) {
+                            Column(
+                                Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    info.name,
+                                    fontWeight =
+                                        FontWeight.Bold
+                                )
+
+                                Text(
+                                    ledgerManager
+                                        .permissionLabel(
+                                            info.role
+                                        ) +
+                                        if (
+                                            localBook !=
+                                            null
+                                        ) {
+                                            " · 本机已有"
+                                        } else {
+                                            " · 云端"
+                                        },
+                                    style =
+                                        MaterialTheme
+                                            .typography
+                                            .bodySmall,
+                                    color =
+                                        if (
+                                            info.role ==
+                                            "VIEWER"
+                                        ) {
+                                            Color(
+                                                0xFFC37B00
+                                            )
+                                        } else {
+                                            BrandGreen
+                                        }
+                                )
+                            }
+
+                            if (
+                                localBook ==
+                                null
+                            ) {
+                                TextButton(
+                                    onClick = {
+                                        runCloudTask(
+                                            "正在下载“${info.name}”…"
+                                        ) {
+                                            cloudSyncManager
+                                                .downloadCloudBook(
+                                                    info
+                                                )
+                                                .message
+                                        }
+                                    },
+                                    enabled =
+                                        !cloudBusy
+                                ) {
+                                    Text("下载")
+                                }
+                            } else if (
+                                localBook.id !=
+                                currentBook.id
+                            ) {
+                                TextButton(
+                                    onClick = {
+                                        onSwitchBook(
+                                            localBook.id
+                                        )
+                                    }
+                                ) {
+                                    Text("切换")
+                                }
+                            } else {
+                                Text(
+                                    "当前",
+                                    color =
+                                        BrandGreen,
+                                    fontWeight =
+                                        FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        if (
+                            info.role ==
+                            "OWNER"
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    loadMembers(
+                                        info
+                                    )
+                                },
+                                enabled =
+                                    !cloudBusy,
+                                modifier =
+                                    Modifier.fillMaxWidth()
+                            ) {
+                                Text("成员与权限")
+                            }
+                        }
                     }
                 }
             }
@@ -6110,7 +6496,14 @@ private fun LedgerManagementContent(
                                     ledgerManager
                                         .permissionLabel(
                                             book.permission
-                                        ),
+                                        ) +
+                                    if (
+                                        book.cloudEnabled
+                                    ) {
+                                        " · 云端"
+                                    } else {
+                                        " · 本机"
+                                    },
                                 style =
                                     MaterialTheme
                                         .typography
@@ -6142,12 +6535,17 @@ private fun LedgerManagementContent(
                         horizontalArrangement =
                             Arrangement.End
                     ) {
-                        TextButton(
-                            onClick = {
-                                renameBook = book
-                            }
+                        if (
+                            !book.cloudEnabled
                         ) {
-                            Text("改名")
+                            TextButton(
+                                onClick = {
+                                    renameBook =
+                                        book
+                                }
+                            ) {
+                                Text("改名")
+                            }
                         }
 
                         if (
@@ -6156,10 +6554,19 @@ private fun LedgerManagementContent(
                         ) {
                             TextButton(
                                 onClick = {
-                                    deleteBook = book
+                                    deleteBook =
+                                        book
                                 }
                             ) {
-                                Text("删除")
+                                Text(
+                                    if (
+                                        book.cloudEnabled
+                                    ) {
+                                        "删除本机副本"
+                                    } else {
+                                        "删除"
+                                    }
+                                )
                             }
                         }
                     }
@@ -6191,13 +6598,13 @@ private fun LedgerManagementContent(
                     Modifier.padding(12.dp)
                 ) {
                     Text(
-                        "V1.3.1 云同步",
+                        "V1.3.2 共享账本",
                         fontWeight =
                             FontWeight.Bold
                     )
 
                     Text(
-                        "• 每个账本使用独立 SQLite 数据库，互不混合。",
+                        "• 云端账本下载后仍使用独立 SQLite 数据库，不与自己的账本混在一起。",
                         style =
                             MaterialTheme
                                 .typography
@@ -6205,7 +6612,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• 每条业务数据保留全局 sync_id、版本号、修改设备和变更日志。",
+                        "• 所有者可授权可编辑或只读；可编辑账号可以跨设备修改并增量同步。",
                         style =
                             MaterialTheme
                                 .typography
@@ -6213,7 +6620,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• 当前账本已支持登录、首次上传、增量 push / pull 和服务器 cursor。",
+                        "• 只读账号只能看首页、历史、分析和报表，编辑型入口会被禁用。",
                         style =
                             MaterialTheme
                                 .typography
@@ -6223,7 +6630,9 @@ private fun LedgerManagementContent(
             }
         }
 
-        if (message.isNotBlank()) {
+        if (
+            message.isNotBlank()
+        ) {
             item {
                 Text(
                     message,
@@ -6254,12 +6663,9 @@ private fun LedgerManagementContent(
 
             if (book != null) {
                 message =
-                    "已创建“${book.name}”，切换后会使用独立数据。"
+                    "已创建“${book.name}”"
                 refresh++
                 onChanged()
-            } else {
-                message =
-                    "账本名称不能为空"
             }
         }
     }
@@ -6302,9 +6708,11 @@ private fun LedgerManagementContent(
     deleteBook?.let {
         book ->
         ConfirmDelete(
-            "删除账本“${book.name}”？" +
-                "这会删除本机该账本的独立数据库。" +
-                "V1.3.0 尚未连接云端，删除后无法从云端恢复。",
+            if (book.cloudEnabled) {
+                "删除本机的“${book.name}”副本？云端账本和其他设备数据不会删除，以后仍可重新下载。"
+            } else {
+                "删除账本“${book.name}”？这会删除本机该账本数据库。"
+            },
             {
                 deleteBook = null
             }
@@ -6315,17 +6723,473 @@ private fun LedgerManagementContent(
                 )
             ) {
                 message =
-                    "账本已删除"
+                    if (
+                        book.cloudEnabled
+                    ) {
+                        "本机副本已删除"
+                    } else {
+                        "账本已删除"
+                    }
                 refresh++
                 onChanged()
-            } else {
-                message =
-                    "当前账本或默认账本不能删除"
             }
 
             deleteBook = null
         }
     }
+
+    if (registerDialog) {
+        CloudRegisterDialog(
+            defaultServer =
+                serverUrl,
+            onDismiss = {
+                registerDialog =
+                    false
+            },
+            onRegister = {
+                baseUrl,
+                username,
+                displayName,
+                password,
+                code ->
+                runCloudTask(
+                    "正在注册账号…"
+                ) {
+                    val registered =
+                        cloudSyncManager
+                            .registerAccount(
+                                baseUrl =
+                                    baseUrl,
+                                username =
+                                    username,
+                                displayName =
+                                    displayName,
+                                password =
+                                    password,
+                                registrationCode =
+                                    code
+                            )
+
+                    "账号 $registered 注册成功"
+                }
+
+                registerDialog =
+                    false
+            }
+        )
+    }
+
+    memberBook?.let {
+        info ->
+        CloudMembersDialog(
+            book = info,
+            members =
+                cloudMembers,
+            busy = cloudBusy,
+            permissionLabel = {
+                ledgerManager
+                    .permissionLabel(it)
+            },
+            onDismiss = {
+                memberBook = null
+            },
+            onSaveMember = {
+                username,
+                role ->
+                var loaded:
+                    List<CloudMemberInfo> =
+                    emptyList()
+
+                runCloudTask(
+                    "正在保存成员权限…",
+                    {
+                        cloudSyncManager
+                            .addOrUpdateMember(
+                                bookId =
+                                    info.id,
+                                username =
+                                    username,
+                                role =
+                                    role
+                            )
+
+                        loaded =
+                            cloudSyncManager
+                                .listMembers(
+                                    info.id
+                                )
+
+                        "成员权限已保存"
+                    },
+                    {
+                        cloudMembers =
+                            loaded
+                    }
+                )
+            },
+            onRemove = {
+                member ->
+                var loaded:
+                    List<CloudMemberInfo> =
+                    emptyList()
+
+                runCloudTask(
+                    "正在移除 ${member.displayName}…",
+                    {
+                        cloudSyncManager
+                            .removeMember(
+                                bookId =
+                                    info.id,
+                                userId =
+                                    member.userId
+                            )
+
+                        loaded =
+                            cloudSyncManager
+                                .listMembers(
+                                    info.id
+                                )
+
+                        "成员已移除"
+                    },
+                    {
+                        cloudMembers =
+                            loaded
+                    }
+                )
+            }
+        )
+    }
+}
+
+@Composable
+private fun CloudRegisterDialog(
+    defaultServer: String,
+    onDismiss: () -> Unit,
+    onRegister: (
+        String,
+        String,
+        String,
+        String,
+        String
+    ) -> Unit
+) {
+    var server by remember {
+        mutableStateOf(
+            defaultServer
+        )
+    }
+    var username by remember {
+        mutableStateOf("")
+    }
+    var displayName by remember {
+        mutableStateOf("")
+    }
+    var password by remember {
+        mutableStateOf("")
+    }
+    var code by remember {
+        mutableStateOf("")
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("注册云端账号")
+        },
+        text = {
+            Column(
+                verticalArrangement =
+                    Arrangement.spacedBy(
+                        8.dp
+                    )
+            ) {
+                Text(
+                    "注册码由服务器管理员提供。",
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall,
+                    color = Color.Gray
+                )
+
+                OutlinedTextField(
+                    value = server,
+                    onValueChange = {
+                        server = it
+                    },
+                    label = {
+                        Text("服务器")
+                    },
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = {
+                        username = it
+                    },
+                    label = {
+                        Text("用户名")
+                    },
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value =
+                        displayName,
+                    onValueChange = {
+                        displayName = it
+                    },
+                    label = {
+                        Text("显示名称")
+                    },
+                    singleLine = true
+                )
+
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = {
+                        password = it
+                    },
+                    label = {
+                        Text("密码（至少8位）")
+                    },
+                    singleLine = true,
+                    visualTransformation =
+                        PasswordVisualTransformation()
+                )
+
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = {
+                        code = it
+                    },
+                    label = {
+                        Text("注册码")
+                    },
+                    singleLine = true,
+                    visualTransformation =
+                        PasswordVisualTransformation()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (
+                        username.trim()
+                            .isNotBlank() &&
+                        displayName.trim()
+                            .isNotBlank() &&
+                        password.length >= 8 &&
+                        code.trim()
+                            .isNotBlank()
+                    ) {
+                        onRegister(
+                            server,
+                            username,
+                            displayName,
+                            password,
+                            code
+                        )
+                    }
+                }
+            ) {
+                Text("注册")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss
+            ) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+private fun CloudMembersDialog(
+    book: CloudBookInfo,
+    members: List<CloudMemberInfo>,
+    busy: Boolean,
+    permissionLabel:
+        (String) -> String,
+    onDismiss: () -> Unit,
+    onSaveMember:
+        (String, String) -> Unit,
+    onRemove:
+        (CloudMemberInfo) -> Unit
+) {
+    var username by remember(book.id) {
+        mutableStateOf("")
+    }
+    var role by remember(book.id) {
+        mutableStateOf("EDITOR")
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                "成员权限 · ${book.name}"
+            )
+        },
+        text = {
+            Column(
+                verticalArrangement =
+                    Arrangement.spacedBy(
+                        8.dp
+                    )
+            ) {
+                Text(
+                    "输入已经注册的用户名。重复添加同一用户会直接修改权限。",
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall,
+                    color = Color.Gray
+                )
+
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = {
+                        username = it
+                    },
+                    label = {
+                        Text("用户名")
+                    },
+                    singleLine = true
+                )
+
+                Row(
+                    horizontalArrangement =
+                        Arrangement.spacedBy(
+                            8.dp
+                        )
+                ) {
+                    FilterChip(
+                        selected =
+                            role ==
+                                "EDITOR",
+                        onClick = {
+                            role =
+                                "EDITOR"
+                        },
+                        label = {
+                            Text("可编辑")
+                        }
+                    )
+
+                    FilterChip(
+                        selected =
+                            role ==
+                                "VIEWER",
+                        onClick = {
+                            role =
+                                "VIEWER"
+                        },
+                        label = {
+                            Text("只读")
+                        }
+                    )
+                }
+
+                Button(
+                    onClick = {
+                        onSaveMember(
+                            username.trim(),
+                            role
+                        )
+                        username = ""
+                    },
+                    enabled =
+                        !busy &&
+                            username.trim()
+                                .isNotBlank(),
+                    modifier =
+                        Modifier.fillMaxWidth()
+                ) {
+                    Text("添加 / 修改权限")
+                }
+
+                HorizontalDivider()
+
+                Text(
+                    "当前成员",
+                    fontWeight =
+                        FontWeight.Bold
+                )
+
+                if (members.isEmpty()) {
+                    Text(
+                        "暂无成员数据",
+                        color = Color.Gray
+                    )
+                }
+
+                members.forEach {
+                    member ->
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment =
+                            Alignment.CenterVertically
+                    ) {
+                        Column(
+                            Modifier.weight(1f)
+                        ) {
+                            Text(
+                                "${member.displayName}（${member.username}）"
+                            )
+                            Text(
+                                permissionLabel(
+                                    member.role
+                                ),
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .bodySmall,
+                                color =
+                                    if (
+                                        member.role ==
+                                        "OWNER"
+                                    ) {
+                                        BrandGreen
+                                    } else {
+                                        Color.Gray
+                                    }
+                            )
+                        }
+
+                        if (
+                            member.role !=
+                            "OWNER"
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    onRemove(
+                                        member
+                                    )
+                                },
+                                enabled =
+                                    !busy
+                            ) {
+                                Text("移除")
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onDismiss
+            ) {
+                Text("完成")
+            }
+        }
+    )
 }
 
 @Composable
@@ -6428,6 +7292,7 @@ private fun SubPage(title: String, back: () -> Unit, content: @Composable () -> 
 private fun HistoryContent(
     db: AppDatabase,
     dataVersion: Int,
+    canEdit: Boolean,
     onChanged: () -> Unit
 ) {
     var timeFilter by remember {
@@ -6675,10 +7540,14 @@ private fun HistoryContent(
                     )
                 }
 
-                TextButton(
-                    onClick = { deleteSession = s }
-                ) {
-                    Text("删除")
+                if (canEdit) {
+                    TextButton(
+                        onClick = {
+                            deleteSession = s
+                        }
+                    ) {
+                        Text("删除")
+                    }
                 }
             }
         }
@@ -6727,10 +7596,14 @@ private fun HistoryContent(
                             )
                         }
 
-                        TextButton(
-                            onClick = { deleteOrder = p }
-                        ) {
-                            Text("删除")
+                        if (canEdit) {
+                            TextButton(
+                                onClick = {
+                                    deleteOrder = p
+                                }
+                            ) {
+                                Text("删除")
+                            }
                         }
                     }
 
@@ -6868,8 +7741,9 @@ private fun HistoryContent(
         }
     }
 
-    deleteOrder?.let { p ->
-        ConfirmDelete(
+    if (canEdit) {
+        deleteOrder?.let { p ->
+            ConfirmDelete(
             "删除这张进货单？",
             { deleteOrder = null }
         ) {
@@ -6888,6 +7762,7 @@ private fun HistoryContent(
             deleteSession = null
             onChanged()
         }
+    }
     }
 }
 
