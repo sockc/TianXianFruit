@@ -6142,20 +6142,22 @@ private fun LedgerManagementContent(
                         Button(
                             onClick = {
                                 runCloudTask(
-                                    "正在同步“${currentBook.name}”…"
-                                ) {
-                                    cloudSyncManager
-                                        .syncCurrentBook(
-                                            db = db,
-                                            book =
-                                                ledgerManager
-                                                    .getBook(
-                                                        currentBook.id
-                                                    )
-                                                    ?: currentBook
-                                        )
-                                        .message
-                                }
+                                    busyText =
+                                        "正在同步“${currentBook.name}”…",
+                                    block = {
+                                        cloudSyncManager
+                                            .syncCurrentBook(
+                                                db = db,
+                                                book =
+                                                    ledgerManager
+                                                        .getBook(
+                                                            currentBook.id
+                                                        )
+                                                        ?: currentBook
+                                            )
+                                            .message
+                                    }
+                                )
                             },
                             enabled =
                                 !cloudBusy,
@@ -6381,14 +6383,16 @@ private fun LedgerManagementContent(
                                 TextButton(
                                     onClick = {
                                         runCloudTask(
-                                            "正在下载“${info.name}”…"
-                                        ) {
-                                            cloudSyncManager
-                                                .downloadCloudBook(
-                                                    info
-                                                )
-                                                .message
-                                        }
+                                            busyText =
+                                                "正在下载“${info.name}”…",
+                                            block = {
+                                                cloudSyncManager
+                                                    .downloadCloudBook(
+                                                        info
+                                                    )
+                                                    .message
+                                            }
+                                        )
                                     },
                                     enabled =
                                         !cloudBusy
@@ -6753,25 +6757,27 @@ private fun LedgerManagementContent(
                 password,
                 code ->
                 runCloudTask(
-                    "正在注册账号…"
-                ) {
-                    val registered =
-                        cloudSyncManager
-                            .registerAccount(
-                                baseUrl =
-                                    baseUrl,
-                                username =
-                                    username,
-                                displayName =
-                                    displayName,
-                                password =
-                                    password,
-                                registrationCode =
-                                    code
-                            )
+                    busyText =
+                        "正在注册账号…",
+                    block = {
+                        val registered =
+                            cloudSyncManager
+                                .registerAccount(
+                                    baseUrl =
+                                        baseUrl,
+                                    username =
+                                        username,
+                                    displayName =
+                                        displayName,
+                                    password =
+                                        password,
+                                    registrationCode =
+                                        code
+                                )
 
-                    "账号 $registered 注册成功"
-                }
+                        "账号 $registered 注册成功"
+                    }
+                )
 
                 registerDialog =
                     false
