@@ -910,7 +910,7 @@ class AppDatabase(
                         "updated_at=" +
                         "CASE WHEN updated_at<=0 " +
                         "THEN ? ELSE updated_at END",
-                    arrayOf(
+                    arrayOf<Any?>(
                         deviceId,
                         now
                     )
@@ -970,7 +970,7 @@ class AppDatabase(
                 updated_at
             ) VALUES(1,?,?,?,?,?)
             """.trimIndent(),
-            arrayOf(
+            arrayOf<Any?>(
                 ledgerId,
                 ledgerName,
                 deviceId,
@@ -1007,7 +1007,7 @@ class AppDatabase(
                     updated_at
                 ) VALUES(?,?,?,?,?)
                 """.trimIndent(),
-                arrayOf(
+                arrayOf<Any?>(
                     ledgerId,
                     ledgerName,
                     deviceId,
@@ -1023,7 +1023,7 @@ class AppDatabase(
                     updated_at=?
                 WHERE book_id=?
                 """.trimIndent(),
-                arrayOf(
+                arrayOf<Any?>(
                     ledgerName,
                     now,
                     ledgerId
@@ -1333,7 +1333,7 @@ class AppDatabase(
                 updated_at=?
             WHERE book_id=?
             """.trimIndent(),
-            arrayOf(
+            arrayOf<Any?>(
                 clean,
                 System.currentTimeMillis(),
                 ledgerId
@@ -1347,7 +1347,7 @@ class AppDatabase(
                 updated_at=?
             WHERE id=1
             """.trimIndent(),
-            arrayOf(
+            arrayOf<Any?>(
                 clean,
                 System.currentTimeMillis()
             )
