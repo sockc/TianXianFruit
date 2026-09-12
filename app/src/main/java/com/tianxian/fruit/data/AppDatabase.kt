@@ -298,6 +298,18 @@ data class CloudSyncLocalStatus(
     val lastError: String
 )
 
+data class SyncConflictRecord(
+    val id: Long,
+    val tableName: String,
+    val recordSyncId: String,
+    val localVersion: Long,
+    val serverVersion: Long,
+    val serverDeleted: Boolean,
+    val localPayload: String,
+    val serverPayload: String,
+    val detectedAt: Long
+)
+
 class AppDatabase(
     context: Context,
     val dbFileName: String = DB_NAME,
@@ -336,6 +348,7 @@ class AppDatabase(
         )
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
+        createV11ConflictSupport(db)
 
         if (seedDefaults) {
             seedFruits(db)
@@ -361,6 +374,9 @@ class AppDatabase(
         }
         if (oldVersion < 10) {
             createV10SyncTriggerFix(db)
+        }
+        if (oldVersion < 11) {
+            createV11ConflictSupport(db)
         }
     }
 
@@ -1132,6 +1148,33 @@ class AppDatabase(
         createSyncTriggers(db)
     }
 
+    private fun createV11ConflictSupport(
+        db: SQLiteDatabase
+    ) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS sync_conflict(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                table_name TEXT NOT NULL,
+                record_sync_id TEXT NOT NULL,
+                local_version INTEGER NOT NULL,
+                server_version INTEGER NOT NULL,
+                server_deleted INTEGER NOT NULL DEFAULT 0,
+                local_payload TEXT NOT NULL DEFAULT '{}',
+                server_payload TEXT NOT NULL DEFAULT '{}',
+                detected_at INTEGER NOT NULL,
+                UNIQUE(table_name,record_sync_id)
+            )
+            """.trimIndent()
+        )
+
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS " +
+                "idx_sync_conflict_detected " +
+                "ON sync_conflict(detected_at)"
+        )
+    }
+
     private fun createSyncTriggers(
         db: SQLiteDatabase
     ) {
@@ -1556,6 +1599,298 @@ class AppDatabase(
         )
     }
 
+    fun saveSyncConflict(
+        tableName: String,
+        syncId: String,
+        localVersion: Long,
+        serverVersion: Long,
+        serverDeleted: Boolean,
+        serverPayload: JSONObject
+    ) {
+        if (
+            tableName !in
+                syncableTables()
+        ) {
+            return
+        }
+
+        val localPayload =
+            getSyncPayload(
+                tableName,
+                syncId
+            )
+                ?: JSONObject()
+
+        writableDatabase.execSQL(
+            """
+            INSERT INTO sync_conflict(
+                table_name,
+                record_sync_id,
+                local_version,
+                server_version,
+                server_deleted,
+                local_payload,
+                server_payload,
+                detected_at
+            ) VALUES(?,?,?,?,?,?,?,?)
+            ON CONFLICT(table_name,record_sync_id)
+            DO UPDATE SET
+                local_version=excluded.local_version,
+                server_version=excluded.server_version,
+                server_deleted=excluded.server_deleted,
+                local_payload=excluded.local_payload,
+                server_payload=excluded.server_payload,
+                detected_at=excluded.detected_at
+            """.trimIndent(),
+            arrayOf<Any?>(
+                tableName,
+                syncId,
+                localVersion,
+                serverVersion,
+                if (serverDeleted) 1 else 0,
+                localPayload.toString(),
+                serverPayload.toString(),
+                System.currentTimeMillis()
+            )
+        )
+    }
+
+    fun getSyncConflicts():
+        List<SyncConflictRecord> =
+        readableDatabase.rawQuery(
+            """
+            SELECT
+                id,
+                table_name,
+                record_sync_id,
+                local_version,
+                server_version,
+                server_deleted,
+                local_payload,
+                server_payload,
+                detected_at
+            FROM sync_conflict
+            ORDER BY detected_at
+            """.trimIndent(),
+            null
+        ).use {
+            c ->
+            buildList {
+                while (c.moveToNext()) {
+                    add(
+                        SyncConflictRecord(
+                            id =
+                                c.long("id"),
+                            tableName =
+                                c.str(
+                                    "table_name"
+                                ),
+                            recordSyncId =
+                                c.str(
+                                    "record_sync_id"
+                                ),
+                            localVersion =
+                                c.long(
+                                    "local_version"
+                                ),
+                            serverVersion =
+                                c.long(
+                                    "server_version"
+                                ),
+                            serverDeleted =
+                                c.int(
+                                    "server_deleted"
+                                ) == 1,
+                            localPayload =
+                                c.str(
+                                    "local_payload"
+                                ),
+                            serverPayload =
+                                c.str(
+                                    "server_payload"
+                                ),
+                            detectedAt =
+                                c.long(
+                                    "detected_at"
+                                )
+                        )
+                    )
+                }
+            }
+        }
+
+    fun getSyncConflictCount(): Int =
+        readableDatabase.rawQuery(
+            "SELECT COUNT(*) AS c " +
+                "FROM sync_conflict",
+            null
+        ).use {
+            c ->
+            if (c.moveToFirst()) {
+                c.int("c")
+            } else {
+                0
+            }
+        }
+
+    fun clearSyncConflict(
+        tableName: String,
+        syncId: String
+    ) {
+        writableDatabase.delete(
+            "sync_conflict",
+            "table_name=? " +
+                "AND record_sync_id=?",
+            arrayOf(
+                tableName,
+                syncId
+            )
+        )
+    }
+
+    fun resolveConflictUseCloud(
+        conflict: SyncConflictRecord
+    ) {
+        val payload =
+            runCatching {
+                JSONObject(
+                    conflict.serverPayload
+                )
+            }.getOrDefault(
+                JSONObject()
+            )
+
+        markRecordChangesUploaded(
+            conflict.tableName,
+            conflict.recordSyncId
+        )
+
+        applyRemoteRecord(
+            tableName =
+                conflict.tableName,
+            syncId =
+                conflict.recordSyncId,
+            rowVersion =
+                conflict.serverVersion,
+            operation =
+                if (
+                    conflict.serverDeleted
+                ) {
+                    "DELETE"
+                } else {
+                    "UPSERT"
+                },
+            payload = payload,
+            modifiedBy =
+                "cloud-conflict",
+            force = true
+        )
+
+        clearSyncConflict(
+            conflict.tableName,
+            conflict.recordSyncId
+        )
+    }
+
+    fun completeLocalConflictResolution(
+        conflict: SyncConflictRecord,
+        acceptedVersion: Long
+    ) {
+        val db =
+            writableDatabase
+
+        db.beginTransaction()
+
+        try {
+            setRemoteApply(
+                db,
+                true
+            )
+
+            db.update(
+                conflict.tableName,
+                ContentValues().apply {
+                    put(
+                        "row_version",
+                        acceptedVersion
+                    )
+                    put(
+                        "modified_by",
+                        deviceId
+                    )
+                    put(
+                        "sync_status",
+                        0
+                    )
+                    put(
+                        "updated_at",
+                        System.currentTimeMillis()
+                    )
+                },
+                "sync_id=?",
+                arrayOf(
+                    conflict.recordSyncId
+                )
+            )
+
+            db.execSQL(
+                """
+                UPDATE sync_change_log
+                SET uploaded=1
+                WHERE table_name=?
+                  AND record_sync_id=?
+                """.trimIndent(),
+                arrayOf<Any?>(
+                    conflict.tableName,
+                    conflict.recordSyncId
+                )
+            )
+
+            db.delete(
+                "sync_conflict",
+                "table_name=? " +
+                    "AND record_sync_id=?",
+                arrayOf(
+                    conflict.tableName,
+                    conflict.recordSyncId
+                )
+            )
+
+            setRemoteApply(
+                db,
+                false
+            )
+
+            db.setTransactionSuccessful()
+        } finally {
+            runCatching {
+                setRemoteApply(
+                    db,
+                    false
+                )
+            }
+            db.endTransaction()
+        }
+    }
+
+    private fun markRecordChangesUploaded(
+        tableName: String,
+        syncId: String
+    ) {
+        writableDatabase.execSQL(
+            """
+            UPDATE sync_change_log
+            SET uploaded=1
+            WHERE table_name=?
+              AND record_sync_id=?
+            """.trimIndent(),
+            arrayOf<Any?>(
+                tableName,
+                syncId
+            )
+        )
+    }
+
     fun applyRemoteSyncEvent(
         tableName: String,
         syncId: String,
@@ -1563,6 +1898,32 @@ class AppDatabase(
         operation: String,
         payload: JSONObject,
         modifiedBy: String
+    ) {
+        applyRemoteRecord(
+            tableName =
+                tableName,
+            syncId =
+                syncId,
+            rowVersion =
+                rowVersion,
+            operation =
+                operation,
+            payload =
+                payload,
+            modifiedBy =
+                modifiedBy,
+            force = false
+        )
+    }
+
+    private fun applyRemoteRecord(
+        tableName: String,
+        syncId: String,
+        rowVersion: Long,
+        operation: String,
+        payload: JSONObject,
+        modifiedBy: String,
+        force: Boolean
     ) {
         if (
             tableName !in
@@ -1590,6 +1951,7 @@ class AppDatabase(
             }
 
         if (
+            !force &&
             existingState != null &&
             existingState.second >=
                 rowVersion
@@ -3929,7 +4291,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 10
+        const val DB_VERSION = 11
     }
 }
 

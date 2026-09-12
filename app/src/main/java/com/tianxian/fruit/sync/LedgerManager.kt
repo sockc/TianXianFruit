@@ -299,6 +299,36 @@ class LedgerManager(
         return updatedBook
     }
 
+    fun markCloudAccessRevoked(
+        bookId: String
+    ): Boolean {
+        var changed = false
+        val now =
+            System.currentTimeMillis()
+
+        val updated =
+            books().map {
+                if (it.id == bookId) {
+                    changed = true
+                    it.copy(
+                        permission =
+                            "REVOKED",
+                        cloudEnabled =
+                            false,
+                        updatedAt = now
+                    )
+                } else {
+                    it
+                }
+            }
+
+        if (changed) {
+            saveBooks(updated)
+        }
+
+        return changed
+    }
+
     fun updateCloudMetadata(
         bookId: String,
         name: String,
@@ -389,6 +419,8 @@ class LedgerManager(
             "OWNER" -> "所有者"
             "EDITOR" -> "可编辑"
             "VIEWER" -> "只读"
+            "REVOKED" ->
+                "已失去云端权限"
             else -> permission
         }
 

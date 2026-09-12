@@ -6,6 +6,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.core.view.WindowCompat
 import com.tianxian.fruit.data.AppDatabase
+import com.tianxian.fruit.sync.CloudSyncManager
+import com.tianxian.fruit.sync.LedgerBook
 import com.tianxian.fruit.sync.LedgerManager
 import com.tianxian.fruit.ui.TianXianApp
 
@@ -13,6 +15,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var db: AppDatabase
     private lateinit var ledgerManager:
         LedgerManager
+    private lateinit var cloudSyncManager:
+        CloudSyncManager
+    private lateinit var currentBook:
+        LedgerBook
 
     override fun onCreate(
         savedInstanceState: Bundle?
@@ -39,8 +45,14 @@ class MainActivity : ComponentActivity() {
                 applicationContext
             )
 
-        val currentBook =
+        currentBook =
             ledgerManager.currentBook()
+
+        cloudSyncManager =
+            CloudSyncManager(
+                applicationContext,
+                ledgerManager
+            )
 
         db =
             AppDatabase(
@@ -63,6 +75,8 @@ class MainActivity : ComponentActivity() {
                 db = db,
                 ledgerManager =
                     ledgerManager,
+                cloudSyncManager =
+                    cloudSyncManager,
                 currentBook =
                     currentBook,
                 onSwitchBook = {
@@ -82,10 +96,31 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+
+        if (
+            ::cloudSyncManager.isInitialized &&
+            ::currentBook.isInitialized
+        ) {
+            cloudSyncManager
+                .scheduleAutoSync(
+                    currentBook
+                )
+        }
+    }
+
     override fun onDestroy() {
+        if (
+            ::cloudSyncManager.isInitialized
+        ) {
+            cloudSyncManager.shutdown()
+        }
+
         if (::db.isInitialized) {
             db.close()
         }
+
         super.onDestroy()
     }
 }

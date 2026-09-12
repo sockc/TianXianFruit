@@ -3,6 +3,7 @@ package com.tianxian.fruit.sync
 import android.content.Context
 import com.tianxian.fruit.data.AppDatabase
 import com.tianxian.fruit.data.SyncChangeRecord
+import com.tianxian.fruit.data.SyncConflictRecord
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -11,6 +12,8 @@ import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class CloudSession(
     val baseUrl: String,
@@ -32,6 +35,19 @@ data class CloudMemberInfo(
     val username: String,
     val displayName: String,
     val role: String
+)
+
+data class CloudAuditInfo(
+    val id: Long,
+    val username: String,
+    val displayName: String,
+    val deviceName: String,
+    val action: String,
+    val tableName: String,
+    val syncId: String,
+    val beforePayload: JSONObject?,
+    val afterPayload: JSONObject?,
+    val createdAt: String
 )
 
 data class CloudSyncResult(
@@ -59,6 +75,18 @@ class CloudSyncManager(
             PREFS_NAME,
             Context.MODE_PRIVATE
         )
+
+    private val autoExecutor =
+        Executors.newSingleThreadExecutor()
+
+    private val autoRunning =
+        AtomicBoolean(false)
+
+    @Volatile
+    private var autoPending = false
+
+    @Volatile
+    private var closed = false
 
     fun defaultBaseUrl(): String =
         prefs.getString(
@@ -405,6 +433,95 @@ class CloudSyncManager(
         }
     }
 
+    fun listAudit(
+        bookId: String,
+        limit: Int = 100
+    ): List<CloudAuditInfo> {
+        val current =
+            requireSession()
+
+        val encoded =
+            URLEncoder.encode(
+                bookId,
+                "UTF-8"
+            )
+
+        val array =
+            requestJson(
+                baseUrl =
+                    current.baseUrl,
+                method = "GET",
+                path =
+                    "/api/v1/books/" +
+                        "$encoded/audit" +
+                        "?limit=$limit",
+                body = null,
+                token = current.token
+            ) as JSONArray
+
+        return buildList {
+            for (
+                i in 0 until
+                    array.length()
+            ) {
+                val item =
+                    array.getJSONObject(i)
+
+                add(
+                    CloudAuditInfo(
+                        id =
+                            item.getLong(
+                                "id"
+                            ),
+                        username =
+                            item.optString(
+                                "username",
+                                ""
+                            ),
+                        displayName =
+                            item.optString(
+                                "display_name",
+                                ""
+                            ),
+                        deviceName =
+                            item.optString(
+                                "device_name",
+                                ""
+                            ),
+                        action =
+                            item.optString(
+                                "action",
+                                ""
+                            ),
+                        tableName =
+                            item.optString(
+                                "table_name",
+                                ""
+                            ),
+                        syncId =
+                            item.optString(
+                                "sync_id",
+                                ""
+                            ),
+                        beforePayload =
+                            item.optJSONObject(
+                                "before_payload"
+                            ),
+                        afterPayload =
+                            item.optJSONObject(
+                                "after_payload"
+                            ),
+                        createdAt =
+                            item.optString(
+                                "created_at",
+                                ""
+                            )
+                    )
+                )
+            }
+        }
+    }
+
     fun addOrUpdateMember(
         bookId: String,
         username: String,
@@ -555,6 +672,290 @@ class CloudSyncManager(
             )
 
         return result
+    }
+
+    fun scheduleAutoSync(
+        book: LedgerBook
+    ) {
+        if (
+            closed ||
+            session() == null
+        ) {
+            return
+        }
+
+        autoPending = true
+
+        if (
+            !autoRunning.compareAndSet(
+                false,
+                true
+            )
+        ) {
+            return
+        }
+
+        autoExecutor.execute {
+            try {
+                while (
+                    !closed &&
+                    autoPending
+                ) {
+                    autoPending = false
+
+                    try {
+                        Thread.sleep(
+                            AUTO_SYNC_DEBOUNCE_MS
+                        )
+                    } catch (
+                        _: InterruptedException
+                    ) {
+                        return@execute
+                    }
+
+                    val liveBook =
+                        ledgerManager
+                            .getBook(
+                                book.id
+                            )
+                            ?: book
+
+                    if (
+                        liveBook.permission ==
+                        "REVOKED"
+                    ) {
+                        continue
+                    }
+
+                    val localDb =
+                        AppDatabase(
+                            context =
+                                appContext,
+                            dbFileName =
+                                liveBook.databaseName,
+                            ledgerId =
+                                liveBook.id,
+                            ledgerName =
+                                liveBook.name,
+                            deviceId =
+                                ledgerManager.deviceId,
+                            deviceName =
+                                ledgerManager.deviceName,
+                            seedDefaults = false
+                        )
+
+                    try {
+                        syncCurrentBook(
+                            db = localDb,
+                            book = liveBook
+                        )
+                    } catch (
+                        error: Throwable
+                    ) {
+                        localDb.setLastCloudSync(
+                            localDb
+                                .getLastCloudSyncAt(),
+                            error.message
+                                ?: error.javaClass
+                                    .simpleName
+                        )
+                    } finally {
+                        localDb.close()
+                    }
+                }
+            } finally {
+                autoRunning.set(false)
+
+                if (
+                    autoPending &&
+                    !closed
+                ) {
+                    scheduleAutoSync(book)
+                }
+            }
+        }
+    }
+
+    fun shutdown() {
+        closed = true
+        autoPending = false
+        autoExecutor.shutdownNow()
+    }
+
+    fun resolveConflictUseCloud(
+        db: AppDatabase,
+        book: LedgerBook,
+        conflict: SyncConflictRecord
+    ): CloudSyncResult {
+        db.resolveConflictUseCloud(
+            conflict
+        )
+
+        return syncCurrentBook(
+            db,
+            book
+        )
+    }
+
+    fun resolveConflictUseLocal(
+        db: AppDatabase,
+        book: LedgerBook,
+        conflict: SyncConflictRecord
+    ): CloudSyncResult {
+        val current =
+            requireSession()
+
+        verifyLogin()
+        registerDevice(current)
+
+        val cloudBook =
+            resolveCloudBook(
+                current,
+                book
+            )
+
+        if (
+            cloudBook.role !=
+                "OWNER" &&
+            cloudBook.role !=
+                "EDITOR"
+        ) {
+            throw CloudApiException(
+                403,
+                "当前账号没有修改该账本的权限"
+            )
+        }
+
+        val localPayload =
+            db.getSyncPayload(
+                conflict.tableName,
+                conflict.recordSyncId
+            )
+                ?: throw IllegalStateException(
+                    "本机记录已经不存在"
+                )
+
+        val nextVersion =
+            conflict.serverVersion + 1
+
+        val operation =
+            if (
+                localPayload.optInt(
+                    "deleted",
+                    0
+                ) == 1
+            ) {
+                "DELETE"
+            } else {
+                "UPSERT"
+            }
+
+        val change =
+            JSONObject().apply {
+                put(
+                    "table_name",
+                    conflict.tableName
+                )
+                put(
+                    "sync_id",
+                    conflict.recordSyncId
+                )
+                put(
+                    "row_version",
+                    nextVersion
+                )
+                put(
+                    "operation",
+                    operation
+                )
+                put(
+                    "payload",
+                    localPayload
+                )
+            }
+
+        val response =
+            requestJson(
+                baseUrl =
+                    current.baseUrl,
+                method = "POST",
+                path =
+                    "/api/v1/sync/push",
+                body =
+                    JSONObject().apply {
+                        put(
+                            "book_id",
+                            book.id
+                        )
+                        put(
+                            "device_id",
+                            ledgerManager.deviceId
+                        )
+                        put(
+                            "changes",
+                            JSONArray().apply {
+                                put(change)
+                            }
+                        )
+                    },
+                token = current.token
+            ) as JSONObject
+
+        val conflicts =
+            response.getJSONArray(
+                "conflicts"
+            )
+
+        if (conflicts.length() > 0) {
+            val item =
+                conflicts.getJSONObject(0)
+
+            db.saveSyncConflict(
+                tableName =
+                    item.getString(
+                        "table_name"
+                    ),
+                syncId =
+                    item.getString(
+                        "sync_id"
+                    ),
+                localVersion =
+                    item.getLong(
+                        "incoming_version"
+                    ),
+                serverVersion =
+                    item.getLong(
+                        "server_version"
+                    ),
+                serverDeleted =
+                    item.optBoolean(
+                        "server_deleted",
+                        false
+                    ),
+                serverPayload =
+                    item.optJSONObject(
+                        "server_payload"
+                    )
+                        ?: JSONObject()
+            )
+
+            throw CloudApiException(
+                409,
+                "云端在处理冲突期间又发生了变化，请重新选择"
+            )
+        }
+
+        db.completeLocalConflictResolution(
+            conflict =
+                conflict,
+            acceptedVersion =
+                nextVersion
+        )
+
+        return syncCurrentBook(
+            db,
+            book
+        )
     }
 
     fun downloadCloudBook(
@@ -712,11 +1113,32 @@ class CloudSyncManager(
                             .size
                 }
 
+                pushResult.conflicts
+                    .forEach {
+                        conflict ->
+                        db.saveSyncConflict(
+                            tableName =
+                                conflict.tableName,
+                            syncId =
+                                conflict.syncId,
+                            localVersion =
+                                conflict.incomingVersion,
+                            serverVersion =
+                                conflict.serverVersion,
+                            serverDeleted =
+                                conflict.serverDeleted,
+                            serverPayload =
+                                conflict.serverPayload
+                        )
+                    }
+
                 conflictCount +=
                     pushResult.conflicts
+                        .size
 
                 if (
-                    pushResult.conflicts > 0 ||
+                    pushResult.conflicts
+                        .isNotEmpty() ||
                     pushResult
                         .acceptedLocalIds
                         .isEmpty()
@@ -825,11 +1247,19 @@ class CloudSyncManager(
         }
 
         if (
+            book.cloudEnabled ||
+            book.cloudBookId
+                .isNotBlank() ||
             book.permission != "OWNER"
         ) {
+            ledgerManager
+                .markCloudAccessRevoked(
+                    book.id
+                )
+
             throw CloudApiException(
                 403,
-                "该共享账本已不在你的云端权限列表中"
+                "该账本的云端访问权限已被移除；本机副本仍保留为只读查看"
             )
         }
 
@@ -955,10 +1385,20 @@ class CloudSyncManager(
         )
     }
 
+    private data class ServerConflictInfo(
+        val tableName: String,
+        val syncId: String,
+        val incomingVersion: Long,
+        val serverVersion: Long,
+        val serverDeleted: Boolean,
+        val serverPayload: JSONObject
+    )
+
     private data class PushBatchResult(
         val acceptedLocalIds:
             List<Long>,
-        val conflicts: Int
+        val conflicts:
+            List<ServerConflictInfo>
     )
 
     private fun pushBatch(
@@ -1071,15 +1511,59 @@ class CloudSyncManager(
                 it.id
             }
 
+        val conflictArray =
+            response.getJSONArray(
+                "conflicts"
+            )
+
+        val conflicts =
+            buildList {
+                for (
+                    i in 0 until
+                        conflictArray.length()
+                ) {
+                    val item =
+                        conflictArray
+                            .getJSONObject(i)
+
+                    add(
+                        ServerConflictInfo(
+                            tableName =
+                                item.getString(
+                                    "table_name"
+                                ),
+                            syncId =
+                                item.getString(
+                                    "sync_id"
+                                ),
+                            incomingVersion =
+                                item.getLong(
+                                    "incoming_version"
+                                ),
+                            serverVersion =
+                                item.getLong(
+                                    "server_version"
+                                ),
+                            serverDeleted =
+                                item.optBoolean(
+                                    "server_deleted",
+                                    false
+                                ),
+                            serverPayload =
+                                item.optJSONObject(
+                                    "server_payload"
+                                )
+                                    ?: JSONObject()
+                        )
+                    )
+                }
+            }
+
         return PushBatchResult(
             acceptedLocalIds =
                 acceptedLocalIds,
             conflicts =
-                response
-                    .getJSONArray(
-                        "conflicts"
-                    )
-                    .length()
+                conflicts
         )
     }
 
@@ -1350,6 +1834,9 @@ class CloudSyncManager(
             "https://sync.830888.xyz"
 
         private const val APP_VERSION =
-            "1.3.2"
+            "1.3.3"
+
+        private const val AUTO_SYNC_DEBOUNCE_MS =
+            800L
     }
 }

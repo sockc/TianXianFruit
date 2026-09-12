@@ -11,6 +11,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.lazy.LazyColumn
@@ -39,9 +41,11 @@ import com.tianxian.fruit.report.ReportLineStyle
 import com.tianxian.fruit.sync.LedgerBook
 import com.tianxian.fruit.sync.LedgerManager
 import com.tianxian.fruit.sync.CloudApiException
+import com.tianxian.fruit.sync.CloudAuditInfo
 import com.tianxian.fruit.sync.CloudBookInfo
 import com.tianxian.fruit.sync.CloudMemberInfo
 import com.tianxian.fruit.sync.CloudSyncManager
+import org.json.JSONObject
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -110,26 +114,50 @@ private data class PurchaseDraftRow(
 fun TianXianApp(
     db: AppDatabase,
     ledgerManager: LedgerManager,
+    cloudSyncManager: CloudSyncManager,
     currentBook: LedgerBook,
     onSwitchBook: (String) -> Unit
 ) {
-    val context =
-        LocalContext.current
-    val cloudSyncManager =
-        remember {
-            CloudSyncManager(
-                context.applicationContext,
-                ledgerManager
+    var page by remember {
+        mutableStateOf(
+            AppPage.HOME
+        )
+    }
+    var moreTarget by remember {
+        mutableStateOf(
+            MorePage.MENU
+        )
+    }
+    var dataVersion by remember {
+        mutableIntStateOf(0)
+    }
+
+    val liveCurrentBook =
+        ledgerManager
+            .getBook(
+                currentBook.id
             )
-        }
+            ?: currentBook
 
     val canEdit =
-        currentBook.permission !=
-            "VIEWER"
+        liveCurrentBook.permission ==
+            "OWNER" ||
+            liveCurrentBook.permission ==
+                "EDITOR"
 
-    var page by remember { mutableStateOf(AppPage.HOME) }
-    var moreTarget by remember { mutableStateOf(MorePage.MENU) }
-    var dataVersion by remember { mutableIntStateOf(0) }
+    fun notifyDataChanged() {
+        dataVersion++
+
+        if (
+            cloudSyncManager
+                .session() != null
+        ) {
+            cloudSyncManager
+                .scheduleAutoSync(
+                    liveCurrentBook
+                )
+        }
+    }
 
     BackHandler(enabled = page != AppPage.HOME) { page = AppPage.HOME }
 
@@ -175,7 +203,7 @@ fun TianXianApp(
                     AppPage.HOME -> HomeScreen(
                         db = db,
                         dataVersion = dataVersion,
-                        bookName = currentBook.name,
+                        bookName = liveCurrentBook.name,
                         onPurchase = {
                             if (canEdit) {
                                 page =
@@ -223,10 +251,10 @@ fun TianXianApp(
                         onFruits = { moreTarget = MorePage.FRUITS; page = AppPage.MORE },
                         onMore = { moreTarget = MorePage.MENU; page = AppPage.MORE }
                     )
-                    AppPage.PURCHASE -> PurchaseScreen(db, dataVersion) { dataVersion++ }
-                    AppPage.PLAN -> PurchasePlanScreen(db, dataVersion) { dataVersion++ }
-                    AppPage.SESSION -> SessionScreen(db, dataVersion) { dataVersion++ }
-                    AppPage.SETTLEMENT -> SettlementScreen(db, dataVersion) { dataVersion++ }
+                    AppPage.PURCHASE -> PurchaseScreen(db, dataVersion) { notifyDataChanged() }
+                    AppPage.PLAN -> PurchasePlanScreen(db, dataVersion) { notifyDataChanged() }
+                    AppPage.SESSION -> SessionScreen(db, dataVersion) { notifyDataChanged() }
+                    AppPage.SETTLEMENT -> SettlementScreen(db, dataVersion) { notifyDataChanged() }
                     AppPage.MORE -> MoreScreen(
                         db = db,
                         dataVersion = dataVersion,
@@ -236,7 +264,7 @@ fun TianXianApp(
                         cloudSyncManager =
                             cloudSyncManager,
                         currentBook =
-                            currentBook,
+                            liveCurrentBook,
                         canEdit =
                             canEdit,
                         onSwitchBook =
@@ -245,7 +273,7 @@ fun TianXianApp(
                             page = AppPage.PLAN
                         },
                         onChanged = {
-                            dataVersion++
+                            notifyDataChanged()
                         }
                     )
                 }
@@ -3836,7 +3864,14 @@ private fun MoreScreen(
                                 )
                         ) {
                             Text(
-                                "当前为只读共享账本：可查看首页、历史、分析和报表，不能修改经营数据。",
+                                if (
+                                    currentBook.permission ==
+                                    "REVOKED"
+                                ) {
+                                    "当前账本已失去云端访问权限：本机副本仍可查看，但不能继续同步或修改。"
+                                } else {
+                                    "当前为只读共享账本：可查看首页、历史、分析和报表，不能修改经营数据。"
+                                },
                                 modifier =
                                     Modifier.padding(
                                         14.dp
@@ -5664,6 +5699,31 @@ private fun LedgerManagementContent(
                 ?: currentBook
         }
 
+    val conflicts =
+        remember(
+            refresh,
+            cloudRefresh
+        ) {
+            db.getSyncConflicts()
+        }
+
+    var showSyncDetails by remember {
+        mutableStateOf(false)
+    }
+    var showConflictDialog by remember {
+        mutableStateOf(false)
+    }
+    var showAuditDialog by remember {
+        mutableStateOf(false)
+    }
+    var auditRows by remember {
+        mutableStateOf<
+            List<CloudAuditInfo>
+        >(
+            emptyList()
+        )
+    }
+
     var cloudBooks by remember {
         mutableStateOf<
             List<CloudBookInfo>
@@ -5823,6 +5883,33 @@ private fun LedgerManagementContent(
         )
     }
 
+    fun loadAudit() {
+        var loaded:
+            List<CloudAuditInfo> =
+            emptyList()
+
+        runCloudTask(
+            busyText =
+                "正在读取修改记录…",
+            block = {
+                loaded =
+                    cloudSyncManager
+                        .listAudit(
+                            liveCurrentBook.id,
+                            100
+                        )
+
+                "已读取 ${loaded.size} 条修改记录"
+            },
+            onSuccess = {
+                auditRows = loaded
+                showAuditDialog =
+                    true
+            }
+        )
+    }
+
+
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding =
@@ -5893,56 +5980,72 @@ private fun LedgerManagementContent(
                                 .bodySmall
                     )
 
-                    Text(
-                        "设备ID：" +
-                            status.deviceId
-                                .take(8) +
-                            "…",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall,
-                        color = Color.Gray
-                    )
+                    val syncStatusText =
+                        when {
+                            liveCurrentBook
+                                .permission ==
+                                "REVOKED" ->
+                                "已失去云端权限"
+
+                            conflicts
+                                .isNotEmpty() ->
+                                "需要处理 ${conflicts.size} 条冲突"
+
+                            cloudLocalStatus
+                                .lastError
+                                .isNotBlank() ->
+                                "同步异常"
+
+                            status.pendingChanges >
+                                0 ->
+                                "待同步 ${status.pendingChanges} 条"
+
+                            liveCurrentBook
+                                .cloudEnabled ->
+                                "已同步"
+
+                            else ->
+                                "仅本机"
+                        }
 
                     Text(
-                        "待上传变更：" +
-                            "${status.pendingChanges} 条",
+                        "同步状态：$syncStatusText",
                         color =
-                            if (
-                                status.pendingChanges >
-                                0
-                            ) {
-                                BrandGreen
-                            } else {
-                                Color.Gray
+                            when {
+                                conflicts
+                                    .isNotEmpty() ->
+                                    MaterialTheme
+                                        .colorScheme
+                                        .error
+
+                                liveCurrentBook
+                                    .permission ==
+                                    "REVOKED" ->
+                                    MaterialTheme
+                                        .colorScheme
+                                        .error
+
+                                liveCurrentBook
+                                    .cloudEnabled &&
+                                    status
+                                        .pendingChanges ==
+                                        0 ->
+                                    BrandGreen
+
+                                else ->
+                                    Color.Gray
                             },
                         fontWeight =
                             FontWeight.SemiBold
                     )
 
                     Text(
-                        if (
-                            liveCurrentBook
-                                .cloudEnabled
-                        ) {
-                            "云端同步：已连接"
-                        } else {
-                            "云端同步：未连接"
-                        },
+                        "自动同步：已开启（启动、回到前台、保存数据后）",
                         style =
                             MaterialTheme
                                 .typography
                                 .bodySmall,
-                        color =
-                            if (
-                                liveCurrentBook
-                                    .cloudEnabled
-                            ) {
-                                BrandGreen
-                            } else {
-                                Color.Gray
-                            }
+                        color = Color.Gray
                     )
 
                     if (
@@ -5963,16 +6066,115 @@ private fun LedgerManagementContent(
                         )
                     }
 
-                    Text(
-                        "云端游标：" +
+                    if (
+                        conflicts
+                            .isNotEmpty()
+                    ) {
+                        Button(
+                            onClick = {
+                                showConflictDialog =
+                                    true
+                            },
+                            modifier =
+                                Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                "处理同步冲突（${conflicts.size}）"
+                            )
+                        }
+                    }
+
+                    if (
+                        cloudSession != null &&
+                        liveCurrentBook
+                            .cloudEnabled
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                loadAudit()
+                            },
+                            enabled =
+                                !cloudBusy,
+                            modifier =
+                                Modifier.fillMaxWidth()
+                        ) {
+                            Text("查看修改记录")
+                        }
+                    }
+
+                    TextButton(
+                        onClick = {
+                            showSyncDetails =
+                                !showSyncDetails
+                        },
+                        modifier =
+                            Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            if (
+                                showSyncDetails
+                            ) {
+                                "收起同步详情"
+                            } else {
+                                "同步详情"
+                            }
+                        )
+                    }
+
+                    if (showSyncDetails) {
+                        Text(
+                            "设备ID：" +
+                                status.deviceId
+                                    .take(8) +
+                                "…",
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall,
+                            color = Color.Gray
+                        )
+
+                        Text(
+                            "待上传变更：" +
+                                "${status.pendingChanges} 条",
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall,
+                            color = Color.Gray
+                        )
+
+                        Text(
+                            "同步序号：" +
+                                cloudLocalStatus
+                                    .serverCursor,
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall,
+                            color = Color.Gray
+                        )
+
+                        if (
                             cloudLocalStatus
-                                .serverCursor,
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall,
-                        color = Color.Gray
-                    )
+                                .lastError
+                                .isNotBlank()
+                        ) {
+                            Text(
+                                "最近错误：" +
+                                    cloudLocalStatus
+                                        .lastError,
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .bodySmall,
+                                color =
+                                    MaterialTheme
+                                        .colorScheme
+                                        .error
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -6160,7 +6362,10 @@ private fun LedgerManagementContent(
                                 )
                             },
                             enabled =
-                                !cloudBusy,
+                                !cloudBusy &&
+                                liveCurrentBook
+                                    .permission !=
+                                    "REVOKED",
                             modifier =
                                 Modifier.fillMaxWidth()
                         ) {
@@ -6180,14 +6385,18 @@ private fun LedgerManagementContent(
                             }
 
                             Text(
-                                if (
+                                when (
                                     liveCurrentBook
-                                        .permission ==
-                                        "VIEWER"
+                                        .permission
                                 ) {
-                                    "立即刷新只读账本"
-                                } else {
-                                    "立即同步当前账本"
+                                    "REVOKED" ->
+                                        "已失去云端权限"
+
+                                    "VIEWER" ->
+                                        "立即刷新只读账本"
+
+                                    else ->
+                                        "立即同步当前账本"
                                 }
                             )
                         }
@@ -6602,7 +6811,7 @@ private fun LedgerManagementContent(
                     Modifier.padding(12.dp)
                 ) {
                     Text(
-                        "V1.3.2 共享账本",
+                        "V1.3.3 同步稳定版",
                         fontWeight =
                             FontWeight.Bold
                     )
@@ -6616,7 +6825,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• 所有者可授权可编辑或只读；可编辑账号可以跨设备修改并增量同步。",
+                        "• 启动、回到前台和保存数据后会自动同步；网络失败不影响本地记账。",
                         style =
                             MaterialTheme
                                 .typography
@@ -6624,7 +6833,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• 只读账号只能看首页、历史、分析和报表，编辑型入口会被禁用。",
+                        "• 发生版本冲突时可选择采用云端或保留本机，并可查看云端修改记录。",
                         style =
                             MaterialTheme
                                 .typography
@@ -6866,6 +7075,84 @@ private fun LedgerManagementContent(
             }
         )
     }
+    if (
+        showConflictDialog &&
+        conflicts.isNotEmpty()
+    ) {
+        SyncConflictDialog(
+            conflicts = conflicts,
+            busy = cloudBusy,
+            onDismiss = {
+                showConflictDialog =
+                    false
+            },
+            onUseCloud = {
+                conflict ->
+                runCloudTask(
+                    busyText =
+                        "正在采用云端版本…",
+                    block = {
+                        cloudSyncManager
+                            .resolveConflictUseCloud(
+                                db = db,
+                                book =
+                                    liveCurrentBook,
+                                conflict =
+                                    conflict
+                            )
+                            .message
+                    },
+                    onSuccess = {
+                        if (
+                            db.getSyncConflictCount() ==
+                            0
+                        ) {
+                            showConflictDialog =
+                                false
+                        }
+                    }
+                )
+            },
+            onUseLocal = {
+                conflict ->
+                runCloudTask(
+                    busyText =
+                        "正在保留本机版本…",
+                    block = {
+                        cloudSyncManager
+                            .resolveConflictUseLocal(
+                                db = db,
+                                book =
+                                    liveCurrentBook,
+                                conflict =
+                                    conflict
+                            )
+                            .message
+                    },
+                    onSuccess = {
+                        if (
+                            db.getSyncConflictCount() ==
+                            0
+                        ) {
+                            showConflictDialog =
+                                false
+                        }
+                    }
+                )
+            }
+        )
+    }
+
+    if (showAuditDialog) {
+        CloudAuditDialog(
+            rows = auditRows,
+            onDismiss = {
+                showAuditDialog =
+                    false
+            }
+        )
+    }
+
 }
 
 @Composable
@@ -7197,6 +7484,451 @@ private fun CloudMembersDialog(
         }
     )
 }
+
+@Composable
+private fun SyncConflictDialog(
+    conflicts: List<SyncConflictRecord>,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onUseCloud: (SyncConflictRecord) -> Unit,
+    onUseLocal: (SyncConflictRecord) -> Unit
+) {
+    if (conflicts.isEmpty()) {
+        return
+    }
+
+    val conflict =
+        conflicts.first()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                "同步冲突 · ${syncTableLabel(conflict.tableName)}"
+            )
+        },
+        text = {
+            Column(
+                Modifier
+                    .heightIn(
+                        max = 500.dp
+                    )
+                    .verticalScroll(
+                        rememberScrollState()
+                    ),
+                verticalArrangement =
+                    Arrangement.spacedBy(
+                        8.dp
+                    )
+            ) {
+                Text(
+                    "还有 ${conflicts.size} 条冲突待处理",
+                    color =
+                        MaterialTheme
+                            .colorScheme
+                            .error,
+                    fontWeight =
+                        FontWeight.Bold
+                )
+
+                Text(
+                    "本机版本 ${conflict.localVersion} · 云端版本 ${conflict.serverVersion}",
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall,
+                    color = Color.Gray
+                )
+
+                Text(
+                    conflictPayloadDiff(
+                        conflict
+                    ),
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall
+                )
+
+                Text(
+                    "采用云端：放弃本机这条未同步修改。\n保留本机：以当前本机内容生成一个比云端更新的新版本。",
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall,
+                    color = Color.Gray
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onUseLocal(
+                        conflict
+                    )
+                },
+                enabled = !busy
+            ) {
+                Text("保留本机")
+            }
+        },
+        dismissButton = {
+            Row {
+                TextButton(
+                    onClick = {
+                        onUseCloud(
+                            conflict
+                        )
+                    },
+                    enabled = !busy
+                ) {
+                    Text("采用云端")
+                }
+
+                TextButton(
+                    onClick = onDismiss,
+                    enabled = !busy
+                ) {
+                    Text("稍后处理")
+                }
+            }
+        }
+    )
+}
+
+@Composable
+private fun CloudAuditDialog(
+    rows: List<CloudAuditInfo>,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("修改记录")
+        },
+        text = {
+            Column(
+                Modifier
+                    .heightIn(
+                        max = 520.dp
+                    )
+                    .verticalScroll(
+                        rememberScrollState()
+                    ),
+                verticalArrangement =
+                    Arrangement.spacedBy(
+                        10.dp
+                    )
+            ) {
+                if (rows.isEmpty()) {
+                    Text(
+                        "暂无云端修改记录",
+                        color = Color.Gray
+                    )
+                }
+
+                rows.forEach {
+                    row ->
+                    Card(
+                        Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            Modifier.padding(
+                                10.dp
+                            ),
+                            verticalArrangement =
+                                Arrangement.spacedBy(
+                                    3.dp
+                                )
+                        ) {
+                            Text(
+                                "${auditActionLabel(row.action)} · ${syncTableLabel(row.tableName)}",
+                                fontWeight =
+                                    FontWeight.Bold
+                            )
+
+                            Text(
+                                "${row.displayName.ifBlank { row.username }} · ${row.deviceName.ifBlank { "未知设备" }}",
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .bodySmall,
+                                color = Color.Gray
+                            )
+
+                            Text(
+                                row.createdAt
+                                    .replace(
+                                        "T",
+                                        " "
+                                    )
+                                    .take(19),
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .bodySmall,
+                                color = Color.Gray
+                            )
+
+                            val summary =
+                                auditPayloadDiff(
+                                    row.beforePayload,
+                                    row.afterPayload
+                                )
+
+                            if (
+                                summary.isNotBlank()
+                            ) {
+                                Text(
+                                    summary,
+                                    style =
+                                        MaterialTheme
+                                            .typography
+                                            .bodySmall
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onDismiss
+            ) {
+                Text("关闭")
+            }
+        }
+    )
+}
+
+private fun syncTableLabel(
+    tableName: String
+): String =
+    when (tableName) {
+        "fruit" -> "商品"
+        "store" -> "摊位"
+        "partner" -> "合伙人"
+        "purchase_plan" ->
+            "采购清单"
+        "purchase_plan_item" ->
+            "采购清单商品"
+        "purchase_order" ->
+            "进货单"
+        "purchase_item" ->
+            "进货商品"
+        "store_daily_record" ->
+            "营业记录"
+        "profit_rule" ->
+            "利润规则"
+        "profit_distribution" ->
+            "利润分配"
+        "daily_cash_settlement" ->
+            "资金轧差"
+        "settlement_partner" ->
+            "结算人员"
+        "settlement_transfer" ->
+            "转账方案"
+        "profit_settlement_batch" ->
+            "利润结算批次"
+        "profit_settlement_item" ->
+            "利润结算明细"
+        else -> tableName
+    }
+
+private fun auditActionLabel(
+    action: String
+): String =
+    when (action) {
+        "UPSERT" -> "新增/修改"
+        "DELETE" -> "删除"
+        else -> action
+    }
+
+private fun conflictPayloadDiff(
+    conflict: SyncConflictRecord
+): String {
+    val local =
+        runCatching {
+            JSONObject(
+                conflict.localPayload
+            )
+        }.getOrDefault(
+            JSONObject()
+        )
+
+    val cloud =
+        runCatching {
+            JSONObject(
+                conflict.serverPayload
+            )
+        }.getOrDefault(
+            JSONObject()
+        )
+
+    return payloadDiffText(
+        local,
+        cloud,
+        leftLabel = "本机",
+        rightLabel = "云端",
+        cloudDeleted =
+            conflict.serverDeleted
+    )
+}
+
+private fun auditPayloadDiff(
+    before: JSONObject?,
+    after: JSONObject?
+): String {
+    if (
+        before == null &&
+        after == null
+    ) {
+        return ""
+    }
+
+    if (before == null) {
+        return "新增：" +
+            compactPayload(
+                after
+                    ?: JSONObject()
+            )
+    }
+
+    if (after == null) {
+        return "删除：" +
+            compactPayload(
+                before
+            )
+    }
+
+    return payloadDiffText(
+        before,
+        after,
+        leftLabel = "原",
+        rightLabel = "新",
+        cloudDeleted = false
+    )
+}
+
+private fun payloadDiffText(
+    left: JSONObject,
+    right: JSONObject,
+    leftLabel: String,
+    rightLabel: String,
+    cloudDeleted: Boolean
+): String {
+    if (cloudDeleted) {
+        return "$rightLabel：记录已删除\n$leftLabel：" +
+            compactPayload(left)
+    }
+
+    val ignored =
+        setOf(
+            "id",
+            "sync_id",
+            "sync_status",
+            "row_version",
+            "modified_by",
+            "created_at",
+            "updated_at"
+        )
+
+    val keys =
+        linkedSetOf<String>()
+
+    left.keys().forEach {
+        if (it !in ignored) {
+            keys += it
+        }
+    }
+
+    right.keys().forEach {
+        if (it !in ignored) {
+            keys += it
+        }
+    }
+
+    val lines =
+        keys.mapNotNull {
+            key ->
+            val l =
+                jsonDisplayValue(
+                    left.opt(key)
+                )
+            val r =
+                jsonDisplayValue(
+                    right.opt(key)
+                )
+
+            if (l == r) {
+                null
+            } else {
+                "$key：$leftLabel $l → $rightLabel $r"
+            }
+        }.take(8)
+
+    return if (lines.isEmpty()) {
+        "$leftLabel：" +
+            compactPayload(left) +
+            "\n$rightLabel：" +
+            compactPayload(right)
+    } else {
+        lines.joinToString("\n")
+    }
+}
+
+private fun compactPayload(
+    obj: JSONObject
+): String {
+    val ignored =
+        setOf(
+            "id",
+            "sync_id",
+            "sync_status",
+            "row_version",
+            "modified_by",
+            "created_at",
+            "updated_at"
+        )
+
+    val parts =
+        mutableListOf<String>()
+
+    obj.keys().forEach {
+        key ->
+        if (
+            key !in ignored &&
+            parts.size < 6
+        ) {
+            parts +=
+                "$key=" +
+                    jsonDisplayValue(
+                        obj.opt(key)
+                    )
+        }
+    }
+
+    return if (parts.isEmpty()) {
+        "无可显示字段"
+    } else {
+        parts.joinToString("，")
+    }
+}
+
+private fun jsonDisplayValue(
+    value: Any?
+): String =
+    when {
+        value == null ||
+            value ==
+            JSONObject.NULL ->
+            "空"
+
+        else ->
+            value.toString()
+                .take(60)
+    }
 
 @Composable
 private fun LedgerNameDialog(
