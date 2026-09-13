@@ -305,6 +305,69 @@ class LedgerManager(
         return updatedBook
     }
 
+    fun revokeCloudBooksForAccountSwitch() {
+        val now =
+            System.currentTimeMillis()
+
+        val updated =
+            books().map {
+                book ->
+                if (
+                    book.cloudBookId
+                        .isNotBlank()
+                ) {
+                    book.copy(
+                        permission =
+                            "REVOKED",
+                        cloudEnabled =
+                            false,
+                        updatedAt = now
+                    )
+                } else {
+                    book
+                }
+            }
+
+        saveBooks(updated)
+    }
+
+    fun reconcileCloudAccess(
+        accessibleBookIds: Set<String>
+    ) {
+        val now =
+            System.currentTimeMillis()
+
+        var changed = false
+
+        val updated =
+            books().map {
+                book ->
+                if (
+                    book.cloudBookId
+                        .isNotBlank() &&
+                    book.id !in
+                        accessibleBookIds &&
+                    book.permission !=
+                        "REVOKED"
+                ) {
+                    changed = true
+                    book.copy(
+                        permission =
+                            "REVOKED",
+                        cloudEnabled =
+                            false,
+                        updatedAt = now
+                    )
+                } else {
+                    book
+                }
+            }
+
+        if (changed) {
+            saveBooks(updated)
+        }
+    }
+
     fun markCloudAccessRevoked(
         bookId: String
     ): Boolean {

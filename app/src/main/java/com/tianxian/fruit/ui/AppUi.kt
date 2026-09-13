@@ -203,7 +203,20 @@ fun TianXianApp(
                     AppPage.HOME -> HomeScreen(
                         db = db,
                         dataVersion = dataVersion,
-                        bookName = ledgerManager.displayName(liveCurrentBook),
+                        ledgerManager =
+                            ledgerManager,
+                        currentBook =
+                            liveCurrentBook,
+                        books =
+                            ledgerManager.books(),
+                        onSwitchBook =
+                            onSwitchBook,
+                        onBookManage = {
+                            moreTarget =
+                                MorePage.BOOKS
+                            page =
+                                AppPage.MORE
+                        },
                         onPurchase = {
                             if (canEdit) {
                                 page =
@@ -305,7 +318,11 @@ private fun MetricCard(title: String, value: String, modifier: Modifier = Modifi
 private fun HomeScreen(
     db: AppDatabase,
     dataVersion: Int,
-    bookName: String,
+    ledgerManager: LedgerManager,
+    currentBook: LedgerBook,
+    books: List<LedgerBook>,
+    onSwitchBook: (String) -> Unit,
+    onBookManage: () -> Unit,
     onPurchase: () -> Unit,
     onPlan: () -> Unit,
     onSession: () -> Unit,
@@ -315,8 +332,17 @@ private fun HomeScreen(
     onFruits: () -> Unit,
     onMore: () -> Unit
 ) {
-    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
-    val selectedDateString = selectedDate.toString()
+    var selectedDate by remember {
+        mutableStateOf(
+            LocalDate.now()
+        )
+    }
+    var bookMenuExpanded by remember {
+        mutableStateOf(false)
+    }
+
+    val selectedDateString =
+        selectedDate.toString()
 
     val summary = remember(dataVersion, selectedDateString) {
         db.getDailySummary(selectedDateString)
@@ -371,7 +397,7 @@ private fun HomeScreen(
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .height(150.dp)
+                    .height(170.dp)
                     .background(
                         Brush.linearGradient(
                             listOf(
@@ -381,51 +407,222 @@ private fun HomeScreen(
                             )
                         )
                     )
-                    .padding(horizontal = 20.dp, vertical = 18.dp)
+                    .padding(
+                        horizontal = 16.dp,
+                        vertical = 12.dp
+                    )
             ) {
-                Column(Modifier.align(Alignment.CenterStart)) {
+                Box(
+                    Modifier.align(
+                        Alignment.TopStart
+                    )
+                ) {
+                    TextButton(
+                        onClick = {
+                            bookMenuExpanded =
+                                true
+                        },
+                        modifier =
+                            Modifier.widthIn(
+                                max = 260.dp
+                            )
+                    ) {
+                        Text(
+                            "📒 " +
+                                ledgerManager
+                                    .displayName(
+                                        currentBook
+                                    ) +
+                                "  ▼",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight =
+                                FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                    }
+
+                    DropdownMenu(
+                        expanded =
+                            bookMenuExpanded,
+                        onDismissRequest = {
+                            bookMenuExpanded =
+                                false
+                        }
+                    ) {
+                        books
+                            .sortedWith(
+                                compareByDescending<
+                                    LedgerBook
+                                > {
+                                    it.id ==
+                                        currentBook.id
+                                }.thenByDescending {
+                                    it.lastSyncAt
+                                }.thenBy {
+                                    it.createdAt
+                                }
+                            )
+                            .forEach {
+                                book ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(
+                                                (
+                                                    if (
+                                                        book.id ==
+                                                        currentBook.id
+                                                    ) {
+                                                        "✓ "
+                                                    } else {
+                                                        ""
+                                                    }
+                                                ) +
+                                                    ledgerManager
+                                                        .displayName(
+                                                            book
+                                                        ),
+                                                fontWeight =
+                                                    if (
+                                                        book.id ==
+                                                        currentBook.id
+                                                    ) {
+                                                        FontWeight.Bold
+                                                    } else {
+                                                        FontWeight.Normal
+                                                    }
+                                            )
+
+                                            Text(
+                                                ledgerManager
+                                                    .permissionLabel(
+                                                        book.permission
+                                                    ) +
+                                                    if (
+                                                        book.cloudEnabled
+                                                    ) {
+                                                        " · 云端"
+                                                    } else if (
+                                                        book.cloudBookId
+                                                            .isNotBlank()
+                                                    ) {
+                                                        " · 本机副本"
+                                                    } else {
+                                                        " · 本机"
+                                                    },
+                                                style =
+                                                    MaterialTheme
+                                                        .typography
+                                                        .labelSmall,
+                                                color =
+                                                    if (
+                                                        book.permission ==
+                                                        "REVOKED"
+                                                    ) {
+                                                        MaterialTheme
+                                                            .colorScheme
+                                                            .error
+                                                    } else {
+                                                        Color.Gray
+                                                    }
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        bookMenuExpanded =
+                                            false
+
+                                        if (
+                                            book.id !=
+                                            currentBook.id
+                                        ) {
+                                            onSwitchBook(
+                                                book.id
+                                            )
+                                        }
+                                    }
+                                )
+                            }
+
+                        HorizontalDivider()
+
+                        DropdownMenuItem(
+                            text = {
+                                Text("⚙ 账本管理")
+                            },
+                            onClick = {
+                                bookMenuExpanded =
+                                    false
+                                onBookManage()
+                            }
+                        )
+                    }
+                }
+
+                Column(
+                    Modifier
+                        .align(
+                            Alignment.CenterStart
+                        )
+                        .padding(top = 24.dp)
+                ) {
                     Text(
                         "天鲜果业",
                         color = Color.White,
                         fontSize = 30.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight =
+                            FontWeight.Bold
                     )
-                    Spacer(Modifier.height(6.dp))
+
+                    Spacer(
+                        Modifier.height(6.dp)
+                    )
+
                     Text(
                         "每一天努力，收获更甜的生活",
-                        color = Color.White.copy(alpha = 0.88f),
-                        fontSize = 13.sp
-                    )
-                    Spacer(
-                        Modifier.height(4.dp)
-                    )
-                    Text(
-                        "当前账本 · $bookName",
                         color =
                             Color.White.copy(
-                                alpha = 0.78f
+                                alpha = 0.88f
                             ),
-                        fontSize = 11.sp
+                        fontSize = 13.sp
                     )
                 }
 
                 Column(
-                    Modifier.align(Alignment.BottomEnd),
-                    horizontalAlignment = Alignment.End
+                    Modifier.align(
+                        Alignment.BottomEnd
+                    ),
+                    horizontalAlignment =
+                        Alignment.End
                 ) {
-                    Text("🍇🍊🍓", fontSize = 24.sp)
+                    Text(
+                        "🍇🍊🍓",
+                        fontSize = 24.sp
+                    )
+
                     Text(
                         "新鲜水果 · 从这里开始！",
-                        color = Color.White.copy(alpha = 0.9f),
+                        color =
+                            Color.White.copy(
+                                alpha = 0.9f
+                            ),
                         fontSize = 12.sp
                     )
                 }
 
                 TextButton(
                     onClick = onMore,
-                    modifier = Modifier.align(Alignment.TopEnd)
+                    modifier =
+                        Modifier.align(
+                            Alignment.TopEnd
+                        )
                 ) {
-                    Text("⚙", color = Color.White, fontSize = 24.sp)
+                    Text(
+                        "⚙",
+                        color = Color.White,
+                        fontSize = 24.sp
+                    )
                 }
             }
         }
@@ -6830,7 +7027,7 @@ private fun LedgerManagementContent(
                     Modifier.padding(12.dp)
                 ) {
                     Text(
-                        "V1.3.3 同步稳定版",
+                        "V1.3.4 快速切账本",
                         fontWeight =
                             FontWeight.Bold
                     )
@@ -6844,7 +7041,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• 启动、回到前台和保存数据后会自动同步；网络失败不影响本地记账。",
+                        "• 首页左上角可直接切换已下载账本，不再需要进入“更多 → 账本管理”。",
                         style =
                             MaterialTheme
                                 .typography
@@ -6852,7 +7049,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• 发生版本冲突时可选择采用云端或保留本机，并可查看云端修改记录。",
+                        "• 同一台手机可安全切换不同云端账号；设备注册按“手机 + 账号”独立识别。",
                         style =
                             MaterialTheme
                                 .typography

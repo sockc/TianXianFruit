@@ -12,6 +12,7 @@ import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.security.MessageDigest
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -188,6 +189,16 @@ class CloudSyncManager(
                 token = token
             )
 
+        // First register the account-scoped device ID.
+        // If registration fails, do not overwrite the old local login.
+        registerDevice(result)
+
+        // Never let a newly logged-in account inherit cached
+        // OWNER/EDITOR permissions from the previously used account.
+        // listCloudBooks() below restores only books this account can access.
+        ledgerManager
+            .revokeCloudBooksForAccountSwitch()
+
         prefs.edit()
             .putString(
                 KEY_BASE_URL,
@@ -207,7 +218,12 @@ class CloudSyncManager(
             )
             .apply()
 
-        registerDevice(result)
+        // Refresh local permissions immediately. If this fails,
+        // a switched account keeps previous cloud books read-only.
+        runCatching {
+            listCloudBooks()
+        }
+
         return result
     }
 
@@ -381,6 +397,13 @@ class CloudSyncManager(
                     )
             }
         }
+
+        ledgerManager
+            .reconcileCloudAccess(
+                result.map {
+                    it.id
+                }.toSet()
+            )
 
         return result
     }
@@ -734,13 +757,6 @@ class CloudSyncManager(
                             )
                             ?: book
 
-                    if (
-                        liveBook.permission ==
-                        "REVOKED"
-                    ) {
-                        continue
-                    }
-
                     val localDb =
                         AppDatabase(
                             context =
@@ -903,7 +919,9 @@ class CloudSyncManager(
                         )
                         put(
                             "device_id",
-                            ledgerManager.deviceId
+                            serverDeviceId(
+                                current
+                            )
                         )
                         put(
                             "changes",
@@ -1376,6 +1394,37 @@ class CloudSyncManager(
         return count to cursor
     }
 
+    private fun serverDeviceId(
+        session: CloudSession
+    ): String {
+        val source =
+            ledgerManager.deviceId +
+                "|" +
+                session.username
+                    .trim()
+                    .lowercase()
+
+        val digest =
+            MessageDigest
+                .getInstance(
+                    "SHA-256"
+                )
+                .digest(
+                    source.toByteArray(
+                        Charsets.UTF_8
+                    )
+                )
+
+        return digest.joinToString(
+            separator = ""
+        ) {
+            byte ->
+            "%02x".format(
+                byte.toInt() and 0xff
+            )
+        }
+    }
+
     private fun registerDevice(
         session: CloudSession
     ) {
@@ -1389,7 +1438,9 @@ class CloudSyncManager(
                 JSONObject().apply {
                     put(
                         "device_id",
-                        ledgerManager.deviceId
+                        serverDeviceId(
+                            session
+                        )
                     )
                     put(
                         "name",
@@ -1483,7 +1534,9 @@ class CloudSyncManager(
                         )
                         put(
                             "device_id",
-                            ledgerManager.deviceId
+                            serverDeviceId(
+                                session
+                            )
                         )
                         put(
                             "changes",
@@ -1857,7 +1910,7 @@ class CloudSyncManager(
             "https://sync.830888.xyz"
 
         private const val APP_VERSION =
-            "1.3.3"
+            "1.3.4"
 
         private const val AUTO_SYNC_DEBOUNCE_MS =
             800L
