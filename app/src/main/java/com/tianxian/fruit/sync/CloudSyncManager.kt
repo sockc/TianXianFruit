@@ -845,6 +845,19 @@ class CloudSyncManager(
         }
     }
 
+    private fun canWriteCloudBook(
+        role: String
+    ): Boolean =
+        role == "SUPERADMIN" ||
+            role == "OWNER" ||
+            role == "EDITOR"
+
+    private fun hasOwnerLevelCloudAccess(
+        role: String
+    ): Boolean =
+        role == "SUPERADMIN" ||
+            role == "OWNER"
+
     fun scheduleAutoSync(
         book: LedgerBook
     ) {
@@ -979,12 +992,9 @@ class CloudSyncManager(
             )
 
         if (
-            cloudBook.role !=
-                "SUPERADMIN" &&
-            cloudBook.role !=
-                "OWNER" &&
-            cloudBook.role !=
-                "EDITOR"
+            !canWriteCloudBook(
+                cloudBook.role
+            )
         ) {
             throw CloudApiException(
                 403,
@@ -1173,9 +1183,9 @@ class CloudSyncManager(
                 )
 
             if (
-                info.role == "SUPERADMIN" ||
-                info.role == "OWNER" ||
-                info.role == "EDITOR"
+                canWriteCloudBook(
+                    info.role
+                )
             ) {
                 db.prepareCloudIdRanges()
             }
@@ -1241,10 +1251,9 @@ class CloudSyncManager(
             )
 
         val canEdit =
-            cloudBook.role ==
-                "OWNER" ||
-                cloudBook.role ==
-                "EDITOR"
+            canWriteCloudBook(
+                cloudBook.role
+            )
 
         if (canEdit) {
             db.prepareCloudIdRanges()
@@ -1425,13 +1434,52 @@ class CloudSyncManager(
         return createCloudBook(session, book)
     }
 
-    fun createIndependentCloudBook(book: LedgerBook): CloudBookInfo {
-        val current = requireSession()
-        verifyLogin(); registerDevice(current)
-        val existing = listCloudBooks().firstOrNull { it.id == book.id }
-        if (existing != null) return existing
-        val created = createCloudBook(current, book)
-        ledgerManager.updateCloudMetadata(created.id, created.name, created.ownerUsername, created.role)
+    fun createIndependentCloudBook(
+        book: LedgerBook
+    ): CloudBookInfo {
+        val current =
+            requireSession()
+
+        verifyLogin()
+        registerDevice(current)
+
+        val existing =
+            listCloudBooks()
+                .firstOrNull {
+                    it.id == book.id
+                }
+
+        if (existing != null) {
+            return existing
+        }
+
+        if (
+            book.cloudBookId
+                .isNotBlank() &&
+            !hasOwnerLevelCloudAccess(
+                book.permission
+            )
+        ) {
+            throw CloudApiException(
+                403,
+                "只有账本所有者或系统管理员可以重新创建该云端账本"
+            )
+        }
+
+        val created =
+            createCloudBook(
+                current,
+                book
+            )
+
+        ledgerManager
+            .updateCloudMetadata(
+                created.id,
+                created.name,
+                created.ownerUsername,
+                created.role
+            )
+
         return created
     }
 
@@ -2016,7 +2064,7 @@ class CloudSyncManager(
             "https://sync.830888.xyz"
 
         private const val APP_VERSION =
-            "1.3.5"
+            "1.3.8"
 
         private const val AUTO_SYNC_DEBOUNCE_MS =
             800L
