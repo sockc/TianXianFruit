@@ -12280,6 +12280,37 @@ private data class BusinessWeekdayStat(
 )
 
 @Composable
+private fun EmptyHint(
+    text: String
+) {
+    Card(
+        modifier =
+            Modifier.fillMaxWidth(),
+        colors =
+            CardDefaults.cardColors(
+                containerColor =
+                    Color(
+                        0xFFF7F7F7
+                    )
+            )
+    ) {
+        Text(
+            text,
+            modifier =
+                Modifier.padding(
+                    horizontal = 14.dp,
+                    vertical = 16.dp
+                ),
+            style =
+                MaterialTheme
+                    .typography
+                    .bodyMedium,
+            color = Color.Gray
+        )
+    }
+}
+
+@Composable
 private fun BusinessTrendRow(
     date: String,
     label: String,
