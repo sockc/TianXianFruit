@@ -70,3 +70,48 @@
 - 新增 sync_change_log，记录本机新增、修改和软删除，供后续增量云同步。
 - 修复利润比例 0.33% 应显示 33.33% 的问题。
 - DB_VERSION 升级到 8。
+
+## V1.3.1 当前账本云同步
+
+- 接入 `https://sync.830888.xyz` 天鲜同步服务器。
+- 登录后自动注册设备。
+- 当前账本使用本地 LedgerBook.id 原样创建云端 Book.id。
+- 支持 sync_change_log 增量 push、cursor 增量 pull。
+- DB_VERSION 9：增加 remote_apply 和 sync_cloud_state。
+- 云端 pull 写入时抑制本地同步触发器，避免循环上传。
+- 为未来多设备编辑预留设备独立 INTEGER ID 段。
+
+## V1.3.2 共享账本
+
+- 云端共享账本列表、下载和切换。
+- OWNER / EDITOR / VIEWER 权限进入 APP。
+- OWNER 可管理成员权限。
+- APP 可使用注册码注册新账号。
+- VIEWER 禁用编辑型入口，并且同步时只 pull 不 push。
+- 云端镜像账本首次创建不注入默认数据。
+- 修复新增记录产生重复 sync_change_log 的问题。
+- DB_VERSION 10。
+
+## V1.3.3 同步稳定版
+
+- 启动、回前台、保存后自动同步，网络失败不阻塞本地记账。
+- DB_VERSION 11：持久化同步冲突，可选采用云端/保留本机。
+- 账本权限每次同步刷新；被移除后本机副本标记 REVOKED 并停止编辑。
+- 增加云端 audit_log 修改记录查看。
+- 主界面隐藏技术性 cursor，改名为同步序号并收进同步详情。
+
+## V1.3.4 快速切账本 + 同设备多账号
+
+- 首页左上角直接切换本机账本，当前账本置顶并显示权限。
+- 同一台 Android 设备可登录不同云端账号，不再触发 device_id 409。
+- 服务器设备 ID 改为“本机 device_id + 云端用户名”的 SHA-256。
+- 账号切换时先锁定旧云端账本，再按新账号权限恢复，避免越权编辑。
+- 继续兼容 TianXian Sync Server V1.0.4，无数据库迁移。
+
+## V1.3.6 GitHub 自动更新
+
+- 启动每 12 小时检查一次 `sockc/TianXianFruit` 最新 GitHub Release。
+- 有新版时显示 Release 更新说明并可跳转 GitHub 下载。
+- “更多”提供手动检查更新。
+- Actions 支持 main 构建、`v*` Tag 自动 Release、网页手动发布 Release。
+- Release APK 延续原签名，服务器仍为 V1.0.5-Lucky。

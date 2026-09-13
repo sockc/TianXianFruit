@@ -2,6 +2,8 @@ package com.tianxian.fruit.ui
 
 import android.app.DatePickerDialog
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import androidx.activity.compose.BackHandler
@@ -33,6 +35,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.tianxian.fruit.BuildConfig
 import com.tianxian.fruit.data.*
 import com.tianxian.fruit.report.GeneratedReport
 import com.tianxian.fruit.report.ReportGenerator
@@ -45,6 +48,9 @@ import com.tianxian.fruit.sync.CloudAuditInfo
 import com.tianxian.fruit.sync.CloudBookInfo
 import com.tianxian.fruit.sync.CloudMemberInfo
 import com.tianxian.fruit.sync.CloudSyncManager
+import com.tianxian.fruit.update.AppUpdateCheckResult
+import com.tianxian.fruit.update.AppUpdateInfo
+import com.tianxian.fruit.update.AppUpdateManager
 import org.json.JSONObject
 import java.time.Instant
 import java.time.LocalDate
@@ -130,6 +136,106 @@ fun TianXianApp(
     }
     var dataVersion by remember {
         mutableIntStateOf(0)
+    }
+
+    val context =
+        LocalContext.current
+
+    val updateManager =
+        remember {
+            AppUpdateManager(
+                context.applicationContext
+            )
+        }
+
+    var updateInfo by remember {
+        mutableStateOf<
+            AppUpdateInfo?
+        >(null)
+    }
+
+    var updateChecking by remember {
+        mutableStateOf(false)
+    }
+
+    var updateCheckMessage by remember {
+        mutableStateOf("")
+    }
+
+    fun checkAppUpdate(
+        manual: Boolean
+    ) {
+        if (updateChecking) {
+            if (manual) {
+                updateCheckMessage =
+                    "正在检查更新，请稍候"
+            }
+            return
+        }
+
+        updateChecking = true
+
+        val callback:
+            (
+                Result<
+                    AppUpdateCheckResult
+                >
+            ) -> Unit =
+            {
+                result ->
+                updateChecking =
+                    false
+
+                result
+                    .onSuccess {
+                        checked ->
+                        updateCheckMessage =
+                            checked.message
+
+                        if (
+                            checked.update !=
+                            null
+                        ) {
+                            updateInfo =
+                                checked.update
+                        }
+                    }
+                    .onFailure {
+                        error ->
+                        if (manual) {
+                            updateCheckMessage =
+                                "检查更新失败：" +
+                                    (
+                                        error.message
+                                            ?: "未知错误"
+                                        )
+                        }
+                    }
+            }
+
+        val started =
+            if (manual) {
+                updateManager
+                    .checkNow(
+                        callback
+                    )
+            } else {
+                updateManager
+                    .checkIfDue(
+                        callback
+                    )
+            }
+
+        if (!started) {
+            updateChecking =
+                false
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        checkAppUpdate(
+            manual = false
+        )
     }
 
     val liveCurrentBook =
@@ -287,6 +393,15 @@ fun TianXianApp(
                         onPlan = {
                             page = AppPage.PLAN
                         },
+                        updateChecking =
+                            updateChecking,
+                        updateCheckMessage =
+                            updateCheckMessage,
+                        onCheckUpdate = {
+                            checkAppUpdate(
+                                manual = true
+                            )
+                        },
                         onChanged = {
                             notifyDataChanged()
                         }
@@ -294,6 +409,23 @@ fun TianXianApp(
                 }
             }
         }
+    }
+
+    updateInfo?.let {
+        info ->
+        AppUpdateDialog(
+            info = info,
+            onDismiss = {
+                updateInfo = null
+            },
+            onOpenRelease = {
+                updateInfo = null
+                openWebPage(
+                    context,
+                    info.releaseUrl
+                )
+            }
+        )
     }
 }
 
@@ -3976,6 +4108,9 @@ private fun MoreScreen(
     canEdit: Boolean,
     onSwitchBook: (String) -> Unit,
     onPlan: () -> Unit,
+    updateChecking: Boolean,
+    updateCheckMessage: String,
+    onCheckUpdate: () -> Unit,
     onChanged: () -> Unit
 ) {
     var sub by remember(initialSub) { mutableStateOf(initialSub) }
@@ -4093,6 +4228,111 @@ private fun MoreScreen(
                 item {
                     MenuCard("📄 生成报表") {
                         sub = MorePage.REPORT
+                    }
+                }
+
+                item {
+                    Card(
+                        Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            Modifier.padding(
+                                14.dp
+                            ),
+                            verticalArrangement =
+                                Arrangement.spacedBy(
+                                    6.dp
+                                )
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement =
+                                    Arrangement.SpaceBetween,
+                                verticalAlignment =
+                                    Alignment.CenterVertically
+                            ) {
+                                Column(
+                                    Modifier.weight(
+                                        1f
+                                    )
+                                ) {
+                                    Text(
+                                        "⬆ 版本更新",
+                                        fontWeight =
+                                            FontWeight.Bold
+                                    )
+                                    Text(
+                                        "当前版本 V${BuildConfig.VERSION_NAME} · build ${BuildConfig.VERSION_CODE}",
+                                        style =
+                                            MaterialTheme
+                                                .typography
+                                                .bodySmall,
+                                        color = Color.Gray
+                                    )
+                                }
+
+                                Button(
+                                    onClick =
+                                        onCheckUpdate,
+                                    enabled =
+                                        !updateChecking
+                                ) {
+                                    if (
+                                        updateChecking
+                                    ) {
+                                        CircularProgressIndicator(
+                                            modifier =
+                                                Modifier.size(
+                                                    16.dp
+                                                ),
+                                            strokeWidth =
+                                                2.dp
+                                        )
+                                        Spacer(
+                                            Modifier.width(
+                                                6.dp
+                                            )
+                                        )
+                                    }
+
+                                    Text(
+                                        if (
+                                            updateChecking
+                                        ) {
+                                            "检查中"
+                                        } else {
+                                            "检查更新"
+                                        }
+                                    )
+                                }
+                            }
+
+                            if (
+                                updateCheckMessage
+                                    .isNotBlank()
+                            ) {
+                                Text(
+                                    updateCheckMessage,
+                                    style =
+                                        MaterialTheme
+                                            .typography
+                                            .bodySmall,
+                                    color =
+                                        if (
+                                            updateCheckMessage
+                                                .startsWith(
+                                                    "检查更新失败"
+                                                )
+                                        ) {
+                                            MaterialTheme
+                                                .colorScheme
+                                                .error
+                                        } else {
+                                            BrandGreen
+                                        }
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -7102,7 +7342,7 @@ private fun LedgerManagementContent(
                     Modifier.padding(12.dp)
                 ) {
                     Text(
-                        "V1.3.5 系统管理与云端回收站",
+                        "V1.3.6 GitHub 自动更新",
                         fontWeight =
                             FontWeight.Bold
                     )
@@ -7116,7 +7356,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• 新手机登录已有账号时，不再自动把本机默认“我的账本”上传成重复云端账本。",
+                        "• APP 启动后每 12 小时后台检查 GitHub Release；有新版时弹窗提醒。",
                         style =
                             MaterialTheme
                                 .typography
@@ -7124,7 +7364,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• OWNER / SUPERADMIN 可删除云端账本到回收站；SUPERADMIN 还能管理用户、设备和全局审计。",
+                        "• “更多”可手动检查更新；点击“前往 GitHub 下载”直接打开最新 Release 页面。",
                         style =
                             MaterialTheme
                                 .typography
@@ -8350,6 +8590,137 @@ private fun jsonDisplayValue(
             value.toString()
                 .take(60)
     }
+
+@Composable
+private fun AppUpdateDialog(
+    info: AppUpdateInfo,
+    onDismiss: () -> Unit,
+    onOpenRelease: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                "发现新版本 V${info.versionName}"
+            )
+        },
+        text = {
+            Column(
+                Modifier
+                    .heightIn(
+                        max = 480.dp
+                    )
+                    .verticalScroll(
+                        rememberScrollState()
+                    ),
+                verticalArrangement =
+                    Arrangement.spacedBy(
+                        10.dp
+                    )
+            ) {
+                Text(
+                    "当前版本：V${BuildConfig.VERSION_NAME}"
+                )
+                Text(
+                    "最新版本：V${info.versionName}",
+                    fontWeight =
+                        FontWeight.Bold,
+                    color = BrandGreen
+                )
+
+                if (
+                    info.publishedAt
+                        .isNotBlank()
+                ) {
+                    Text(
+                        "发布时间：" +
+                            info.publishedAt
+                                .replace(
+                                    "T",
+                                    " "
+                                )
+                                .replace(
+                                    "Z",
+                                    ""
+                                )
+                                .take(16),
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall,
+                        color = Color.Gray
+                    )
+                }
+
+                HorizontalDivider()
+
+                Text(
+                    "更新内容",
+                    fontWeight =
+                        FontWeight.Bold
+                )
+
+                Text(
+                    info.releaseNotes
+                        .ifBlank {
+                            "GitHub 已发布新版本。"
+                        },
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodyMedium
+                )
+
+                if (
+                    info.apkUrl
+                        .isNotBlank()
+                ) {
+                    Text(
+                        "Release 中已检测到 APK 安装包。",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall,
+                        color = Color.Gray
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick =
+                    onOpenRelease
+            ) {
+                Text("前往 GitHub 下载")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss
+            ) {
+                Text("稍后")
+            }
+        }
+    )
+}
+
+private fun openWebPage(
+    context: Context,
+    url: String
+) {
+    runCatching {
+        context.startActivity(
+            Intent(
+                Intent.ACTION_VIEW,
+                Uri.parse(url)
+            ).apply {
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK
+                )
+            }
+        )
+    }
+}
 
 @Composable
 private fun LedgerNameDialog(
