@@ -1,6 +1,7 @@
 package com.tianxian.fruit.ui
 
 import android.app.DatePickerDialog
+import android.graphics.BitmapFactory
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -10,6 +11,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -28,6 +30,8 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -73,7 +77,21 @@ enum class AppPage(val title: String, val emoji: String) {
     PLAN("采购", "🛒")
 }
 
-private enum class MorePage { MENU, BOOKS, SYSTEM_ADMIN, DATA_CENTER, HISTORY, STATS, PARTNERS, STORES, PROFIT, FRUITS, REPORT }
+private enum class MorePage {
+    MENU,
+    BOOKS,
+    SYSTEM_ADMIN,
+    HOME_HEADER,
+    ABOUT,
+    DATA_CENTER,
+    HISTORY,
+    STATS,
+    PARTNERS,
+    STORES,
+    PROFIT,
+    FRUITS,
+    REPORT
+}
 
 private enum class HistoryTimeFilter(val label: String) {
     ALL("全部时间"),
@@ -140,6 +158,17 @@ fun TianXianApp(
 
     val context =
         LocalContext.current
+
+    val ledgerUiSettingsManager =
+        remember {
+            LedgerUiSettingsManager(
+                context.applicationContext
+            )
+        }
+
+    var uiSettingsVersion by remember {
+        mutableIntStateOf(0)
+    }
 
     val updateManager =
         remember {
@@ -317,11 +346,21 @@ fun TianXianApp(
                             liveCurrentBook,
                         books =
                             ledgerManager.books(),
+                        ledgerUiSettingsManager =
+                            ledgerUiSettingsManager,
+                        uiSettingsVersion =
+                            uiSettingsVersion,
                         onSwitchBook =
                             onSwitchBook,
                         onBookManage = {
                             moreTarget =
                                 MorePage.BOOKS
+                            page =
+                                AppPage.MORE
+                        },
+                        onHeaderSettings = {
+                            moreTarget =
+                                MorePage.HOME_HEADER
                             page =
                                 AppPage.MORE
                         },
@@ -402,6 +441,13 @@ fun TianXianApp(
                                 manual = true
                             )
                         },
+                        ledgerUiSettingsManager =
+                            ledgerUiSettingsManager,
+                        uiSettingsVersion =
+                            uiSettingsVersion,
+                        onUiSettingsChanged = {
+                            uiSettingsVersion++
+                        },
                         onChanged = {
                             notifyDataChanged()
                         }
@@ -455,8 +501,12 @@ private fun HomeScreen(
     ledgerManager: LedgerManager,
     currentBook: LedgerBook,
     books: List<LedgerBook>,
+    ledgerUiSettingsManager:
+        LedgerUiSettingsManager,
+    uiSettingsVersion: Int,
     onSwitchBook: (String) -> Unit,
     onBookManage: () -> Unit,
+    onHeaderSettings: () -> Unit,
     onPurchase: () -> Unit,
     onPlan: () -> Unit,
     onSession: () -> Unit,
@@ -474,6 +524,41 @@ private fun HomeScreen(
     var bookMenuExpanded by remember {
         mutableStateOf(false)
     }
+
+    val headerSettings =
+        remember(
+            currentBook.id,
+            uiSettingsVersion
+        ) {
+            ledgerUiSettingsManager
+                .load(
+                    currentBook.id
+                )
+        }
+
+    val headerBitmap =
+        remember(
+            currentBook.id,
+            uiSettingsVersion,
+            headerSettings
+                .backgroundImagePath
+        ) {
+            headerSettings
+                .backgroundImagePath
+                .takeIf {
+                    it.isNotBlank()
+                }
+                ?.let {
+                    path ->
+                    runCatching {
+                        BitmapFactory
+                            .decodeFile(
+                                path
+                            )
+                            ?.asImageBitmap()
+                    }.getOrNull()
+                }
+        }
 
     val selectedDateString =
         selectedDate.toString()
@@ -532,231 +617,311 @@ private fun HomeScreen(
                 Modifier
                     .fillMaxWidth()
                     .height(170.dp)
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                Color(0xFF0A6E3A),
-                                Color(0xFF148E51),
-                                Color(0xFF0B5E34)
-                            )
-                        )
-                    )
-                    .padding(
-                        horizontal = 16.dp,
-                        vertical = 12.dp
-                    )
             ) {
-                Box(
-                    Modifier.align(
-                        Alignment.TopStart
-                    )
+                if (
+                    headerBitmap != null
                 ) {
-                    TextButton(
-                        onClick = {
-                            bookMenuExpanded =
-                                true
-                        },
+                    Image(
+                        bitmap =
+                            headerBitmap,
+                        contentDescription =
+                            "首页顶部背景",
                         modifier =
-                            Modifier.widthIn(
-                                max = 260.dp
+                            Modifier.fillMaxSize(),
+                        contentScale =
+                            ContentScale.Crop
+                    )
+
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(
+                                Color.Black.copy(
+                                    alpha = 0.28f
+                                )
+                            )
+                    )
+                } else {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.linearGradient(
+                                    listOf(
+                                        Color(
+                                            0xFF0A6E3A
+                                        ),
+                                        Color(
+                                            0xFF148E51
+                                        ),
+                                        Color(
+                                            0xFF0B5E34
+                                        )
+                                    )
+                                )
+                            )
+                    )
+                }
+
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .padding(
+                            horizontal = 16.dp,
+                            vertical = 12.dp
+                        )
+                ) {
+                    Box(
+                        Modifier.align(
+                            Alignment.TopStart
+                        )
+                    ) {
+                        TextButton(
+                            onClick = {
+                                bookMenuExpanded =
+                                    true
+                            },
+                            modifier =
+                                Modifier.widthIn(
+                                    max = 260.dp
+                                )
+                        ) {
+                            Text(
+                                "📒 " +
+                                    ledgerManager
+                                        .displayName(
+                                            currentBook
+                                        ) +
+                                    "  ▼",
+                                color =
+                                    Color.White,
+                                fontSize =
+                                    12.sp,
+                                fontWeight =
+                                    FontWeight
+                                        .SemiBold,
+                                maxLines = 1
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded =
+                                bookMenuExpanded,
+                            onDismissRequest = {
+                                bookMenuExpanded =
+                                    false
+                            }
+                        ) {
+                            books
+                                .sortedWith(
+                                    compareByDescending<
+                                        LedgerBook
+                                    > {
+                                        it.id ==
+                                            currentBook.id
+                                    }.thenByDescending {
+                                        it.lastSyncAt
+                                    }.thenBy {
+                                        it.createdAt
+                                    }
+                                )
+                                .forEach {
+                                    book ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Column {
+                                                Text(
+                                                    (
+                                                        if (
+                                                            book.id ==
+                                                            currentBook.id
+                                                        ) {
+                                                            "✓ "
+                                                        } else {
+                                                            ""
+                                                        }
+                                                    ) +
+                                                        ledgerManager
+                                                            .displayName(
+                                                                book
+                                                            ),
+                                                    fontWeight =
+                                                        if (
+                                                            book.id ==
+                                                            currentBook.id
+                                                        ) {
+                                                            FontWeight
+                                                                .Bold
+                                                        } else {
+                                                            FontWeight
+                                                                .Normal
+                                                        }
+                                                )
+
+                                                Text(
+                                                    ledgerManager
+                                                        .permissionLabel(
+                                                            book.permission
+                                                        ) +
+                                                        if (
+                                                            book.cloudEnabled
+                                                        ) {
+                                                            " · 云端"
+                                                        } else if (
+                                                            book.cloudBookId
+                                                                .isNotBlank()
+                                                        ) {
+                                                            " · 本机副本"
+                                                        } else {
+                                                            " · 本机"
+                                                        },
+                                                    style =
+                                                        MaterialTheme
+                                                            .typography
+                                                            .labelSmall,
+                                                    color =
+                                                        if (
+                                                            book.permission ==
+                                                            "REVOKED"
+                                                        ) {
+                                                            MaterialTheme
+                                                                .colorScheme
+                                                                .error
+                                                        } else {
+                                                            Color.Gray
+                                                        }
+                                                )
+                                            }
+                                        },
+                                        onClick = {
+                                            bookMenuExpanded =
+                                                false
+
+                                            if (
+                                                book.id !=
+                                                currentBook.id
+                                            ) {
+                                                onSwitchBook(
+                                                    book.id
+                                                )
+                                            }
+                                        }
+                                    )
+                                }
+
+                            HorizontalDivider()
+
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "⚙ 账本管理"
+                                    )
+                                },
+                                onClick = {
+                                    bookMenuExpanded =
+                                        false
+                                    onBookManage()
+                                }
+                            )
+                        }
+                    }
+
+                    Column(
+                        Modifier
+                            .align(
+                                Alignment.CenterStart
+                            )
+                            .padding(
+                                top = 24.dp
                             )
                     ) {
                         Text(
-                            "📒 " +
-                                ledgerManager
-                                    .displayName(
-                                        currentBook
-                                    ) +
-                                "  ▼",
+                            headerSettings
+                                .title,
                             color = Color.White,
-                            fontSize = 12.sp,
+                            fontSize = 30.sp,
                             fontWeight =
-                                FontWeight.SemiBold,
+                                FontWeight.Bold,
                             maxLines = 1
                         )
-                    }
 
-                    DropdownMenu(
-                        expanded =
-                            bookMenuExpanded,
-                        onDismissRequest = {
-                            bookMenuExpanded =
-                                false
-                        }
-                    ) {
-                        books
-                            .sortedWith(
-                                compareByDescending<
-                                    LedgerBook
-                                > {
-                                    it.id ==
-                                        currentBook.id
-                                }.thenByDescending {
-                                    it.lastSyncAt
-                                }.thenBy {
-                                    it.createdAt
-                                }
-                            )
-                            .forEach {
-                                book ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Column {
-                                            Text(
-                                                (
-                                                    if (
-                                                        book.id ==
-                                                        currentBook.id
-                                                    ) {
-                                                        "✓ "
-                                                    } else {
-                                                        ""
-                                                    }
-                                                ) +
-                                                    ledgerManager
-                                                        .displayName(
-                                                            book
-                                                        ),
-                                                fontWeight =
-                                                    if (
-                                                        book.id ==
-                                                        currentBook.id
-                                                    ) {
-                                                        FontWeight.Bold
-                                                    } else {
-                                                        FontWeight.Normal
-                                                    }
-                                            )
-
-                                            Text(
-                                                ledgerManager
-                                                    .permissionLabel(
-                                                        book.permission
-                                                    ) +
-                                                    if (
-                                                        book.cloudEnabled
-                                                    ) {
-                                                        " · 云端"
-                                                    } else if (
-                                                        book.cloudBookId
-                                                            .isNotBlank()
-                                                    ) {
-                                                        " · 本机副本"
-                                                    } else {
-                                                        " · 本机"
-                                                    },
-                                                style =
-                                                    MaterialTheme
-                                                        .typography
-                                                        .labelSmall,
-                                                color =
-                                                    if (
-                                                        book.permission ==
-                                                        "REVOKED"
-                                                    ) {
-                                                        MaterialTheme
-                                                            .colorScheme
-                                                            .error
-                                                    } else {
-                                                        Color.Gray
-                                                    }
-                                            )
-                                        }
-                                    },
-                                    onClick = {
-                                        bookMenuExpanded =
-                                            false
-
-                                        if (
-                                            book.id !=
-                                            currentBook.id
-                                        ) {
-                                            onSwitchBook(
-                                                book.id
-                                            )
-                                        }
-                                    }
+                        if (
+                            headerSettings
+                                .subtitle
+                                .isNotBlank()
+                        ) {
+                            Spacer(
+                                Modifier.height(
+                                    6.dp
                                 )
-                            }
+                            )
 
-                        HorizontalDivider()
+                            Text(
+                                headerSettings
+                                    .subtitle,
+                                color =
+                                    Color.White
+                                        .copy(
+                                            alpha =
+                                                0.9f
+                                        ),
+                                fontSize = 13.sp,
+                                maxLines = 2
+                            )
+                        }
+                    }
 
-                        DropdownMenuItem(
-                            text = {
-                                Text("⚙ 账本管理")
-                            },
-                            onClick = {
-                                bookMenuExpanded =
-                                    false
-                                onBookManage()
-                            }
+                    Column(
+                        Modifier.align(
+                            Alignment.BottomEnd
+                        ),
+                        horizontalAlignment =
+                            Alignment.End
+                    ) {
+                        if (
+                            headerSettings
+                                .showFruitIcons
+                        ) {
+                            Text(
+                                "🍇🍊🍓",
+                                fontSize = 24.sp
+                            )
+                        }
+
+                        if (
+                            headerSettings
+                                .tagline
+                                .isNotBlank()
+                        ) {
+                            Text(
+                                headerSettings
+                                    .tagline,
+                                color =
+                                    Color.White
+                                        .copy(
+                                            alpha =
+                                                0.92f
+                                        ),
+                                fontSize = 12.sp,
+                                maxLines = 1
+                            )
+                        }
+                    }
+
+                    TextButton(
+                        onClick =
+                            onHeaderSettings,
+                        modifier =
+                            Modifier.align(
+                                Alignment.TopEnd
+                            )
+                    ) {
+                        Text(
+                            "⚙",
+                            color = Color.White,
+                            fontSize = 24.sp
                         )
                     }
-                }
-
-                Column(
-                    Modifier
-                        .align(
-                            Alignment.CenterStart
-                        )
-                        .padding(top = 24.dp)
-                ) {
-                    Text(
-                        "天鲜果业",
-                        color = Color.White,
-                        fontSize = 30.sp,
-                        fontWeight =
-                            FontWeight.Bold
-                    )
-
-                    Spacer(
-                        Modifier.height(6.dp)
-                    )
-
-                    Text(
-                        "每一天努力，收获更甜的生活",
-                        color =
-                            Color.White.copy(
-                                alpha = 0.88f
-                            ),
-                        fontSize = 13.sp
-                    )
-                }
-
-                Column(
-                    Modifier.align(
-                        Alignment.BottomEnd
-                    ),
-                    horizontalAlignment =
-                        Alignment.End
-                ) {
-                    Text(
-                        "🍇🍊🍓",
-                        fontSize = 24.sp
-                    )
-
-                    Text(
-                        "新鲜水果 · 从这里开始！",
-                        color =
-                            Color.White.copy(
-                                alpha = 0.9f
-                            ),
-                        fontSize = 12.sp
-                    )
-                }
-
-                TextButton(
-                    onClick = onMore,
-                    modifier =
-                        Modifier.align(
-                            Alignment.TopEnd
-                        )
-                ) {
-                    Text(
-                        "⚙",
-                        color = Color.White,
-                        fontSize = 24.sp
-                    )
                 }
             }
         }
@@ -4111,6 +4276,10 @@ private fun MoreScreen(
     updateChecking: Boolean,
     updateCheckMessage: String,
     onCheckUpdate: () -> Unit,
+    ledgerUiSettingsManager:
+        LedgerUiSettingsManager,
+    uiSettingsVersion: Int,
+    onUiSettingsChanged: () -> Unit,
     onChanged: () -> Unit
 ) {
     var sub by remember(initialSub) { mutableStateOf(initialSub) }
@@ -4133,81 +4302,181 @@ private fun MoreScreen(
     when (sub) {
         MorePage.MENU -> {
             LazyColumn(
-                Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Color(
+                            0xFFF6F6F6
+                        )
+                    ),
+                contentPadding =
+                    PaddingValues(
+                        bottom = 24.dp
+                    ),
+                verticalArrangement =
+                    Arrangement.spacedBy(
+                        0.dp
+                    )
             ) {
                 item {
-                    PageHeader(
-                        "更多",
-                        "当前账本：${ledgerManager.displayName(currentBook)}"
-                    )
-                }
-
-                item {
-                    MenuCard("📚 账本管理") {
-                        sub = MorePage.BOOKS
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(
+                                MaterialTheme
+                                    .colorScheme
+                                    .surface
+                            )
+                            .padding(
+                                horizontal = 18.dp,
+                                vertical = 16.dp
+                            )
+                    ) {
+                        Text(
+                            "更多",
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .headlineSmall,
+                            fontWeight =
+                                FontWeight.Bold
+                        )
+                        Text(
+                            "当前账本：${ledgerManager.displayName(currentBook)}",
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodyMedium,
+                            color = Color.Gray
+                        )
                     }
                 }
 
-                if (cloudSyncManager.session()?.systemRole == "SUPERADMIN") {
-                    item {
-                        MenuCard("🛡 系统管理") {
-                            sub = MorePage.SYSTEM_ADMIN
-                        }
-                    }
-                }
-
                 item {
-                    MenuCard("📊 数据中心") {
-                        sub = MorePage.DATA_CENTER
+                    SettingsSection(
+                        title = "账本与数据"
+                    ) {
+                        SettingsRow(
+                            icon = "📚",
+                            title = "账本管理",
+                            subtitle =
+                                "切换、共享、同步、云端回收站",
+                            onClick = {
+                                sub =
+                                    MorePage.BOOKS
+                            }
+                        )
+
+                        SettingsDivider()
+
+                        SettingsRow(
+                            icon = "📊",
+                            title = "数据中心",
+                            subtitle =
+                                "历史记录与经营分析",
+                            onClick = {
+                                sub =
+                                    MorePage.DATA_CENTER
+                            }
+                        )
+
+                        SettingsDivider()
+
+                        SettingsRow(
+                            icon = "📄",
+                            title = "生成报表",
+                            subtitle =
+                                "利润、结算、经营汇总",
+                            onClick = {
+                                sub =
+                                    MorePage.REPORT
+                            }
+                        )
                     }
                 }
 
                 if (canEdit) {
                     item {
-                        MenuCard("👥 合伙人管理") {
-                            sub = MorePage.PARTNERS
-                        }
-                    }
+                        SettingsSection(
+                            title = "经营设置"
+                        ) {
+                            SettingsRow(
+                                icon = "👥",
+                                title = "合伙人管理",
+                                onClick = {
+                                    sub =
+                                        MorePage.PARTNERS
+                                }
+                            )
 
-                    item {
-                        MenuCard("📍 摊位管理") {
-                            sub = MorePage.STORES
-                        }
-                    }
+                            SettingsDivider()
 
-                    item {
-                        MenuCard("📦 商品管理") {
-                            sub = MorePage.FRUITS
-                        }
-                    }
+                            SettingsRow(
+                                icon = "📍",
+                                title = "摊位管理",
+                                onClick = {
+                                    sub =
+                                        MorePage.STORES
+                                }
+                            )
 
-                    item {
-                        MenuCard("💰 利润分配") {
-                            sub = MorePage.PROFIT
-                        }
-                    }
+                            SettingsDivider()
 
-                    item {
-                        MenuCard("🛒 采购清单") {
-                            onPlan()
+                            SettingsRow(
+                                icon = "📦",
+                                title = "商品管理",
+                                onClick = {
+                                    sub =
+                                        MorePage.FRUITS
+                                }
+                            )
+
+                            SettingsDivider()
+
+                            SettingsRow(
+                                icon = "💰",
+                                title = "利润分配",
+                                onClick = {
+                                    sub =
+                                        MorePage.PROFIT
+                                }
+                            )
+
+                            SettingsDivider()
+
+                            SettingsRow(
+                                icon = "🛒",
+                                title = "采购清单",
+                                onClick =
+                                    onPlan
+                            )
                         }
                     }
                 } else {
                     item {
                         Card(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(
+                                        horizontal =
+                                            16.dp,
+                                        vertical =
+                                            10.dp
+                                    ),
                             colors =
-                                CardDefaults.cardColors(
-                                    containerColor =
-                                        Color(
-                                            0xFFFFF8E8
-                                        )
-                                )
+                                CardDefaults
+                                    .cardColors(
+                                        containerColor =
+                                            Color(
+                                                0xFFFFF8E8
+                                            )
+                                    )
                         ) {
                             Text(
                                 if (
-                                    currentBook.permission ==
+                                    currentBook
+                                        .permission ==
                                     "REVOKED"
                                 ) {
                                     "当前账本已失去云端访问权限：本机副本仍可查看，但不能继续同步或修改。"
@@ -4226,115 +4495,106 @@ private fun MoreScreen(
                 }
 
                 item {
-                    MenuCard("📄 生成报表") {
-                        sub = MorePage.REPORT
+                    SettingsSection(
+                        title = "界面与显示"
+                    ) {
+                        SettingsRow(
+                            icon = "🎨",
+                            title = "首页顶部设置",
+                            subtitle =
+                                "背景图片、标题、副标题和装饰",
+                            onClick = {
+                                sub =
+                                    MorePage
+                                        .HOME_HEADER
+                            }
+                        )
+                    }
+                }
+
+                if (
+                    cloudSyncManager
+                        .session()
+                        ?.systemRole ==
+                    "SUPERADMIN"
+                ) {
+                    item {
+                        SettingsSection(
+                            title = "系统"
+                        ) {
+                            SettingsRow(
+                                icon = "🛡",
+                                title = "系统管理",
+                                subtitle =
+                                    "用户、设备与系统审计",
+                                onClick = {
+                                    sub =
+                                        MorePage
+                                            .SYSTEM_ADMIN
+                                }
+                            )
+                        }
                     }
                 }
 
                 item {
-                    Card(
-                        Modifier.fillMaxWidth()
+                    SettingsSection(
+                        title = "帮助与关于"
                     ) {
-                        Column(
-                            Modifier.padding(
-                                14.dp
-                            ),
-                            verticalArrangement =
-                                Arrangement.spacedBy(
-                                    6.dp
-                                )
-                        ) {
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement =
-                                    Arrangement.SpaceBetween,
-                                verticalAlignment =
-                                    Alignment.CenterVertically
-                            ) {
-                                Column(
-                                    Modifier.weight(
-                                        1f
-                                    )
-                                ) {
-                                    Text(
-                                        "⬆ 版本更新",
-                                        fontWeight =
-                                            FontWeight.Bold
-                                    )
-                                    Text(
-                                        "当前版本 V${BuildConfig.VERSION_NAME} · build ${BuildConfig.VERSION_CODE}",
-                                        style =
-                                            MaterialTheme
-                                                .typography
-                                                .bodySmall,
-                                        color = Color.Gray
-                                    )
-                                }
-
-                                Button(
-                                    onClick =
-                                        onCheckUpdate,
-                                    enabled =
-                                        !updateChecking
-                                ) {
-                                    if (
-                                        updateChecking
-                                    ) {
-                                        CircularProgressIndicator(
-                                            modifier =
-                                                Modifier.size(
-                                                    16.dp
-                                                ),
-                                            strokeWidth =
-                                                2.dp
-                                        )
-                                        Spacer(
-                                            Modifier.width(
-                                                6.dp
-                                            )
-                                        )
-                                    }
-
-                                    Text(
-                                        if (
-                                            updateChecking
-                                        ) {
-                                            "检查中"
-                                        } else {
-                                            "检查更新"
-                                        }
-                                    )
-                                }
+                        SettingsRow(
+                            icon = "ℹ️",
+                            title = "关于天鲜账本",
+                            subtitle =
+                                "版本、更新与 GitHub",
+                            trailing =
+                                "V${BuildConfig.VERSION_NAME}",
+                            onClick = {
+                                sub =
+                                    MorePage.ABOUT
                             }
-
-                            if (
-                                updateCheckMessage
-                                    .isNotBlank()
-                            ) {
-                                Text(
-                                    updateCheckMessage,
-                                    style =
-                                        MaterialTheme
-                                            .typography
-                                            .bodySmall,
-                                    color =
-                                        if (
-                                            updateCheckMessage
-                                                .startsWith(
-                                                    "检查更新失败"
-                                                )
-                                        ) {
-                                            MaterialTheme
-                                                .colorScheme
-                                                .error
-                                        } else {
-                                            BrandGreen
-                                        }
-                                )
-                            }
-                        }
+                        )
                     }
                 }
+            }
+        }
+
+        MorePage.HOME_HEADER -> {
+            SubPage(
+                "首页顶部设置",
+                {
+                    sub =
+                        MorePage.MENU
+                }
+            ) {
+                HomeHeaderSettingsContent(
+                    ledgerUiSettingsManager =
+                        ledgerUiSettingsManager,
+                    currentBook =
+                        currentBook,
+                    uiSettingsVersion =
+                        uiSettingsVersion,
+                    onChanged =
+                        onUiSettingsChanged
+                )
+            }
+        }
+
+        MorePage.ABOUT -> {
+            SubPage(
+                "关于天鲜账本",
+                {
+                    sub =
+                        MorePage.MENU
+                }
+            ) {
+                AboutAppContent(
+                    updateChecking =
+                        updateChecking,
+                    updateCheckMessage =
+                        updateCheckMessage,
+                    onCheckUpdate =
+                        onCheckUpdate
+                )
             }
         }
 
@@ -7342,7 +7602,7 @@ private fun LedgerManagementContent(
                     Modifier.padding(12.dp)
                 ) {
                     Text(
-                        "V1.3.6 GitHub 自动更新",
+                        "V1.3.7 界面个性化",
                         fontWeight =
                             FontWeight.Bold
                     )
@@ -7356,7 +7616,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• APP 启动后每 12 小时后台检查 GitHub Release；有新版时弹窗提醒。",
+                        "• “更多”采用分组式设置界面，更新入口已经移到“关于天鲜账本”。",
                         style =
                             MaterialTheme
                                 .typography
@@ -7364,7 +7624,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• “更多”可手动检查更新；点击“前往 GitHub 下载”直接打开最新 Release 页面。",
+                        "• 每个账本都可在本机单独设置首页背景图、主标题、副标题和右下角文案。",
                         style =
                             MaterialTheme
                                 .typography
@@ -8773,6 +9033,985 @@ private fun LedgerNameDialog(
                 Text("取消")
             }
         }
+    )
+}
+
+@Composable
+private fun HomeHeaderSettingsContent(
+    ledgerUiSettingsManager:
+        LedgerUiSettingsManager,
+    currentBook: LedgerBook,
+    uiSettingsVersion: Int,
+    onChanged: () -> Unit
+) {
+    val context =
+        LocalContext.current
+
+    val loaded =
+        remember(
+            currentBook.id,
+            uiSettingsVersion
+        ) {
+            ledgerUiSettingsManager
+                .load(
+                    currentBook.id
+                )
+        }
+
+    var title by remember(
+        currentBook.id,
+        uiSettingsVersion
+    ) {
+        mutableStateOf(
+            loaded.title
+        )
+    }
+
+    var subtitle by remember(
+        currentBook.id,
+        uiSettingsVersion
+    ) {
+        mutableStateOf(
+            loaded.subtitle
+        )
+    }
+
+    var tagline by remember(
+        currentBook.id,
+        uiSettingsVersion
+    ) {
+        mutableStateOf(
+            loaded.tagline
+        )
+    }
+
+    var showFruitIcons by remember(
+        currentBook.id,
+        uiSettingsVersion
+    ) {
+        mutableStateOf(
+            loaded.showFruitIcons
+        )
+    }
+
+    var backgroundPath by remember(
+        currentBook.id,
+        uiSettingsVersion
+    ) {
+        mutableStateOf(
+            loaded.backgroundImagePath
+        )
+    }
+
+    var message by remember {
+        mutableStateOf("")
+    }
+
+    val imageLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts
+                .GetContent()
+        ) {
+            uri ->
+            if (uri != null) {
+                ledgerUiSettingsManager
+                    .saveBackgroundImage(
+                        currentBook.id,
+                        uri
+                    )
+                    .onSuccess {
+                        path ->
+                        backgroundPath =
+                            path
+                        message =
+                            "背景图片已更换"
+                        onChanged()
+                    }
+                    .onFailure {
+                        error ->
+                        message =
+                            "图片设置失败：" +
+                                (
+                                    error.message
+                                        ?: "未知错误"
+                                    )
+                    }
+            }
+        }
+
+    val previewBitmap =
+        remember(
+            backgroundPath,
+            uiSettingsVersion
+        ) {
+            backgroundPath
+                .takeIf {
+                    it.isNotBlank()
+                }
+                ?.let {
+                    path ->
+                    runCatching {
+                        BitmapFactory
+                            .decodeFile(
+                                path
+                            )
+                            ?.asImageBitmap()
+                    }.getOrNull()
+                }
+        }
+
+    LazyColumn(
+        Modifier
+            .fillMaxSize()
+            .background(
+                Color(
+                    0xFFF6F6F6
+                )
+            ),
+        contentPadding =
+            PaddingValues(
+                16.dp
+            ),
+        verticalArrangement =
+            Arrangement.spacedBy(
+                14.dp
+            )
+    ) {
+        item {
+            Text(
+                "当前账本：${currentBook.name}",
+                color = Color.Gray,
+                style =
+                    MaterialTheme
+                        .typography
+                        .bodySmall
+            )
+        }
+
+        item {
+            Card(
+                Modifier
+                    .fillMaxWidth()
+                    .height(
+                        170.dp
+                    )
+            ) {
+                Box(
+                    Modifier.fillMaxSize()
+                ) {
+                    if (
+                        previewBitmap !=
+                        null
+                    ) {
+                        Image(
+                            bitmap =
+                                previewBitmap,
+                            contentDescription =
+                                "首页顶部预览",
+                            modifier =
+                                Modifier
+                                    .fillMaxSize(),
+                            contentScale =
+                                ContentScale.Crop
+                        )
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Color.Black
+                                        .copy(
+                                            alpha =
+                                                0.28f
+                                        )
+                                )
+                        )
+                    } else {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Brush
+                                        .linearGradient(
+                                            listOf(
+                                                Color(
+                                                    0xFF0A6E3A
+                                                ),
+                                                Color(
+                                                    0xFF148E51
+                                                ),
+                                                Color(
+                                                    0xFF0B5E34
+                                                )
+                                            )
+                                        )
+                                )
+                        )
+                    }
+
+                    Column(
+                        Modifier
+                            .align(
+                                Alignment
+                                    .CenterStart
+                            )
+                            .padding(
+                                start = 18.dp
+                            )
+                    ) {
+                        Text(
+                            title
+                                .ifBlank {
+                                    "天鲜果业"
+                                },
+                            color =
+                                Color.White,
+                            fontSize =
+                                28.sp,
+                            fontWeight =
+                                FontWeight.Bold,
+                            maxLines = 1
+                        )
+
+                        if (
+                            subtitle
+                                .isNotBlank()
+                        ) {
+                            Spacer(
+                                Modifier.height(
+                                    5.dp
+                                )
+                            )
+                            Text(
+                                subtitle,
+                                color =
+                                    Color.White
+                                        .copy(
+                                            alpha =
+                                                0.9f
+                                        ),
+                                fontSize =
+                                    13.sp,
+                                maxLines = 2
+                            )
+                        }
+                    }
+
+                    Column(
+                        Modifier
+                            .align(
+                                Alignment
+                                    .BottomEnd
+                            )
+                            .padding(
+                                12.dp
+                            ),
+                        horizontalAlignment =
+                            Alignment.End
+                    ) {
+                        if (
+                            showFruitIcons
+                        ) {
+                            Text(
+                                "🍇🍊🍓",
+                                fontSize =
+                                    22.sp
+                            )
+                        }
+
+                        if (
+                            tagline
+                                .isNotBlank()
+                        ) {
+                            Text(
+                                tagline,
+                                color =
+                                    Color.White,
+                                fontSize =
+                                    11.sp,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    Modifier.padding(
+                        14.dp
+                    ),
+                    verticalArrangement =
+                        Arrangement.spacedBy(
+                            12.dp
+                        )
+                ) {
+                    Text(
+                        "文字",
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+
+                    OutlinedTextField(
+                        value = title,
+                        onValueChange = {
+                            value ->
+                            title =
+                                value.take(
+                                    20
+                                )
+                        },
+                        modifier =
+                            Modifier
+                                .fillMaxWidth(),
+                        label = {
+                            Text("主标题")
+                        },
+                        singleLine = true
+                    )
+
+                    OutlinedTextField(
+                        value = subtitle,
+                        onValueChange = {
+                            value ->
+                            subtitle =
+                                value.take(
+                                    50
+                                )
+                        },
+                        modifier =
+                            Modifier
+                                .fillMaxWidth(),
+                        label = {
+                            Text("副标题")
+                        },
+                        minLines = 1,
+                        maxLines = 2
+                    )
+
+                    OutlinedTextField(
+                        value = tagline,
+                        onValueChange = {
+                            value ->
+                            tagline =
+                                value.take(
+                                    35
+                                )
+                        },
+                        modifier =
+                            Modifier
+                                .fillMaxWidth(),
+                        label = {
+                            Text(
+                                "右下角文案"
+                            )
+                        },
+                        singleLine = true
+                    )
+
+                    Row(
+                        Modifier
+                            .fillMaxWidth(),
+                        verticalAlignment =
+                            Alignment
+                                .CenterVertically
+                    ) {
+                        Column(
+                            Modifier.weight(
+                                1f
+                            )
+                        ) {
+                            Text(
+                                "水果装饰"
+                            )
+                            Text(
+                                "显示 🍇🍊🍓",
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .bodySmall,
+                                color =
+                                    Color.Gray
+                            )
+                        }
+
+                        Switch(
+                            checked =
+                                showFruitIcons,
+                            onCheckedChange = {
+                                showFruitIcons =
+                                    it
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    Modifier.padding(
+                        14.dp
+                    ),
+                    verticalArrangement =
+                        Arrangement.spacedBy(
+                            10.dp
+                        )
+                ) {
+                    Text(
+                        "顶部背景",
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+
+                    Text(
+                        if (
+                            backgroundPath
+                                .isBlank()
+                        ) {
+                            "当前使用默认绿色渐变背景"
+                        } else {
+                            "当前使用自定义图片"
+                        },
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall,
+                        color = Color.Gray
+                    )
+
+                    Row(
+                        Modifier
+                            .fillMaxWidth(),
+                        horizontalArrangement =
+                            Arrangement
+                                .spacedBy(
+                                    8.dp
+                                )
+                    ) {
+                        Button(
+                            onClick = {
+                                imageLauncher
+                                    .launch(
+                                        "image/*"
+                                    )
+                            },
+                            modifier =
+                                Modifier.weight(
+                                    1f
+                                )
+                        ) {
+                            Text(
+                                if (
+                                    backgroundPath
+                                        .isBlank()
+                                ) {
+                                    "选择图片"
+                                } else {
+                                    "更换图片"
+                                }
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                ledgerUiSettingsManager
+                                    .removeBackgroundImage(
+                                        currentBook.id
+                                    )
+                                backgroundPath =
+                                    ""
+                                message =
+                                    "已恢复默认背景"
+                                onChanged()
+                            },
+                            enabled =
+                                backgroundPath
+                                    .isNotBlank(),
+                            modifier =
+                                Modifier.weight(
+                                    1f
+                                )
+                        ) {
+                            Text("恢复背景")
+                        }
+                    }
+
+                    Text(
+                        "使用 Android 系统图片选择器，不需要开放整个相册权限。图片会压缩后保存到 APP 私有目录。",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall,
+                        color = Color.Gray
+                    )
+                }
+            }
+        }
+
+        item {
+            Button(
+                onClick = {
+                    ledgerUiSettingsManager
+                        .save(
+                            currentBook.id,
+                            LedgerHeaderSettings(
+                                title =
+                                    title
+                                        .trim()
+                                        .ifBlank {
+                                            "天鲜果业"
+                                        },
+                                subtitle =
+                                    subtitle
+                                        .trim(),
+                                tagline =
+                                    tagline
+                                        .trim(),
+                                showFruitIcons =
+                                    showFruitIcons,
+                                backgroundImagePath =
+                                    backgroundPath
+                            )
+                        )
+
+                    message =
+                        "首页顶部设置已保存"
+                    onChanged()
+                },
+                modifier =
+                    Modifier.fillMaxWidth()
+            ) {
+                Text("保存设置")
+            }
+        }
+
+        item {
+            OutlinedButton(
+                onClick = {
+                    ledgerUiSettingsManager
+                        .reset(
+                            currentBook.id
+                        )
+
+                    val defaults =
+                        ledgerUiSettingsManager
+                            .load(
+                                currentBook.id
+                            )
+
+                    title =
+                        defaults.title
+                    subtitle =
+                        defaults.subtitle
+                    tagline =
+                        defaults.tagline
+                    showFruitIcons =
+                        defaults
+                            .showFruitIcons
+                    backgroundPath =
+                        ""
+
+                    message =
+                        "已恢复默认首页顶部"
+                    onChanged()
+                },
+                modifier =
+                    Modifier.fillMaxWidth()
+            ) {
+                Text("恢复全部默认")
+            }
+        }
+
+        if (
+            message.isNotBlank()
+        ) {
+            item {
+                Text(
+                    message,
+                    color =
+                        if (
+                            message.contains(
+                                "失败"
+                            )
+                        ) {
+                            MaterialTheme
+                                .colorScheme
+                                .error
+                        } else {
+                            BrandGreen
+                        },
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall
+                )
+            }
+        }
+
+        item {
+            Text(
+                "说明：这些界面设置按账本区分并保存在当前设备，不参与经营数据云同步。换手机后业务数据可以同步，但背景图片和首页文案需要在新设备重新设置。",
+                style =
+                    MaterialTheme
+                        .typography
+                        .bodySmall,
+                color = Color.Gray
+            )
+        }
+    }
+}
+
+@Composable
+private fun AboutAppContent(
+    updateChecking: Boolean,
+    updateCheckMessage: String,
+    onCheckUpdate: () -> Unit
+) {
+    val context =
+        LocalContext.current
+
+    LazyColumn(
+        Modifier
+            .fillMaxSize()
+            .background(
+                Color(
+                    0xFFF6F6F6
+                )
+            ),
+        contentPadding =
+            PaddingValues(
+                bottom = 24.dp
+            )
+    ) {
+        item {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .background(
+                        MaterialTheme
+                            .colorScheme
+                            .surface
+                    )
+                    .padding(
+                        24.dp
+                    ),
+                horizontalAlignment =
+                    Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "🍇",
+                    fontSize = 48.sp
+                )
+                Spacer(
+                    Modifier.height(
+                        8.dp
+                    )
+                )
+                Text(
+                    "天鲜账本",
+                    style =
+                        MaterialTheme
+                            .typography
+                            .headlineSmall,
+                    fontWeight =
+                        FontWeight.Bold
+                )
+                Text(
+                    "V${BuildConfig.VERSION_NAME} · build ${BuildConfig.VERSION_CODE}",
+                    color = Color.Gray,
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodyMedium
+                )
+            }
+        }
+
+        item {
+            SettingsSection(
+                title = "版本"
+            ) {
+                SettingsRow(
+                    icon = "⬆",
+                    title =
+                        if (
+                            updateChecking
+                        ) {
+                            "正在检查更新…"
+                        } else {
+                            "检查更新"
+                        },
+                    subtitle =
+                        updateCheckMessage
+                            .ifBlank {
+                                "自动每 12 小时检查一次 GitHub Release"
+                            },
+                    onClick =
+                        onCheckUpdate
+                )
+
+                SettingsDivider()
+
+                SettingsRow(
+                    icon = "📝",
+                    title = "本版更新",
+                    subtitle =
+                        "更多页分组、首页顶部个性化、更新入口移入关于",
+                    onClick = {
+                    }
+                )
+            }
+        }
+
+        item {
+            SettingsSection(
+                title = "项目"
+            ) {
+                SettingsRow(
+                    icon = "🌐",
+                    title = "GitHub 项目",
+                    subtitle =
+                        "sockc/TianXianFruit",
+                    onClick = {
+                        openWebPage(
+                            context,
+                            "https://github.com/sockc/TianXianFruit"
+                        )
+                    }
+                )
+
+                SettingsDivider()
+
+                SettingsRow(
+                    icon = "📦",
+                    title = "GitHub Releases",
+                    subtitle =
+                        "查看和下载已发布版本",
+                    onClick = {
+                        openWebPage(
+                            context,
+                            AppUpdateManager
+                                .RELEASES_URL
+                        )
+                    }
+                )
+            }
+        }
+
+        item {
+            Column(
+                Modifier.padding(
+                    horizontal = 20.dp,
+                    vertical = 16.dp
+                )
+            ) {
+                Text(
+                    "天鲜账本用于水果经营中的进货、营业、利润、结算和多账本云同步。",
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall,
+                    color = Color.Gray
+                )
+
+                Spacer(
+                    Modifier.height(
+                        6.dp
+                    )
+                )
+
+                Text(
+                    "当前云同步服务兼容 TianXian Sync Server V1.0.5-Lucky。",
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall,
+                    color = Color.Gray
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsSection(
+    title: String,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(
+                top = 14.dp
+            )
+    ) {
+        Text(
+            title,
+            modifier =
+                Modifier.padding(
+                    horizontal = 20.dp,
+                    vertical = 8.dp
+                ),
+            color =
+                Color(
+                    0xFF8A8A8A
+                ),
+            style =
+                MaterialTheme
+                    .typography
+                    .bodySmall
+        )
+
+        Card(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        horizontal =
+                            12.dp
+                    ),
+            shape =
+                RoundedCornerShape(
+                    14.dp
+                ),
+            colors =
+                CardDefaults.cardColors(
+                    containerColor =
+                        MaterialTheme
+                            .colorScheme
+                            .surface
+                )
+        ) {
+            Column(
+                content = content
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingsRow(
+    icon: String,
+    title: String,
+    subtitle: String? = null,
+    trailing: String? = null,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        color = Color.Transparent
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(
+                    horizontal = 16.dp,
+                    vertical = 14.dp
+                ),
+            verticalAlignment =
+                Alignment.CenterVertically
+        ) {
+            Text(
+                icon,
+                fontSize = 20.sp,
+                modifier =
+                    Modifier.width(
+                        34.dp
+                    )
+            )
+
+            Column(
+                Modifier.weight(
+                    1f
+                )
+            ) {
+                Text(
+                    title,
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodyLarge,
+                    fontWeight =
+                        FontWeight.Medium
+                )
+
+                if (
+                    !subtitle
+                        .isNullOrBlank()
+                ) {
+                    Spacer(
+                        Modifier.height(
+                            2.dp
+                        )
+                    )
+
+                    Text(
+                        subtitle,
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall,
+                        color =
+                            Color(
+                                0xFF8A8A8A
+                            )
+                    )
+                }
+            }
+
+            if (
+                !trailing
+                    .isNullOrBlank()
+            ) {
+                Text(
+                    trailing,
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodyMedium,
+                    color =
+                        Color(
+                            0xFF8A8A8A
+                        )
+                )
+
+                Spacer(
+                    Modifier.width(
+                        8.dp
+                    )
+                )
+            }
+
+            Text(
+                "›",
+                color =
+                    Color(
+                        0xFF9B9B9B
+                    ),
+                fontSize = 25.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingsDivider() {
+    HorizontalDivider(
+        modifier =
+            Modifier.padding(
+                start = 50.dp
+            ),
+        color =
+            Color(
+                0xFFE9E9E9
+            )
     )
 }
 
