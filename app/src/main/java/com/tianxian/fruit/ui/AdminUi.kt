@@ -31,6 +31,9 @@ fun SystemAdminContent(
     var renameUser by remember { mutableStateOf<CloudAdminUserInfo?>(null) }
     var resetPasswordUser by remember { mutableStateOf<CloudAdminUserInfo?>(null) }
     var deleteUser by remember { mutableStateOf<CloudAdminUserInfo?>(null) }
+    var createUserDialog by remember {
+        mutableStateOf(false)
+    }
 
     fun runAdminTask(
         busyText: String,
@@ -87,6 +90,18 @@ fun SystemAdminContent(
                 }
                 Text("刷新")
             }
+
+            if (tab == 0) {
+                OutlinedButton(
+                    onClick = {
+                        createUserDialog = true
+                    },
+                    enabled = !loading
+                ) {
+                    Text("＋ 新增账号")
+                }
+            }
+
             Text(
                 message,
                 modifier = Modifier.weight(1f),
@@ -212,6 +227,142 @@ fun SystemAdminContent(
                 }
             }
         }
+    }
+
+    if (createUserDialog) {
+        var username by remember {
+            mutableStateOf("")
+        }
+        var displayName by remember {
+            mutableStateOf("")
+        }
+        var password by remember {
+            mutableStateOf("")
+        }
+
+        AlertDialog(
+            onDismissRequest = {
+                createUserDialog = false
+            },
+            title = {
+                Text("新增账号")
+            },
+            text = {
+                Column(
+                    verticalArrangement =
+                        Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = username,
+                        onValueChange = {
+                            username = it
+                        },
+                        label = {
+                            Text("用户名")
+                        },
+                        singleLine = true
+                    )
+
+                    OutlinedTextField(
+                        value = displayName,
+                        onValueChange = {
+                            displayName = it
+                        },
+                        label = {
+                            Text("显示名称")
+                        },
+                        singleLine = true
+                    )
+
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = {
+                            password = it
+                        },
+                        label = {
+                            Text("初始密码（至少8位）")
+                        },
+                        singleLine = true
+                    )
+
+                    Text(
+                        "创建账号后，再到“成员与权限”把账号加入指定云端账本。",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall,
+                        color = Color.Gray
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val user =
+                            username.trim()
+                        val name =
+                            displayName.trim()
+
+                        if (
+                            user.isBlank() ||
+                            name.isBlank() ||
+                            password.length < 8 ||
+                            loading
+                        ) {
+                            return@Button
+                        }
+
+                        createUserDialog = false
+                        loading = true
+                        message =
+                            "正在创建账号…"
+
+                        Thread {
+                            val result =
+                                runCatching {
+                                    cloudSyncManager
+                                        .createAdminUser(
+                                            username = user,
+                                            displayName = name,
+                                            password = password
+                                        )
+                                    cloudSyncManager
+                                        .listAdminUsers()
+                                }
+
+                            Handler(
+                                Looper.getMainLooper()
+                            ).post {
+                                loading = false
+
+                                result
+                                    .onSuccess {
+                                        users = it
+                                        message =
+                                            "账号 $user 已创建"
+                                    }
+                                    .onFailure {
+                                        message =
+                                            it.message
+                                                ?: "创建失败"
+                                    }
+                            }
+                        }.start()
+                    }
+                ) {
+                    Text("创建")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        createUserDialog = false
+                    }
+                ) {
+                    Text("取消")
+                }
+            }
+        )
     }
 
     renameUser?.let { user ->
@@ -370,6 +521,7 @@ private fun adminActionLabel(action: String): String = when (action) {
     "BOOK_RESTORE" -> "恢复账本"
     "BOOK_PURGE_DATA" -> "永久清空账本"
     "BOOK_TRANSFER_OWNER" -> "转移所有权"
+    "USER_CREATE" -> "创建用户"
     "USER_UPDATE" -> "修改用户"
     "USER_DISABLE" -> "停用用户"
     "USER_FORCE_LOGOUT_ALL" -> "强制退出全部设备"

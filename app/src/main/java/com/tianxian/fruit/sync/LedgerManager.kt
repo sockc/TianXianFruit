@@ -14,6 +14,9 @@ data class LedgerBook(
     val ownerDeviceId: String,
     val ownerUsername: String = "",
     val permission: String = "OWNER",
+    val permissionTemplate: String = "OWNER",
+    val permissions: Set<String> =
+        BookPermissions.allMemberPermissions,
     val cloudBookId: String = "",
     val cloudEnabled: Boolean = false,
     val lastSyncAt: Long = 0L,
@@ -234,7 +237,10 @@ class LedgerManager(
         bookId: String,
         name: String,
         ownerUsername: String,
-        permission: String
+        permission: String,
+        permissionTemplate: String = "LEGACY",
+        permissions: Set<String> =
+            BookPermissions.fallbackForRole(permission)
     ): LedgerBook {
         val cleanName =
             name.trim()
@@ -255,6 +261,8 @@ class LedgerManager(
                     ownerUsername =
                         ownerUsername,
                     permission = permission,
+                    permissionTemplate = permissionTemplate,
+                    permissions = permissions,
                     cloudBookId = bookId,
                     cloudEnabled = true,
                     updatedAt = now
@@ -275,6 +283,10 @@ class LedgerManager(
                         ownerUsername,
                     permission =
                         permission,
+                    permissionTemplate =
+                        permissionTemplate,
+                    permissions =
+                        permissions,
                     cloudBookId =
                         bookId,
                     cloudEnabled = true,
@@ -319,6 +331,10 @@ class LedgerManager(
                     book.copy(
                         permission =
                             "REVOKED",
+                        permissionTemplate =
+                            "REVOKED",
+                        permissions =
+                            emptySet(),
                         cloudEnabled =
                             false,
                         updatedAt = now
@@ -354,6 +370,10 @@ class LedgerManager(
                     book.copy(
                         permission =
                             "REVOKED",
+                        permissionTemplate =
+                            "REVOKED",
+                        permissions =
+                            emptySet(),
                         cloudEnabled =
                             false,
                         updatedAt = now
@@ -382,6 +402,10 @@ class LedgerManager(
                     it.copy(
                         permission =
                             "REVOKED",
+                        permissionTemplate =
+                            "REVOKED",
+                        permissions =
+                            emptySet(),
                         cloudEnabled =
                             false,
                         updatedAt = now
@@ -402,7 +426,10 @@ class LedgerManager(
         bookId: String,
         name: String,
         ownerUsername: String,
-        permission: String
+        permission: String,
+        permissionTemplate: String = "LEGACY",
+        permissions: Set<String> =
+            BookPermissions.fallbackForRole(permission)
     ): Boolean {
         val existing =
             getBook(bookId)
@@ -424,6 +451,10 @@ class LedgerManager(
                             ownerUsername,
                         permission =
                             permission,
+                        permissionTemplate =
+                            permissionTemplate,
+                        permissions =
+                            permissions,
                         cloudBookId =
                             bookId,
                         cloudEnabled =
@@ -509,14 +540,16 @@ class LedgerManager(
         permission: String
     ): String =
         when (permission) {
-            "SUPERADMIN" ->
-                "系统管理员"
-            "OWNER" -> "所有者"
-            "EDITOR" -> "可编辑"
-            "VIEWER" -> "只读"
+            "OWNER" ->
+                "所有者"
+            "SUPERADMIN",
+            "EDITOR",
+            "VIEWER" ->
+                "成员访问"
             "REVOKED" ->
                 "已失去云端权限"
-            else -> permission
+            else ->
+                "成员访问"
         }
 
     private fun ensureDefaultBook() {
@@ -627,6 +660,44 @@ class LedgerManager(
                                     "permission",
                                     "OWNER"
                                 ),
+                            permissionTemplate =
+                                obj.optString(
+                                    "permissionTemplate",
+                                    if (
+                                        obj.optString(
+                                            "permission",
+                                            "OWNER"
+                                        ) == "OWNER"
+                                    ) {
+                                        "OWNER"
+                                    } else {
+                                        "LEGACY"
+                                    }
+                                ),
+                            permissions =
+                                obj.optJSONArray(
+                                    "permissions"
+                                )?.let {
+                                    array ->
+                                    buildSet {
+                                        for (
+                                            index in 0 until
+                                                array.length()
+                                        ) {
+                                            add(
+                                                array.getString(
+                                                    index
+                                                )
+                                            )
+                                        }
+                                    }
+                                } ?: BookPermissions
+                                    .fallbackForRole(
+                                        obj.optString(
+                                            "permission",
+                                            "OWNER"
+                                        )
+                                    ),
                             cloudBookId =
                                 obj.optString(
                                     "cloudBookId",
@@ -692,6 +763,20 @@ class LedgerManager(
                     put(
                         "permission",
                         book.permission
+                    )
+                    put(
+                        "permissionTemplate",
+                        book.permissionTemplate
+                    )
+                    put(
+                        "permissions",
+                        JSONArray().apply {
+                            book.permissions
+                                .sorted()
+                                .forEach {
+                                    put(it)
+                                }
+                        }
                     )
                     put(
                         "cloudBookId",

@@ -36,7 +36,9 @@ data class CloudBookInfo(
     val updatedAt: String = "",
     val deletedAt: String = "",
     val recordCount: Int = 0,
-    val memberCount: Int = 0
+    val memberCount: Int = 0,
+    val permissionTemplate: String = "LEGACY",
+    val permissions: Set<String> = emptySet()
 )
 
 data class CloudAdminUserInfo(
@@ -76,7 +78,9 @@ data class CloudMemberInfo(
     val userId: String,
     val username: String,
     val displayName: String,
-    val role: String
+    val role: String,
+    val permissionTemplate: String = "LEGACY",
+    val permissions: Set<String> = emptySet()
 )
 
 data class CloudAuditInfo(
@@ -299,50 +303,10 @@ class CloudSyncManager(
         return result
     }
 
-    fun registerAccount(
-        baseUrl: String,
-        username: String,
-        displayName: String,
-        password: String,
-        registrationCode: String
-    ): String {
-        val cleanBase =
-            normalizeBaseUrl(baseUrl)
-
-        val response =
-            requestJson(
-                baseUrl = cleanBase,
-                method = "POST",
-                path =
-                    "/api/v1/auth/register",
-                body =
-                    JSONObject().apply {
-                        put(
-                            "username",
-                            username.trim()
-                        )
-                        put(
-                            "display_name",
-                            displayName.trim()
-                        )
-                        put(
-                            "password",
-                            password
-                        )
-                        put(
-                            "registration_code",
-                            registrationCode.trim()
-                        )
-                    },
-                token = null
-            ) as JSONObject
-
-        return response.getString(
-            "username"
-        )
-    }
-
     fun logout() {
+        ledgerManager
+            .revokeCloudBooksForAccountSwitch()
+
         prefs.edit()
             .remove(KEY_TOKEN)
             .remove(KEY_USERNAME)
@@ -401,6 +365,22 @@ class CloudSyncManager(
         return refreshed
     }
 
+    private fun parseStringSet(
+        array: JSONArray?
+    ): Set<String> =
+        if (array == null) {
+            emptySet()
+        } else {
+            buildSet {
+                for (
+                    index in 0 until
+                        array.length()
+                ) {
+                    add(array.getString(index))
+                }
+            }
+        }
+
     private fun parseCloudBook(
         item: JSONObject
     ): CloudBookInfo =
@@ -408,15 +388,38 @@ class CloudSyncManager(
             id = item.getString("id"),
             name = item.getString("name"),
             role = item.getString("role"),
-            ownerUserId = item.getString("owner_user_id"),
-            ownerUsername = item.optString("owner_username", ""),
-            deleted = item.optBoolean("deleted", false),
-            purged = item.optBoolean("purged", false),
-            createdAt = item.optString("created_at", ""),
-            updatedAt = item.optString("updated_at", ""),
-            deletedAt = item.optString("deleted_at", ""),
-            recordCount = item.optInt("record_count", 0),
-            memberCount = item.optInt("member_count", 0)
+            ownerUserId =
+                item.getString("owner_user_id"),
+            ownerUsername =
+                item.optString("owner_username", ""),
+            deleted =
+                item.optBoolean("deleted", false),
+            purged =
+                item.optBoolean("purged", false),
+            createdAt =
+                item.optString("created_at", ""),
+            updatedAt =
+                item.optString("updated_at", ""),
+            deletedAt =
+                item.optString("deleted_at", ""),
+            recordCount =
+                item.optInt("record_count", 0),
+            memberCount =
+                item.optInt("member_count", 0),
+            permissionTemplate =
+                item.optString(
+                    "permission_template",
+                    "LEGACY"
+                ),
+            permissions =
+                parseStringSet(
+                    item.optJSONArray("permissions")
+                ).ifEmpty {
+                    BookPermissions
+                        .fallbackForRole(
+                            item.getString("role")
+                        )
+                }
         )
 
     fun listCloudBooks(): List<CloudBookInfo> {
@@ -441,7 +444,11 @@ class CloudSyncManager(
                     bookId = info.id,
                     name = info.name,
                     ownerUsername = info.ownerUsername,
-                    permission = info.role
+                    permission = info.role,
+                    permissionTemplate =
+                        info.permissionTemplate,
+                    permissions =
+                        info.permissions
                 )
             }
         }
@@ -464,6 +471,34 @@ class CloudSyncManager(
             }
         }
     }
+
+    private fun parseMember(
+        item: JSONObject
+    ): CloudMemberInfo =
+        CloudMemberInfo(
+            userId =
+                item.getString("user_id"),
+            username =
+                item.getString("username"),
+            displayName =
+                item.getString("display_name"),
+            role =
+                item.getString("role"),
+            permissionTemplate =
+                item.optString(
+                    "permission_template",
+                    "LEGACY"
+                ),
+            permissions =
+                parseStringSet(
+                    item.optJSONArray("permissions")
+                ).ifEmpty {
+                    BookPermissions
+                        .fallbackForRole(
+                            item.getString("role")
+                        )
+                }
+        )
 
     fun listMembers(
         bookId: String
@@ -491,30 +526,12 @@ class CloudSyncManager(
 
         return buildList {
             for (
-                i in 0 until
+                index in 0 until
                     array.length()
             ) {
-                val item =
-                    array.getJSONObject(i)
-
                 add(
-                    CloudMemberInfo(
-                        userId =
-                            item.getString(
-                                "user_id"
-                            ),
-                        username =
-                            item.getString(
-                                "username"
-                            ),
-                        displayName =
-                            item.getString(
-                                "display_name"
-                            ),
-                        role =
-                            item.getString(
-                                "role"
-                            )
+                    parseMember(
+                        array.getJSONObject(index)
                     )
                 )
             }
@@ -613,7 +630,8 @@ class CloudSyncManager(
     fun addOrUpdateMember(
         bookId: String,
         username: String,
-        role: String
+        permissionTemplate: String,
+        permissions: Set<String>
     ): CloudMemberInfo {
         val current =
             requireSession()
@@ -639,31 +657,74 @@ class CloudSyncManager(
                             username.trim()
                         )
                         put(
-                            "role",
-                            role
+                            "permission_template",
+                            permissionTemplate
+                        )
+                        put(
+                            "permissions",
+                            JSONArray().apply {
+                                permissions.sorted()
+                                    .forEach {
+                                        put(it)
+                                    }
+                            }
                         )
                     },
                 token = current.token
             ) as JSONObject
 
-        return CloudMemberInfo(
-            userId =
-                item.getString(
-                    "user_id"
-                ),
-            username =
-                item.getString(
-                    "username"
-                ),
-            displayName =
-                item.getString(
-                    "display_name"
-                ),
-            role =
-                item.getString(
-                    "role"
-                )
-        )
+        return parseMember(item)
+    }
+
+    fun updateMemberPermissions(
+        bookId: String,
+        userId: String,
+        permissionTemplate: String,
+        permissions: Set<String>
+    ): CloudMemberInfo {
+        val current =
+            requireSession()
+
+        val encodedBook =
+            URLEncoder.encode(
+                bookId,
+                "UTF-8"
+            )
+        val encodedUser =
+            URLEncoder.encode(
+                userId,
+                "UTF-8"
+            )
+
+        val item =
+            requestJson(
+                baseUrl =
+                    current.baseUrl,
+                method = "PATCH",
+                path =
+                    "/api/v1/books/" +
+                        "$encodedBook/members/" +
+                        "$encodedUser/permissions",
+                body =
+                    JSONObject().apply {
+                        put(
+                            "permission_template",
+                            permissionTemplate
+                        )
+                        put(
+                            "permissions",
+                            JSONArray().apply {
+                                permissions.sorted()
+                                    .forEach {
+                                        put(it)
+                                    }
+                            }
+                        )
+                    },
+                token = current.token
+            ) as JSONObject
+
+        return parseMember(item)
     }
 
     fun removeMember(
@@ -707,7 +768,14 @@ class CloudSyncManager(
             token = current.token
         ) as JSONObject
         val result = parseCloudBook(item)
-        ledgerManager.updateCloudMetadata(result.id, result.name, result.ownerUsername, result.role)
+        ledgerManager.updateCloudMetadata(
+            result.id,
+            result.name,
+            result.ownerUsername,
+            result.role,
+            result.permissionTemplate,
+            result.permissions
+        )
         return result
     }
 
@@ -742,6 +810,30 @@ class CloudSyncManager(
             JSONObject().apply { put("username", username.trim()) }, current.token
         ) as JSONObject
         return parseCloudBook(item)
+    }
+
+    fun createAdminUser(
+        username: String,
+        displayName: String,
+        password: String
+    ) {
+        val current =
+            requireSession()
+
+        requestJson(
+            baseUrl =
+                current.baseUrl,
+            method = "POST",
+            path =
+                "/api/v1/admin/users",
+            body =
+                JSONObject().apply {
+                    put("username", username.trim())
+                    put("display_name", displayName.trim())
+                    put("password", password)
+                },
+            token = current.token
+        )
     }
 
     fun listAdminUsers(): List<CloudAdminUserInfo> {
@@ -842,6 +934,106 @@ class CloudSyncManager(
                     targetType=x.optString("target_type",""), targetId=x.optString("target_id",""), createdAt=x.optString("created_at","")
                 ))
             }
+        }
+    }
+
+    private fun hasCloudPermission(
+        book: CloudBookInfo,
+        permission: String
+    ): Boolean {
+        if (
+            book.role == "SUPERADMIN" ||
+            book.role == "OWNER"
+        ) {
+            return true
+        }
+
+        val effective =
+            if (book.permissions.isNotEmpty()) {
+                book.permissions
+            } else {
+                BookPermissions
+                    .fallbackForRole(
+                        book.role
+                    )
+            }
+
+        return permission in effective
+    }
+
+    private fun canPushChange(
+        book: CloudBookInfo,
+        change: SyncChangeRecord
+    ): Boolean {
+        val permissions =
+            when (change.tableName) {
+                "purchase_order",
+                "purchase_item",
+                "purchase_activity" ->
+                    if (
+                        change.operation ==
+                        "DELETE"
+                    ) {
+                        setOf(
+                            BookPermissions
+                                .PURCHASE_DELETE
+                        )
+                    } else {
+                        setOf(
+                            BookPermissions
+                                .PURCHASE_CREATE,
+                            BookPermissions
+                                .PURCHASE_EDIT
+                        )
+                    }
+
+                "purchase_plan",
+                "purchase_plan_item" ->
+                    setOf(
+                        BookPermissions
+                            .PURCHASE_PLAN_EDIT
+                    )
+
+                "store_daily_record" ->
+                    setOf(
+                        BookPermissions
+                            .BUSINESS_EDIT
+                    )
+
+                "profit_rule",
+                "profit_distribution" ->
+                    setOf(
+                        BookPermissions
+                            .PROFIT_EDIT
+                    )
+
+                "daily_cash_settlement",
+                "settlement_partner",
+                "settlement_transfer",
+                "profit_settlement_batch",
+                "profit_settlement_item" ->
+                    setOf(
+                        BookPermissions
+                            .SETTLEMENT_EDIT
+                    )
+
+                "fruit",
+                "store",
+                "partner" ->
+                    setOf(
+                        BookPermissions
+                            .BASIC_EDIT
+                    )
+
+                else ->
+                    emptySet()
+            }
+
+        return permissions.any {
+            hasCloudPermission(
+                book,
+                it
+            )
         }
     }
 
@@ -991,14 +1183,30 @@ class CloudSyncManager(
                 book
             )
 
+        val conflictChange =
+            SyncChangeRecord(
+                id = -1L,
+                tableName =
+                    conflict.tableName,
+                recordSyncId =
+                    conflict.recordSyncId,
+                operation =
+                    "UPSERT",
+                rowVersion =
+                    conflict.localVersion,
+                deviceId = "",
+                changedAt = 0L
+            )
+
         if (
-            !canWriteCloudBook(
-                cloudBook.role
+            !canPushChange(
+                cloudBook,
+                conflictChange
             )
         ) {
             throw CloudApiException(
                 403,
-                "当前账号没有修改该账本的权限"
+                "当前账号没有修改该业务数据的权限"
             )
         }
 
@@ -1152,7 +1360,11 @@ class CloudSyncManager(
                     name = info.name,
                     ownerUsername =
                         info.ownerUsername,
-                    permission = info.role
+                    permission = info.role,
+                    permissionTemplate =
+                        info.permissionTemplate,
+                    permissions =
+                        info.permissions
                 )
 
         val db =
@@ -1187,9 +1399,13 @@ class CloudSyncManager(
             )
 
             if (
-                canWriteCloudBook(
-                    info.role
-                )
+                info.role == "SUPERADMIN" ||
+                info.role == "OWNER" ||
+                info.permissions.any {
+                    it in
+                        BookPermissions
+                            .editPermissions
+                }
             ) {
                 db.prepareCloudIdRanges()
             }
@@ -1242,6 +1458,14 @@ class CloudSyncManager(
                 book
             )
 
+        val permissionChanged =
+            book.permission !=
+                cloudBook.role ||
+            book.permissionTemplate !=
+                cloudBook.permissionTemplate ||
+            book.permissions !=
+                cloudBook.permissions
+
         ledgerManager
             .updateCloudMetadata(
                 bookId =
@@ -1251,13 +1475,27 @@ class CloudSyncManager(
                 ownerUsername =
                     cloudBook.ownerUsername,
                 permission =
-                    cloudBook.role
+                    cloudBook.role,
+                permissionTemplate =
+                    cloudBook.permissionTemplate,
+                permissions =
+                    cloudBook.permissions
             )
 
+        if (permissionChanged) {
+            db.setServerCursor(0L)
+        }
+
         val canEdit =
-            canWriteCloudBook(
-                cloudBook.role
-            )
+            cloudBook.role ==
+                "SUPERADMIN" ||
+            cloudBook.role ==
+                "OWNER" ||
+            cloudBook.permissions.any {
+                it in
+                    BookPermissions
+                        .editPermissions
+            }
 
         if (canEdit) {
             db.prepareCloudIdRanges()
@@ -1277,12 +1515,27 @@ class CloudSyncManager(
                     break
                 }
 
+                val allowedPending =
+                    pending.filter {
+                        change ->
+                        canPushChange(
+                            cloudBook,
+                            change
+                        )
+                    }
+
+                if (
+                    allowedPending.isEmpty()
+                ) {
+                    break
+                }
+
                 val pushResult =
                     pushBatch(
                         current,
                         db,
                         book,
-                        pending
+                        allowedPending
                     )
 
                 if (
@@ -1413,10 +1666,10 @@ class CloudSyncManager(
 
                 !canEdit &&
                     pendingReadOnly ->
-                    "只读账本已下载 $downloadedCount 条；本机存在不可上传的修改，请不要在只读账本编辑"
+                    "当前权限仅同步允许查看的数据；本机存在无权上传的修改"
 
                 !canEdit ->
-                    "只读同步完成：下载 $downloadedCount 条"
+                    "权限同步完成：下载 $downloadedCount 条"
 
                 else ->
                     "同步完成：上传 $uploadedCount 条，下载 $downloadedCount 条"
@@ -1500,7 +1753,9 @@ class CloudSyncManager(
                 created.id,
                 created.name,
                 created.ownerUsername,
-                created.role
+                created.role,
+                created.permissionTemplate,
+                created.permissions
             )
 
         return created
@@ -2116,7 +2371,7 @@ class CloudSyncManager(
             "https://sync.830888.xyz"
 
         private const val APP_VERSION =
-            "1.4.0"
+            "1.4.1"
 
         private const val KEY_PURCHASE_ACTIVITY_BACKFILL_PREFIX =
             "purchase_activity_backfill_v1_4_"

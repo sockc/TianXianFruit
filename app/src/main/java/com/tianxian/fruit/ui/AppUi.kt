@@ -46,11 +46,11 @@ import com.tianxian.fruit.report.ReportGenerator
 import com.tianxian.fruit.report.ReportLine
 import com.tianxian.fruit.report.ReportLineStyle
 import com.tianxian.fruit.sync.LedgerBook
+import com.tianxian.fruit.sync.BookPermissions
 import com.tianxian.fruit.sync.LedgerManager
 import com.tianxian.fruit.sync.CloudApiException
 import com.tianxian.fruit.sync.CloudAuditInfo
 import com.tianxian.fruit.sync.CloudBookInfo
-import com.tianxian.fruit.sync.CloudMemberInfo
 import com.tianxian.fruit.sync.CloudSyncManager
 import com.tianxian.fruit.update.AppUpdateCheckResult
 import com.tianxian.fruit.update.AppUpdateInfo
@@ -80,6 +80,8 @@ enum class AppPage(val title: String, val emoji: String) {
 private enum class MorePage {
     MENU,
     BOOKS,
+    CLOUD_BOOKS,
+    MEMBER_PERMISSIONS,
     SYSTEM_ADMIN,
     HOME_HEADER,
     ABOUT,
@@ -169,6 +171,34 @@ fun TianXianApp(
     }
     var dataVersion by remember {
         mutableIntStateOf(0)
+    }
+
+    var authVersion by remember {
+        mutableIntStateOf(0)
+    }
+
+    val authSession =
+        remember(authVersion) {
+            cloudSyncManager.session()
+        }
+
+    if (authSession == null) {
+        MaterialTheme(
+            colorScheme =
+                lightColorScheme(
+                    primary = BrandGreen,
+                    secondary = BrandGreen
+                )
+        ) {
+            CloudLoginGate(
+                cloudSyncManager =
+                    cloudSyncManager,
+                onLoggedIn = {
+                    authVersion++
+                }
+            )
+        }
+        return
     }
 
     val context =
@@ -289,13 +319,39 @@ fun TianXianApp(
             )
             ?: currentBook
 
+    fun hasPermission(
+        permission: String
+    ): Boolean =
+        BookPermissions.has(
+            book = liveCurrentBook,
+            systemRole =
+                authSession.systemRole,
+            permission = permission
+        )
+
+    val canPurchaseEdit =
+        hasPermission(
+            BookPermissions.PURCHASE_CREATE
+        ) ||
+        hasPermission(
+            BookPermissions.PURCHASE_EDIT
+        )
+
+    val canBusinessEdit =
+        hasPermission(
+            BookPermissions.BUSINESS_EDIT
+        )
+
+    val canSettlementEdit =
+        hasPermission(
+            BookPermissions.SETTLEMENT_EDIT
+        )
+
     val canEdit =
-        liveCurrentBook.permission ==
-            "SUPERADMIN" ||
-        liveCurrentBook.permission ==
-            "OWNER" ||
-            liveCurrentBook.permission ==
-                "EDITOR"
+        BookPermissions.canModifyAnything(
+            liveCurrentBook,
+            authSession.systemRole
+        )
 
     fun notifyDataChanged() {
         dataVersion++
@@ -318,17 +374,27 @@ fun TianXianApp(
             contentWindowInsets = WindowInsets.safeDrawing,
             bottomBar = {
                 NavigationBar {
-                    AppPage.entries.filter { it != AppPage.PLAN }.forEach { item ->
-                        val enabled =
-                            canEdit ||
-                                item ==
-                                    AppPage.HOME ||
-                                item ==
-                                    AppPage.MORE
-
+                    AppPage.entries
+                        .filter {
+                            item ->
+                            when (item) {
+                                AppPage.HOME,
+                                AppPage.MORE ->
+                                    true
+                                AppPage.PURCHASE ->
+                                    canPurchaseEdit
+                                AppPage.SESSION ->
+                                    canBusinessEdit
+                                AppPage.SETTLEMENT ->
+                                    canSettlementEdit
+                                AppPage.PLAN ->
+                                    false
+                            }
+                        }
+                        .forEach { item ->
                         NavigationBarItem(
                             selected = page == item,
-                            enabled = enabled,
+                            enabled = true,
                             onClick = {
                                 if (
                                     item ==
@@ -365,6 +431,8 @@ fun TianXianApp(
                             ledgerUiSettingsManager,
                         uiSettingsVersion =
                             uiSettingsVersion,
+                        systemRole =
+                            authSession.systemRole,
                         onSwitchBook =
                             onSwitchBook,
                         onBookManage = {
@@ -380,46 +448,38 @@ fun TianXianApp(
                                 AppPage.MORE
                         },
                         onPurchase = {
-                            if (canEdit) {
+                            if (canPurchaseEdit) {
                                 page =
                                     AppPage.PURCHASE
-                            } else {
-                                moreTarget =
-                                    MorePage.HISTORY
-                                page =
-                                    AppPage.MORE
                             }
                         },
                         onPlan = {
-                            if (canEdit) {
+                            if (
+                                hasPermission(
+                                    BookPermissions.PURCHASE_PLAN_EDIT
+                                )
+                            ) {
                                 page =
                                     AppPage.PLAN
-                            } else {
-                                moreTarget =
-                                    MorePage.HISTORY
-                                page =
-                                    AppPage.MORE
                             }
                         },
                         onSession = {
-                            if (canEdit) {
+                            if (canBusinessEdit) {
                                 page =
                                     AppPage.SESSION
-                            } else {
-                                moreTarget =
-                                    MorePage.HISTORY
-                                page =
-                                    AppPage.MORE
                             }
                         },
                         onStores = {
-                            moreTarget =
-                                if (canEdit) {
+                            if (
+                                hasPermission(
+                                    BookPermissions.BASIC_EDIT
+                                )
+                            ) {
+                                moreTarget =
                                     MorePage.STORES
-                                } else {
-                                    MorePage.STATS
-                                }
-                            page = AppPage.MORE
+                                page =
+                                    AppPage.MORE
+                            }
                         },
                         onHistory = {
                             moreTarget =
@@ -441,14 +501,16 @@ fun TianXianApp(
                                 AppPage.MORE
                         },
                         onProfit = {
-                            moreTarget =
-                                if (canEdit) {
+                            if (
+                                hasPermission(
+                                    BookPermissions.PROFIT_VIEW
+                                )
+                            ) {
+                                moreTarget =
                                     MorePage.PROFIT
-                                } else {
-                                    MorePage.STATS
-                                }
-                            page =
-                                AppPage.MORE
+                                page =
+                                    AppPage.MORE
+                            }
                         },
                         onReport = {
                             moreTarget =
@@ -501,6 +563,8 @@ fun TianXianApp(
                             cloudSyncManager,
                         currentBook =
                             liveCurrentBook,
+                        systemRole =
+                            authSession.systemRole,
                         canEdit =
                             canEdit,
                         onSwitchBook =
@@ -523,6 +587,11 @@ fun TianXianApp(
                             uiSettingsVersion,
                         onUiSettingsChanged = {
                             uiSettingsVersion++
+                        },
+                        onLogout = {
+                            cloudSyncManager.logout()
+                            authVersion++
+                            page = AppPage.HOME
                         },
                         onChanged = {
                             notifyDataChanged()
@@ -597,6 +666,7 @@ private fun HomeScreen(
     ledgerUiSettingsManager:
         LedgerUiSettingsManager,
     uiSettingsVersion: Int,
+    systemRole: String,
     onSwitchBook: (String) -> Unit,
     onBookManage: () -> Unit,
     onHeaderSettings: () -> Unit,
@@ -620,6 +690,55 @@ private fun HomeScreen(
     var bookMenuExpanded by remember {
         mutableStateOf(false)
     }
+
+    val canViewBusiness =
+        BookPermissions.has(
+            currentBook,
+            systemRole,
+            BookPermissions.HOME_BUSINESS_VIEW
+        )
+
+    val canViewHistory =
+        BookPermissions.has(
+            currentBook,
+            systemRole,
+            BookPermissions.HISTORY_VIEW
+        )
+
+    val canViewStats =
+        BookPermissions.has(
+            currentBook,
+            systemRole,
+            BookPermissions.STATS_VIEW
+        )
+
+    val canViewProfit =
+        BookPermissions.has(
+            currentBook,
+            systemRole,
+            BookPermissions.PROFIT_VIEW
+        )
+
+    val canViewReport =
+        BookPermissions.has(
+            currentBook,
+            systemRole,
+            BookPermissions.REPORT_VIEW
+        )
+
+    val canViewPurchaseActivity =
+        BookPermissions.has(
+            currentBook,
+            systemRole,
+            BookPermissions.PURCHASE_ACTIVITY_VIEW
+        )
+
+    val canEditPurchasePlan =
+        BookPermissions.has(
+            currentBook,
+            systemRole,
+            BookPermissions.PURCHASE_PLAN_EDIT
+        )
 
     val headerSettings =
         remember(
@@ -719,7 +838,9 @@ private fun HomeScreen(
     }
 
     val locationText =
-        if (records.isEmpty()) {
+        if (!canViewBusiness) {
+            "经营数据已按权限隐藏"
+        } else if (records.isEmpty()) {
             "当日未记录摊位"
         } else {
             records.joinToString("、") { it.storeName }.take(30)
@@ -1097,345 +1218,402 @@ private fun HomeScreen(
                             )
                         }
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                            DashboardTile(
-                                "💰",
-                                "营业额",
-                                money(summary.revenue),
-                                SoftOrange,
-                                Modifier.weight(1f)
-                            )
-                            DashboardTile(
-                                "📈",
-                                "利润",
-                                money(summary.profit),
-                                SoftGreen,
-                                Modifier.weight(1f)
-                            )
-                        }
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                            DashboardTile(
-                                "🛒",
-                                "进货成本",
-                                money(summary.purchaseCost),
-                                SoftBlue,
-                                Modifier.weight(1f)
-                            )
-                            DashboardTile(
-                                "📦",
-                                "剩余库存价值",
-                                money(summary.closingStockValue),
-                                Color(0xFFFFF7D9),
-                                Modifier.weight(1f)
-                            )
-                        }
-
-                        Card(
-                            colors = CardDefaults.cardColors(
-                                containerColor = Color(0xFFF7F9FC)
-                            )
-                        ) {
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 9.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                        if (canViewBusiness) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                                DashboardTile(
+                                    "💰",
+                                    "营业额",
+                                    money(summary.revenue),
+                                    SoftOrange,
+                                    Modifier.weight(1f)
+                                )
+                                DashboardTile(
+                                    "📈",
+                                    "利润",
+                                    money(summary.profit),
+                                    SoftGreen,
+                                    Modifier.weight(1f)
+                                )
+                            }
+    
+                            Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                                DashboardTile(
+                                    "🛒",
+                                    "进货成本",
+                                    money(summary.purchaseCost),
+                                    SoftBlue,
+                                    Modifier.weight(1f)
+                                )
+                                DashboardTile(
+                                    "📦",
+                                    "剩余库存价值",
+                                    money(summary.closingStockValue),
+                                    Color(0xFFFFF7D9),
+                                    Modifier.weight(1f)
+                                )
+                            }
+    
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = Color(0xFFF7F9FC)
+                                )
                             ) {
-                                Text(
-                                    "👥 客户",
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Spacer(Modifier.weight(1f))
-                                Text(
-                                    "${summary.customers} 人",
-                                    fontWeight = FontWeight.Bold,
-                                    color = BrandGreen
-                                )
-                                if (records.isNotEmpty()) {
-                                    Spacer(Modifier.width(12.dp))
-                                    Text(
-                                        "新 ${records.sumOf { it.newCustomer }}  ·  " +
-                                            "老 ${records.sumOf { it.oldCustomer }}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = Color.Gray
-                                    )
-                                }
-                            }
-                        }
-
-                        Text("快捷操作", fontWeight = FontWeight.Bold)
-
-                        Row(
-                            horizontalArrangement =
-                                Arrangement.spacedBy(
-                                    8.dp
-                                )
-                        ) {
-                            QuickActionTile(
-                                "📊",
-                                "经营统计",
-                                onStats,
-                                Modifier.weight(1f),
-                                Color(0xFFEAF8F0)
-                            )
-                            QuickActionTile(
-                                "💰",
-                                "利润分配",
-                                onProfit,
-                                Modifier.weight(1f),
-                                Color(0xFFFFF3E3)
-                            )
-                            QuickActionTile(
-                                "📄",
-                                "生成报表",
-                                onReport,
-                                Modifier.weight(1f),
-                                Color(0xFFEAF3FF)
-                            )
-                            QuickActionTile(
-                                "🧾",
-                                "历史记录",
-                                onHistory,
-                                Modifier.weight(1f),
-                                Color(0xFFF2ECFF)
-                            )
-                        }
-
-                        Card(
-                            onClick =
-                                onPurchaseActivity,
-                            colors =
-                                CardDefaults
-                                    .cardColors(
-                                        containerColor =
-                                            Color(
-                                                0xFFFFF8E8
-                                            )
-                                    ),
-                            shape =
-                                RoundedCornerShape(
-                                    14.dp
-                                )
-                        ) {
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(
-                                        horizontal =
-                                            13.dp,
-                                        vertical =
-                                            10.dp
-                                    ),
-                                verticalAlignment =
-                                    Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    "⚡",
-                                    fontSize =
-                                        22.sp
-                                )
-
-                                Spacer(
-                                    Modifier.width(
-                                        9.dp
-                                    )
-                                )
-
-                                Column(
-                                    Modifier.weight(
-                                        1f
-                                    )
-                                ) {
-                                    Text(
-                                        "今日采购动态",
-                                        fontWeight =
-                                            FontWeight.Bold
-                                    )
-
-                                    Text(
-                                        if (
-                                            todayPurchaseOrders
-                                                .isEmpty()
-                                        ) {
-                                            "今天还没有进货动态"
-                                        } else {
-                                            "${todayPurchaseOrders.size} 张进货单 · " +
-                                                "合计 ${money(todayPurchaseTotal)}" +
-                                                if (
-                                                    todayTemporaryCount >
-                                                    0
-                                                ) {
-                                                    " · 临时 $todayTemporaryCount"
-                                                } else {
-                                                    ""
-                                                }
-                                        },
-                                        style =
-                                            MaterialTheme
-                                                .typography
-                                                .bodySmall,
-                                        color =
-                                            Color.Gray
-                                    )
-                                }
-
-                                Text(
-                                    "›",
-                                    color =
-                                        BrandGreen,
-                                    fontSize =
-                                        24.sp
-                                )
-                            }
-                        }
-
-                        Card(
-                            onClick = onPlan,
-                            colors = CardDefaults.cardColors(
-                                containerColor = Color(0xFFF4FAF6)
-                            ),
-                            shape = RoundedCornerShape(14.dp)
-                        ) {
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 13.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("🛒", fontSize = 22.sp)
-                                Spacer(Modifier.width(9.dp))
-
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        nextPlanTitle,
-                                        fontWeight = FontWeight.Bold
-                                    )
-
-                                    val planText =
-                                        if (nextPlan == null) {
-                                            "暂无计划，点击添加"
-                                        } else {
-                                            val pendingCount =
-                                                nextPlan.items.count { it.status == 0 }
-                                            val purchasedCount =
-                                                nextPlan.items.count { it.status == 1 }
-                                            val cancelledCount =
-                                                nextPlan.items.count { it.status == 2 }
-
-                                            when {
-                                                nextPlan.items.isEmpty() ->
-                                                    "暂无商品"
-
-                                                pendingCount > 0 ->
-                                                    "待采购 $pendingCount · " +
-                                                        "已采购 $purchasedCount · " +
-                                                        "取消 $cancelledCount"
-
-                                                purchasedCount > 0 ->
-                                                    "已完成 $purchasedCount 项" +
-                                                        if (cancelledCount > 0) {
-                                                            " · 取消 $cancelledCount"
-                                                        } else {
-                                                            ""
-                                                        }
-
-                                                else ->
-                                                    "已全部取消"
-                                            }
-                                        }
-
-                                    Text(
-                                        planText,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = Color.Gray
-                                    )
-                                }
-
-                                Text(
-                                    "›",
-                                    color = BrandGreen,
-                                    fontSize = 24.sp
-                                )
-                            }
-                        }
-
-                        Card(
-                            colors = CardDefaults.cardColors(
-                                containerColor = Color(0xFFFCFCFD)
-                            )
-                        ) {
-                            Column(Modifier.padding(12.dp)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        "最近7天营业额趋势",
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    TextButton(onClick = onStats) {
-                                        Text("查看详情 ›")
-                                    }
-                                }
-
-                                RevenueTrendChart(trend)
-
-                                Row(Modifier.fillMaxWidth()) {
-                                    trend.forEach { (d, revenue) ->
-                                        Column(
-                                            modifier = Modifier.weight(1f),
-                                            horizontalAlignment = Alignment.CenterHorizontally
-                                        ) {
-                                            Text(
-                                                "${d.monthValue}/${d.dayOfMonth}",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = Color.Gray,
-                                                fontSize = 9.sp,
-                                                maxLines = 1
-                                            )
-                                            Text(
-                                                fmt(revenue),
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = BrandGreen,
-                                                fontSize = 9.sp,
-                                                maxLines = 1
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if (rankings.isNotEmpty()) {
-                            Text(
-                                "${selectedDate.monthValue}月营业额前三",
-                                fontWeight = FontWeight.Bold
-                            )
-
-                            rankings.take(3).forEachIndexed { index, r ->
                                 Row(
                                     Modifier
                                         .fillMaxWidth()
-                                        .padding(vertical = 3.dp),
+                                        .padding(horizontal = 12.dp, vertical = 9.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        "${index + 1}.",
-                                        Modifier.width(28.dp),
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        r.storeName,
-                                        Modifier.weight(1f)
-                                    )
-                                    Text(
-                                        money(r.revenue),
+                                        "👥 客户",
                                         fontWeight = FontWeight.SemiBold
+                                    )
+                                    Spacer(Modifier.weight(1f))
+                                    Text(
+                                        "${summary.customers} 人",
+                                        fontWeight = FontWeight.Bold,
+                                        color = BrandGreen
+                                    )
+                                    if (records.isNotEmpty()) {
+                                        Spacer(Modifier.width(12.dp))
+                                        Text(
+                                            "新 ${records.sumOf { it.newCustomer }}  ·  " +
+                                                "老 ${records.sumOf { it.oldCustomer }}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color.Gray
+                                        )
+                                    }
+                                }
+                            }
+                            }
+
+                        val quickActions =
+                            buildList {
+                                if (canViewStats) {
+                                    add(
+                                        Triple(
+                                            "📊",
+                                            "经营统计",
+                                            onStats
+                                        )
+                                    )
+                                }
+                                if (canViewProfit) {
+                                    add(
+                                        Triple(
+                                            "💰",
+                                            "利润分配",
+                                            onProfit
+                                        )
+                                    )
+                                }
+                                if (canViewReport) {
+                                    add(
+                                        Triple(
+                                            "📄",
+                                            "生成报表",
+                                            onReport
+                                        )
+                                    )
+                                }
+                                if (canViewHistory) {
+                                    add(
+                                        Triple(
+                                            "🧾",
+                                            "历史记录",
+                                            onHistory
+                                        )
+                                    )
+                                }
+                            }
+
+                        if (quickActions.isNotEmpty()) {
+                            Text(
+                                "快捷操作",
+                                fontWeight =
+                                    FontWeight.Bold
+                            )
+
+                            Row(
+                                horizontalArrangement =
+                                    Arrangement.spacedBy(8.dp)
+                            ) {
+                                quickActions
+                                    .take(4)
+                                    .forEachIndexed {
+                                        index,
+                                        action ->
+                                        QuickActionTile(
+                                            action.first,
+                                            action.second,
+                                            action.third,
+                                            Modifier.weight(1f),
+                                            listOf(
+                                                SoftGreen,
+                                                SoftOrange,
+                                                SoftBlue,
+                                                SoftPurple
+                                            )[index]
+                                        )
+                                    }
+
+                                repeat(
+                                    (4 -
+                                        quickActions
+                                            .take(4)
+                                            .size)
+                                        .coerceAtLeast(0)
+                                ) {
+                                    Spacer(
+                                        Modifier.weight(1f)
                                     )
                                 }
                             }
                         }
+
+                        if (canViewPurchaseActivity) {
+                            Card(
+                                onClick =
+                                    onPurchaseActivity,
+                                colors =
+                                    CardDefaults
+                                        .cardColors(
+                                            containerColor =
+                                                Color(
+                                                    0xFFFFF8E8
+                                                )
+                                        ),
+                                shape =
+                                    RoundedCornerShape(
+                                        14.dp
+                                    )
+                            ) {
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(
+                                            horizontal =
+                                                13.dp,
+                                            vertical =
+                                                10.dp
+                                        ),
+                                    verticalAlignment =
+                                        Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        "⚡",
+                                        fontSize =
+                                            22.sp
+                                    )
+    
+                                    Spacer(
+                                        Modifier.width(
+                                            9.dp
+                                        )
+                                    )
+    
+                                    Column(
+                                        Modifier.weight(
+                                            1f
+                                        )
+                                    ) {
+                                        Text(
+                                            "今日采购动态",
+                                            fontWeight =
+                                                FontWeight.Bold
+                                        )
+    
+                                        Text(
+                                            if (
+                                                todayPurchaseOrders
+                                                    .isEmpty()
+                                            ) {
+                                                "今天还没有进货动态"
+                                            } else {
+                                                "${todayPurchaseOrders.size} 张进货单 · " +
+                                                    "合计 ${money(todayPurchaseTotal)}" +
+                                                    if (
+                                                        todayTemporaryCount >
+                                                        0
+                                                    ) {
+                                                        " · 临时 $todayTemporaryCount"
+                                                    } else {
+                                                        ""
+                                                    }
+                                            },
+                                            style =
+                                                MaterialTheme
+                                                    .typography
+                                                    .bodySmall,
+                                            color =
+                                                Color.Gray
+                                        )
+                                    }
+    
+                                    Text(
+                                        "›",
+                                        color =
+                                            BrandGreen,
+                                        fontSize =
+                                            24.sp
+                                    )
+                                }
+                            }
+                            }
+
+                        if (canEditPurchasePlan) {
+                            Card(
+                                onClick = onPlan,
+                                colors = CardDefaults.cardColors(
+                                    containerColor = Color(0xFFF4FAF6)
+                                ),
+                                shape = RoundedCornerShape(14.dp)
+                            ) {
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 13.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("🛒", fontSize = 22.sp)
+                                    Spacer(Modifier.width(9.dp))
+    
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            nextPlanTitle,
+                                            fontWeight = FontWeight.Bold
+                                        )
+    
+                                        val planText =
+                                            if (nextPlan == null) {
+                                                "暂无计划，点击添加"
+                                            } else {
+                                                val pendingCount =
+                                                    nextPlan.items.count { it.status == 0 }
+                                                val purchasedCount =
+                                                    nextPlan.items.count { it.status == 1 }
+                                                val cancelledCount =
+                                                    nextPlan.items.count { it.status == 2 }
+    
+                                                when {
+                                                    nextPlan.items.isEmpty() ->
+                                                        "暂无商品"
+    
+                                                    pendingCount > 0 ->
+                                                        "待采购 $pendingCount · " +
+                                                            "已采购 $purchasedCount · " +
+                                                            "取消 $cancelledCount"
+    
+                                                    purchasedCount > 0 ->
+                                                        "已完成 $purchasedCount 项" +
+                                                            if (cancelledCount > 0) {
+                                                                " · 取消 $cancelledCount"
+                                                            } else {
+                                                                ""
+                                                            }
+    
+                                                    else ->
+                                                        "已全部取消"
+                                                }
+                                            }
+    
+                                        Text(
+                                            planText,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color.Gray
+                                        )
+                                    }
+    
+                                    Text(
+                                        "›",
+                                        color = BrandGreen,
+                                        fontSize = 24.sp
+                                    )
+                                }
+                            }
+                            }
+
+                        if (
+                            canViewStats &&
+                            canViewBusiness
+                        ) {
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = Color(0xFFFCFCFD)
+                                )
+                            ) {
+                                Column(Modifier.padding(12.dp)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            "最近7天营业额趋势",
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        TextButton(onClick = onStats) {
+                                            Text("查看详情 ›")
+                                        }
+                                    }
+    
+                                    RevenueTrendChart(trend)
+    
+                                    Row(Modifier.fillMaxWidth()) {
+                                        trend.forEach { (d, revenue) ->
+                                            Column(
+                                                modifier = Modifier.weight(1f),
+                                                horizontalAlignment = Alignment.CenterHorizontally
+                                            ) {
+                                                Text(
+                                                    "${d.monthValue}/${d.dayOfMonth}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = Color.Gray,
+                                                    fontSize = 9.sp,
+                                                    maxLines = 1
+                                                )
+                                                Text(
+                                                    fmt(revenue),
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = BrandGreen,
+                                                    fontSize = 9.sp,
+                                                    maxLines = 1
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+    
+                            if (rankings.isNotEmpty()) {
+                                Text(
+                                    "${selectedDate.monthValue}月营业额前三",
+                                    fontWeight = FontWeight.Bold
+                                )
+    
+                                rankings.take(3).forEachIndexed { index, r ->
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            "${index + 1}.",
+                                            Modifier.width(28.dp),
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            r.storeName,
+                                            Modifier.weight(1f)
+                                        )
+                                        Text(
+                                            money(r.revenue),
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                            }                        }
+
                     }
                 }
             }
@@ -4643,6 +4821,7 @@ private fun MoreScreen(
     ledgerManager: LedgerManager,
     cloudSyncManager: CloudSyncManager,
     currentBook: LedgerBook,
+    systemRole: String,
     canEdit: Boolean,
     onSwitchBook: (String) -> Unit,
     onPlan: () -> Unit,
@@ -4653,6 +4832,7 @@ private fun MoreScreen(
         LedgerUiSettingsManager,
     uiSettingsVersion: Int,
     onUiSettingsChanged: () -> Unit,
+    onLogout: () -> Unit,
     onChanged: () -> Unit
 ) {
     var sub by remember(initialSub) { mutableStateOf(initialSub) }
@@ -4668,297 +4848,319 @@ private fun MoreScreen(
 
     when (sub) {
         MorePage.MENU -> {
+            fun allowed(
+                permission: String
+            ): Boolean =
+                BookPermissions.has(
+                    currentBook,
+                    systemRole,
+                    permission
+                )
+
             LazyColumn(
                 Modifier
                     .fillMaxSize()
                     .background(
-                        Color(
-                            0xFFF6F6F6
-                        )
+                        Color(0xFFF6F6F6)
                     ),
                 contentPadding =
                     PaddingValues(
-                        bottom = 24.dp
-                    ),
-                verticalArrangement =
-                    Arrangement.spacedBy(
-                        0.dp
+                        top = 3.dp,
+                        bottom = 12.dp
                     )
             ) {
                 item {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .background(
-                                MaterialTheme
-                                    .colorScheme
-                                    .surface
-                            )
-                            .padding(
-                                horizontal = 18.dp,
-                                vertical = 16.dp
-                            )
-                    ) {
-                        Text(
-                            "更多",
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .headlineSmall,
-                            fontWeight =
-                                FontWeight.Bold
-                        )
-                        Text(
-                            "当前账本：${ledgerManager.displayName(currentBook)}",
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodyMedium,
-                            color = Color.Gray
-                        )
-                    }
-                }
-
-                item {
                     SettingsSection(
-                        title = "账本与数据"
+                        "账本与数据"
                     ) {
                         SettingsRow(
-                            icon = "📚",
-                            title = "账本管理",
-                            subtitle =
-                                "切换、共享、同步、云端回收站",
-                            onClick = {
-                                sub =
-                                    MorePage.BOOKS
-                            }
-                        )
+                            "📚",
+                            "账本管理"
+                        ) {
+                            sub =
+                                MorePage.BOOKS
+                        }
 
-                        SettingsDivider()
-
-                        SettingsRow(
-                            icon = "🧾",
-                            title = "历史记录",
-                            subtitle =
-                                "进货、营业、采购和利润历史",
-                            onClick = {
+                        if (
+                            allowed(
+                                BookPermissions.HISTORY_VIEW
+                            )
+                        ) {
+                            SettingsDivider()
+                            SettingsRow(
+                                "🧾",
+                                "历史记录"
+                            ) {
                                 sub =
                                     MorePage.HISTORY
                             }
-                        )
+                        }
 
-                        SettingsDivider()
-
-                        SettingsRow(
-                            icon = "⚡",
-                            title = "采购动态",
-                            subtitle =
-                                "查看账本成员当天拿了什么、花了多少钱",
-                            onClick = {
+                        if (
+                            allowed(
+                                BookPermissions.PURCHASE_ACTIVITY_VIEW
+                            )
+                        ) {
+                            SettingsDivider()
+                            SettingsRow(
+                                "⚡",
+                                "采购动态"
+                            ) {
                                 sub =
-                                    MorePage
-                                        .PURCHASE_ACTIVITY
+                                    MorePage.PURCHASE_ACTIVITY
                             }
-                        )
+                        }
 
-                        SettingsDivider()
-
-                        SettingsRow(
-                            icon = "📊",
-                            title = "经营统计",
-                            subtitle =
-                                "趋势、摊位效率、客流和经营日历",
-                            onClick = {
+                        if (
+                            allowed(
+                                BookPermissions.STATS_VIEW
+                            )
+                        ) {
+                            SettingsDivider()
+                            SettingsRow(
+                                "📊",
+                                "经营统计"
+                            ) {
                                 sub =
                                     MorePage.STATS
                             }
-                        )
+                        }
 
-                        SettingsDivider()
-
-                        SettingsRow(
-                            icon = "📄",
-                            title = "生成报表",
-                            subtitle =
-                                "利润、结算、经营汇总",
-                            onClick = {
+                        if (
+                            allowed(
+                                BookPermissions.REPORT_VIEW
+                            )
+                        ) {
+                            SettingsDivider()
+                            SettingsRow(
+                                "📄",
+                                "生成报表"
+                            ) {
                                 sub =
                                     MorePage.REPORT
                             }
-                        )
+                        }
 
-                        SettingsDivider()
-
-                        SettingsRow(
-                            icon = "💾",
-                            title = "数据备份",
-                            subtitle =
-                                "导出当前账本 JSON 备份",
-                            onClick = {
+                        if (
+                            currentBook.permission ==
+                            "OWNER" ||
+                            systemRole ==
+                            "SUPERADMIN"
+                        ) {
+                            SettingsDivider()
+                            SettingsRow(
+                                "💾",
+                                "数据备份"
+                            ) {
                                 sub =
                                     MorePage.BACKUP
                             }
-                        )
-                    }
-                }
-
-                if (canEdit) {
-                    item {
-                        SettingsSection(
-                            title = "经营设置"
-                        ) {
-                            SettingsRow(
-                                icon = "👥",
-                                title = "合伙人管理",
-                                onClick = {
-                                    sub =
-                                        MorePage.PARTNERS
-                                }
-                            )
-
-                            SettingsDivider()
-
-                            SettingsRow(
-                                icon = "📍",
-                                title = "摊位管理",
-                                onClick = {
-                                    sub =
-                                        MorePage.STORES
-                                }
-                            )
-
-                            SettingsDivider()
-
-                            SettingsRow(
-                                icon = "📦",
-                                title = "商品管理",
-                                onClick = {
-                                    sub =
-                                        MorePage.FRUITS
-                                }
-                            )
-
-                            SettingsDivider()
-
-                            SettingsRow(
-                                icon = "💰",
-                                title = "利润分配",
-                                onClick = {
-                                    sub =
-                                        MorePage.PROFIT
-                                }
-                            )
-
-                            SettingsDivider()
-
-                            SettingsRow(
-                                icon = "🛒",
-                                title = "采购清单",
-                                onClick =
-                                    onPlan
-                            )
-                        }
-                    }
-                } else {
-                    item {
-                        Card(
-                            modifier =
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(
-                                        horizontal =
-                                            16.dp,
-                                        vertical =
-                                            10.dp
-                                    ),
-                            colors =
-                                CardDefaults
-                                    .cardColors(
-                                        containerColor =
-                                            Color(
-                                                0xFFFFF8E8
-                                            )
-                                    )
-                        ) {
-                            Text(
-                                if (
-                                    currentBook
-                                        .permission ==
-                                    "REVOKED"
-                                ) {
-                                    "当前账本已失去云端访问权限：本机副本仍可查看，但不能继续同步或修改。"
-                                } else {
-                                    "当前为只读共享账本：可查看首页、历史、统计和报表，不能修改经营数据。"
-                                },
-                                modifier =
-                                    Modifier.padding(
-                                        14.dp
-                                    ),
-                                color =
-                                    Color.DarkGray
-                            )
                         }
                     }
                 }
 
                 item {
                     SettingsSection(
-                        title = "界面与显示"
+                        "云端与协作"
                     ) {
                         SettingsRow(
-                            icon = "🎨",
-                            title = "首页顶部设置",
-                            subtitle =
-                                "背景图片、标题、副标题和装饰",
-                            onClick = {
+                            "☁️",
+                            "云端共享账本"
+                        ) {
+                            sub =
+                                MorePage.CLOUD_BOOKS
+                        }
+
+                        if (
+                            currentBook.cloudEnabled
+                        ) {
+                            SettingsDivider()
+                            SettingsRow(
+                                "👥",
+                                "成员与权限"
+                            ) {
                                 sub =
-                                    MorePage
-                                        .HOME_HEADER
+                                    MorePage.MEMBER_PERMISSIONS
                             }
-                        )
+                        }
                     }
                 }
 
                 if (
-                    cloudSyncManager
-                        .session()
-                        ?.systemRole ==
-                    "SUPERADMIN"
+                    allowed(
+                        BookPermissions.BASIC_EDIT
+                    ) ||
+                    allowed(
+                        BookPermissions.PROFIT_VIEW
+                    ) ||
+                    allowed(
+                        BookPermissions.PURCHASE_PLAN_EDIT
+                    )
                 ) {
                     item {
                         SettingsSection(
-                            title = "系统"
+                            "经营设置"
                         ) {
-                            SettingsRow(
-                                icon = "🛡",
-                                title = "系统管理",
-                                subtitle =
-                                    "用户、设备与系统审计",
-                                onClick = {
+                            var needDivider =
+                                false
+
+                            if (
+                                allowed(
+                                    BookPermissions.BASIC_EDIT
+                                )
+                            ) {
+                                SettingsRow(
+                                    "👥",
+                                    "合伙人管理"
+                                ) {
                                     sub =
-                                        MorePage
-                                            .SYSTEM_ADMIN
+                                        MorePage.PARTNERS
                                 }
-                            )
+                                SettingsDivider()
+                                SettingsRow(
+                                    "📍",
+                                    "摊位管理"
+                                ) {
+                                    sub =
+                                        MorePage.STORES
+                                }
+                                SettingsDivider()
+                                SettingsRow(
+                                    "📦",
+                                    "商品管理"
+                                ) {
+                                    sub =
+                                        MorePage.FRUITS
+                                }
+                                needDivider =
+                                    true
+                            }
+
+                            if (
+                                allowed(
+                                    BookPermissions.PROFIT_VIEW
+                                )
+                            ) {
+                                if (needDivider) {
+                                    SettingsDivider()
+                                }
+                                SettingsRow(
+                                    "💰",
+                                    "利润分配"
+                                ) {
+                                    sub =
+                                        MorePage.PROFIT
+                                }
+                                needDivider =
+                                    true
+                            }
+
+                            if (
+                                allowed(
+                                    BookPermissions.PURCHASE_PLAN_EDIT
+                                )
+                            ) {
+                                if (needDivider) {
+                                    SettingsDivider()
+                                }
+                                SettingsRow(
+                                    "🛒",
+                                    "采购清单",
+                                    onClick =
+                                        onPlan
+                                )
+                            }
                         }
                     }
                 }
 
                 item {
                     SettingsSection(
-                        title = "帮助与关于"
+                        "界面与显示"
+                    ) {
+                        SettingsRow(
+                            "🎨",
+                            "首页顶部设置"
+                        ) {
+                            sub =
+                                MorePage.HOME_HEADER
+                        }
+                    }
+                }
+
+                if (
+                    systemRole ==
+                    "SUPERADMIN"
+                ) {
+                    item {
+                        SettingsSection(
+                            "系统"
+                        ) {
+                            SettingsRow(
+                                "🛡",
+                                "系统管理"
+                            ) {
+                                sub =
+                                    MorePage.SYSTEM_ADMIN
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    SettingsSection(
+                        "帮助与关于"
                     ) {
                         SettingsRow(
                             icon = "ℹ️",
                             title = "关于天鲜账本",
-                            subtitle =
-                                "版本、更新与 GitHub",
                             trailing =
-                                "V${BuildConfig.VERSION_NAME}",
-                            onClick = {
-                                sub =
-                                    MorePage.ABOUT
-                            }
+                                "V${BuildConfig.VERSION_NAME}"
+                        ) {
+                            sub =
+                                MorePage.ABOUT
+                        }
+                    }
+                }
+
+                item {
+                    SettingsSection(
+                        "当前账号"
+                    ) {
+                        val session =
+                            cloudSyncManager.session()
+
+                        SettingsRow(
+                            icon = "👤",
+                            title =
+                                session?.let {
+                                    "${it.displayName}（${it.username}）"
+                                } ?: "未登录",
+                            trailing =
+                                if (
+                                    systemRole ==
+                                    "SUPERADMIN"
+                                ) {
+                                    "超级管理员"
+                                } else {
+                                    ""
+                                },
+                            showArrow = false
+                        ) {
+                        }
+
+                        SettingsDivider()
+
+                        SettingsRow(
+                            icon = "↪",
+                            title = "退出登录",
+                            titleColor =
+                                MaterialTheme
+                                    .colorScheme
+                                    .error,
+                            showArrow = false,
+                            onClick =
+                                onLogout
                         )
                     }
                 }
@@ -5026,6 +5228,50 @@ private fun MoreScreen(
             }
         }
 
+        MorePage.CLOUD_BOOKS -> {
+            SubPage(
+                "云端共享账本",
+                {
+                    sub =
+                        MorePage.MENU
+                }
+            ) {
+                CloudSharedBooksContent(
+                    cloudSyncManager =
+                        cloudSyncManager,
+                    ledgerManager =
+                        ledgerManager,
+                    currentBook =
+                        currentBook,
+                    onSwitchBook =
+                        onSwitchBook,
+                    onChanged =
+                        onChanged
+                )
+            }
+        }
+
+        MorePage.MEMBER_PERMISSIONS -> {
+            SubPage(
+                "成员与权限",
+                {
+                    sub =
+                        MorePage.MENU
+                }
+            ) {
+                MemberPermissionContent(
+                    cloudSyncManager =
+                        cloudSyncManager,
+                    ledgerManager =
+                        ledgerManager,
+                    currentBook =
+                        currentBook,
+                    onChanged =
+                        onChanged
+                )
+            }
+        }
+
         MorePage.SYSTEM_ADMIN -> {
             SubPage("系统管理", { sub = MorePage.MENU }) {
                 SystemAdminContent(cloudSyncManager = cloudSyncManager)
@@ -5043,7 +5289,16 @@ private fun MoreScreen(
                 HistoryContent(
                     db,
                     dataVersion,
-                    canEdit,
+                    BookPermissions.has(
+                        currentBook,
+                        systemRole,
+                        BookPermissions.BUSINESS_EDIT
+                    ) ||
+                        BookPermissions.has(
+                            currentBook,
+                            systemRole,
+                            BookPermissions.PURCHASE_EDIT
+                        ),
                     onChanged
                 )
             }
@@ -5145,6 +5400,11 @@ private fun MoreScreen(
                 ProfitContent(
                     db,
                     dataVersion,
+                    BookPermissions.has(
+                        currentBook,
+                        systemRole,
+                        BookPermissions.PROFIT_EDIT
+                    ),
                     onChanged
                 )
             }
@@ -6911,21 +7171,6 @@ private fun LedgerManagementContent(
     var transferCloudBook by remember { mutableStateOf<CloudBookInfo?>(null) }
     var trashBooks by remember { mutableStateOf<List<CloudBookInfo>>(emptyList()) }
     var showTrash by remember { mutableStateOf(false) }
-    var registerDialog by remember {
-        mutableStateOf(false)
-    }
-
-    var memberBook by remember {
-        mutableStateOf<CloudBookInfo?>(null)
-    }
-    var cloudMembers by remember {
-        mutableStateOf<
-            List<CloudMemberInfo>
-        >(
-            emptyList()
-        )
-    }
-
     fun runCloudTask(
         busyText: String,
         block: () -> String,
@@ -6993,32 +7238,6 @@ private fun LedgerManagementContent(
                     loaded
                 cloudBooksLoaded =
                     true
-            }
-        )
-    }
-
-    fun loadMembers(
-        info: CloudBookInfo
-    ) {
-        var loaded:
-            List<CloudMemberInfo> =
-            emptyList()
-
-        runCloudTask(
-            "正在读取“${info.name}”成员…",
-            {
-                loaded =
-                    cloudSyncManager
-                        .listMembers(
-                            info.id
-                        )
-                "成员已刷新"
-            },
-            {
-                cloudMembers =
-                    loaded
-                memberBook =
-                    info
             }
         )
     }
@@ -7454,19 +7673,6 @@ private fun LedgerManagementContent(
                             }
                             Text("登录云端")
                         }
-
-                        TextButton(
-                            onClick = {
-                                registerDialog =
-                                    true
-                            },
-                            enabled =
-                                !cloudBusy,
-                            modifier =
-                                Modifier.fillMaxWidth()
-                        ) {
-                            Text("注册新账号")
-                        }
                     } else {
                         Text(
                             "${cloudSession.displayName}（${cloudSession.username}）" +
@@ -7555,38 +7761,6 @@ private fun LedgerManagementContent(
                             Text("刷新云端账本列表")
                         }
 
-                        TextButton(
-                            onClick = {
-                                registerDialog =
-                                    true
-                            },
-                            enabled =
-                                !cloudBusy,
-                            modifier =
-                                Modifier.fillMaxWidth()
-                        ) {
-                            Text("注册其他账号")
-                        }
-
-                        TextButton(
-                            onClick = {
-                                cloudSyncManager
-                                    .logout()
-                                cloudMessage =
-                                    "已退出云端账号"
-                                cloudBooks =
-                                    emptyList()
-                                cloudBooksLoaded =
-                                    false
-                                cloudRefresh++
-                            },
-                            enabled =
-                                !cloudBusy,
-                            modifier =
-                                Modifier.fillMaxWidth()
-                        ) {
-                            Text("退出登录")
-                        }
                     }
 
                     if (
@@ -7801,7 +7975,10 @@ private fun LedgerManagementContent(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 OutlinedButton(
-                                    onClick = { loadMembers(info) },
+                                    onClick = {
+                                        cloudMessage =
+                                            "成员权限请从“更多 → 成员与权限”管理"
+                                    },
                                     enabled = !cloudBusy,
                                     modifier = Modifier.weight(1f)
                                 ) { Text("成员") }
@@ -8024,7 +8201,7 @@ private fun LedgerManagementContent(
                     Modifier.padding(12.dp)
                 ) {
                     Text(
-                        "V1.4.0 多人采购动态",
+                        "V1.4.1 成员权限中心",
                         fontWeight =
                             FontWeight.Bold
                     )
@@ -8038,7 +8215,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• 采购动态按当前账本共享，已加入成员可查看当天进货变化。",
+                        "• 云端账本成员支持采购员、经营员、财务、只读和自定义权限。",
                         style =
                             MaterialTheme
                                 .typography
@@ -8046,7 +8223,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• 新增计划/临时采购标签、同商品重复采购提醒和15秒采购动态刷新。",
+                        "• 首次打开只有登录入口；账号由超级管理员统一创建。",
                         style =
                             MaterialTheme
                                 .typography
@@ -8294,130 +8471,6 @@ private fun LedgerManagementContent(
         )
     }
 
-    if (registerDialog) {
-        CloudRegisterDialog(
-            defaultServer =
-                serverUrl,
-            onDismiss = {
-                registerDialog =
-                    false
-            },
-            onRegister = {
-                baseUrl,
-                username,
-                displayName,
-                password,
-                code ->
-                runCloudTask(
-                    busyText =
-                        "正在注册账号…",
-                    block = {
-                        val registered =
-                            cloudSyncManager
-                                .registerAccount(
-                                    baseUrl =
-                                        baseUrl,
-                                    username =
-                                        username,
-                                    displayName =
-                                        displayName,
-                                    password =
-                                        password,
-                                    registrationCode =
-                                        code
-                                )
-
-                        "账号 $registered 注册成功"
-                    }
-                )
-
-                registerDialog =
-                    false
-            }
-        )
-    }
-
-    memberBook?.let {
-        info ->
-        CloudMembersDialog(
-            book = info,
-            members =
-                cloudMembers,
-            busy = cloudBusy,
-            permissionLabel = {
-                ledgerManager
-                    .permissionLabel(it)
-            },
-            onDismiss = {
-                memberBook = null
-            },
-            onSaveMember = {
-                username,
-                role ->
-                var loaded:
-                    List<CloudMemberInfo> =
-                    emptyList()
-
-                runCloudTask(
-                    "正在保存成员权限…",
-                    {
-                        cloudSyncManager
-                            .addOrUpdateMember(
-                                bookId =
-                                    info.id,
-                                username =
-                                    username,
-                                role =
-                                    role
-                            )
-
-                        loaded =
-                            cloudSyncManager
-                                .listMembers(
-                                    info.id
-                                )
-
-                        "成员权限已保存"
-                    },
-                    {
-                        cloudMembers =
-                            loaded
-                    }
-                )
-            },
-            onRemove = {
-                member ->
-                var loaded:
-                    List<CloudMemberInfo> =
-                    emptyList()
-
-                runCloudTask(
-                    "正在移除 ${member.displayName}…",
-                    {
-                        cloudSyncManager
-                            .removeMember(
-                                bookId =
-                                    info.id,
-                                userId =
-                                    member.userId
-                            )
-
-                        loaded =
-                            cloudSyncManager
-                                .listMembers(
-                                    info.id
-                                )
-
-                        "成员已移除"
-                    },
-                    {
-                        cloudMembers =
-                            loaded
-                    }
-                )
-            }
-        )
-    }
     if (
         showConflictDialog &&
         conflicts.isNotEmpty()
@@ -8496,336 +8549,6 @@ private fun LedgerManagementContent(
         )
     }
 
-}
-
-@Composable
-private fun CloudRegisterDialog(
-    defaultServer: String,
-    onDismiss: () -> Unit,
-    onRegister: (
-        String,
-        String,
-        String,
-        String,
-        String
-    ) -> Unit
-) {
-    var server by remember {
-        mutableStateOf(
-            defaultServer
-        )
-    }
-    var username by remember {
-        mutableStateOf("")
-    }
-    var displayName by remember {
-        mutableStateOf("")
-    }
-    var password by remember {
-        mutableStateOf("")
-    }
-    var code by remember {
-        mutableStateOf("")
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text("注册云端账号")
-        },
-        text = {
-            Column(
-                verticalArrangement =
-                    Arrangement.spacedBy(
-                        8.dp
-                    )
-            ) {
-                Text(
-                    "注册码由服务器管理员提供。",
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodySmall,
-                    color = Color.Gray
-                )
-
-                OutlinedTextField(
-                    value = server,
-                    onValueChange = {
-                        server = it
-                    },
-                    label = {
-                        Text("服务器")
-                    },
-                    singleLine = true
-                )
-
-                OutlinedTextField(
-                    value = username,
-                    onValueChange = {
-                        username = it
-                    },
-                    label = {
-                        Text("用户名")
-                    },
-                    singleLine = true
-                )
-
-                OutlinedTextField(
-                    value =
-                        displayName,
-                    onValueChange = {
-                        displayName = it
-                    },
-                    label = {
-                        Text("显示名称")
-                    },
-                    singleLine = true
-                )
-
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = {
-                        password = it
-                    },
-                    label = {
-                        Text("密码（至少8位）")
-                    },
-                    singleLine = true,
-                    visualTransformation =
-                        PasswordVisualTransformation()
-                )
-
-                OutlinedTextField(
-                    value = code,
-                    onValueChange = {
-                        code = it
-                    },
-                    label = {
-                        Text("注册码")
-                    },
-                    singleLine = true,
-                    visualTransformation =
-                        PasswordVisualTransformation()
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    if (
-                        username.trim()
-                            .isNotBlank() &&
-                        displayName.trim()
-                            .isNotBlank() &&
-                        password.length >= 8 &&
-                        code.trim()
-                            .isNotBlank()
-                    ) {
-                        onRegister(
-                            server,
-                            username,
-                            displayName,
-                            password,
-                            code
-                        )
-                    }
-                }
-            ) {
-                Text("注册")
-            }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = onDismiss
-            ) {
-                Text("取消")
-            }
-        }
-    )
-}
-
-@Composable
-private fun CloudMembersDialog(
-    book: CloudBookInfo,
-    members: List<CloudMemberInfo>,
-    busy: Boolean,
-    permissionLabel:
-        (String) -> String,
-    onDismiss: () -> Unit,
-    onSaveMember:
-        (String, String) -> Unit,
-    onRemove:
-        (CloudMemberInfo) -> Unit
-) {
-    var username by remember(book.id) {
-        mutableStateOf("")
-    }
-    var role by remember(book.id) {
-        mutableStateOf("EDITOR")
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                "成员权限 · ${book.name}"
-            )
-        },
-        text = {
-            Column(
-                verticalArrangement =
-                    Arrangement.spacedBy(
-                        8.dp
-                    )
-            ) {
-                Text(
-                    "输入已经注册的用户名。重复添加同一用户会直接修改权限。",
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodySmall,
-                    color = Color.Gray
-                )
-
-                OutlinedTextField(
-                    value = username,
-                    onValueChange = {
-                        username = it
-                    },
-                    label = {
-                        Text("用户名")
-                    },
-                    singleLine = true
-                )
-
-                Row(
-                    horizontalArrangement =
-                        Arrangement.spacedBy(
-                            8.dp
-                        )
-                ) {
-                    FilterChip(
-                        selected =
-                            role ==
-                                "EDITOR",
-                        onClick = {
-                            role =
-                                "EDITOR"
-                        },
-                        label = {
-                            Text("可编辑")
-                        }
-                    )
-
-                    FilterChip(
-                        selected =
-                            role ==
-                                "VIEWER",
-                        onClick = {
-                            role =
-                                "VIEWER"
-                        },
-                        label = {
-                            Text("只读")
-                        }
-                    )
-                }
-
-                Button(
-                    onClick = {
-                        onSaveMember(
-                            username.trim(),
-                            role
-                        )
-                        username = ""
-                    },
-                    enabled =
-                        !busy &&
-                            username.trim()
-                                .isNotBlank(),
-                    modifier =
-                        Modifier.fillMaxWidth()
-                ) {
-                    Text("添加 / 修改权限")
-                }
-
-                HorizontalDivider()
-
-                Text(
-                    "当前成员",
-                    fontWeight =
-                        FontWeight.Bold
-                )
-
-                if (members.isEmpty()) {
-                    Text(
-                        "暂无成员数据",
-                        color = Color.Gray
-                    )
-                }
-
-                members.forEach {
-                    member ->
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment =
-                            Alignment.CenterVertically
-                    ) {
-                        Column(
-                            Modifier.weight(1f)
-                        ) {
-                            Text(
-                                "${member.displayName}（${member.username}）"
-                            )
-                            Text(
-                                permissionLabel(
-                                    member.role
-                                ),
-                                style =
-                                    MaterialTheme
-                                        .typography
-                                        .bodySmall,
-                                color =
-                                    if (
-                                        member.role ==
-                                        "OWNER"
-                                    ) {
-                                        BrandGreen
-                                    } else {
-                                        Color.Gray
-                                    }
-                            )
-                        }
-
-                        if (
-                            member.role !=
-                            "OWNER"
-                        ) {
-                            TextButton(
-                                onClick = {
-                                    onRemove(
-                                        member
-                                    )
-                                },
-                                enabled =
-                                    !busy
-                            ) {
-                                Text("移除")
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = onDismiss
-            ) {
-                Text("完成")
-            }
-        }
-    )
 }
 
 @Composable
@@ -10250,7 +9973,7 @@ private fun AboutAppContent(
                 )
 
                 Text(
-                    "当前云同步服务兼容 TianXian Sync Server V1.0.5-Lucky。",
+                    "当前云同步服务需要 TianXian Sync Server V1.0.6-Lucky。",
                     style =
                         MaterialTheme
                             .typography
@@ -10265,30 +9988,30 @@ private fun AboutAppContent(
 @Composable
 private fun SettingsSection(
     title: String,
-    content: @Composable ColumnScope.() -> Unit
+    content:
+        @Composable
+        ColumnScope.() -> Unit
 ) {
     Column(
         Modifier
             .fillMaxWidth()
             .padding(
-                top = 14.dp
+                top = 7.dp
             )
     ) {
         Text(
             title,
             modifier =
                 Modifier.padding(
-                    horizontal = 20.dp,
-                    vertical = 8.dp
+                    horizontal = 17.dp,
+                    vertical = 3.dp
                 ),
             color =
-                Color(
-                    0xFF8A8A8A
-                ),
+                Color(0xFF8A8A8A),
             style =
                 MaterialTheme
                     .typography
-                    .bodySmall
+                    .labelMedium
         )
 
         Card(
@@ -10296,13 +10019,10 @@ private fun SettingsSection(
                 Modifier
                     .fillMaxWidth()
                     .padding(
-                        horizontal =
-                            12.dp
+                        horizontal = 9.dp
                     ),
             shape =
-                RoundedCornerShape(
-                    14.dp
-                ),
+                RoundedCornerShape(11.dp),
             colors =
                 CardDefaults.cardColors(
                     containerColor =
@@ -10324,6 +10044,9 @@ private fun SettingsRow(
     title: String,
     subtitle: String? = null,
     trailing: String? = null,
+    titleColor: Color =
+        Color.Unspecified,
+    showArrow: Boolean = true,
     onClick: () -> Unit
 ) {
     Surface(
@@ -10334,91 +10057,57 @@ private fun SettingsRow(
             Modifier
                 .fillMaxWidth()
                 .padding(
-                    horizontal = 16.dp,
-                    vertical = 14.dp
+                    horizontal = 13.dp,
+                    vertical = 8.dp
                 ),
             verticalAlignment =
                 Alignment.CenterVertically
         ) {
             Text(
                 icon,
-                fontSize = 20.sp,
+                fontSize = 18.sp,
                 modifier =
-                    Modifier.width(
-                        34.dp
-                    )
+                    Modifier.width(29.dp)
             )
 
-            Column(
-                Modifier.weight(
-                    1f
-                )
-            ) {
-                Text(
-                    title,
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodyLarge,
-                    fontWeight =
-                        FontWeight.Medium
-                )
-
-                if (
-                    !subtitle
-                        .isNullOrBlank()
-                ) {
-                    Spacer(
-                        Modifier.height(
-                            2.dp
-                        )
-                    )
-
-                    Text(
-                        subtitle,
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall,
-                        color =
-                            Color(
-                                0xFF8A8A8A
-                            )
-                    )
-                }
-            }
+            Text(
+                title,
+                modifier =
+                    Modifier.weight(1f),
+                style =
+                    MaterialTheme
+                        .typography
+                        .bodyMedium,
+                fontWeight =
+                    FontWeight.Medium,
+                color = titleColor
+            )
 
             if (
-                !trailing
-                    .isNullOrBlank()
+                !trailing.isNullOrBlank()
             ) {
                 Text(
                     trailing,
                     style =
                         MaterialTheme
                             .typography
-                            .bodyMedium,
+                            .bodySmall,
                     color =
-                        Color(
-                            0xFF8A8A8A
-                        )
+                        Color(0xFF8A8A8A)
                 )
-
                 Spacer(
-                    Modifier.width(
-                        8.dp
-                    )
+                    Modifier.width(5.dp)
                 )
             }
 
-            Text(
-                "›",
-                color =
-                    Color(
-                        0xFF9B9B9B
-                    ),
-                fontSize = 25.sp
-            )
+            if (showArrow) {
+                Text(
+                    "›",
+                    color =
+                        Color(0xFF9B9B9B),
+                    fontSize = 21.sp
+                )
+            }
         }
     }
 }
@@ -10428,12 +10117,10 @@ private fun SettingsDivider() {
     HorizontalDivider(
         modifier =
             Modifier.padding(
-                start = 50.dp
+                start = 42.dp
             ),
         color =
-            Color(
-                0xFFE9E9E9
-            )
+            Color(0xFFE9E9E9)
     )
 }
 
@@ -13289,7 +12976,12 @@ private fun StoreContent(db: AppDatabase, dataVersion: Int, onChanged: () -> Uni
 }
 
 @Composable
-private fun ProfitContent(db: AppDatabase, dataVersion: Int, onChanged: () -> Unit) {
+private fun ProfitContent(
+    db: AppDatabase,
+    dataVersion: Int,
+    canEdit: Boolean,
+    onChanged: () -> Unit
+) {
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
     val partners = remember(dataVersion) { db.getPartners() }
     val savedRules = remember(dataVersion) { db.getProfitRules() }
@@ -13334,7 +13026,20 @@ private fun ProfitContent(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                 Text(p.name, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
                 OutlinedTextField(
                     value = percentages[p.id] ?: "",
-                    onValueChange = { v -> if (v.matches(Regex("^\\d*(\\.\\d{0,2})?$"))) percentages[p.id] = v },
+                    onValueChange = {
+                        v ->
+                        if (
+                            canEdit &&
+                            v.matches(
+                                Regex(
+                                    "^\\d*(\\.\\d{0,2})?$"
+                                )
+                            )
+                        ) {
+                            percentages[p.id] = v
+                        }
+                    },
+                    enabled = canEdit,
                     modifier = Modifier.width(110.dp).height(50.dp),
                     suffix = { Text("%") },
                     singleLine = true,
@@ -13343,30 +13048,43 @@ private fun ProfitContent(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                 )
             }
         }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = {
-                    if (partners.isEmpty()) message = "请先添加合伙人"
-                    else if (kotlin.math.abs(totalPercent - 100.0) >= 0.01) message = "百分比合计必须等于100%"
-                    else {
-                        db.saveProfitRules(allocations)
-                        message = "利润分配百分比规则已保存"
-                        onChanged()
-                    }
-                }, modifier = Modifier.weight(1f)) { Text("保存百分比规则") }
-                Button(onClick = {
-                    if (summary.profit <= 0) message = "当天利润必须大于0才能生成利润分配"
-                    else if (partners.isEmpty()) message = "请先添加合伙人"
-                    else if (kotlin.math.abs(totalPercent - 100.0) >= 0.01) message = "百分比合计必须等于100%"
-                    else {
-                        val ok = db.saveProfitDistribution(date, allocations)
-                        message = if (ok) "利润分配表已独立保存" else "保存失败"
-                        if (ok) onChanged()
-                    }
-                }, modifier = Modifier.weight(1f)) { Text("保存当日分配") }
+        if (canEdit) {
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = {
+                        if (partners.isEmpty()) message = "请先添加合伙人"
+                        else if (kotlin.math.abs(totalPercent - 100.0) >= 0.01) message = "百分比合计必须等于100%"
+                        else {
+                            db.saveProfitRules(allocations)
+                            message = "利润分配百分比规则已保存"
+                            onChanged()
+                        }
+                    }, modifier = Modifier.weight(1f)) { Text("保存百分比规则") }
+                    Button(onClick = {
+                        if (summary.profit <= 0) message = "当天利润必须大于0才能生成利润分配"
+                        else if (partners.isEmpty()) message = "请先添加合伙人"
+                        else if (kotlin.math.abs(totalPercent - 100.0) >= 0.01) message = "百分比合计必须等于100%"
+                        else {
+                            val ok = db.saveProfitDistribution(date, allocations)
+                            message = if (ok) "利润分配表已独立保存" else "保存失败"
+                            if (ok) onChanged()
+                        }
+                    }, modifier = Modifier.weight(1f)) { Text("保存当日分配") }
+                }
+                if (message.isNotBlank()) Text(message, color = BrandGreen, modifier = Modifier.padding(top = 6.dp))
+            }        } else {
+            item {
+                Text(
+                    "当前成员为只读权限。",
+                    color = Color.Gray,
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall
+                )
             }
-            if (message.isNotBlank()) Text(message, color = BrandGreen, modifier = Modifier.padding(top = 6.dp))
         }
+
         if (summary.profit > 0 && partners.isNotEmpty()) {
             item {
                 Card(colors = CardDefaults.cardColors(containerColor = SoftGreen)) {
@@ -13385,7 +13103,15 @@ private fun ProfitContent(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                         Text("利润基数：${money(saved.first().sourceProfit)}", style = MaterialTheme.typography.bodySmall)
                         saved.forEach { r -> Text("${r.partnerName} · ${cleanPercent(r.ratio * 100)}%：${money(r.allocatedProfit)}", style = MaterialTheme.typography.bodySmall) }
                     }
-                    TextButton(onClick = { deleteDate = date }) { Text("删除") }
+                    if (canEdit) {
+                        TextButton(
+                            onClick = {
+                                deleteDate = date
+                            }
+                        ) {
+                            Text("删除")
+                        }
+                    }
                 }
             }
         }
@@ -13398,15 +13124,25 @@ private fun ProfitContent(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                             Text("$d · 利润 ${money(rows.firstOrNull()?.sourceProfit ?: 0.0)}", fontWeight = FontWeight.Bold)
                             rows.forEach { r -> Text("${r.partnerName} ${cleanPercent(r.ratio * 100)}%：${money(r.allocatedProfit)}", style = MaterialTheme.typography.bodySmall) }
                         }
-                        TextButton(onClick = { deleteDate = d }) { Text("删除") }
+                        if (canEdit) {
+                            TextButton(
+                                onClick = {
+                                    deleteDate = d
+                                }
+                            ) {
+                                Text("删除")
+                            }
+                        }
                     }
                 }
             }
         }
     }
-    deleteDate?.let { d ->
-        ConfirmDelete("删除 $d 的整张利润分配历史？不会删除当天营业和总账。", { deleteDate = null }) {
+    if (canEdit) {
+        deleteDate?.let { d ->
+            ConfirmDelete("删除 $d 的整张利润分配历史？不会删除当天营业和总账。", { deleteDate = null }) {
             db.deleteProfitDistribution(d); deleteDate = null; onChanged()
+            }
         }
     }
 }
