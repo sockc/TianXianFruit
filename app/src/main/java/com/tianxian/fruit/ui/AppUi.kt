@@ -67,7 +67,7 @@ enum class AppPage(val title: String, val emoji: String) {
     PLAN("采购", "🛒")
 }
 
-private enum class MorePage { MENU, BOOKS, DATA_CENTER, HISTORY, STATS, PARTNERS, STORES, PROFIT, FRUITS, REPORT }
+private enum class MorePage { MENU, BOOKS, SYSTEM_ADMIN, DATA_CENTER, HISTORY, STATS, PARTNERS, STORES, PROFIT, FRUITS, REPORT }
 
 private enum class HistoryTimeFilter(val label: String) {
     ALL("全部时间"),
@@ -140,6 +140,8 @@ fun TianXianApp(
             ?: currentBook
 
     val canEdit =
+        liveCurrentBook.permission ==
+            "SUPERADMIN" ||
         liveCurrentBook.permission ==
             "OWNER" ||
             liveCurrentBook.permission ==
@@ -4013,6 +4015,14 @@ private fun MoreScreen(
                     }
                 }
 
+                if (cloudSyncManager.session()?.systemRole == "SUPERADMIN") {
+                    item {
+                        MenuCard("🛡 系统管理") {
+                            sub = MorePage.SYSTEM_ADMIN
+                        }
+                    }
+                }
+
                 item {
                     MenuCard("📊 数据中心") {
                         sub = MorePage.DATA_CENTER
@@ -4106,6 +4116,12 @@ private fun MoreScreen(
                     onChanged =
                         onChanged
                 )
+            }
+        }
+
+        MorePage.SYSTEM_ADMIN -> {
+            SubPage("系统管理", { sub = MorePage.MENU }) {
+                SystemAdminContent(cloudSyncManager = cloudSyncManager)
             }
         }
 
@@ -5968,6 +5984,11 @@ private fun LedgerManagementContent(
     var deleteBook by remember {
         mutableStateOf<LedgerBook?>(null)
     }
+    var renameCloudBook by remember { mutableStateOf<CloudBookInfo?>(null) }
+    var deleteCloudBook by remember { mutableStateOf<CloudBookInfo?>(null) }
+    var transferCloudBook by remember { mutableStateOf<CloudBookInfo?>(null) }
+    var trashBooks by remember { mutableStateOf<List<CloudBookInfo>>(emptyList()) }
+    var showTrash by remember { mutableStateOf(false) }
     var registerDialog by remember {
         mutableStateOf(false)
     }
@@ -6526,9 +6547,9 @@ private fun LedgerManagementContent(
                         }
                     } else {
                         Text(
-                            "${cloudSession.displayName}（${cloudSession.username}）",
-                            fontWeight =
-                                FontWeight.SemiBold
+                            "${cloudSession.displayName}（${cloudSession.username}）" +
+                                if (cloudSession.systemRole == "SUPERADMIN") " · 超级管理员" else "",
+                            fontWeight = FontWeight.SemiBold
                         )
 
                         Text(
@@ -6796,6 +6817,13 @@ private fun LedgerManagementContent(
                                             BrandGreen
                                         }
                                 )
+
+                                Text(
+                                    "数据 ${info.recordCount} · 成员 ${info.memberCount}" +
+                                        if (info.createdAt.isNotBlank()) " · " + info.createdAt.replace("T", " ").take(10) else "",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.Gray
+                                )
                             }
 
                             if (
@@ -6845,26 +6873,54 @@ private fun LedgerManagementContent(
                             }
                         }
 
-                        if (
-                            info.role ==
-                            "OWNER"
-                        ) {
-                            OutlinedButton(
-                                onClick = {
-                                    loadMembers(
-                                        info
-                                    )
-                                },
-                                enabled =
-                                    !cloudBusy,
-                                modifier =
-                                    Modifier.fillMaxWidth()
+                        if (info.role == "OWNER" || info.role == "SUPERADMIN") {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text("成员与权限")
+                                OutlinedButton(
+                                    onClick = { loadMembers(info) },
+                                    enabled = !cloudBusy,
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("成员") }
+                                OutlinedButton(
+                                    onClick = { renameCloudBook = info },
+                                    enabled = !cloudBusy,
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("改名") }
+                                OutlinedButton(
+                                    onClick = { deleteCloudBook = info },
+                                    enabled = !cloudBusy,
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("删除云端") }
                             }
+                            TextButton(
+                                onClick = { transferCloudBook = info },
+                                enabled = !cloudBusy,
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("转移账本所有权") }
                         }
                     }
                 }
+            }
+        }
+
+        if (cloudSession != null) {
+            item {
+                OutlinedButton(
+                    onClick = {
+                        runCloudTask(
+                            busyText = "正在读取云端回收站…",
+                            block = {
+                                trashBooks = cloudSyncManager.listDeletedCloudBooks()
+                                "回收站 ${trashBooks.size} 个账本"
+                            },
+                            onSuccess = { showTrash = true }
+                        )
+                    },
+                    enabled = !cloudBusy,
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("🗑 云端账本回收站") }
             }
         }
 
@@ -6978,6 +7034,25 @@ private fun LedgerManagementContent(
                         }
 
                         if (
+                            cloudSession != null && !book.cloudEnabled &&
+                            book.cloudBookId.isBlank() && book.permission == "OWNER"
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    runCloudTask(
+                                        busyText = "正在创建独立云端账本…",
+                                        block = {
+                                            val info = cloudSyncManager.createIndependentCloudBook(book)
+                                            cloudBooks = cloudSyncManager.listCloudBooks()
+                                            "已创建云端账本：${info.name}"
+                                        }
+                                    )
+                                },
+                                enabled = !cloudBusy
+                            ) { Text("上传为新云端账本") }
+                        }
+
+                        if (
                             !book.isDefault &&
                             !isCurrent
                         ) {
@@ -7027,7 +7102,7 @@ private fun LedgerManagementContent(
                     Modifier.padding(12.dp)
                 ) {
                     Text(
-                        "V1.3.4 快速切账本",
+                        "V1.3.5 系统管理与云端回收站",
                         fontWeight =
                             FontWeight.Bold
                     )
@@ -7041,7 +7116,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• 首页左上角可直接切换已下载账本，不再需要进入“更多 → 账本管理”。",
+                        "• 新手机登录已有账号时，不再自动把本机默认“我的账本”上传成重复云端账本。",
                         style =
                             MaterialTheme
                                 .typography
@@ -7049,7 +7124,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• 同一台手机可安全切换不同云端账号；设备注册按“手机 + 账号”独立识别。",
+                        "• OWNER / SUPERADMIN 可删除云端账本到回收站；SUPERADMIN 还能管理用户、设备和全局审计。",
                         style =
                             MaterialTheme
                                 .typography
@@ -7165,6 +7240,136 @@ private fun LedgerManagementContent(
 
             deleteBook = null
         }
+    }
+
+    renameCloudBook?.let { info ->
+        LedgerNameDialog(
+            title = "修改云端账本名称",
+            initial = info.name,
+            onDismiss = { renameCloudBook = null }
+        ) { name ->
+            runCloudTask(
+                busyText = "正在修改云端账本名称…",
+                block = {
+                    val changed = cloudSyncManager.renameCloudBook(info.id, name)
+                    cloudBooks = cloudSyncManager.listCloudBooks()
+                    "已改名为“${changed.name}”"
+                }
+            )
+            renameCloudBook = null
+        }
+    }
+
+    transferCloudBook?.let { info ->
+        var targetUsername by remember(info.id) { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { transferCloudBook = null },
+            title = { Text("转移账本所有权") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("当前所有者：${info.ownerUsername}")
+                    OutlinedTextField(
+                        value = targetUsername,
+                        onValueChange = { targetUsername = it },
+                        label = { Text("新所有者用户名") },
+                        singleLine = true
+                    )
+                    Text("转移后原所有者保留可编辑权限。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val username = targetUsername.trim()
+                    if (username.isBlank()) return@Button
+                    transferCloudBook = null
+                    runCloudTask(
+                        busyText = "正在转移所有权…",
+                        block = {
+                            cloudSyncManager.transferCloudBookOwner(info.id, username)
+                            cloudBooks = cloudSyncManager.listCloudBooks()
+                            "账本所有权已转移给 $username"
+                        }
+                    )
+                }) { Text("确认转移") }
+            },
+            dismissButton = { TextButton(onClick = { transferCloudBook = null }) { Text("取消") } }
+        )
+    }
+
+    deleteCloudBook?.let { info ->
+        ConfirmActionDialog(
+            title = "删除云端账本",
+            text = "把“${info.name}”移入云端回收站？其他设备下次同步后会失去该账本云端访问权限。本机数据库副本不会自动删除。",
+            confirmText = "移入回收站",
+            onDismiss = { deleteCloudBook = null }
+        ) {
+            runCloudTask(
+                busyText = "正在删除云端账本…",
+                block = {
+                    cloudSyncManager.deleteCloudBook(info.id)
+                    cloudBooks = cloudSyncManager.listCloudBooks()
+                    "云端账本已移入回收站"
+                }
+            )
+            deleteCloudBook = null
+        }
+    }
+
+    if (showTrash) {
+        AlertDialog(
+            onDismissRequest = { showTrash = false },
+            title = { Text("云端账本回收站") },
+            text = {
+                Column(
+                    Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (trashBooks.isEmpty()) Text("回收站为空", color = Color.Gray)
+                    trashBooks.forEach { info ->
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("${info.name}（${info.ownerUsername}）", fontWeight = FontWeight.Bold)
+                                Text(
+                                    "数据 ${info.recordCount} · 成员 ${info.memberCount}" +
+                                        if (info.deletedAt.isNotBlank()) " · 删除 " + info.deletedAt.replace("T", " ").take(16) else "",
+                                    style = MaterialTheme.typography.bodySmall, color = Color.Gray
+                                )
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                    TextButton(
+                                        onClick = {
+                                            runCloudTask(
+                                                busyText = "正在恢复账本…",
+                                                block = {
+                                                    cloudSyncManager.restoreCloudBook(info.id)
+                                                    trashBooks = cloudSyncManager.listDeletedCloudBooks()
+                                                    cloudBooks = cloudSyncManager.listCloudBooks()
+                                                    "账本已恢复"
+                                                }
+                                            )
+                                        }, enabled = !cloudBusy
+                                    ) { Text("恢复") }
+                                    if (cloudSession?.systemRole == "SUPERADMIN") {
+                                        TextButton(
+                                            onClick = {
+                                                runCloudTask(
+                                                    busyText = "正在永久清空云端数据…",
+                                                    block = {
+                                                        cloudSyncManager.purgeCloudBook(info.id)
+                                                        trashBooks = cloudSyncManager.listDeletedCloudBooks()
+                                                        "云端业务数据已永久清空；审计记录保留"
+                                                    }
+                                                )
+                                            }, enabled = !cloudBusy
+                                        ) { Text("永久清空", color = MaterialTheme.colorScheme.error) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showTrash = false }) { Text("关闭") } }
+        )
     }
 
     if (registerDialog) {

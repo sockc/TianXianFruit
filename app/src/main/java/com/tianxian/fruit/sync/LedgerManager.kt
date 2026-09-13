@@ -509,6 +509,8 @@ class LedgerManager(
         permission: String
     ): String =
         when (permission) {
+            "SUPERADMIN" ->
+                "系统管理员"
             "OWNER" -> "所有者"
             "EDITOR" -> "可编辑"
             "VIEWER" -> "只读"

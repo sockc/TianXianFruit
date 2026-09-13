@@ -20,6 +20,7 @@ data class CloudSession(
     val baseUrl: String,
     val username: String,
     val displayName: String,
+    val systemRole: String,
     val token: String
 )
 
@@ -29,7 +30,46 @@ data class CloudBookInfo(
     val role: String,
     val ownerUserId: String,
     val ownerUsername: String,
-    val deleted: Boolean
+    val deleted: Boolean,
+    val purged: Boolean = false,
+    val createdAt: String = "",
+    val updatedAt: String = "",
+    val deletedAt: String = "",
+    val recordCount: Int = 0,
+    val memberCount: Int = 0
+)
+
+data class CloudAdminUserInfo(
+    val id: String,
+    val username: String,
+    val displayName: String,
+    val systemRole: String,
+    val active: Boolean,
+    val ownedBookCount: Int,
+    val memberBookCount: Int,
+    val deviceCount: Int,
+    val createdAt: String
+)
+
+data class CloudAdminDeviceInfo(
+    val deviceId: String,
+    val username: String,
+    val displayName: String,
+    val name: String,
+    val platform: String,
+    val appVersion: String,
+    val revoked: Boolean,
+    val createdAt: String,
+    val lastSeenAt: String
+)
+
+data class CloudSystemAuditInfo(
+    val id: Long,
+    val actorUsername: String,
+    val action: String,
+    val targetType: String,
+    val targetId: String,
+    val createdAt: String
 )
 
 data class CloudMemberInfo(
@@ -127,6 +167,11 @@ class CloudSyncManager(
                 defaultBaseUrl(),
             username = username,
             displayName = displayName,
+            systemRole =
+                prefs.getString(
+                    KEY_SYSTEM_ROLE,
+                    "USER"
+                ).orEmpty(),
             token = token
         )
     }
@@ -154,6 +199,24 @@ class CloudSyncManager(
                         put(
                             "password",
                             password
+                        )
+                        put(
+                            "device_id",
+                            serverDeviceId(
+                                username
+                            )
+                        )
+                        put(
+                            "device_name",
+                            ledgerManager.deviceName
+                        )
+                        put(
+                            "platform",
+                            "android"
+                        )
+                        put(
+                            "app_version",
+                            APP_VERSION
                         )
                     },
                 token = null
@@ -186,6 +249,11 @@ class CloudSyncManager(
                     me.getString(
                         "display_name"
                     ),
+                systemRole =
+                    me.optString(
+                        "system_role",
+                        "USER"
+                    ),
                 token = token
             )
 
@@ -215,6 +283,10 @@ class CloudSyncManager(
             .putString(
                 KEY_DISPLAY_NAME,
                 result.displayName
+            )
+            .putString(
+                KEY_SYSTEM_ROLE,
+                result.systemRole
             )
             .apply()
 
@@ -275,6 +347,7 @@ class CloudSyncManager(
             .remove(KEY_TOKEN)
             .remove(KEY_USERNAME)
             .remove(KEY_DISPLAY_NAME)
+            .remove(KEY_SYSTEM_ROLE)
             .apply()
     }
 
@@ -302,6 +375,11 @@ class CloudSyncManager(
                 displayName =
                     me.getString(
                         "display_name"
+                    ),
+                systemRole =
+                    me.optString(
+                        "system_role",
+                        "USER"
                     )
             )
 
@@ -314,98 +392,77 @@ class CloudSyncManager(
                 KEY_DISPLAY_NAME,
                 refreshed.displayName
             )
+            .putString(
+                KEY_SYSTEM_ROLE,
+                refreshed.systemRole
+            )
             .apply()
 
         return refreshed
     }
 
-    fun listCloudBooks():
-        List<CloudBookInfo> {
-        val current =
-            requireSession()
+    private fun parseCloudBook(
+        item: JSONObject
+    ): CloudBookInfo =
+        CloudBookInfo(
+            id = item.getString("id"),
+            name = item.getString("name"),
+            role = item.getString("role"),
+            ownerUserId = item.getString("owner_user_id"),
+            ownerUsername = item.optString("owner_username", ""),
+            deleted = item.optBoolean("deleted", false),
+            purged = item.optBoolean("purged", false),
+            createdAt = item.optString("created_at", ""),
+            updatedAt = item.optString("updated_at", ""),
+            deletedAt = item.optString("deleted_at", ""),
+            recordCount = item.optInt("record_count", 0),
+            memberCount = item.optInt("member_count", 0)
+        )
 
-        val array =
-            requestJson(
-                baseUrl =
-                    current.baseUrl,
-                method = "GET",
-                path = "/api/v1/books",
-                body = null,
-                token = current.token
-            ) as JSONArray
+    fun listCloudBooks(): List<CloudBookInfo> {
+        val current = requireSession()
+        val array = requestJson(
+            baseUrl = current.baseUrl,
+            method = "GET",
+            path = "/api/v1/books",
+            body = null,
+            token = current.token
+        ) as JSONArray
 
-        val result =
-            buildList {
-                for (
-                    i in 0 until
-                        array.length()
-                ) {
-                    val item =
-                        array.getJSONObject(i)
-
-                    add(
-                        CloudBookInfo(
-                            id =
-                                item.getString(
-                                    "id"
-                                ),
-                            name =
-                                item.getString(
-                                    "name"
-                                ),
-                            role =
-                                item.getString(
-                                    "role"
-                                ),
-                            ownerUserId =
-                                item.getString(
-                                    "owner_user_id"
-                                ),
-                            ownerUsername =
-                                item.optString(
-                                    "owner_username",
-                                    ""
-                                ),
-                            deleted =
-                                item.optBoolean(
-                                    "deleted",
-                                    false
-                                )
-                        )
-                    )
-                }
-            }.filterNot {
-                it.deleted
+        val result = buildList {
+            for (i in 0 until array.length()) {
+                add(parseCloudBook(array.getJSONObject(i)))
             }
+        }.filterNot { it.deleted || it.purged }
 
-        result.forEach {
-            info ->
-            if (
-                ledgerManager
-                    .getBook(
-                        info.id
-                    ) != null
-            ) {
-                ledgerManager
-                    .updateCloudMetadata(
-                        bookId = info.id,
-                        name = info.name,
-                        ownerUsername =
-                            info.ownerUsername,
-                        permission =
-                            info.role
-                    )
+        result.forEach { info ->
+            if (ledgerManager.getBook(info.id) != null) {
+                ledgerManager.updateCloudMetadata(
+                    bookId = info.id,
+                    name = info.name,
+                    ownerUsername = info.ownerUsername,
+                    permission = info.role
+                )
             }
         }
-
-        ledgerManager
-            .reconcileCloudAccess(
-                result.map {
-                    it.id
-                }.toSet()
-            )
-
+        ledgerManager.reconcileCloudAccess(result.map { it.id }.toSet())
         return result
+    }
+
+    fun listDeletedCloudBooks(): List<CloudBookInfo> {
+        val current = requireSession()
+        val array = requestJson(
+            baseUrl = current.baseUrl,
+            method = "GET",
+            path = "/api/v1/books/trash",
+            body = null,
+            token = current.token
+        ) as JSONArray
+        return buildList {
+            for (i in 0 until array.length()) {
+                add(parseCloudBook(array.getJSONObject(i)))
+            }
+        }
     }
 
     fun listMembers(
@@ -640,75 +697,152 @@ class CloudSyncManager(
         )
     }
 
-    fun renameCloudBook(
-        bookId: String,
-        name: String
-    ): CloudBookInfo {
-        val current =
-            requireSession()
-
-        val encoded =
-            URLEncoder.encode(
-                bookId,
-                "UTF-8"
-            )
-
-        val item =
-            requestJson(
-                baseUrl =
-                    current.baseUrl,
-                method = "PATCH",
-                path =
-                    "/api/v1/books/$encoded",
-                body =
-                    JSONObject().apply {
-                        put(
-                            "name",
-                            name.trim()
-                        )
-                    },
-                token = current.token
-            ) as JSONObject
-
-        val result =
-            CloudBookInfo(
-                id =
-                    item.getString(
-                        "id"
-                    ),
-                name =
-                    item.getString(
-                        "name"
-                    ),
-                role =
-                    item.getString(
-                        "role"
-                    ),
-                ownerUserId =
-                    item.getString(
-                        "owner_user_id"
-                    ),
-                ownerUsername =
-                    item.optString(
-                        "owner_username",
-                        ""
-                    ),
-                deleted =
-                    item.optBoolean(
-                        "deleted",
-                        false
-                    )
-            )
-
-        ledgerManager
-            .updateCloudMetadata(
-                result.id,
-                result.name,
-                result.ownerUsername,
-                result.role
-            )
-
+    fun renameCloudBook(bookId: String, name: String): CloudBookInfo {
+        val current = requireSession()
+        val encoded = URLEncoder.encode(bookId, "UTF-8")
+        val item = requestJson(
+            baseUrl = current.baseUrl, method = "PATCH",
+            path = "/api/v1/books/$encoded",
+            body = JSONObject().apply { put("name", name.trim()) },
+            token = current.token
+        ) as JSONObject
+        val result = parseCloudBook(item)
+        ledgerManager.updateCloudMetadata(result.id, result.name, result.ownerUsername, result.role)
         return result
+    }
+
+    fun deleteCloudBook(bookId: String) {
+        val current = requireSession()
+        val encoded = URLEncoder.encode(bookId, "UTF-8")
+        requestJson(current.baseUrl, "DELETE", "/api/v1/books/$encoded", null, current.token)
+        ledgerManager.markCloudAccessRevoked(bookId)
+    }
+
+    fun restoreCloudBook(bookId: String): CloudBookInfo {
+        val current = requireSession()
+        val encoded = URLEncoder.encode(bookId, "UTF-8")
+        val item = requestJson(
+            current.baseUrl, "POST", "/api/v1/books/$encoded/restore",
+            JSONObject(), current.token
+        ) as JSONObject
+        return parseCloudBook(item)
+    }
+
+    fun purgeCloudBook(bookId: String) {
+        val current = requireSession()
+        val encoded = URLEncoder.encode(bookId, "UTF-8")
+        requestJson(current.baseUrl, "DELETE", "/api/v1/books/$encoded/purge", null, current.token)
+    }
+
+    fun transferCloudBookOwner(bookId: String, username: String): CloudBookInfo {
+        val current = requireSession()
+        val encoded = URLEncoder.encode(bookId, "UTF-8")
+        val item = requestJson(
+            current.baseUrl, "POST", "/api/v1/books/$encoded/transfer-owner",
+            JSONObject().apply { put("username", username.trim()) }, current.token
+        ) as JSONObject
+        return parseCloudBook(item)
+    }
+
+    fun listAdminUsers(): List<CloudAdminUserInfo> {
+        val current = requireSession()
+        val array = requestJson(current.baseUrl, "GET", "/api/v1/admin/users", null, current.token) as JSONArray
+        return buildList {
+            for (i in 0 until array.length()) {
+                val x = array.getJSONObject(i)
+                add(CloudAdminUserInfo(
+                    id=x.getString("id"), username=x.getString("username"),
+                    displayName=x.optString("display_name", ""), systemRole=x.optString("system_role", "USER"),
+                    active=x.optBoolean("is_active", true), ownedBookCount=x.optInt("owned_book_count",0),
+                    memberBookCount=x.optInt("member_book_count",0), deviceCount=x.optInt("device_count",0),
+                    createdAt=x.optString("created_at","")
+                ))
+            }
+        }
+    }
+
+    fun setAdminUserActive(userId: String, active: Boolean) {
+        val current=requireSession()
+        requestJson(current.baseUrl,"PATCH","/api/v1/admin/users/${URLEncoder.encode(userId,"UTF-8")}",
+            JSONObject().apply{put("is_active",active)},current.token)
+    }
+
+    fun updateAdminUserDisplayName(
+        userId: String,
+        displayName: String
+    ) {
+        val current = requireSession()
+        requestJson(
+            current.baseUrl,
+            "PATCH",
+            "/api/v1/admin/users/${URLEncoder.encode(userId, "UTF-8")}",
+            JSONObject().apply { put("display_name", displayName.trim()) },
+            current.token
+        )
+    }
+
+    fun deleteAdminUser(userId: String) {
+        val current = requireSession()
+        requestJson(
+            current.baseUrl,
+            "DELETE",
+            "/api/v1/admin/users/${URLEncoder.encode(userId, "UTF-8")}",
+            null,
+            current.token
+        )
+    }
+
+    fun resetAdminUserPassword(
+        userId: String,
+        newPassword: String
+    ) {
+        val current = requireSession()
+        requestJson(
+            current.baseUrl,
+            "POST",
+            "/api/v1/admin/users/${URLEncoder.encode(userId, "UTF-8")}/reset-password",
+            JSONObject().apply { put("new_password", newPassword) },
+            current.token
+        )
+    }
+
+    fun forceLogoutAllDevices(userId: String) {
+        val current=requireSession()
+        requestJson(current.baseUrl,"POST","/api/v1/admin/users/${URLEncoder.encode(userId,"UTF-8")}/logout-all",JSONObject(),current.token)
+    }
+
+    fun listAdminDevices(): List<CloudAdminDeviceInfo> {
+        val current=requireSession()
+        val array=requestJson(current.baseUrl,"GET","/api/v1/admin/devices",null,current.token) as JSONArray
+        return buildList {
+            for(i in 0 until array.length()){
+                val x=array.getJSONObject(i)
+                add(CloudAdminDeviceInfo(
+                    deviceId=x.getString("device_id"), username=x.getString("username"), displayName=x.optString("display_name",""),
+                    name=x.optString("name",""), platform=x.optString("platform",""), appVersion=x.optString("app_version",""),
+                    revoked=x.optBoolean("revoked",false), createdAt=x.optString("created_at",""), lastSeenAt=x.optString("last_seen_at","")
+                ))
+            }
+        }
+    }
+
+    fun revokeAdminDevice(deviceId: String) {
+        val current=requireSession()
+        requestJson(current.baseUrl,"DELETE","/api/v1/admin/devices/${URLEncoder.encode(deviceId,"UTF-8")}",null,current.token)
+    }
+
+    fun listSystemAudit(limit: Int = 100): List<CloudSystemAuditInfo> {
+        val current=requireSession()
+        val array=requestJson(current.baseUrl,"GET","/api/v1/admin/audit?limit=$limit",null,current.token) as JSONArray
+        return buildList {
+            for(i in 0 until array.length()){
+                val x=array.getJSONObject(i)
+                add(CloudSystemAuditInfo(
+                    id=x.getLong("id"), actorUsername=x.optString("actor_username",""), action=x.optString("action",""),
+                    targetType=x.optString("target_type",""), targetId=x.optString("target_id",""), createdAt=x.optString("created_at","")
+                ))
+            }
+        }
     }
 
     fun scheduleAutoSync(
@@ -845,6 +979,8 @@ class CloudSyncManager(
             )
 
         if (
+            cloudBook.role !=
+                "SUPERADMIN" &&
             cloudBook.role !=
                 "OWNER" &&
             cloudBook.role !=
@@ -1037,6 +1173,7 @@ class CloudSyncManager(
                 )
 
             if (
+                info.role == "SUPERADMIN" ||
                 info.role == "OWNER" ||
                 info.role == "EDITOR"
             ) {
@@ -1270,78 +1407,40 @@ class CloudSyncManager(
         session: CloudSession,
         book: LedgerBook
     ): CloudBookInfo {
-        val cloudBooks =
-            listCloudBooks()
+        val cloudBooks = listCloudBooks()
+        val existing = cloudBooks.firstOrNull { it.id == book.id }
+        if (existing != null) return existing
 
-        val existing =
-            cloudBooks.firstOrNull {
-                it.id == book.id
-            }
-
-        if (existing != null) {
-            return existing
+        if (book.cloudEnabled || book.cloudBookId.isNotBlank() || book.permission != "OWNER") {
+            ledgerManager.markCloudAccessRevoked(book.id)
+            throw CloudApiException(403, "该账本的云端访问权限已被移除；本机副本仍保留为只读查看")
         }
 
-        if (
-            book.cloudEnabled ||
-            book.cloudBookId
-                .isNotBlank() ||
-            book.permission != "OWNER"
-        ) {
-            ledgerManager
-                .markCloudAccessRevoked(
-                    book.id
-                )
-
-            throw CloudApiException(
-                403,
-                "该账本的云端访问权限已被移除；本机副本仍保留为只读查看"
-            )
+        val ownedCloudBooks = cloudBooks.filter {
+            it.ownerUsername.equals(session.username, ignoreCase = true)
         }
+        if (book.isDefault && ownedCloudBooks.isNotEmpty()) {
+            throw CloudApiException(409, "该账号云端已经有 ${ownedCloudBooks.size} 个自有账本。为防止换手机自动生成重复“我的账本”，本机默认账本不会自动上传；请先下载已有云端账本，或在账本管理中手动创建独立云端账本。")
+        }
+        return createCloudBook(session, book)
+    }
 
-        val item =
-            requestJson(
-                baseUrl =
-                    session.baseUrl,
-                method = "POST",
-                path = "/api/v1/books",
-                body =
-                    JSONObject().apply {
-                        put(
-                            "id",
-                            book.id
-                        )
-                        put(
-                            "name",
-                            book.name
-                        )
-                    },
-                token =
-                    session.token
-            ) as JSONObject
+    fun createIndependentCloudBook(book: LedgerBook): CloudBookInfo {
+        val current = requireSession()
+        verifyLogin(); registerDevice(current)
+        val existing = listCloudBooks().firstOrNull { it.id == book.id }
+        if (existing != null) return existing
+        val created = createCloudBook(current, book)
+        ledgerManager.updateCloudMetadata(created.id, created.name, created.ownerUsername, created.role)
+        return created
+    }
 
-        return CloudBookInfo(
-            id =
-                item.getString("id"),
-            name =
-                item.getString("name"),
-            role =
-                item.getString("role"),
-            ownerUserId =
-                item.getString(
-                    "owner_user_id"
-                ),
-            ownerUsername =
-                item.optString(
-                    "owner_username",
-                    ""
-                ),
-            deleted =
-                item.optBoolean(
-                    "deleted",
-                    false
-                )
-        )
+    private fun createCloudBook(session: CloudSession, book: LedgerBook): CloudBookInfo {
+        val item = requestJson(
+            baseUrl=session.baseUrl, method="POST", path="/api/v1/books",
+            body=JSONObject().apply { put("id",book.id); put("name",book.name) }, token=session.token
+        ) as JSONObject
+        return parseCloudBook(item)
     }
 
     private fun pullAll(
@@ -1396,11 +1495,16 @@ class CloudSyncManager(
 
     private fun serverDeviceId(
         session: CloudSession
+    ): String =
+        serverDeviceId(session.username)
+
+    private fun serverDeviceId(
+        username: String
     ): String {
         val source =
             ledgerManager.deviceId +
                 "|" +
-                session.username
+                username
                     .trim()
                     .lowercase()
 
@@ -1905,12 +2009,14 @@ class CloudSyncManager(
             "username"
         private const val KEY_DISPLAY_NAME =
             "display_name"
+        private const val KEY_SYSTEM_ROLE =
+            "system_role"
 
         const val DEFAULT_BASE_URL =
             "https://sync.830888.xyz"
 
         private const val APP_VERSION =
-            "1.3.4"
+            "1.3.5"
 
         private const val AUTO_SYNC_DEBOUNCE_MS =
             800L
