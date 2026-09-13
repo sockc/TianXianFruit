@@ -27,6 +27,7 @@ data class CloudBookInfo(
     val name: String,
     val role: String,
     val ownerUserId: String,
+    val ownerUsername: String,
     val deleted: Boolean
 )
 
@@ -344,6 +345,11 @@ class CloudSyncManager(
                                 item.getString(
                                     "owner_user_id"
                                 ),
+                            ownerUsername =
+                                item.optString(
+                                    "owner_username",
+                                    ""
+                                ),
                             deleted =
                                 item.optBoolean(
                                     "deleted",
@@ -368,6 +374,8 @@ class CloudSyncManager(
                     .updateCloudMetadata(
                         bookId = info.id,
                         name = info.name,
+                        ownerUsername =
+                            info.ownerUsername,
                         permission =
                             info.role
                     )
@@ -657,6 +665,11 @@ class CloudSyncManager(
                     item.getString(
                         "owner_user_id"
                     ),
+                ownerUsername =
+                    item.optString(
+                        "owner_username",
+                        ""
+                    ),
                 deleted =
                     item.optBoolean(
                         "deleted",
@@ -668,6 +681,7 @@ class CloudSyncManager(
             .updateCloudMetadata(
                 result.id,
                 result.name,
+                result.ownerUsername,
                 result.role
             )
 
@@ -972,6 +986,8 @@ class CloudSyncManager(
                 .upsertCloudBook(
                     bookId = info.id,
                     name = info.name,
+                    ownerUsername =
+                        info.ownerUsername,
                     permission = info.role
                 )
 
@@ -1063,6 +1079,8 @@ class CloudSyncManager(
                     cloudBook.id,
                 name =
                     cloudBook.name,
+                ownerUsername =
+                    cloudBook.ownerUsername,
                 permission =
                     cloudBook.role
             )
@@ -1294,6 +1312,11 @@ class CloudSyncManager(
             ownerUserId =
                 item.getString(
                     "owner_user_id"
+                ),
+            ownerUsername =
+                item.optString(
+                    "owner_username",
+                    ""
                 ),
             deleted =
                 item.optBoolean(

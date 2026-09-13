@@ -12,6 +12,7 @@ data class LedgerBook(
     val name: String,
     val databaseName: String,
     val ownerDeviceId: String,
+    val ownerUsername: String = "",
     val permission: String = "OWNER",
     val cloudBookId: String = "",
     val cloudEnabled: Boolean = false,
@@ -232,6 +233,7 @@ class LedgerManager(
     fun upsertCloudBook(
         bookId: String,
         name: String,
+        ownerUsername: String,
         permission: String
     ): LedgerBook {
         val cleanName =
@@ -250,6 +252,8 @@ class LedgerManager(
             if (existing != null) {
                 existing.copy(
                     name = cleanName,
+                    ownerUsername =
+                        ownerUsername,
                     permission = permission,
                     cloudBookId = bookId,
                     cloudEnabled = true,
@@ -267,6 +271,8 @@ class LedgerManager(
                             ) +
                             ".db",
                     ownerDeviceId = "",
+                    ownerUsername =
+                        ownerUsername,
                     permission =
                         permission,
                     cloudBookId =
@@ -332,6 +338,7 @@ class LedgerManager(
     fun updateCloudMetadata(
         bookId: String,
         name: String,
+        ownerUsername: String,
         permission: String
     ): Boolean {
         val existing =
@@ -350,6 +357,8 @@ class LedgerManager(
                                 .ifBlank {
                                     it.name
                                 },
+                        ownerUsername =
+                            ownerUsername,
                         permission =
                             permission,
                         cloudBookId =
@@ -410,6 +419,27 @@ class LedgerManager(
         }
 
         return changed
+    }
+
+    fun displayName(
+        book: LedgerBook
+    ): String {
+        val owner =
+            book.ownerUsername
+                .trim()
+
+        if (owner.isBlank()) {
+            return book.name
+        }
+
+        return if (
+            book.name ==
+                "我的账本"
+        ) {
+            "${owner}的账本"
+        } else {
+            "${book.name}（$owner）"
+        }
     }
 
     fun permissionLabel(
@@ -522,6 +552,11 @@ class LedgerManager(
                                     "ownerDeviceId",
                                     deviceId
                                 ),
+                            ownerUsername =
+                                obj.optString(
+                                    "ownerUsername",
+                                    ""
+                                ),
                             permission =
                                 obj.optString(
                                     "permission",
@@ -584,6 +619,10 @@ class LedgerManager(
                     put(
                         "ownerDeviceId",
                         book.ownerDeviceId
+                    )
+                    put(
+                        "ownerUsername",
+                        book.ownerUsername
                     )
                     put(
                         "permission",

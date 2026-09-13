@@ -203,7 +203,7 @@ fun TianXianApp(
                     AppPage.HOME -> HomeScreen(
                         db = db,
                         dataVersion = dataVersion,
-                        bookName = liveCurrentBook.name,
+                        bookName = ledgerManager.displayName(liveCurrentBook),
                         onPurchase = {
                             if (canEdit) {
                                 page =
@@ -3806,7 +3806,7 @@ private fun MoreScreen(
                 item {
                     PageHeader(
                         "更多",
-                        "当前账本：${currentBook.name}"
+                        "当前账本：${ledgerManager.displayName(currentBook)}"
                     )
                 }
 
@@ -5940,7 +5940,9 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        liveCurrentBook.name,
+                        ledgerManager.displayName(
+                            liveCurrentBook
+                        ),
                         style =
                             MaterialTheme
                                 .typography
@@ -6549,7 +6551,21 @@ private fun LedgerManagementContent(
                                 Modifier.weight(1f)
                             ) {
                                 Text(
-                                    info.name,
+                                    if (
+                                        info.ownerUsername
+                                            .isNotBlank()
+                                    ) {
+                                        if (
+                                            info.name ==
+                                            "我的账本"
+                                        ) {
+                                            "${info.ownerUsername}的账本"
+                                        } else {
+                                            "${info.name}（${info.ownerUsername}）"
+                                        }
+                                    } else {
+                                        info.name
+                                    },
                                     fontWeight =
                                         FontWeight.Bold
                                 )
@@ -6693,7 +6709,10 @@ private fun LedgerManagementContent(
                             Modifier.weight(1f)
                         ) {
                             Text(
-                                book.name,
+                                ledgerManager
+                                    .displayName(
+                                        book
+                                    ),
                                 fontWeight =
                                     FontWeight.Bold
                             )
