@@ -84,6 +84,7 @@ private enum class MorePage {
     HOME_HEADER,
     ABOUT,
     HISTORY,
+    PURCHASE_ACTIVITY,
     STATS,
     BACKUP,
     PARTNERS,
@@ -426,6 +427,13 @@ fun TianXianApp(
                             page =
                                 AppPage.MORE
                         },
+                        onPurchaseActivity = {
+                            moreTarget =
+                                MorePage
+                                    .PURCHASE_ACTIVITY
+                            page =
+                                AppPage.MORE
+                        },
                         onStats = {
                             moreTarget =
                                 MorePage.STATS
@@ -461,7 +469,25 @@ fun TianXianApp(
                                 AppPage.MORE
                         }
                     )
-                    AppPage.PURCHASE -> PurchaseScreen(db, dataVersion) { notifyDataChanged() }
+                    AppPage.PURCHASE ->
+                        PurchaseScreen(
+                            db = db,
+                            dataVersion =
+                                dataVersion,
+                            recorderUsername =
+                                cloudSyncManager
+                                    .session()
+                                    ?.username
+                                    .orEmpty(),
+                            recorderDisplayName =
+                                cloudSyncManager
+                                    .session()
+                                    ?.displayName
+                                    .orEmpty(),
+                            onChanged = {
+                                notifyDataChanged()
+                            }
+                        )
                     AppPage.PLAN -> PurchasePlanScreen(db, dataVersion) { notifyDataChanged() }
                     AppPage.SESSION -> SessionScreen(db, dataVersion) { notifyDataChanged() }
                     AppPage.SETTLEMENT -> SettlementScreen(db, dataVersion) { notifyDataChanged() }
@@ -579,6 +605,7 @@ private fun HomeScreen(
     onSession: () -> Unit,
     onStores: () -> Unit,
     onHistory: () -> Unit,
+    onPurchaseActivity: () -> Unit,
     onStats: () -> Unit,
     onProfit: () -> Unit,
     onReport: () -> Unit,
@@ -638,6 +665,36 @@ private fun HomeScreen(
     val records = remember(dataVersion, selectedDateString) {
         db.getDailyRecords(selectedDateString)
     }
+
+    val todayPurchaseDate =
+        LocalDate
+            .now()
+            .toString()
+
+    val todayPurchaseOrders =
+        remember(
+            dataVersion,
+            todayPurchaseDate
+        ) {
+            db.getPurchaseOrdersForDate(
+                todayPurchaseDate
+            )
+        }
+
+    val todayPurchaseTotal =
+        todayPurchaseOrders
+            .sumOf {
+                it.order.totalCost
+            }
+
+    val todayTemporaryCount =
+        todayPurchaseOrders
+            .count {
+                it.activity
+                    ?.purchaseType ==
+                    PurchaseTypes
+                        .TEMPORARY
+            }
 
     val nextDate = selectedDate.plusDays(1)
     val nextDateString = nextDate.toString()
@@ -1143,6 +1200,94 @@ private fun HomeScreen(
                                 Modifier.weight(1f),
                                 Color(0xFFF2ECFF)
                             )
+                        }
+
+                        Card(
+                            onClick =
+                                onPurchaseActivity,
+                            colors =
+                                CardDefaults
+                                    .cardColors(
+                                        containerColor =
+                                            Color(
+                                                0xFFFFF8E8
+                                            )
+                                    ),
+                            shape =
+                                RoundedCornerShape(
+                                    14.dp
+                                )
+                        ) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(
+                                        horizontal =
+                                            13.dp,
+                                        vertical =
+                                            10.dp
+                                    ),
+                                verticalAlignment =
+                                    Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "⚡",
+                                    fontSize =
+                                        22.sp
+                                )
+
+                                Spacer(
+                                    Modifier.width(
+                                        9.dp
+                                    )
+                                )
+
+                                Column(
+                                    Modifier.weight(
+                                        1f
+                                    )
+                                ) {
+                                    Text(
+                                        "今日采购动态",
+                                        fontWeight =
+                                            FontWeight.Bold
+                                    )
+
+                                    Text(
+                                        if (
+                                            todayPurchaseOrders
+                                                .isEmpty()
+                                        ) {
+                                            "今天还没有进货动态"
+                                        } else {
+                                            "${todayPurchaseOrders.size} 张进货单 · " +
+                                                "合计 ${money(todayPurchaseTotal)}" +
+                                                if (
+                                                    todayTemporaryCount >
+                                                    0
+                                                ) {
+                                                    " · 临时 $todayTemporaryCount"
+                                                } else {
+                                                    ""
+                                                }
+                                        },
+                                        style =
+                                            MaterialTheme
+                                                .typography
+                                                .bodySmall,
+                                        color =
+                                            Color.Gray
+                                    )
+                                }
+
+                                Text(
+                                    "›",
+                                    color =
+                                        BrandGreen,
+                                    fontSize =
+                                        24.sp
+                                )
+                            }
                         }
 
                         Card(
@@ -1765,7 +1910,13 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
 }
 
 @Composable
-private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Unit) {
+private fun PurchaseScreen(
+    db: AppDatabase,
+    dataVersion: Int,
+    recorderUsername: String,
+    recorderDisplayName: String,
+    onChanged: () -> Unit
+) {
     val focusManager = LocalFocusManager.current
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
     val fruits = remember(dataVersion) { db.getFruits() }
@@ -1776,6 +1927,32 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
     var buyerMenu by remember { mutableStateOf(false) }
     var remark by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("") }
+
+    var purchaseType by remember {
+        mutableStateOf(
+            PurchaseTypes.PLANNED
+        )
+    }
+
+    var duplicateRows by remember {
+        mutableStateOf<
+            List<
+                PurchaseDuplicateRecord
+            >
+        >(
+            emptyList()
+        )
+    }
+
+    var pendingDuplicateLines by remember {
+        mutableStateOf<
+            List<
+                PurchaseLineInput
+            >?
+        >(
+            null
+        )
+    }
 
     var addFruitDialog by remember { mutableStateOf(false) }
     var pendingFruitRowId by remember { mutableStateOf<Long?>(null) }
@@ -1839,6 +2016,91 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
     fun meaningfulRows(): List<PurchaseDraftRow> =
         rows.filterNot { it.isBlank }
 
+    fun persistPurchase(
+        lines: List<PurchaseLineInput>
+    ) {
+        val selectedBuyer =
+            buyer
+
+        if (selectedBuyer == null) {
+            message =
+                "请先在更多页面添加合伙人"
+            return
+        }
+
+        val editId =
+            editingOrderId
+
+        val ok =
+            if (editId == null) {
+                db.addPurchaseOrder(
+                    date = date,
+                    buyer =
+                        selectedBuyer,
+                    lines = lines,
+                    remark =
+                        remark,
+                    purchaseType =
+                        purchaseType,
+                    recorderUsername =
+                        recorderUsername,
+                    recorderDisplayName =
+                        recorderDisplayName
+                ) > 0
+            } else {
+                db.updatePurchaseOrder(
+                    id = editId,
+                    date = date,
+                    buyer =
+                        selectedBuyer,
+                    lines = lines,
+                    remark =
+                        remark,
+                    purchaseType =
+                        purchaseType,
+                    recorderUsername =
+                        recorderUsername,
+                    recorderDisplayName =
+                        recorderDisplayName
+                )
+            }
+
+        if (ok) {
+            val savedType =
+                purchaseType
+
+            editingOrderId =
+                null
+            historicalBuyerName =
+                ""
+            remark =
+                ""
+            purchaseType =
+                PurchaseTypes.PLANNED
+            resetRowsToOneBlank()
+
+            message =
+                if (editId == null) {
+                    if (
+                        savedType ==
+                        PurchaseTypes
+                            .TEMPORARY
+                    ) {
+                        "临时采购已保存"
+                    } else {
+                        "整张进货单已保存"
+                    }
+                } else {
+                    "进货单已更新"
+                }
+
+            onChanged()
+        } else {
+            message =
+                "保存失败，请检查内容"
+        }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
@@ -1868,6 +2130,8 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
                                 editingOrderId = null
                                 historicalBuyerName = ""
                                 remark = ""
+                                purchaseType =
+                                    PurchaseTypes.PLANNED
                                 date = LocalDate.now().toString()
                                 buyerId = partners.firstOrNull()?.id
                                 resetRowsToOneBlank()
@@ -1915,6 +2179,17 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
                     }
                 }
             }
+        }
+
+        item {
+            PurchaseTypeSelector(
+                purchaseType =
+                    purchaseType,
+                onChange = {
+                    purchaseType =
+                        it
+                }
+            )
         }
 
         if (editingOrderId == null && purchasedPlanItems.isNotEmpty()) {
@@ -2071,39 +2346,38 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
                             if (lines.size != filledRows.size) {
                                 message = "有历史水果无法识别，请重新选择该商品"
                             } else {
-                                val editId = editingOrderId
-                                val ok =
-                                    if (editId == null) {
-                                        db.addPurchaseOrder(
-                                            date,
-                                            buyer,
-                                            lines,
-                                            remark
-                                        ) > 0
-                                    } else {
-                                        db.updatePurchaseOrder(
-                                            editId,
-                                            date,
-                                            buyer,
-                                            lines,
-                                            remark
+                                val editId =
+                                    editingOrderId
+
+                                val duplicates =
+                                    if (
+                                        editId ==
+                                        null
+                                    ) {
+                                        db.getDuplicatePurchases(
+                                            date =
+                                                date,
+                                            fruitIds =
+                                                lines.map {
+                                                    it.fruit.id
+                                                }
                                         )
+                                    } else {
+                                        emptyList()
                                     }
 
-                                if (ok) {
-                                    editingOrderId = null
-                                    historicalBuyerName = ""
-                                    remark = ""
-                                    resetRowsToOneBlank()
-                                    message =
-                                        if (editId == null) {
-                                            "整张进货单已保存"
-                                        } else {
-                                            "进货单已更新"
-                                        }
-                                    onChanged()
+                                if (
+                                    duplicates
+                                        .isNotEmpty()
+                                ) {
+                                    duplicateRows =
+                                        duplicates
+                                    pendingDuplicateLines =
+                                        lines
                                 } else {
-                                    message = "保存失败，请检查内容"
+                                    persistPurchase(
+                                        lines
+                                    )
                                 }
                             }
                         }
@@ -2158,9 +2432,30 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                "合计 ${money(detail.order.totalCost)}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color.Gray
+                                "合计 ${money(detail.order.totalCost)} · " +
+                                    PurchaseTypes.label(
+                                        detail.activity
+                                            ?.purchaseType
+                                            ?: PurchaseTypes
+                                                .PLANNED
+                                    ),
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .bodySmall,
+                                color =
+                                    if (
+                                        detail.activity
+                                            ?.purchaseType ==
+                                        PurchaseTypes
+                                            .TEMPORARY
+                                    ) {
+                                        Color(
+                                            0xFFE07B00
+                                        )
+                                    } else {
+                                        Color.Gray
+                                    }
                             )
                         }
 
@@ -2171,6 +2466,11 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
                                 buyerId = detail.order.buyerId
                                 historicalBuyerName = detail.order.buyerName
                                 remark = detail.order.remark
+                                purchaseType =
+                                    detail.activity
+                                        ?.purchaseType
+                                        ?: PurchaseTypes
+                                            .PLANNED
 
                                 rows.clear()
                                 detail.items.forEach { item ->
@@ -2247,6 +2547,32 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
         )
     }
 
+    PurchaseDuplicateDialog(
+        rows =
+            duplicateRows,
+        onCancel = {
+            duplicateRows =
+                emptyList()
+            pendingDuplicateLines =
+                null
+        },
+        onContinue = {
+            val lines =
+                pendingDuplicateLines
+
+            duplicateRows =
+                emptyList()
+            pendingDuplicateLines =
+                null
+
+            if (lines != null) {
+                persistPurchase(
+                    lines
+                )
+            }
+        }
+    )
+
     deleteOrder?.let { detail ->
         ConfirmDelete(
             "删除 ${detail.order.date} 的整张进货单？历史价格也会同步隐藏。",
@@ -2258,6 +2584,8 @@ private fun PurchaseScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> U
                 editingOrderId = null
                 historicalBuyerName = ""
                 remark = ""
+                purchaseType =
+                    PurchaseTypes.PLANNED
                 resetRowsToOneBlank()
             }
 
@@ -4422,6 +4750,20 @@ private fun MoreScreen(
                         SettingsDivider()
 
                         SettingsRow(
+                            icon = "⚡",
+                            title = "采购动态",
+                            subtitle =
+                                "查看账本成员当天拿了什么、花了多少钱",
+                            onClick = {
+                                sub =
+                                    MorePage
+                                        .PURCHASE_ACTIVITY
+                            }
+                        )
+
+                        SettingsDivider()
+
+                        SettingsRow(
                             icon = "📊",
                             title = "经营统计",
                             subtitle =
@@ -4703,6 +5045,26 @@ private fun MoreScreen(
                     dataVersion,
                     canEdit,
                     onChanged
+                )
+            }
+        }
+
+        MorePage.PURCHASE_ACTIVITY -> {
+            SubPage(
+                "采购动态",
+                {
+                    sub =
+                        MorePage.MENU
+                }
+            ) {
+                PurchaseActivityContent(
+                    db = db,
+                    dataVersion =
+                        dataVersion,
+                    currentBook =
+                        currentBook,
+                    cloudSyncManager =
+                        cloudSyncManager
                 )
             }
         }
@@ -7662,7 +8024,7 @@ private fun LedgerManagementContent(
                     Modifier.padding(12.dp)
                 ) {
                     Text(
-                        "V1.3.7 界面个性化",
+                        "V1.4.0 多人采购动态",
                         fontWeight =
                             FontWeight.Bold
                     )
@@ -7676,7 +8038,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• “更多”采用分组式设置界面，更新入口已经移到“关于天鲜账本”。",
+                        "• 采购动态按当前账本共享，已加入成员可查看当天进货变化。",
                         style =
                             MaterialTheme
                                 .typography
@@ -7684,7 +8046,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• 每个账本都可在本机单独设置首页背景图、主标题、副标题和右下角文案。",
+                        "• 新增计划/临时采购标签、同商品重复采购提醒和15秒采购动态刷新。",
                         style =
                             MaterialTheme
                                 .typography
@@ -13285,7 +13647,7 @@ private fun TimeFilterSelector(
 }
 
 @Composable
-private fun CompactDateNavigator(
+internal fun CompactDateNavigator(
     label: String?,
     date: String,
     modifier: Modifier = Modifier,

@@ -1182,6 +1182,10 @@ class CloudSyncManager(
                         db.getServerCursor()
                 )
 
+            markPurchaseActivityBackfillDone(
+                book.id
+            )
+
             if (
                 canWriteCloudBook(
                     info.role
@@ -1335,19 +1339,38 @@ class CloudSyncManager(
             db.getServerCursor()
 
         if (conflictCount == 0) {
+            val needsActivityBackfill =
+                !isPurchaseActivityBackfillDone(
+                    book.id
+                )
+
             val pulled =
                 pullAll(
                     session = current,
                     db = db,
                     book = book,
                     startCursor =
-                        cursor
+                        if (
+                            needsActivityBackfill
+                        ) {
+                            0L
+                        } else {
+                            cursor
+                        }
                 )
 
             downloadedCount =
                 pulled.first
             cursor =
                 pulled.second
+
+            if (
+                needsActivityBackfill
+            ) {
+                markPurchaseActivityBackfillDone(
+                    book.id
+                )
+            }
         }
 
         val now =
@@ -1539,6 +1562,35 @@ class CloudSyncManager(
         } while (pull.hasMore)
 
         return count to cursor
+    }
+
+    private fun purchaseActivityBackfillKey(
+        bookId: String
+    ): String =
+        KEY_PURCHASE_ACTIVITY_BACKFILL_PREFIX +
+            bookId
+
+    private fun isPurchaseActivityBackfillDone(
+        bookId: String
+    ): Boolean =
+        prefs.getBoolean(
+            purchaseActivityBackfillKey(
+                bookId
+            ),
+            false
+        )
+
+    private fun markPurchaseActivityBackfillDone(
+        bookId: String
+    ) {
+        prefs.edit()
+            .putBoolean(
+                purchaseActivityBackfillKey(
+                    bookId
+                ),
+                true
+            )
+            .apply()
     }
 
     private fun serverDeviceId(
@@ -2064,7 +2116,10 @@ class CloudSyncManager(
             "https://sync.830888.xyz"
 
         private const val APP_VERSION =
-            "1.3.8"
+            "1.4.0"
+
+        private const val KEY_PURCHASE_ACTIVITY_BACKFILL_PREFIX =
+            "purchase_activity_backfill_v1_4_"
 
         private const val AUTO_SYNC_DEBOUNCE_MS =
             800L

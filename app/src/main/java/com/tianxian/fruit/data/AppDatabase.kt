@@ -30,7 +30,8 @@ data class PurchaseOrderRecord(
     val storeId: Long,
     val storeName: String,
     val totalCost: Double,
-    val remark: String
+    val remark: String,
+    val createdAt: Long
 )
 
 data class PurchaseItemRecord(
@@ -46,7 +47,63 @@ data class PurchaseItemRecord(
 
 data class PurchaseOrderDetail(
     val order: PurchaseOrderRecord,
-    val items: List<PurchaseItemRecord>
+    val items: List<PurchaseItemRecord>,
+    val activity: PurchaseActivityMeta? = null
+)
+
+object PurchaseTypes {
+    const val PLANNED =
+        "PLANNED"
+    const val TEMPORARY =
+        "TEMPORARY"
+
+    fun normalize(
+        value: String
+    ): String =
+        if (
+            value ==
+            TEMPORARY
+        ) {
+            TEMPORARY
+        } else {
+            PLANNED
+        }
+
+    fun label(
+        value: String
+    ): String =
+        if (
+            normalize(value) ==
+            TEMPORARY
+        ) {
+            "临时采购"
+        } else {
+            "计划采购"
+        }
+}
+
+data class PurchaseActivityMeta(
+    val id: Long,
+    val orderSyncId: String,
+    val purchaseType: String,
+    val recorderUsername: String,
+    val recorderDisplayName: String,
+    val createdAt: Long,
+    val updatedAt: Long
+)
+
+data class PurchaseDuplicateRecord(
+    val orderId: Long,
+    val date: String,
+    val buyerName: String,
+    val fruitId: Long,
+    val fruitName: String,
+    val unit: String,
+    val quantity: Double,
+    val totalCost: Double,
+    val unitPrice: Double,
+    val purchaseType: String,
+    val createdAt: Long
 )
 
 data class PriceHistoryRecord(
@@ -342,6 +399,9 @@ class AppDatabase(
         createV5Tables(db)
         migrateV5ToV6(db)
         createV7Tables(db)
+        createV12PurchaseActivityTable(
+            db
+        )
         createV8SyncFoundation(
             db,
             initialData = false
@@ -349,6 +409,9 @@ class AppDatabase(
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
+        createV12PurchaseActivity(
+            db
+        )
 
         if (seedDefaults) {
             seedFruits(db)
@@ -377,6 +440,11 @@ class AppDatabase(
         }
         if (oldVersion < 11) {
             createV11ConflictSupport(db)
+        }
+        if (oldVersion < 12) {
+            createV12PurchaseActivity(
+                db
+            )
         }
     }
 
@@ -815,6 +883,47 @@ class AppDatabase(
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS idx_profit_settlement_item_date_partner " +
                 "ON profit_settlement_item(profit_date,partner_id)"
+        )
+    }
+
+    private fun createV12PurchaseActivityTable(
+        db: SQLiteDatabase
+    ) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS purchase_activity(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_sync_id TEXT NOT NULL UNIQUE,
+                purchase_type TEXT NOT NULL DEFAULT 'PLANNED',
+                recorder_username TEXT NOT NULL DEFAULT '',
+                recorder_display_name TEXT NOT NULL DEFAULT '',
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                row_version INTEGER NOT NULL DEFAULT 1,
+                modified_by TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+
+        db.execSQL(
+            "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                "idx_purchase_activity_order_sync " +
+                "ON purchase_activity(order_sync_id)"
+        )
+    }
+
+    private fun createV12PurchaseActivity(
+        db: SQLiteDatabase
+    ) {
+        createV12PurchaseActivityTable(
+            db
+        )
+
+        createSyncTriggers(
+            db
         )
     }
 
@@ -1321,6 +1430,7 @@ class AppDatabase(
             "purchase_plan_item",
             "purchase_order",
             "purchase_item",
+            "purchase_activity",
             "store_daily_record",
             "profit_rule",
             "profit_distribution",
@@ -2556,32 +2666,141 @@ class AppDatabase(
         date: String,
         buyer: PartnerOption,
         lines: List<PurchaseLineInput>,
-        remark: String
+        remark: String,
+        purchaseType: String =
+            PurchaseTypes.PLANNED,
+        recorderUsername: String = "",
+        recorderDisplayName: String = ""
     ): Long {
         if (lines.isEmpty()) return -1
-        val activeBuyer = getPartnerById(buyer.id) ?: return -1
-        val db = writableDatabase
+
+        val activeBuyer =
+            getPartnerById(
+                buyer.id
+            )
+                ?: return -1
+
+        val db =
+            writableDatabase
+
         db.beginTransaction()
+
         try {
-            val total = lines.sumOf { it.totalCost }
-            val orderId = db.insert("purchase_order", null, baseSyncValues().apply {
-                put("date", date)
-                put("buyer_id", activeBuyer.id); put("buyer_name", activeBuyer.name)
-                put("store_id", 0); put("store_name", "共用货品")
-                put("total_cost", total); put("remark", remark.trim()); put("deleted", 0)
-            })
-            if (orderId <= 0) return -1
-            lines.forEach { line ->
-                val price = if (line.quantity > 0) line.totalCost / line.quantity else 0.0
-                db.insert("purchase_item", null, baseSyncValues().apply {
-                    put("order_id", orderId)
-                    put("fruit_id", line.fruit.id); put("fruit_name", line.fruit.name)
-                    put("unit", line.unit); put("quantity", line.quantity)
-                    put("total_cost", line.totalCost); put("unit_price", price)
-                    put("deleted", 0)
-                })
+            val total =
+                lines.sumOf {
+                    it.totalCost
+                }
+
+            val orderId =
+                db.insert(
+                    "purchase_order",
+                    null,
+                    baseSyncValues().apply {
+                        put(
+                            "date",
+                            date
+                        )
+                        put(
+                            "buyer_id",
+                            activeBuyer.id
+                        )
+                        put(
+                            "buyer_name",
+                            activeBuyer.name
+                        )
+                        put(
+                            "store_id",
+                            0
+                        )
+                        put(
+                            "store_name",
+                            "共用货品"
+                        )
+                        put(
+                            "total_cost",
+                            total
+                        )
+                        put(
+                            "remark",
+                            remark.trim()
+                        )
+                        put(
+                            "deleted",
+                            0
+                        )
+                    }
+                )
+
+            if (orderId <= 0) {
+                return -1
             }
+
+            lines.forEach {
+                line ->
+                val price =
+                    if (
+                        line.quantity >
+                        0
+                    ) {
+                        line.totalCost /
+                            line.quantity
+                    } else {
+                        0.0
+                    }
+
+                db.insert(
+                    "purchase_item",
+                    null,
+                    baseSyncValues().apply {
+                        put(
+                            "order_id",
+                            orderId
+                        )
+                        put(
+                            "fruit_id",
+                            line.fruit.id
+                        )
+                        put(
+                            "fruit_name",
+                            line.fruit.name
+                        )
+                        put(
+                            "unit",
+                            line.unit
+                        )
+                        put(
+                            "quantity",
+                            line.quantity
+                        )
+                        put(
+                            "total_cost",
+                            line.totalCost
+                        )
+                        put(
+                            "unit_price",
+                            price
+                        )
+                        put(
+                            "deleted",
+                            0
+                        )
+                    }
+                )
+            }
+
+            upsertPurchaseActivity(
+                db = db,
+                orderId = orderId,
+                purchaseType =
+                    purchaseType,
+                recorderUsername =
+                    recorderUsername,
+                recorderDisplayName =
+                    recorderDisplayName
+            )
+
             db.setTransactionSuccessful()
+
             return orderId
         } finally {
             db.endTransaction()
@@ -2593,81 +2812,309 @@ class AppDatabase(
         date: String,
         buyer: PartnerOption,
         lines: List<PurchaseLineInput>,
-        remark: String
+        remark: String,
+        purchaseType: String =
+            PurchaseTypes.PLANNED,
+        recorderUsername: String = "",
+        recorderDisplayName: String = ""
     ): Boolean {
         if (lines.isEmpty()) return false
 
-        val oldBuyer = readableDatabase.rawQuery(
-            "SELECT buyer_id,buyer_name FROM purchase_order WHERE id=? AND deleted=0 LIMIT 1",
-            arrayOf(id.toString())
-        ).use { c ->
-            if (c.moveToFirst()) PartnerOption(c.long("buyer_id"), c.str("buyer_name")) else null
-        } ?: return false
-
-        val activeBuyer = getPartnerById(buyer.id)
-        val resolvedBuyer = when {
-            activeBuyer != null -> activeBuyer
-            buyer.id == oldBuyer.id -> oldBuyer
-            else -> return false
-        }
-
-        val db = writableDatabase
-        db.beginTransaction()
-        try {
-            val now = System.currentTimeMillis()
-            val total = lines.sumOf { it.totalCost }
-            val changed = db.update("purchase_order", ContentValues().apply {
-                put("date", date)
-                put("buyer_id", resolvedBuyer.id)
-                put("buyer_name", resolvedBuyer.name)
-                put("store_id", 0)
-                put("store_name", "共用货品")
-                put("total_cost", total)
-                put("remark", remark.trim())
-                put("sync_status", 2)
-                put("updated_at", now)
-            }, "id=? AND deleted=0", arrayOf(id.toString()))
-            if (changed <= 0) return false
-
-            db.update("purchase_item", ContentValues().apply {
-                put("deleted", 1)
-                put("sync_status", 2)
-                put("updated_at", now)
-            }, "order_id=? AND deleted=0", arrayOf(id.toString()))
-
-            lines.forEach { line ->
-                val price = if (line.quantity > 0) line.totalCost / line.quantity else 0.0
-                db.insert("purchase_item", null, baseSyncValues().apply {
-                    put("order_id", id)
-                    put("fruit_id", line.fruit.id)
-                    put("fruit_name", line.fruit.name)
-                    put("unit", line.unit)
-                    put("quantity", line.quantity)
-                    put("total_cost", line.totalCost)
-                    put("unit_price", price)
-                    put("deleted", 0)
-                })
+        val oldBuyer =
+            readableDatabase.rawQuery(
+                "SELECT buyer_id,buyer_name " +
+                    "FROM purchase_order " +
+                    "WHERE id=? AND deleted=0 LIMIT 1",
+                arrayOf(
+                    id.toString()
+                )
+            ).use {
+                c ->
+                if (c.moveToFirst()) {
+                    PartnerOption(
+                        c.long(
+                            "buyer_id"
+                        ),
+                        c.str(
+                            "buyer_name"
+                        )
+                    )
+                } else {
+                    null
+                }
             }
+                ?: return false
+
+        val activeBuyer =
+            getPartnerById(
+                buyer.id
+            )
+
+        val resolvedBuyer =
+            when {
+                activeBuyer != null ->
+                    activeBuyer
+
+                buyer.id ==
+                    oldBuyer.id ->
+                    oldBuyer
+
+                else ->
+                    return false
+            }
+
+        val db =
+            writableDatabase
+
+        db.beginTransaction()
+
+        try {
+            val now =
+                System.currentTimeMillis()
+
+            val total =
+                lines.sumOf {
+                    it.totalCost
+                }
+
+            val changed =
+                db.update(
+                    "purchase_order",
+                    ContentValues().apply {
+                        put(
+                            "date",
+                            date
+                        )
+                        put(
+                            "buyer_id",
+                            resolvedBuyer.id
+                        )
+                        put(
+                            "buyer_name",
+                            resolvedBuyer.name
+                        )
+                        put(
+                            "store_id",
+                            0
+                        )
+                        put(
+                            "store_name",
+                            "共用货品"
+                        )
+                        put(
+                            "total_cost",
+                            total
+                        )
+                        put(
+                            "remark",
+                            remark.trim()
+                        )
+                        put(
+                            "sync_status",
+                            2
+                        )
+                        put(
+                            "updated_at",
+                            now
+                        )
+                    },
+                    "id=? AND deleted=0",
+                    arrayOf(
+                        id.toString()
+                    )
+                )
+
+            if (changed <= 0) {
+                return false
+            }
+
+            db.update(
+                "purchase_item",
+                ContentValues().apply {
+                    put(
+                        "deleted",
+                        1
+                    )
+                    put(
+                        "sync_status",
+                        2
+                    )
+                    put(
+                        "updated_at",
+                        now
+                    )
+                },
+                "order_id=? AND deleted=0",
+                arrayOf(
+                    id.toString()
+                )
+            )
+
+            lines.forEach {
+                line ->
+                val price =
+                    if (
+                        line.quantity >
+                        0
+                    ) {
+                        line.totalCost /
+                            line.quantity
+                    } else {
+                        0.0
+                    }
+
+                db.insert(
+                    "purchase_item",
+                    null,
+                    baseSyncValues().apply {
+                        put(
+                            "order_id",
+                            id
+                        )
+                        put(
+                            "fruit_id",
+                            line.fruit.id
+                        )
+                        put(
+                            "fruit_name",
+                            line.fruit.name
+                        )
+                        put(
+                            "unit",
+                            line.unit
+                        )
+                        put(
+                            "quantity",
+                            line.quantity
+                        )
+                        put(
+                            "total_cost",
+                            line.totalCost
+                        )
+                        put(
+                            "unit_price",
+                            price
+                        )
+                        put(
+                            "deleted",
+                            0
+                        )
+                    }
+                )
+            }
+
+            upsertPurchaseActivity(
+                db = db,
+                orderId = id,
+                purchaseType =
+                    purchaseType,
+                recorderUsername =
+                    recorderUsername,
+                recorderDisplayName =
+                    recorderDisplayName
+            )
+
             db.setTransactionSuccessful()
+
             return true
         } finally {
             db.endTransaction()
         }
     }
 
-    fun deletePurchaseOrder(id: Long) {
-        val now = System.currentTimeMillis()
-        val db = writableDatabase
+    fun deletePurchaseOrder(
+        id: Long
+    ) {
+        val now =
+            System.currentTimeMillis()
+
+        val db =
+            writableDatabase
+
+        val orderSyncId =
+            getPurchaseOrderSyncId(
+                db,
+                id
+            )
+
         db.beginTransaction()
+
         try {
-            db.update("purchase_order", ContentValues().apply {
-                put("deleted", 1); put("sync_status", 2); put("updated_at", now)
-            }, "id=?", arrayOf(id.toString()))
-            db.update("purchase_item", ContentValues().apply {
-                put("deleted", 1); put("sync_status", 2); put("updated_at", now)
-            }, "order_id=?", arrayOf(id.toString()))
+            db.update(
+                "purchase_order",
+                ContentValues().apply {
+                    put(
+                        "deleted",
+                        1
+                    )
+                    put(
+                        "sync_status",
+                        2
+                    )
+                    put(
+                        "updated_at",
+                        now
+                    )
+                },
+                "id=?",
+                arrayOf(
+                    id.toString()
+                )
+            )
+
+            db.update(
+                "purchase_item",
+                ContentValues().apply {
+                    put(
+                        "deleted",
+                        1
+                    )
+                    put(
+                        "sync_status",
+                        2
+                    )
+                    put(
+                        "updated_at",
+                        now
+                    )
+                },
+                "order_id=?",
+                arrayOf(
+                    id.toString()
+                )
+            )
+
+            if (
+                orderSyncId
+                    .isNotBlank()
+            ) {
+                db.update(
+                    "purchase_activity",
+                    ContentValues().apply {
+                        put(
+                            "deleted",
+                            1
+                        )
+                        put(
+                            "sync_status",
+                            2
+                        )
+                        put(
+                            "updated_at",
+                            now
+                        )
+                    },
+                    "order_sync_id=?",
+                    arrayOf(
+                        orderSyncId
+                    )
+                )
+            }
+
             db.setTransactionSuccessful()
-        } finally { db.endTransaction() }
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun getPurchasePlan(date: String): PurchasePlanDetail? {
@@ -2949,21 +3396,525 @@ class AppDatabase(
         }
     }
 
-    fun getPurchaseOrders(limit: Int = 100): List<PurchaseOrderDetail> {
-        val orders = readableDatabase.rawQuery(
-            "SELECT * FROM purchase_order WHERE deleted=0 ORDER BY date DESC,id DESC LIMIT ?", arrayOf(limit.toString())
-        ).use { c -> buildList { while (c.moveToNext()) add(order(c)) } }
-        return orders.map { PurchaseOrderDetail(it, getPurchaseItems(it.id)) }
+    fun getPurchaseOrders(
+        limit: Int = 100
+    ): List<PurchaseOrderDetail> {
+        val orders =
+            readableDatabase.rawQuery(
+                "SELECT * FROM purchase_order " +
+                    "WHERE deleted=0 " +
+                    "ORDER BY date DESC,created_at DESC,id DESC " +
+                    "LIMIT ?",
+                arrayOf(
+                    limit.toString()
+                )
+            ).use {
+                c ->
+                buildList {
+                    while (
+                        c.moveToNext()
+                    ) {
+                        add(
+                            order(c)
+                        )
+                    }
+                }
+            }
+
+        return orders.map {
+            row ->
+            PurchaseOrderDetail(
+                order = row,
+                items =
+                    getPurchaseItems(
+                        row.id
+                    ),
+                activity =
+                    getPurchaseActivity(
+                        row.id
+                    )
+            )
+        }
     }
 
-    fun getPurchaseOrdersBetween(start: String?, end: String?): List<PurchaseOrderDetail> {
-        val where = if (start != null && end != null) "AND date>=? AND date<=?" else ""
-        val args = if (start != null && end != null) arrayOf(start, end) else emptyArray()
-        val orders = readableDatabase.rawQuery(
-            "SELECT * FROM purchase_order WHERE deleted=0 $where ORDER BY date DESC,id DESC",
-            args
-        ).use { c -> buildList { while (c.moveToNext()) add(order(c)) } }
-        return orders.map { PurchaseOrderDetail(it, getPurchaseItems(it.id)) }
+    fun getPurchaseOrdersForDate(
+        date: String
+    ): List<PurchaseOrderDetail> {
+        val orders =
+            readableDatabase.rawQuery(
+                "SELECT * FROM purchase_order " +
+                    "WHERE date=? AND deleted=0 " +
+                    "ORDER BY created_at DESC,id DESC",
+                arrayOf(
+                    date
+                )
+            ).use {
+                c ->
+                buildList {
+                    while (
+                        c.moveToNext()
+                    ) {
+                        add(
+                            order(c)
+                        )
+                    }
+                }
+            }
+
+        return orders.map {
+            row ->
+            PurchaseOrderDetail(
+                order = row,
+                items =
+                    getPurchaseItems(
+                        row.id
+                    ),
+                activity =
+                    getPurchaseActivity(
+                        row.id
+                    )
+            )
+        }
+    }
+
+    fun getPurchaseOrdersBetween(
+        start: String?,
+        end: String?
+    ): List<PurchaseOrderDetail> {
+        val where =
+            if (
+                start != null &&
+                end != null
+            ) {
+                "AND date>=? AND date<=?"
+            } else {
+                ""
+            }
+
+        val args =
+            if (
+                start != null &&
+                end != null
+            ) {
+                arrayOf(
+                    start,
+                    end
+                )
+            } else {
+                emptyArray()
+            }
+
+        val orders =
+            readableDatabase.rawQuery(
+                "SELECT * FROM purchase_order " +
+                    "WHERE deleted=0 $where " +
+                    "ORDER BY date DESC,created_at DESC,id DESC",
+                args
+            ).use {
+                c ->
+                buildList {
+                    while (
+                        c.moveToNext()
+                    ) {
+                        add(
+                            order(c)
+                        )
+                    }
+                }
+            }
+
+        return orders.map {
+            row ->
+            PurchaseOrderDetail(
+                order = row,
+                items =
+                    getPurchaseItems(
+                        row.id
+                    ),
+                activity =
+                    getPurchaseActivity(
+                        row.id
+                    )
+            )
+        }
+    }
+
+    fun getDuplicatePurchases(
+        date: String,
+        fruitIds: List<Long>,
+        excludeOrderId: Long? = null
+    ): List<PurchaseDuplicateRecord> {
+        val ids =
+            fruitIds
+                .distinct()
+                .filter {
+                    it > 0
+                }
+
+        if (ids.isEmpty()) {
+            return emptyList()
+        }
+
+        val placeholders =
+            ids.joinToString(
+                ","
+            ) {
+                "?"
+            }
+
+        val args =
+            buildList {
+                add(date)
+                ids.forEach {
+                    add(
+                        it.toString()
+                    )
+                }
+                excludeOrderId
+                    ?.let {
+                        add(
+                            it.toString()
+                        )
+                    }
+            }
+
+        val exclude =
+            if (
+                excludeOrderId != null
+            ) {
+                "AND po.id<>?"
+            } else {
+                ""
+            }
+
+        return readableDatabase.rawQuery(
+            """
+            SELECT
+                po.id AS order_id,
+                po.date,
+                po.buyer_name,
+                pi.fruit_id,
+                pi.fruit_name,
+                pi.unit,
+                pi.quantity,
+                pi.total_cost,
+                pi.unit_price,
+                COALESCE(
+                    pa.purchase_type,
+                    'PLANNED'
+                ) AS purchase_type,
+                po.created_at
+            FROM purchase_item pi
+            JOIN purchase_order po
+              ON po.id=pi.order_id
+            LEFT JOIN purchase_activity pa
+              ON pa.order_sync_id=po.sync_id
+             AND pa.deleted=0
+            WHERE
+                po.date=?
+                AND po.deleted=0
+                AND pi.deleted=0
+                AND pi.fruit_id IN($placeholders)
+                $exclude
+            ORDER BY
+                po.created_at DESC,
+                po.id DESC
+            """.trimIndent(),
+            args.toTypedArray()
+        ).use {
+            c ->
+            buildList {
+                while (
+                    c.moveToNext()
+                ) {
+                    add(
+                        PurchaseDuplicateRecord(
+                            orderId =
+                                c.long(
+                                    "order_id"
+                                ),
+                            date =
+                                c.str(
+                                    "date"
+                                ),
+                            buyerName =
+                                c.str(
+                                    "buyer_name"
+                                ),
+                            fruitId =
+                                c.long(
+                                    "fruit_id"
+                                ),
+                            fruitName =
+                                c.str(
+                                    "fruit_name"
+                                ),
+                            unit =
+                                c.str(
+                                    "unit"
+                                ),
+                            quantity =
+                                c.dbl(
+                                    "quantity"
+                                ),
+                            totalCost =
+                                c.dbl(
+                                    "total_cost"
+                                ),
+                            unitPrice =
+                                c.dbl(
+                                    "unit_price"
+                                ),
+                            purchaseType =
+                                PurchaseTypes
+                                    .normalize(
+                                        c.str(
+                                            "purchase_type"
+                                        )
+                                    ),
+                            createdAt =
+                                c.long(
+                                    "created_at"
+                                )
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private fun getPurchaseActivity(
+        orderId: Long
+    ): PurchaseActivityMeta? =
+        readableDatabase.rawQuery(
+            """
+            SELECT pa.*
+            FROM purchase_activity pa
+            JOIN purchase_order po
+              ON po.sync_id=pa.order_sync_id
+            WHERE
+                po.id=?
+                AND pa.deleted=0
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(
+                orderId.toString()
+            )
+        ).use {
+            c ->
+            if (
+                c.moveToFirst()
+            ) {
+                PurchaseActivityMeta(
+                    id =
+                        c.long(
+                            "id"
+                        ),
+                    orderSyncId =
+                        c.str(
+                            "order_sync_id"
+                        ),
+                    purchaseType =
+                        PurchaseTypes
+                            .normalize(
+                                c.str(
+                                    "purchase_type"
+                                )
+                            ),
+                    recorderUsername =
+                        c.str(
+                            "recorder_username"
+                        ),
+                    recorderDisplayName =
+                        c.str(
+                            "recorder_display_name"
+                        ),
+                    createdAt =
+                        c.long(
+                            "created_at"
+                        ),
+                    updatedAt =
+                        c.long(
+                            "updated_at"
+                        )
+                )
+            } else {
+                null
+            }
+        }
+
+    private fun getPurchaseOrderSyncId(
+        db: SQLiteDatabase,
+        orderId: Long
+    ): String =
+        db.rawQuery(
+            "SELECT sync_id " +
+                "FROM purchase_order " +
+                "WHERE id=? LIMIT 1",
+            arrayOf(
+                orderId.toString()
+            )
+        ).use {
+            c ->
+            if (
+                c.moveToFirst()
+            ) {
+                c.str(
+                    "sync_id"
+                )
+            } else {
+                ""
+            }
+        }
+
+    private fun upsertPurchaseActivity(
+        db: SQLiteDatabase,
+        orderId: Long,
+        purchaseType: String,
+        recorderUsername: String,
+        recorderDisplayName: String
+    ) {
+        val orderSyncId =
+            getPurchaseOrderSyncId(
+                db,
+                orderId
+            )
+
+        if (
+            orderSyncId
+                .isBlank()
+        ) {
+            return
+        }
+
+        val normalizedType =
+            PurchaseTypes
+                .normalize(
+                    purchaseType
+                )
+
+        val existing =
+            db.rawQuery(
+                """
+                SELECT
+                    id,
+                    recorder_username,
+                    recorder_display_name
+                FROM purchase_activity
+                WHERE order_sync_id=?
+                LIMIT 1
+                """.trimIndent(),
+                arrayOf(
+                    orderSyncId
+                )
+            ).use {
+                c ->
+                if (
+                    c.moveToFirst()
+                ) {
+                    Triple(
+                        c.long(
+                            "id"
+                        ),
+                        c.str(
+                            "recorder_username"
+                        ),
+                        c.str(
+                            "recorder_display_name"
+                        )
+                    )
+                } else {
+                    null
+                }
+            }
+
+        if (existing == null) {
+            db.insert(
+                "purchase_activity",
+                null,
+                baseSyncValues().apply {
+                    put(
+                        "order_sync_id",
+                        orderSyncId
+                    )
+                    put(
+                        "purchase_type",
+                        normalizedType
+                    )
+                    put(
+                        "recorder_username",
+                        recorderUsername
+                            .trim()
+                    )
+                    put(
+                        "recorder_display_name",
+                        recorderDisplayName
+                            .trim()
+                    )
+                    put(
+                        "deleted",
+                        0
+                    )
+                }
+            )
+        } else {
+            val now =
+                System.currentTimeMillis()
+
+            db.update(
+                "purchase_activity",
+                ContentValues().apply {
+                    put(
+                        "purchase_type",
+                        normalizedType
+                    )
+
+                    if (
+                        existing.second
+                            .isBlank() &&
+                        recorderUsername
+                            .isNotBlank()
+                    ) {
+                        put(
+                            "recorder_username",
+                            recorderUsername
+                                .trim()
+                        )
+                    }
+
+                    if (
+                        existing.third
+                            .isBlank() &&
+                        recorderDisplayName
+                            .isNotBlank()
+                    ) {
+                        put(
+                            "recorder_display_name",
+                            recorderDisplayName
+                                .trim()
+                        )
+                    }
+
+                    put(
+                        "deleted",
+                        0
+                    )
+                    put(
+                        "sync_status",
+                        2
+                    )
+                    put(
+                        "updated_at",
+                        now
+                    )
+                },
+                "id=?",
+                arrayOf(
+                    existing.first
+                        .toString()
+                )
+            )
+        }
     }
 
     private fun getPurchaseItems(orderId: Long): List<PurchaseItemRecord> = readableDatabase.rawQuery(
@@ -4223,7 +5174,7 @@ class AppDatabase(
             getSyncFoundationStatus()
                 .pendingChanges
         )
-        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item").forEach { table ->
+        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item").forEach { table ->
             root.put(table, tableAsJson(table))
         }
         return root.toString(2)
@@ -4250,9 +5201,29 @@ class AppDatabase(
         return array
     }
 
-    private fun order(c: Cursor) = PurchaseOrderRecord(
-        c.long("id"), c.str("date"), c.long("buyer_id"), c.str("buyer_name"), c.long("store_id"), c.str("store_name"), c.dbl("total_cost"), c.str("remark")
-    )
+    private fun order(
+        c: Cursor
+    ) =
+        PurchaseOrderRecord(
+            id =
+                c.long("id"),
+            date =
+                c.str("date"),
+            buyerId =
+                c.long("buyer_id"),
+            buyerName =
+                c.str("buyer_name"),
+            storeId =
+                c.long("store_id"),
+            storeName =
+                c.str("store_name"),
+            totalCost =
+                c.dbl("total_cost"),
+            remark =
+                c.str("remark"),
+            createdAt =
+                c.long("created_at")
+        )
 
     private fun dailyRecord(c: Cursor) = StoreDailyRecord(
         c.long("id"), c.str("date"), c.long("store_id"), c.str("store_name"),
@@ -4291,7 +5262,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 11
+        const val DB_VERSION = 12
     }
 }
 
