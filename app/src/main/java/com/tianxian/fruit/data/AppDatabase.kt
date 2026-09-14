@@ -4936,6 +4936,95 @@ class AppDatabase(
         }
     }
 
+
+    fun getRecentPurchaseOrdersByDays(
+        dayLimit: Int = 7
+    ): List<PurchaseOrderDetail> {
+        if (dayLimit <= 0) {
+            return emptyList()
+        }
+
+        val dates =
+            readableDatabase.rawQuery(
+                """
+                SELECT DISTINCT date
+                FROM purchase_order
+                WHERE deleted=0
+                ORDER BY date DESC
+                LIMIT ?
+                """.trimIndent(),
+                arrayOf(
+                    dayLimit.toString()
+                )
+            ).use {
+                c ->
+                buildList {
+                    while (
+                        c.moveToNext()
+                    ) {
+                        add(
+                            c.str(
+                                "date"
+                            )
+                        )
+                    }
+                }
+            }
+
+        if (dates.isEmpty()) {
+            return emptyList()
+        }
+
+        val placeholders =
+            dates.joinToString(
+                ","
+            ) {
+                "?"
+            }
+
+        val orders =
+            readableDatabase.rawQuery(
+                """
+                SELECT *
+                FROM purchase_order
+                WHERE
+                    deleted=0
+                    AND date IN($placeholders)
+                ORDER BY
+                    date DESC,
+                    created_at DESC,
+                    id DESC
+                """.trimIndent(),
+                dates.toTypedArray()
+            ).use {
+                c ->
+                buildList {
+                    while (
+                        c.moveToNext()
+                    ) {
+                        add(
+                            order(c)
+                        )
+                    }
+                }
+            }
+
+        return orders.map {
+            row ->
+            PurchaseOrderDetail(
+                order = row,
+                items =
+                    getPurchaseItems(
+                        row.id
+                    ),
+                activity =
+                    getPurchaseActivity(
+                        row.id
+                    )
+            )
+        }
+    }
+
     fun getPurchaseOrdersBetween(
         start: String?,
         end: String?
@@ -5803,6 +5892,91 @@ class AppDatabase(
                 }
             }
         }
+
+
+    fun getRecentBusinessDayRecords(
+        beforeDateExclusive: String,
+        dayLimit: Int = 7
+    ): List<StoreDailyRecord> {
+        if (
+            beforeDateExclusive.isBlank() ||
+            dayLimit <= 0
+        ) {
+            return emptyList()
+        }
+
+        val dates =
+            readableDatabase.rawQuery(
+                """
+                SELECT DISTINCT date
+                FROM store_daily_record
+                WHERE
+                    deleted=0
+                    AND date<?
+                ORDER BY date DESC
+                LIMIT ?
+                """.trimIndent(),
+                arrayOf(
+                    beforeDateExclusive,
+                    dayLimit.toString()
+                )
+            ).use {
+                c ->
+                buildList {
+                    while (
+                        c.moveToNext()
+                    ) {
+                        add(
+                            c.str(
+                                "date"
+                            )
+                        )
+                    }
+                }
+            }
+
+        if (dates.isEmpty()) {
+            return emptyList()
+        }
+
+        val placeholders =
+            dates.joinToString(
+                ","
+            ) {
+                "?"
+            }
+
+        return readableDatabase.rawQuery(
+            """
+            SELECT d.*
+            FROM store_daily_record d
+            LEFT JOIN store s
+              ON s.id=d.store_id
+            WHERE
+                d.deleted=0
+                AND d.date IN($placeholders)
+            ORDER BY
+                d.date DESC,
+                COALESCE(
+                    s.sort_order,
+                    d.id
+                ) ASC,
+                d.id ASC
+            """.trimIndent(),
+            dates.toTypedArray()
+        ).use {
+            c ->
+            buildList {
+                while (
+                    c.moveToNext()
+                ) {
+                    add(
+                        dailyRecord(c)
+                    )
+                }
+            }
+        }
+    }
 
     fun getRecentDailyRecords(limit: Int = 120): List<StoreDailyRecord> = readableDatabase.rawQuery(
         "SELECT * FROM store_daily_record WHERE deleted=0 ORDER BY date DESC,id DESC LIMIT ?", arrayOf(limit.toString())
