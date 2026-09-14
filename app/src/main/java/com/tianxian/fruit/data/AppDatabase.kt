@@ -349,6 +349,13 @@ data class CollaborationCompleteResult(
     val orderId: Long = -1L
 )
 
+private data class CollaborationLinkTarget(
+    val itemId: Long,
+    val itemSyncId: String,
+    val planId: Long,
+    val line: PurchaseLineInput
+)
+
 data class SyncFoundationStatus(
     val bookId: String,
     val bookName: String,
@@ -4057,6 +4064,69 @@ class AppDatabase(
         }
     }
 
+    fun upsertPurchaseDraftToCollaboration(
+        date: String,
+        itemId: Long?,
+        fruit: FruitOption,
+        quantity: Double,
+        unit: String,
+        estimatedAmount: Double
+    ): Long {
+        if (quantity <= 0 || estimatedAmount < 0) {
+            return -1
+        }
+
+        val existing =
+            if (itemId != null) {
+                readableDatabase.rawQuery(
+                    "SELECT ppi.id,ppi.remark " +
+                        "FROM purchase_plan_item ppi " +
+                        "JOIN purchase_plan pp ON pp.id=ppi.plan_id " +
+                        "WHERE ppi.id=? AND pp.plan_date=? " +
+                        "AND ppi.deleted=0 AND ppi.status=0 LIMIT 1",
+                    arrayOf(
+                        itemId.toString(),
+                        date
+                    )
+                ).use { c ->
+                    if (c.moveToFirst()) {
+                        c.long("id") to c.str("remark")
+                    } else {
+                        null
+                    }
+                }
+            } else {
+                readableDatabase.rawQuery(
+                    "SELECT ppi.id,ppi.remark " +
+                        "FROM purchase_plan_item ppi " +
+                        "JOIN purchase_plan pp ON pp.id=ppi.plan_id " +
+                        "WHERE pp.plan_date=? AND pp.deleted=0 " +
+                        "AND ppi.fruit_id=? AND ppi.deleted=0 " +
+                        "AND ppi.status=0 ORDER BY ppi.id LIMIT 1",
+                    arrayOf(
+                        date,
+                        fruit.id.toString()
+                    )
+                ).use { c ->
+                    if (c.moveToFirst()) {
+                        c.long("id") to c.str("remark")
+                    } else {
+                        null
+                    }
+                }
+            }
+
+        return upsertCollaborationPlanItem(
+            date = date,
+            itemId = existing?.first,
+            fruit = fruit,
+            quantity = quantity,
+            unit = unit,
+            estimatedAmount = estimatedAmount,
+            remark = existing?.second.orEmpty()
+        )
+    }
+
     fun deleteCollaborationPlanItem(
         itemId: Long
     ): Boolean {
@@ -4180,7 +4250,7 @@ class AppDatabase(
             )
                 ?: return CollaborationCompleteResult(
                     false,
-                    "进货人已失效，请重新选择"
+                    "采购人已失效，请重新选择"
                 )
 
         val db =
@@ -4280,7 +4350,7 @@ class AppDatabase(
             var orderId =
                 db.rawQuery(
                     "SELECT id FROM purchase_order " +
-                        "WHERE sync_id=? AND deleted=0 LIMIT 1",
+                        "WHERE sync_id=? LIMIT 1",
                     arrayOf(
                         orderSyncId
                     )
@@ -4347,6 +4417,25 @@ class AppDatabase(
                             )
                         }
                     )
+            } else {
+                db.update(
+                    "purchase_order",
+                    ContentValues().apply {
+                        put("date", date)
+                        put("buyer_id", activeBuyer.id)
+                        put("buyer_name", activeBuyer.name)
+                        put("store_id", 0)
+                        put("store_name", "共用货品")
+                        put("total_cost", roundMoney(actualAmount))
+                        put("remark", "协作采购：$fruitName")
+                        put("status", 0)
+                        put("deleted", 0)
+                        put("sync_status", 2)
+                        put("updated_at", now)
+                    },
+                    "id=?",
+                    arrayOf(orderId.toString())
+                )
             }
 
             if (
@@ -4354,28 +4443,32 @@ class AppDatabase(
             ) {
                 return CollaborationCompleteResult(
                     false,
-                    "正式进货单生成失败"
+                    "正式采购单生成失败"
                 )
             }
 
-            val itemExists =
+            val existingPurchaseItemId =
                 db.rawQuery(
                     "SELECT id FROM purchase_item " +
-                        "WHERE sync_id=? AND deleted=0 LIMIT 1",
+                        "WHERE sync_id=? LIMIT 1",
                     arrayOf(
                         purchaseItemSyncId
                     )
-                ).use {
-                    it.moveToFirst()
+                ).use { c ->
+                    if (c.moveToFirst()) {
+                        c.long("id")
+                    } else {
+                        -1L
+                    }
                 }
 
-            if (
-                !itemExists
-            ) {
-                val unitPrice =
-                    actualAmount /
-                        actualQuantity
+            val unitPrice =
+                actualAmount /
+                    actualQuantity
 
+            if (
+                existingPurchaseItemId <= 0
+            ) {
                 val purchaseItemId =
                     db.insert(
                         "purchase_item",
@@ -4429,9 +4522,27 @@ class AppDatabase(
                 ) {
                     return CollaborationCompleteResult(
                         false,
-                        "正式进货商品生成失败"
+                        "正式采购商品生成失败"
                     )
                 }
+            } else {
+                db.update(
+                    "purchase_item",
+                    ContentValues().apply {
+                        put("order_id", orderId)
+                        put("fruit_id", fruitId)
+                        put("fruit_name", fruitName)
+                        put("unit", unit)
+                        put("quantity", actualQuantity)
+                        put("total_cost", roundMoney(actualAmount))
+                        put("unit_price", roundMoney(unitPrice))
+                        put("deleted", 0)
+                        put("sync_status", 2)
+                        put("updated_at", now)
+                    },
+                    "id=?",
+                    arrayOf(existingPurchaseItemId.toString())
+                )
             }
 
             val collaborationId =
@@ -4606,8 +4717,570 @@ class AppDatabase(
 
             return CollaborationCompleteResult(
                 true,
-                "$fruitName 已完成采购并加入进货表",
+                "$fruitName 已完成采购并加入采购表",
                 orderId
+            )
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun linkPurchaseOrderToCollaboration(
+        orderId: Long,
+        date: String,
+        buyer: PartnerOption,
+        lines: List<PurchaseLineInput>,
+        recorderUsername: String = "",
+        recorderDisplayName: String = ""
+    ): Int {
+        if (orderId <= 0 || lines.isEmpty()) {
+            return 0
+        }
+
+        val activeBuyer =
+            getPartnerById(buyer.id)
+                ?: return 0
+
+        val orderSyncId =
+            getPurchaseOrderSyncId(
+                writableDatabase,
+                orderId
+            )
+
+        if (orderSyncId.isBlank()) {
+            return 0
+        }
+
+        val targets =
+            lines.mapNotNull { line ->
+                val existing =
+                    readableDatabase.rawQuery(
+                        "SELECT ppi.id,ppi.sync_id,ppi.plan_id " +
+                            "FROM purchase_plan_item ppi " +
+                            "JOIN purchase_plan pp ON pp.id=ppi.plan_id " +
+                            "WHERE pp.plan_date=? AND pp.deleted=0 " +
+                            "AND ppi.fruit_id=? AND ppi.deleted=0 " +
+                            "AND ppi.status=0 ORDER BY ppi.id LIMIT 1",
+                        arrayOf(
+                            date,
+                            line.fruit.id.toString()
+                        )
+                    ).use { c ->
+                        if (c.moveToFirst()) {
+                            Triple(
+                                c.long("id"),
+                                c.str("sync_id"),
+                                c.long("plan_id")
+                            )
+                        } else {
+                            null
+                        }
+                    }
+
+                val resolved =
+                    existing ?: run {
+                        val createdId =
+                            upsertPurchaseDraftToCollaboration(
+                                date = date,
+                                itemId = null,
+                                fruit = line.fruit,
+                                quantity = line.quantity,
+                                unit = line.unit,
+                                estimatedAmount = line.totalCost
+                            )
+
+                        if (createdId <= 0) {
+                            null
+                        } else {
+                            readableDatabase.rawQuery(
+                                "SELECT id,sync_id,plan_id FROM purchase_plan_item " +
+                                    "WHERE id=? AND deleted=0 LIMIT 1",
+                                arrayOf(createdId.toString())
+                            ).use { c ->
+                                if (c.moveToFirst()) {
+                                    Triple(
+                                        c.long("id"),
+                                        c.str("sync_id"),
+                                        c.long("plan_id")
+                                    )
+                                } else {
+                                    null
+                                }
+                            }
+                        }
+                    }
+
+                resolved?.let {
+                    CollaborationLinkTarget(
+                        itemId = it.first,
+                        itemSyncId = it.second,
+                        planId = it.third,
+                        line = line
+                    )
+                }
+            }
+
+        if (targets.isEmpty()) {
+            return 0
+        }
+
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        var linked = 0
+
+        db.beginTransaction()
+        try {
+            targets.forEach { target ->
+                val collaborationId =
+                    db.rawQuery(
+                        "SELECT id FROM purchase_collaboration " +
+                            "WHERE plan_item_sync_id=? LIMIT 1",
+                        arrayOf(target.itemSyncId)
+                    ).use { c ->
+                        if (c.moveToFirst()) c.long("id") else null
+                    }
+
+                val values =
+                    ContentValues().apply {
+                        put("estimated_amount", roundMoney(target.line.totalCost))
+                        put("actual_quantity", target.line.quantity)
+                        put("actual_amount", roundMoney(target.line.totalCost))
+                        put("buyer_id", activeBuyer.id)
+                        put("buyer_name", activeBuyer.name)
+                        put("completed_by_username", recorderUsername.trim())
+                        put("completed_by_display_name", recorderDisplayName.trim())
+                        put("completed_at", now)
+                        put("purchase_order_sync_id", orderSyncId)
+                        put("deleted", 0)
+                        put("sync_status", 2)
+                        put("updated_at", now)
+                    }
+
+                if (collaborationId == null) {
+                    db.insert(
+                        "purchase_collaboration",
+                        null,
+                        baseSyncValues().apply {
+                            put("plan_item_sync_id", target.itemSyncId)
+                            putAll(values)
+                        }
+                    )
+                } else {
+                    db.update(
+                        "purchase_collaboration",
+                        values,
+                        "id=?",
+                        arrayOf(collaborationId.toString())
+                    )
+                }
+
+                val changed =
+                    db.update(
+                        "purchase_plan_item",
+                        ContentValues().apply {
+                            put("status", 1)
+                            put("sync_status", 2)
+                            put("updated_at", now)
+                        },
+                        "id=? AND status=0 AND deleted=0",
+                        arrayOf(target.itemId.toString())
+                    )
+
+                if (changed > 0) {
+                    linked++
+                }
+            }
+
+            targets.map { it.planId }.distinct().forEach { planId ->
+                refreshPurchasePlanStatus(db, planId)
+            }
+
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+
+        return linked
+    }
+
+    fun updateCompletedCollaborationPlanItem(
+        itemId: Long,
+        buyer: PartnerOption,
+        actualQuantity: Double,
+        actualAmount: Double,
+        recorderUsername: String = "",
+        recorderDisplayName: String = ""
+    ): CollaborationCompleteResult {
+        if (actualQuantity <= 0 || actualAmount <= 0) {
+            return CollaborationCompleteResult(
+                false,
+                "实际数量和金额必须大于0"
+            )
+        }
+
+        val activeBuyer =
+            getPartnerById(buyer.id)
+                ?: return CollaborationCompleteResult(
+                    false,
+                    "采购人已失效，请重新选择"
+                )
+
+        val row =
+            readableDatabase.rawQuery(
+                "SELECT ppi.plan_id,ppi.fruit_id,ppi.fruit_name,ppi.unit," +
+                    "ppi.status,ppi.sync_id," +
+                    "COALESCE(pc.purchase_order_sync_id,'') AS order_sync_id " +
+                    "FROM purchase_plan_item ppi " +
+                    "LEFT JOIN purchase_collaboration pc " +
+                    "ON pc.plan_item_sync_id=ppi.sync_id AND pc.deleted=0 " +
+                    "WHERE ppi.id=? AND ppi.deleted=0 LIMIT 1",
+                arrayOf(itemId.toString())
+            ).use { c ->
+                if (c.moveToFirst()) {
+                    arrayOf<Any>(
+                        c.long("plan_id"),
+                        c.long("fruit_id"),
+                        c.str("fruit_name"),
+                        c.str("unit"),
+                        c.int("status"),
+                        c.str("sync_id"),
+                        c.str("order_sync_id")
+                    )
+                } else {
+                    null
+                }
+            } ?: return CollaborationCompleteResult(false, "协作采购记录不存在")
+
+        if ((row[4] as Int) != 1) {
+            return CollaborationCompleteResult(false, "只有已完成采购才能修改")
+        }
+
+        val fruitId = row[1] as Long
+        val orderSyncId = row[6] as String
+        if (orderSyncId.isBlank()) {
+            return CollaborationCompleteResult(false, "未找到对应正式采购记录")
+        }
+
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        db.beginTransaction()
+        try {
+            val order =
+                db.rawQuery(
+                    "SELECT id,buyer_id FROM purchase_order " +
+                        "WHERE sync_id=? AND deleted=0 LIMIT 1",
+                    arrayOf(orderSyncId)
+                ).use { c ->
+                    if (c.moveToFirst()) {
+                        c.long("id") to c.long("buyer_id")
+                    } else {
+                        null
+                    }
+                } ?: return CollaborationCompleteResult(false, "对应采购单不存在")
+
+            val matchingCount =
+                db.rawQuery(
+                    "SELECT COUNT(*) AS cnt FROM purchase_item " +
+                        "WHERE order_id=? AND fruit_id=? AND deleted=0",
+                    arrayOf(order.first.toString(), fruitId.toString())
+                ).use { c -> if (c.moveToFirst()) c.int("cnt") else 0 }
+
+            if (matchingCount != 1) {
+                return CollaborationCompleteResult(
+                    false,
+                    "同一采购单存在多个同名水果，请到采购历史修改"
+                )
+            }
+
+            val activeItemCount =
+                db.rawQuery(
+                    "SELECT COUNT(*) AS cnt FROM purchase_item " +
+                        "WHERE order_id=? AND deleted=0",
+                    arrayOf(order.first.toString())
+                ).use { c -> if (c.moveToFirst()) c.int("cnt") else 0 }
+
+            if (activeItemCount > 1 && order.second != activeBuyer.id) {
+                return CollaborationCompleteResult(
+                    false,
+                    "该采购单包含多个水果，采购人请到采购历史修改整单"
+                )
+            }
+
+            val unitPrice = actualAmount / actualQuantity
+            db.update(
+                "purchase_item",
+                ContentValues().apply {
+                    put("quantity", actualQuantity)
+                    put("total_cost", roundMoney(actualAmount))
+                    put("unit_price", roundMoney(unitPrice))
+                    put("sync_status", 2)
+                    put("updated_at", now)
+                },
+                "order_id=? AND fruit_id=? AND deleted=0",
+                arrayOf(order.first.toString(), fruitId.toString())
+            )
+
+            val newTotal =
+                db.rawQuery(
+                    "SELECT COALESCE(SUM(total_cost),0) AS total FROM purchase_item " +
+                        "WHERE order_id=? AND deleted=0",
+                    arrayOf(order.first.toString())
+                ).use { c -> if (c.moveToFirst()) c.dbl("total") else 0.0 }
+
+            db.update(
+                "purchase_order",
+                ContentValues().apply {
+                    put("total_cost", roundMoney(newTotal))
+                    if (activeItemCount == 1) {
+                        put("buyer_id", activeBuyer.id)
+                        put("buyer_name", activeBuyer.name)
+                    }
+                    put("sync_status", 2)
+                    put("updated_at", now)
+                },
+                "id=?",
+                arrayOf(order.first.toString())
+            )
+
+            db.update(
+                "purchase_collaboration",
+                ContentValues().apply {
+                    put("actual_quantity", actualQuantity)
+                    put("actual_amount", roundMoney(actualAmount))
+                    put("buyer_id", activeBuyer.id)
+                    put("buyer_name", activeBuyer.name)
+                    if (recorderUsername.isNotBlank()) {
+                        put("completed_by_username", recorderUsername.trim())
+                    }
+                    if (recorderDisplayName.isNotBlank()) {
+                        put("completed_by_display_name", recorderDisplayName.trim())
+                    }
+                    put("sync_status", 2)
+                    put("updated_at", now)
+                },
+                "plan_item_sync_id=? AND deleted=0",
+                arrayOf(row[5] as String)
+            )
+
+            db.setTransactionSuccessful()
+            return CollaborationCompleteResult(
+                true,
+                "${row[2] as String} 已更新",
+                order.first
+            )
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun restoreCompletedCollaborationPlanItem(
+        itemId: Long
+    ): CollaborationCompleteResult =
+        changeCompletedCollaborationState(
+            itemId = itemId,
+            deletePlanItem = false
+        )
+
+    fun deleteCompletedCollaborationPlanItem(
+        itemId: Long
+    ): CollaborationCompleteResult =
+        changeCompletedCollaborationState(
+            itemId = itemId,
+            deletePlanItem = true
+        )
+
+    private fun changeCompletedCollaborationState(
+        itemId: Long,
+        deletePlanItem: Boolean
+    ): CollaborationCompleteResult {
+        val row =
+            readableDatabase.rawQuery(
+                "SELECT ppi.plan_id,ppi.fruit_id,ppi.fruit_name,ppi.status,ppi.sync_id," +
+                    "COALESCE(pc.purchase_order_sync_id,'') AS order_sync_id " +
+                    "FROM purchase_plan_item ppi " +
+                    "LEFT JOIN purchase_collaboration pc " +
+                    "ON pc.plan_item_sync_id=ppi.sync_id AND pc.deleted=0 " +
+                    "WHERE ppi.id=? AND ppi.deleted=0 LIMIT 1",
+                arrayOf(itemId.toString())
+            ).use { c ->
+                if (c.moveToFirst()) {
+                    arrayOf<Any>(
+                        c.long("plan_id"),
+                        c.long("fruit_id"),
+                        c.str("fruit_name"),
+                        c.int("status"),
+                        c.str("sync_id"),
+                        c.str("order_sync_id")
+                    )
+                } else {
+                    null
+                }
+            } ?: return CollaborationCompleteResult(false, "协作采购记录不存在")
+
+        if ((row[3] as Int) != 1) {
+            return CollaborationCompleteResult(false, "该水果还没有完成采购")
+        }
+
+        val planId = row[0] as Long
+        val fruitId = row[1] as Long
+        val fruitName = row[2] as String
+        val planItemSyncId = row[4] as String
+        val orderSyncId = row[5] as String
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+
+        db.beginTransaction()
+        try {
+            if (orderSyncId.isNotBlank()) {
+                val orderId =
+                    db.rawQuery(
+                        "SELECT id FROM purchase_order " +
+                            "WHERE sync_id=? AND deleted=0 LIMIT 1",
+                        arrayOf(orderSyncId)
+                    ).use { c -> if (c.moveToFirst()) c.long("id") else -1L }
+
+                if (orderId > 0) {
+                    val matchingCount =
+                        db.rawQuery(
+                            "SELECT COUNT(*) AS cnt FROM purchase_item " +
+                                "WHERE order_id=? AND fruit_id=? AND deleted=0",
+                            arrayOf(orderId.toString(), fruitId.toString())
+                        ).use { c -> if (c.moveToFirst()) c.int("cnt") else 0 }
+
+                    if (matchingCount > 1) {
+                        return CollaborationCompleteResult(
+                            false,
+                            "同一采购单存在多个同名水果，请到采购历史处理"
+                        )
+                    }
+
+                    if (matchingCount == 1) {
+                        db.update(
+                            "purchase_item",
+                            ContentValues().apply {
+                                put("deleted", 1)
+                                put("sync_status", 2)
+                                put("updated_at", now)
+                            },
+                            "order_id=? AND fruit_id=? AND deleted=0",
+                            arrayOf(orderId.toString(), fruitId.toString())
+                        )
+                    }
+
+                    val remaining =
+                        db.rawQuery(
+                            "SELECT COUNT(*) AS cnt,COALESCE(SUM(total_cost),0) AS total " +
+                                "FROM purchase_item WHERE order_id=? AND deleted=0",
+                            arrayOf(orderId.toString())
+                        ).use { c ->
+                            if (c.moveToFirst()) {
+                                c.int("cnt") to c.dbl("total")
+                            } else {
+                                0 to 0.0
+                            }
+                        }
+
+                    if (remaining.first == 0) {
+                        db.update(
+                            "purchase_order",
+                            ContentValues().apply {
+                                put("deleted", 1)
+                                put("sync_status", 2)
+                                put("updated_at", now)
+                            },
+                            "id=?",
+                            arrayOf(orderId.toString())
+                        )
+
+                        db.update(
+                            "purchase_activity",
+                            ContentValues().apply {
+                                put("deleted", 1)
+                                put("sync_status", 2)
+                                put("updated_at", now)
+                            },
+                            "order_sync_id=?",
+                            arrayOf(orderSyncId)
+                        )
+                    } else {
+                        db.update(
+                            "purchase_order",
+                            ContentValues().apply {
+                                put("total_cost", roundMoney(remaining.second))
+                                put("sync_status", 2)
+                                put("updated_at", now)
+                            },
+                            "id=?",
+                            arrayOf(orderId.toString())
+                        )
+                    }
+                }
+            }
+
+            if (deletePlanItem) {
+                db.update(
+                    "purchase_plan_item",
+                    ContentValues().apply {
+                        put("deleted", 1)
+                        put("sync_status", 2)
+                        put("updated_at", now)
+                    },
+                    "id=?",
+                    arrayOf(itemId.toString())
+                )
+
+                db.update(
+                    "purchase_collaboration",
+                    ContentValues().apply {
+                        put("deleted", 1)
+                        put("sync_status", 2)
+                        put("updated_at", now)
+                    },
+                    "plan_item_sync_id=?",
+                    arrayOf(planItemSyncId)
+                )
+            } else {
+                db.update(
+                    "purchase_plan_item",
+                    ContentValues().apply {
+                        put("status", 0)
+                        put("sync_status", 2)
+                        put("updated_at", now)
+                    },
+                    "id=?",
+                    arrayOf(itemId.toString())
+                )
+
+                db.update(
+                    "purchase_collaboration",
+                    ContentValues().apply {
+                        put("actual_quantity", 0)
+                        put("actual_amount", 0)
+                        put("buyer_id", 0)
+                        put("buyer_name", "")
+                        put("completed_by_username", "")
+                        put("completed_by_display_name", "")
+                        put("completed_at", 0)
+                        put("purchase_order_sync_id", "")
+                        put("deleted", 0)
+                        put("sync_status", 2)
+                        put("updated_at", now)
+                    },
+                    "plan_item_sync_id=?",
+                    arrayOf(planItemSyncId)
+                )
+            }
+
+            refreshPurchasePlanStatus(db, planId)
+            db.setTransactionSuccessful()
+
+            return CollaborationCompleteResult(
+                true,
+                if (deletePlanItem) {
+                    "$fruitName 已删除"
+                } else {
+                    "$fruitName 已恢复为未完成"
+                }
             )
         } finally {
             db.endTransaction()

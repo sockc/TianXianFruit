@@ -78,6 +78,30 @@ internal fun CollaborativePurchaseContent(
                 BookPermissions.PURCHASE_PLAN_EDIT
             )
 
+    val canEditCompleted =
+        BookPermissions.has(
+            currentBook,
+            systemRole,
+            BookPermissions.PURCHASE_EDIT
+        ) &&
+            BookPermissions.has(
+                currentBook,
+                systemRole,
+                BookPermissions.PURCHASE_PLAN_EDIT
+            )
+
+    val canDeleteCompleted =
+        BookPermissions.has(
+            currentBook,
+            systemRole,
+            BookPermissions.PURCHASE_DELETE
+        ) &&
+            BookPermissions.has(
+                currentBook,
+                systemRole,
+                BookPermissions.PURCHASE_PLAN_EDIT
+            )
+
     if (!canView) {
         Box(
             Modifier.fillMaxSize(),
@@ -125,6 +149,18 @@ internal fun CollaborativePurchaseContent(
         mutableStateOf<PurchasePlanItemRecord?>(
             null
         )
+    }
+
+    var editingCompletedPurchase by remember {
+        mutableStateOf(false)
+    }
+
+    var restoringItem by remember {
+        mutableStateOf<PurchasePlanItemRecord?>(null)
+    }
+
+    var deletingCompletedItem by remember {
+        mutableStateOf<PurchasePlanItemRecord?>(null)
     }
 
     val scope =
@@ -392,10 +428,10 @@ internal fun CollaborativePurchaseContent(
                 item ->
                 CollaborationPlanRow(
                     item = item,
-                    canEditPlan =
-                        canEditPlan,
-                    canComplete =
-                        canComplete,
+                    canEditPlan = canEditPlan,
+                    canComplete = canComplete,
+                    canEditCompleted = canEditCompleted,
+                    canDeleteCompleted = canDeleteCompleted,
                     onEdit = {
                         editingItem = item
                     },
@@ -414,8 +450,18 @@ internal fun CollaborativePurchaseContent(
                         }
                     },
                     onComplete = {
-                        completingItem =
-                            item
+                        editingCompletedPurchase = false
+                        completingItem = item
+                    },
+                    onEditCompleted = {
+                        editingCompletedPurchase = true
+                        completingItem = item
+                    },
+                    onRestoreCompleted = {
+                        restoringItem = item
+                    },
+                    onDeleteCompleted = {
+                        deletingCompletedItem = item
                     }
                 )
             }
@@ -468,7 +514,7 @@ internal fun CollaborativePurchaseContent(
 
         item {
             Text(
-                "只有点击“完成采购”并确认实际数量、金额后，才会生成正式进货记录。",
+                "只有点击“完成采购”并确认实际数量、金额后，才会生成正式采购记录。",
                 style =
                     MaterialTheme
                         .typography
@@ -505,6 +551,7 @@ internal fun CollaborativePurchaseContent(
         CollaborationCompleteDialog(
             db = db,
             item = item,
+            editingCompleted = editingCompletedPurchase,
             recorderUsername =
                 session?.username
                     .orEmpty(),
@@ -513,13 +560,52 @@ internal fun CollaborativePurchaseContent(
                     .orEmpty(),
             onDismiss = {
                 completingItem = null
+                editingCompletedPurchase = false
             },
             onCompleted = {
                 completingItem = null
+                editingCompletedPurchase = false
                 message = it
                 onChanged()
                 scope.launch {
                     refreshCloud()
+                }
+            }
+        )
+    }
+
+    restoringItem?.let { item ->
+        CollaborationActionConfirmDialog(
+            title = "恢复为未完成？",
+            message = "${item.fruitName} 将重新回到待采购状态，对应正式采购记录会同步移除。",
+            confirmText = "恢复未完成",
+            onDismiss = { restoringItem = null },
+            onConfirm = {
+                val result = db.restoreCompletedCollaborationPlanItem(item.id)
+                restoringItem = null
+                message = result.message
+                if (result.success) {
+                    onChanged()
+                    scope.launch { refreshCloud() }
+                }
+            }
+        )
+    }
+
+    deletingCompletedItem?.let { item ->
+        CollaborationActionConfirmDialog(
+            title = "删除已完成采购？",
+            message = "${item.fruitName} 的协作记录和对应正式采购记录都会删除，并重新计算当天进货金额。",
+            confirmText = "确认删除",
+            destructive = true,
+            onDismiss = { deletingCompletedItem = null },
+            onConfirm = {
+                val result = db.deleteCompletedCollaborationPlanItem(item.id)
+                deletingCompletedItem = null
+                message = result.message
+                if (result.success) {
+                    onChanged()
+                    scope.launch { refreshCloud() }
                 }
             }
         )
@@ -572,9 +658,14 @@ private fun CollaborationPlanRow(
     item: PurchasePlanItemRecord,
     canEditPlan: Boolean,
     canComplete: Boolean,
+    canEditCompleted: Boolean,
+    canDeleteCompleted: Boolean,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
-    onComplete: () -> Unit
+    onComplete: () -> Unit,
+    onEditCompleted: () -> Unit,
+    onRestoreCompleted: () -> Unit,
+    onDeleteCompleted: () -> Unit
 ) {
     val completed =
         item.status == 1
@@ -731,6 +822,40 @@ private fun CollaborationPlanRow(
                             "完成采购",
                             fontSize = 12.sp
                         )
+                    }
+                }
+            }
+        }
+
+        if (completed && (canEditCompleted || canDeleteCompleted)) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                if (canEditCompleted) {
+                    TextButton(
+                        onClick = onEditCompleted,
+                        contentPadding = PaddingValues(horizontal = 7.dp)
+                    ) {
+                        Text("修改", fontSize = 12.sp)
+                    }
+                }
+
+                if (canDeleteCompleted) {
+                    TextButton(
+                        onClick = onRestoreCompleted,
+                        contentPadding = PaddingValues(horizontal = 7.dp)
+                    ) {
+                        Text("恢复未完成", fontSize = 12.sp)
+                    }
+
+                    TextButton(
+                        onClick = onDeleteCompleted,
+                        contentPadding = PaddingValues(horizontal = 7.dp)
+                    ) {
+                        Text("删除", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                     }
                 }
             }
@@ -1100,6 +1225,7 @@ private fun CollaborationPlanEditDialog(
 private fun CollaborationCompleteDialog(
     db: AppDatabase,
     item: PurchasePlanItemRecord,
+    editingCompleted: Boolean,
     recorderUsername: String,
     recorderDisplayName: String,
     onDismiss: () -> Unit,
@@ -1114,8 +1240,9 @@ private fun CollaborationCompleteDialog(
         item.id
     ) {
         mutableStateOf(
-            partners.firstOrNull()
-                ?.id
+            item.buyerId
+                .takeIf { editingCompleted && it > 0L }
+                ?: partners.firstOrNull()?.id
         )
     }
 
@@ -1128,7 +1255,11 @@ private fun CollaborationCompleteDialog(
     ) {
         mutableStateOf(
             collaborationNumber(
-                item.quantity
+                if (editingCompleted && item.actualQuantity > 0) {
+                    item.actualQuantity
+                } else {
+                    item.quantity
+                }
             )
         )
     }
@@ -1137,7 +1268,13 @@ private fun CollaborationCompleteDialog(
         item.id
     ) {
         mutableStateOf(
-            item.estimatedAmount
+            (
+                if (editingCompleted && item.actualAmount > 0) {
+                    item.actualAmount
+                } else {
+                    item.estimatedAmount
+                }
+            )
                 .takeIf {
                     it > 0
                 }
@@ -1183,7 +1320,13 @@ private fun CollaborationCompleteDialog(
         onDismissRequest =
             onDismiss,
         title = {
-            Text("完成采购")
+            Text(
+                if (editingCompleted) {
+                    "修改已完成采购"
+                } else {
+                    "完成采购"
+                }
+            )
         },
         text = {
             Column(
@@ -1245,7 +1388,7 @@ private fun CollaborationCompleteDialog(
                             Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            "进货人：" +
+                            "采购人：" +
                                 (
                                     buyer?.name
                                         ?: "请选择"
@@ -1281,7 +1424,11 @@ private fun CollaborationCompleteDialog(
                 }
 
                 Text(
-                    "确认后会直接生成正式进货记录，并计入当天进货金额。",
+                    if (editingCompleted) {
+                        "保存后会同步修改对应正式采购记录和当天进货金额。"
+                    } else {
+                        "确认后会直接生成正式采购记录，并计入当天进货金额。"
+                    },
                     style =
                         MaterialTheme
                             .typography
@@ -1316,7 +1463,7 @@ private fun CollaborationCompleteDialog(
                         selectedBuyer == null
                     ) {
                         error =
-                            "请选择进货人"
+                            "请选择采购人"
                     } else if (
                         quantityNumber <= 0 ||
                         amountNumber <= 0
@@ -1325,20 +1472,25 @@ private fun CollaborationCompleteDialog(
                             "实际数量和总价必须大于0"
                     } else {
                         val result =
-                            db.completeCollaborationPlanItem(
-                                itemId =
-                                    item.id,
-                                buyer =
-                                    selectedBuyer,
-                                actualQuantity =
-                                    quantityNumber,
-                                actualAmount =
-                                    amountNumber,
-                                recorderUsername =
-                                    recorderUsername,
-                                recorderDisplayName =
-                                    recorderDisplayName
-                            )
+                            if (editingCompleted) {
+                                db.updateCompletedCollaborationPlanItem(
+                                    itemId = item.id,
+                                    buyer = selectedBuyer,
+                                    actualQuantity = quantityNumber,
+                                    actualAmount = amountNumber,
+                                    recorderUsername = recorderUsername,
+                                    recorderDisplayName = recorderDisplayName
+                                )
+                            } else {
+                                db.completeCollaborationPlanItem(
+                                    itemId = item.id,
+                                    buyer = selectedBuyer,
+                                    actualQuantity = quantityNumber,
+                                    actualAmount = amountNumber,
+                                    recorderUsername = recorderUsername,
+                                    recorderDisplayName = recorderDisplayName
+                                )
+                            }
 
                         if (
                             result.success
@@ -1353,7 +1505,13 @@ private fun CollaborationCompleteDialog(
                     }
                 }
             ) {
-                Text("确认完成")
+                Text(
+                    if (editingCompleted) {
+                        "保存修改"
+                    } else {
+                        "确认完成"
+                    }
+                )
             }
         },
         dismissButton = {
@@ -1366,6 +1524,40 @@ private fun CollaborationCompleteDialog(
         }
     )
 }
+
+@Composable
+private fun CollaborationActionConfirmDialog(
+    title: String,
+    message: String,
+    confirmText: String,
+    destructive: Boolean = false,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(message) },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(
+                    confirmText,
+                    color =
+                        if (destructive) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            BrandActionGreen
+                        }
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
+private val BrandActionGreen = Color(0xFF13A868)
 
 @Composable
 private fun CollaborationNumberField(

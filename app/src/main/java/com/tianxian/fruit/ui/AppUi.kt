@@ -146,6 +146,7 @@ private enum class PurchasePriceSource {
 
 private data class PurchaseDraftRow(
     val rowId: Long,
+    val planItemId: Long? = null,
     val fruitId: Long? = null,
     val fruitNameSnapshot: String = "",
     val unit: String = "件",
@@ -1391,70 +1392,157 @@ private fun HomeScreen(
                             canEditPurchasePlan
                         ) {
                             Card(
-                                onClick =
-                                    onPurchaseActivity,
+                                onClick = onPurchaseActivity,
                                 colors =
                                     CardDefaults.cardColors(
-                                        containerColor =
-                                            Color(0xFFF4FAF6)
+                                        containerColor = Color(0xFFF1FAF5)
                                     ),
-                                shape =
-                                    RoundedCornerShape(14.dp)
+                                shape = RoundedCornerShape(16.dp),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Row(
+                                Column(
                                     Modifier
                                         .fillMaxWidth()
-                                        .padding(
-                                            horizontal = 13.dp,
-                                            vertical = 10.dp
-                                        ),
-                                    verticalAlignment =
-                                        Alignment.CenterVertically
+                                        .padding(horizontal = 15.dp, vertical = 13.dp),
+                                    verticalArrangement = Arrangement.spacedBy(9.dp)
                                 ) {
-                                    Text(
-                                        "🛒",
-                                        fontSize = 22.sp
-                                    )
-
-                                    Spacer(
-                                        Modifier.width(9.dp)
-                                    )
-
-                                    Column(
-                                        Modifier.weight(1f)
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
+                                        Text("🛒", fontSize = 25.sp)
+                                        Spacer(Modifier.width(8.dp))
                                         Text(
-                                            "协作采购",
-                                            fontWeight =
-                                                FontWeight.Bold
+                                            "今日协作采购",
+                                            modifier = Modifier.weight(1f),
+                                            fontSize = 18.sp,
+                                            fontWeight = FontWeight.Bold
                                         )
-
                                         Text(
-                                            if (
-                                                collaborationItems
-                                                    .isEmpty()
-                                            ) {
-                                                "今日暂无采购计划"
+                                            if (collaborationItems.isEmpty()) {
+                                                "›"
                                             } else {
-                                                "计划 ${money(collaborationPlanAmount)} · " +
-                                                    "完成 ${money(collaborationCompletedAmount)} · " +
-                                                    "已采购 $collaborationCompleted 种 · " +
-                                                    "剩余 $collaborationRemaining 种"
+                                                "$collaborationCompleted/${collaborationItems.size}  ›"
                                             },
-                                            style =
-                                                MaterialTheme
-                                                    .typography
-                                                    .bodySmall,
-                                            color = Color.Gray,
-                                            maxLines = 1
+                                            color = BrandGreen,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 17.sp
                                         )
                                     }
 
-                                    Text(
-                                        "›",
-                                        color = BrandGreen,
-                                        fontSize = 24.sp
-                                    )
+                                    if (collaborationItems.isEmpty()) {
+                                        Text(
+                                            "今日暂无采购计划，点击进入添加采购商品",
+                                            color = Color.Gray,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                    } else {
+                                        Row(
+                                            Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            Column(Modifier.weight(1f)) {
+                                                Text(
+                                                    "计划金额",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = Color.Gray
+                                                )
+                                                Text(
+                                                    money(collaborationPlanAmount),
+                                                    fontSize = 21.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                            Column(Modifier.weight(1f)) {
+                                                Text(
+                                                    "已完成金额",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = Color.Gray
+                                                )
+                                                Text(
+                                                    money(collaborationCompletedAmount),
+                                                    fontSize = 21.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = BrandGreen
+                                                )
+                                            }
+                                        }
+
+                                        Row(
+                                            Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            Text(
+                                                "已采购 $collaborationCompleted 种",
+                                                modifier = Modifier.weight(1f),
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                "剩余 $collaborationRemaining 种",
+                                                modifier = Modifier.weight(1f),
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+
+                                        val progress =
+                                            if (collaborationItems.isNotEmpty()) {
+                                                collaborationCompleted.toFloat() / collaborationItems.size.toFloat()
+                                            } else {
+                                                0f
+                                            }
+                                        Box(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .height(8.dp)
+                                                .clip(RoundedCornerShape(99.dp))
+                                                .background(Color(0xFFD8E9DF))
+                                        ) {
+                                            Box(
+                                                Modifier
+                                                    .fillMaxWidth(progress.coerceIn(0f, 1f))
+                                                    .fillMaxHeight()
+                                                    .background(BrandGreen)
+                                            )
+                                        }
+
+                                        val pendingPreview =
+                                            collaborationItems
+                                                .filter { it.status == 0 }
+                                                .take(3)
+
+                                        if (pendingPreview.isEmpty()) {
+                                            Text(
+                                                "✓ 今日采购已全部完成",
+                                                color = BrandGreen,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        } else {
+                                            Text(
+                                                "待采购",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = Color.Gray
+                                            )
+                                            pendingPreview.forEach { item ->
+                                                Row(Modifier.fillMaxWidth()) {
+                                                    Text(
+                                                        "○ ${item.fruitName}",
+                                                        modifier = Modifier.weight(1f),
+                                                        fontWeight = FontWeight.SemiBold
+                                                    )
+                                                    Text(
+                                                        "${fmt(item.quantity)}${item.unit}" +
+                                                            if (item.estimatedAmount > 0) {
+                                                                " · ${money(item.estimatedAmount)}"
+                                                            } else {
+                                                                ""
+                                                            },
+                                                        color = Color.Gray,
+                                                        style = MaterialTheme.typography.bodySmall
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2062,10 +2150,19 @@ private fun PurchaseScreen(
         )
     }
 
+    val syncedFingerprints = remember {
+        mutableStateMapOf<Long, String>()
+    }
+
     var editingOrderId by remember { mutableStateOf<Long?>(null) }
     var deleteOrder by remember { mutableStateOf<PurchaseOrderDetail?>(null) }
 
     val history = remember(dataVersion) { db.getRecentPurchaseOrdersByDays(7) }
+
+    val collaborationPlan =
+        remember(dataVersion, date) {
+            db.getPurchasePlan(date)
+        }
 
     val activeBuyer = partners.firstOrNull { it.id == buyerId }
     val historicalBuyer =
@@ -2096,8 +2193,17 @@ private fun PurchaseScreen(
     fun newBlankRow(): PurchaseDraftRow =
         PurchaseDraftRow(rowId = nextRowId++)
 
+    fun rowFingerprint(row: PurchaseDraftRow): String =
+        listOf(
+            row.fruitId?.toString().orEmpty(),
+            row.quantity,
+            row.unit,
+            row.totalCost
+        ).joinToString("|")
+
     fun resetRowsToOneBlank() {
         rows.clear()
+        syncedFingerprints.clear()
         rows.add(newBlankRow())
     }
 
@@ -2108,6 +2214,81 @@ private fun PurchaseScreen(
 
     fun meaningfulRows(): List<PurchaseDraftRow> =
         rows.filterNot { it.isBlank }
+
+    fun loadRowsFromCollaborationPlan() {
+        if (editingOrderId != null) {
+            return
+        }
+
+        val planItems =
+            db.getPurchasePlan(date)
+                ?.items
+                .orEmpty()
+                .filter { it.status != 2 }
+
+        rows.clear()
+        syncedFingerprints.clear()
+
+        planItems.forEach { item ->
+            val quantityValue =
+                if (item.status == 1 && item.actualQuantity > 0) {
+                    item.actualQuantity
+                } else {
+                    item.quantity
+                }
+            val totalValue =
+                if (item.status == 1 && item.actualAmount > 0) {
+                    item.actualAmount
+                } else {
+                    item.estimatedAmount
+                }
+            val row =
+                PurchaseDraftRow(
+                    rowId = nextRowId++,
+                    planItemId = item.id,
+                    fruitId = item.fruitId,
+                    fruitNameSnapshot = item.fruitName,
+                    unit = item.unit,
+                    quantity = cleanNumber(quantityValue),
+                    unitPrice =
+                        if (quantityValue > 0 && totalValue > 0) {
+                            cleanNumber(totalValue / quantityValue)
+                        } else {
+                            ""
+                        },
+                    totalCost =
+                        if (totalValue > 0) {
+                            cleanNumber(totalValue)
+                        } else {
+                            ""
+                        },
+                    priceSource = PurchasePriceSource.TOTAL
+                )
+            rows.add(row)
+            syncedFingerprints[row.rowId] = rowFingerprint(row)
+        }
+
+        if (rows.isEmpty()) {
+            rows.add(newBlankRow())
+        }
+    }
+
+    fun collaborationItemFor(row: PurchaseDraftRow): PurchasePlanItemRecord? {
+        val items = collaborationPlan?.items.orEmpty()
+        return row.planItemId
+            ?.let { id -> items.firstOrNull { it.id == id } }
+            ?: row.fruitId?.let { fruitId ->
+                items.firstOrNull {
+                    it.fruitId == fruitId && it.status != 2
+                }
+            }
+    }
+
+    LaunchedEffect(date, editingOrderId) {
+        if (editingOrderId == null) {
+            loadRowsFromCollaborationPlan()
+        }
+    }
 
     fun persistPurchase(
         lines: List<PurchaseLineInput>
@@ -2124,27 +2305,39 @@ private fun PurchaseScreen(
         val editId =
             editingOrderId
 
-        val ok =
+        val newOrderId =
             if (editId == null) {
                 db.addPurchaseOrder(
                     date = date,
-                    buyer =
-                        selectedBuyer,
+                    buyer = selectedBuyer,
                     lines = lines,
-                    remark =
-                        remark
-                ) > 0
+                    remark = remark
+                )
+            } else {
+                -1L
+            }
+
+        val ok =
+            if (editId == null) {
+                newOrderId > 0
             } else {
                 db.updatePurchaseOrder(
                     id = editId,
                     date = date,
-                    buyer =
-                        selectedBuyer,
+                    buyer = selectedBuyer,
                     lines = lines,
-                    remark =
-                        remark
+                    remark = remark
                 )
             }
+
+        if (ok && editId == null) {
+            db.linkPurchaseOrderToCollaboration(
+                orderId = newOrderId,
+                date = date,
+                buyer = selectedBuyer,
+                lines = lines
+            )
+        }
 
         if (ok) {
             editingOrderId =
@@ -2153,11 +2346,16 @@ private fun PurchaseScreen(
                 ""
             remark =
                 ""
-            resetRowsToOneBlank()
+
+            if (editId == null) {
+                loadRowsFromCollaborationPlan()
+            } else {
+                resetRowsToOneBlank()
+            }
 
             message =
                 if (editId == null) {
-                    "采购单已保存"
+                    "采购已保存，协作采购状态已同步"
                 } else {
                     "采购单已更新"
                 }
@@ -2253,10 +2451,66 @@ private fun PurchaseScreen(
             rows,
             key = { row -> "purchase_draft_${row.rowId}" }
         ) { row ->
+            val collaborationItem = collaborationItemFor(row)
+            val completed =
+                editingOrderId == null &&
+                    collaborationItem?.status == 1
+
+            LaunchedEffect(
+                date,
+                editingOrderId,
+                row.rowId,
+                row.planItemId,
+                row.fruitId,
+                row.quantity,
+                row.unit,
+                row.totalCost
+            ) {
+                if (editingOrderId == null && !completed) {
+                    val fruit = fruits.firstOrNull { it.id == row.fruitId }
+                    val quantityValue = row.quantity.toDoubleOrNull() ?: 0.0
+                    val amountValue = row.totalCost.toDoubleOrNull() ?: 0.0
+                    val fingerprint = rowFingerprint(row)
+
+                    if (
+                        fruit != null &&
+                        quantityValue > 0 &&
+                        syncedFingerprints[row.rowId] != fingerprint
+                    ) {
+                        kotlinx.coroutines.delay(700L)
+
+                        val latest = rows.firstOrNull { it.rowId == row.rowId }
+                        if (latest != null && rowFingerprint(latest) == fingerprint) {
+                            val planItemId =
+                                db.upsertPurchaseDraftToCollaboration(
+                                    date = date,
+                                    itemId = latest.planItemId,
+                                    fruit = fruit,
+                                    quantity = quantityValue,
+                                    unit = latest.unit,
+                                    estimatedAmount = amountValue.coerceAtLeast(0.0)
+                                )
+
+                            if (planItemId > 0) {
+                                syncedFingerprints[row.rowId] = fingerprint
+                                if (latest.planItemId != planItemId) {
+                                    updateRow(
+                                        row.rowId,
+                                        latest.copy(planItemId = planItemId)
+                                    )
+                                }
+                                onChanged()
+                            }
+                        }
+                    }
+                }
+            }
+
             PurchaseDraftRowEditor(
                 row = row,
                 fruits = fruits,
-                canDelete = rows.size > 1,
+                completed = completed,
+                canDelete = rows.size > 1 && !completed,
                 onChange = { updated ->
                     updateRow(row.rowId, updated)
                 },
@@ -2265,6 +2519,11 @@ private fun PurchaseScreen(
                     addFruitDialog = true
                 },
                 onDelete = {
+                    if (editingOrderId == null && row.planItemId != null) {
+                        db.deleteCollaborationPlanItem(row.planItemId)
+                        onChanged()
+                    }
+                    syncedFingerprints.remove(row.rowId)
                     val index = rows.indexOfFirst { it.rowId == row.rowId }
                     if (index >= 0) rows.removeAt(index)
                     if (rows.isEmpty()) rows.add(newBlankRow())
@@ -2323,6 +2582,30 @@ private fun PurchaseScreen(
                 onClick = {
                     focusManager.clearFocus()
                     val filledRows = meaningfulRows()
+                    val latestPlanItems =
+                        if (editingOrderId == null) {
+                            db.getPurchasePlan(date)?.items.orEmpty()
+                        } else {
+                            emptyList()
+                        }
+                    val rowsToSave =
+                        if (editingOrderId == null) {
+                            filledRows.filterNot { row ->
+                                val matched =
+                                    row.planItemId
+                                        ?.let { id ->
+                                            latestPlanItems.firstOrNull { it.id == id }
+                                        }
+                                        ?: row.fruitId?.let { fruitId ->
+                                            latestPlanItems.firstOrNull {
+                                                it.fruitId == fruitId && it.status == 1
+                                            }
+                                        }
+                                matched?.status == 1
+                            }
+                        } else {
+                            filledRows
+                        }
 
                     when {
                         buyer == null -> {
@@ -2333,7 +2616,11 @@ private fun PurchaseScreen(
                             message = "请至少填写一种采购水果"
                         }
 
-                        filledRows.any {
+                        rowsToSave.isEmpty() && editingOrderId == null -> {
+                            message = "当前商品都已完成采购，无需重复保存"
+                        }
+
+                        rowsToSave.any {
                             it.fruitId == null ||
                                 (it.quantity.toDoubleOrNull() ?: 0.0) <= 0 ||
                                 (it.totalCost.toDoubleOrNull() ?: 0.0) <= 0
@@ -2342,7 +2629,7 @@ private fun PurchaseScreen(
                         }
 
                         else -> {
-                            val lines = filledRows.mapNotNull { r ->
+                            val lines = rowsToSave.mapNotNull { r ->
                                 val activeFruit =
                                     fruits.firstOrNull { it.id == r.fruitId }
 
@@ -2365,7 +2652,7 @@ private fun PurchaseScreen(
                                 }
                             }
 
-                            if (lines.size != filledRows.size) {
+                            if (lines.size != rowsToSave.size) {
                                 message = "有历史水果无法识别，请重新选择该商品"
                             } else {
                                 val editId =
@@ -2724,6 +3011,7 @@ private fun PurchaseScreen(
 private fun PurchaseDraftRowEditor(
     row: PurchaseDraftRow,
     fruits: List<FruitOption>,
+    completed: Boolean,
     canDelete: Boolean,
     onChange: (PurchaseDraftRow) -> Unit,
     onAddFruit: () -> Unit,
@@ -2754,6 +3042,58 @@ private fun PurchaseDraftRowEditor(
                     it.isNotBlank()
                 }
             ?: "选择水果"
+
+    if (completed) {
+        Card(
+            Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors =
+                CardDefaults.cardColors(
+                    containerColor = Color(0xFFE7F7ED)
+                )
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "✓",
+                        color = BrandGreen,
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.width(7.dp))
+                    Text(
+                        fruitDisplay,
+                        modifier = Modifier.weight(1f),
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "已完成采购",
+                        color = BrandGreen,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                val quantityText = row.quantity.ifBlank { "0" }
+                val unitPriceText = row.unitPrice.ifBlank { "0" }
+                val totalText = row.totalCost.ifBlank { "0" }
+                Text(
+                    "数量 $quantityText${row.unit}   单价 ¥$unitPriceText/${row.unit}   总价 ¥$totalText",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF35624A)
+                )
+            }
+        }
+        return
+    }
 
     fun updateQuantity(
         value: String
@@ -3361,10 +3701,24 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                             )
                         }
 
+                        val collectorName =
+                            listOf(
+                                record.wechatCollectorName,
+                                record.alipayCollectorName,
+                                record.cashCollectorName
+                            ).firstOrNull {
+                                it.isNotBlank() && it != "未指定"
+                            }.orEmpty()
+
                         Text(
                             "微信 ${money(record.wechatIncome)}   " +
                                 "支付宝 ${money(record.alipayIncome)}   " +
-                                "现金 ${money(record.cashIncome)}",
+                                "现金 ${money(record.cashIncome)}" +
+                                if (collectorName.isNotBlank()) {
+                                    "   $collectorName"
+                                } else {
+                                    ""
+                                },
                             style =
                                 MaterialTheme
                                     .typography
@@ -3707,10 +4061,24 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                         )
                     }
 
+                    val collectorName =
+                        listOf(
+                            record.wechatCollectorName,
+                            record.alipayCollectorName,
+                            record.cashCollectorName
+                        ).firstOrNull {
+                            it.isNotBlank() && it != "未指定"
+                        }.orEmpty()
+
                     Text(
                         "微信 ${money(record.wechatIncome)}   " +
                             "支付宝 ${money(record.alipayIncome)}   " +
-                            "现金 ${money(record.cashIncome)}",
+                            "现金 ${money(record.cashIncome)}" +
+                            if (collectorName.isNotBlank()) {
+                                "   $collectorName"
+                            } else {
+                                ""
+                            },
                         style =
                             MaterialTheme
                                 .typography
