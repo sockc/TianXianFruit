@@ -124,9 +124,15 @@ jobs:
           gradle-version: "8.13"
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          # setup-android defaults to installing the obsolete SDK package `tools`.
+          # New cmdline-tools no longer exposes that package, so only bootstrap
+          # sdkmanager/licenses here and install the exact SDK packages below.
+          packages: ""
 
       - name: Install Android SDK 36
+        shell: bash
         run: |
           sdkmanager "platforms;android-36" "build-tools;35.0.0"
 
