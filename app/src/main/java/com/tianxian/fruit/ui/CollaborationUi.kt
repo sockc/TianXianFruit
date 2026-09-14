@@ -51,12 +51,12 @@ private val permissionItems =
         ),
         PermissionItem(
             BookPermissions.PURCHASE_ACTIVITY_VIEW,
-            "查看采购动态",
+            "查看协作采购",
             "采购"
         ),
         PermissionItem(
             BookPermissions.PURCHASE_PLAN_EDIT,
-            "采购清单",
+            "编辑采购计划",
             "采购"
         ),
         PermissionItem(

@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -138,16 +139,28 @@ private enum class BusinessTrendMetric(val label: String) {
     CUSTOMERS("客户")
 }
 
+private enum class PurchasePriceSource {
+    TOTAL,
+    UNIT
+}
+
 private data class PurchaseDraftRow(
     val rowId: Long,
     val fruitId: Long? = null,
     val fruitNameSnapshot: String = "",
     val unit: String = "件",
     val quantity: String = "",
-    val totalCost: String = ""
+    val unitPrice: String = "",
+    val totalCost: String = "",
+    val priceSource: PurchasePriceSource =
+        PurchasePriceSource.TOTAL
 ) {
     val isBlank: Boolean
-        get() = fruitId == null && quantity.isBlank() && totalCost.isBlank()
+        get() =
+            fruitId == null &&
+            quantity.isBlank() &&
+            unitPrice.isBlank() &&
+            totalCost.isBlank()
 }
 
 
@@ -536,21 +549,23 @@ fun TianXianApp(
                             db = db,
                             dataVersion =
                                 dataVersion,
-                            recorderUsername =
-                                cloudSyncManager
-                                    .session()
-                                    ?.username
-                                    .orEmpty(),
-                            recorderDisplayName =
-                                cloudSyncManager
-                                    .session()
-                                    ?.displayName
-                                    .orEmpty(),
                             onChanged = {
                                 notifyDataChanged()
                             }
                         )
-                    AppPage.PLAN -> PurchasePlanScreen(db, dataVersion) { notifyDataChanged() }
+                    AppPage.PLAN ->
+                        CollaborativePurchaseContent(
+                            db = db,
+                            dataVersion =
+                                dataVersion,
+                            currentBook =
+                                liveCurrentBook,
+                            cloudSyncManager =
+                                cloudSyncManager,
+                            onChanged = {
+                                notifyDataChanged()
+                            }
+                        )
                     AppPage.SESSION -> SessionScreen(db, dataVersion) { notifyDataChanged() }
                     AppPage.SETTLEMENT -> SettlementScreen(db, dataVersion) { notifyDataChanged() }
                     AppPage.MORE -> MoreScreen(
@@ -785,41 +800,49 @@ private fun HomeScreen(
         db.getDailyRecords(selectedDateString)
     }
 
-    val todayPurchaseDate =
+    val collaborationDate =
         LocalDate
             .now()
             .toString()
 
-    val todayPurchaseOrders =
+    val collaborationPlan =
         remember(
             dataVersion,
-            todayPurchaseDate
+            collaborationDate
         ) {
-            db.getPurchaseOrdersForDate(
-                todayPurchaseDate
+            db.getPurchasePlan(
+                collaborationDate
             )
         }
 
-    val todayPurchaseTotal =
-        todayPurchaseOrders
+    val collaborationItems =
+        collaborationPlan
+            ?.items
+            .orEmpty()
+
+    val collaborationCompleted =
+        collaborationItems.count {
+            it.status == 1
+        }
+
+    val collaborationRemaining =
+        collaborationItems.count {
+            it.status == 0
+        }
+
+    val collaborationPlanAmount =
+        collaborationItems.sumOf {
+            it.estimatedAmount
+        }
+
+    val collaborationCompletedAmount =
+        collaborationItems
+            .filter {
+                it.status == 1
+            }
             .sumOf {
-                it.order.totalCost
+                it.actualAmount
             }
-
-    val todayTemporaryCount =
-        todayPurchaseOrders
-            .count {
-                it.activity
-                    ?.purchaseType ==
-                    PurchaseTypes
-                        .TEMPORARY
-            }
-
-    val nextDate = selectedDate.plusDays(1)
-    val nextDateString = nextDate.toString()
-    val nextPlan = remember(dataVersion, nextDateString) {
-        db.getPurchasePlan(nextDateString)
-    }
 
     val trend = remember(dataVersion, selectedDateString) {
         (6 downTo 0).map { offset ->
@@ -844,14 +867,6 @@ private fun HomeScreen(
             "当日未记录摊位"
         } else {
             records.joinToString("、") { it.storeName }.take(30)
-        }
-
-    val isToday = selectedDate == LocalDate.now()
-    val nextPlanTitle =
-        if (isToday) {
-            "明日采购"
-        } else {
-            "${nextDate.monthValue}月${nextDate.dayOfMonth}日采购"
         }
 
     LazyColumn(
@@ -1371,159 +1386,70 @@ private fun HomeScreen(
                             }
                         }
 
-                        if (canViewPurchaseActivity) {
+                        if (
+                            canViewPurchaseActivity ||
+                            canEditPurchasePlan
+                        ) {
                             Card(
                                 onClick =
                                     onPurchaseActivity,
                                 colors =
-                                    CardDefaults
-                                        .cardColors(
-                                            containerColor =
-                                                Color(
-                                                    0xFFFFF8E8
-                                                )
-                                        ),
+                                    CardDefaults.cardColors(
+                                        containerColor =
+                                            Color(0xFFF4FAF6)
+                                    ),
                                 shape =
-                                    RoundedCornerShape(
-                                        14.dp
-                                    )
+                                    RoundedCornerShape(14.dp)
                             ) {
                                 Row(
                                     Modifier
                                         .fillMaxWidth()
                                         .padding(
-                                            horizontal =
-                                                13.dp,
-                                            vertical =
-                                                10.dp
+                                            horizontal = 13.dp,
+                                            vertical = 10.dp
                                         ),
                                     verticalAlignment =
                                         Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        "⚡",
-                                        fontSize =
-                                            22.sp
+                                        "🛒",
+                                        fontSize = 22.sp
                                     )
-    
+
                                     Spacer(
-                                        Modifier.width(
-                                            9.dp
-                                        )
+                                        Modifier.width(9.dp)
                                     )
-    
+
                                     Column(
-                                        Modifier.weight(
-                                            1f
-                                        )
+                                        Modifier.weight(1f)
                                     ) {
                                         Text(
-                                            "今日采购动态",
+                                            "协作采购",
                                             fontWeight =
                                                 FontWeight.Bold
                                         )
-    
+
                                         Text(
                                             if (
-                                                todayPurchaseOrders
+                                                collaborationItems
                                                     .isEmpty()
                                             ) {
-                                                "今天还没有进货动态"
+                                                "今日暂无采购计划"
                                             } else {
-                                                "${todayPurchaseOrders.size} 张进货单 · " +
-                                                    "合计 ${money(todayPurchaseTotal)}" +
-                                                    if (
-                                                        todayTemporaryCount >
-                                                        0
-                                                    ) {
-                                                        " · 临时 $todayTemporaryCount"
-                                                    } else {
-                                                        ""
-                                                    }
+                                                "计划 ${money(collaborationPlanAmount)} · " +
+                                                    "完成 ${money(collaborationCompletedAmount)} · " +
+                                                    "已采购 $collaborationCompleted 种 · " +
+                                                    "剩余 $collaborationRemaining 种"
                                             },
                                             style =
                                                 MaterialTheme
                                                     .typography
                                                     .bodySmall,
-                                            color =
-                                                Color.Gray
+                                            color = Color.Gray,
+                                            maxLines = 1
                                         )
                                     }
-    
-                                    Text(
-                                        "›",
-                                        color =
-                                            BrandGreen,
-                                        fontSize =
-                                            24.sp
-                                    )
-                                }
-                            }
-                            }
 
-                        if (canEditPurchasePlan) {
-                            Card(
-                                onClick = onPlan,
-                                colors = CardDefaults.cardColors(
-                                    containerColor = Color(0xFFF4FAF6)
-                                ),
-                                shape = RoundedCornerShape(14.dp)
-                            ) {
-                                Row(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 13.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text("🛒", fontSize = 22.sp)
-                                    Spacer(Modifier.width(9.dp))
-    
-                                    Column(Modifier.weight(1f)) {
-                                        Text(
-                                            nextPlanTitle,
-                                            fontWeight = FontWeight.Bold
-                                        )
-    
-                                        val planText =
-                                            if (nextPlan == null) {
-                                                "暂无计划，点击添加"
-                                            } else {
-                                                val pendingCount =
-                                                    nextPlan.items.count { it.status == 0 }
-                                                val purchasedCount =
-                                                    nextPlan.items.count { it.status == 1 }
-                                                val cancelledCount =
-                                                    nextPlan.items.count { it.status == 2 }
-    
-                                                when {
-                                                    nextPlan.items.isEmpty() ->
-                                                        "暂无商品"
-    
-                                                    pendingCount > 0 ->
-                                                        "待采购 $pendingCount · " +
-                                                            "已采购 $purchasedCount · " +
-                                                            "取消 $cancelledCount"
-    
-                                                    purchasedCount > 0 ->
-                                                        "已完成 $purchasedCount 项" +
-                                                            if (cancelledCount > 0) {
-                                                                " · 取消 $cancelledCount"
-                                                            } else {
-                                                                ""
-                                                            }
-    
-                                                    else ->
-                                                        "已全部取消"
-                                                }
-                                            }
-    
-                                        Text(
-                                            planText,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = Color.Gray
-                                        )
-                                    }
-    
                                     Text(
                                         "›",
                                         color = BrandGreen,
@@ -1531,7 +1457,7 @@ private fun HomeScreen(
                                     )
                                 }
                             }
-                            }
+                        }
 
                         if (
                             canViewStats &&
@@ -2091,8 +2017,6 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
 private fun PurchaseScreen(
     db: AppDatabase,
     dataVersion: Int,
-    recorderUsername: String,
-    recorderDisplayName: String,
     onChanged: () -> Unit
 ) {
     val focusManager = LocalFocusManager.current
@@ -2105,12 +2029,6 @@ private fun PurchaseScreen(
     var buyerMenu by remember { mutableStateOf(false) }
     var remark by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("") }
-
-    var purchaseType by remember {
-        mutableStateOf(
-            PurchaseTypes.PLANNED
-        )
-    }
 
     var duplicateRows by remember {
         mutableStateOf<
@@ -2169,9 +2087,6 @@ private fun PurchaseScreen(
         else -> "请先添加"
     }
 
-    val planForDate = remember(dataVersion, date) { db.getPurchasePlan(date) }
-    val purchasedPlanItems = planForDate?.items?.filter { it.status == 1 }.orEmpty()
-
     LaunchedEffect(dataVersion, partners.size) {
         if (buyerId == null && partners.isNotEmpty()) {
             buyerId = partners.first().id
@@ -2217,13 +2132,7 @@ private fun PurchaseScreen(
                         selectedBuyer,
                     lines = lines,
                     remark =
-                        remark,
-                    purchaseType =
-                        purchaseType,
-                    recorderUsername =
-                        recorderUsername,
-                    recorderDisplayName =
-                        recorderDisplayName
+                        remark
                 ) > 0
             } else {
                 db.updatePurchaseOrder(
@@ -2233,41 +2142,22 @@ private fun PurchaseScreen(
                         selectedBuyer,
                     lines = lines,
                     remark =
-                        remark,
-                    purchaseType =
-                        purchaseType,
-                    recorderUsername =
-                        recorderUsername,
-                    recorderDisplayName =
-                        recorderDisplayName
+                        remark
                 )
             }
 
         if (ok) {
-            val savedType =
-                purchaseType
-
             editingOrderId =
                 null
             historicalBuyerName =
                 ""
             remark =
                 ""
-            purchaseType =
-                PurchaseTypes.PLANNED
             resetRowsToOneBlank()
 
             message =
                 if (editId == null) {
-                    if (
-                        savedType ==
-                        PurchaseTypes
-                            .TEMPORARY
-                    ) {
-                        "临时采购已保存"
-                    } else {
-                        "整张进货单已保存"
-                    }
+                    "整张进货单已保存"
                 } else {
                     "进货单已更新"
                 }
@@ -2281,13 +2171,13 @@ private fun PurchaseScreen(
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         item {
             PageHeader(
                 "批量进货",
-                "填写一种水果后点“添加商品”，下方继续增加同样的录入框"
+                null
             )
         }
 
@@ -2308,8 +2198,6 @@ private fun PurchaseScreen(
                                 editingOrderId = null
                                 historicalBuyerName = ""
                                 remark = ""
-                                purchaseType =
-                                    PurchaseTypes.PLANNED
                                 date = LocalDate.now().toString()
                                 buyerId = partners.firstOrNull()?.id
                                 resetRowsToOneBlank()
@@ -2359,51 +2247,7 @@ private fun PurchaseScreen(
             }
         }
 
-        item {
-            PurchaseTypeSelector(
-                purchaseType =
-                    purchaseType,
-                onChange = {
-                    purchaseType =
-                        it
-                }
-            )
-        }
 
-        if (editingOrderId == null && purchasedPlanItems.isNotEmpty()) {
-            item {
-                OutlinedButton(
-                    onClick = {
-                        if (rows.size == 1 && rows[0].isBlank) {
-                            rows.clear()
-                        } else if (rows.lastOrNull()?.isBlank == true) {
-                            rows.removeAt(rows.lastIndex)
-                        }
-
-                        purchasedPlanItems.forEach { item ->
-                            rows.add(
-                                PurchaseDraftRow(
-                                    rowId = nextRowId++,
-                                    fruitId = item.fruitId,
-                                    fruitNameSnapshot = item.fruitName,
-                                    unit = item.unit,
-                                    quantity = cleanNumber(item.quantity),
-                                    totalCost = ""
-                                )
-                            )
-                        }
-
-                        if (rows.isEmpty()) rows.add(newBlankRow())
-
-                        message =
-                            "已导入 ${purchasedPlanItems.size} 项已采购水果，请填写每项实际总价"
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("🛒 从采购计划导入已采购商品（${purchasedPlanItems.size}项）")
-                }
-            }
-        }
 
         items(
             rows,
@@ -2439,7 +2283,7 @@ private fun PurchaseScreen(
                         message = ""
                     }
                 },
-                modifier = Modifier.fillMaxWidth().height(42.dp)
+                modifier = Modifier.fillMaxWidth().height(38.dp)
             ) {
                 Text("＋ 添加商品")
             }
@@ -2610,30 +2454,12 @@ private fun PurchaseScreen(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                "合计 ${money(detail.order.totalCost)} · " +
-                                    PurchaseTypes.label(
-                                        detail.activity
-                                            ?.purchaseType
-                                            ?: PurchaseTypes
-                                                .PLANNED
-                                    ),
+                                "合计 ${money(detail.order.totalCost)}",
                                 style =
                                     MaterialTheme
                                         .typography
                                         .bodySmall,
-                                color =
-                                    if (
-                                        detail.activity
-                                            ?.purchaseType ==
-                                        PurchaseTypes
-                                            .TEMPORARY
-                                    ) {
-                                        Color(
-                                            0xFFE07B00
-                                        )
-                                    } else {
-                                        Color.Gray
-                                    }
+                                color = Color.Gray
                             )
                         }
 
@@ -2644,12 +2470,6 @@ private fun PurchaseScreen(
                                 buyerId = detail.order.buyerId
                                 historicalBuyerName = detail.order.buyerName
                                 remark = detail.order.remark
-                                purchaseType =
-                                    detail.activity
-                                        ?.purchaseType
-                                        ?: PurchaseTypes
-                                            .PLANNED
-
                                 rows.clear()
                                 detail.items.forEach { item ->
                                     rows.add(
@@ -2659,7 +2479,12 @@ private fun PurchaseScreen(
                                             fruitNameSnapshot = item.fruitName,
                                             unit = item.unit,
                                             quantity = cleanNumber(item.quantity),
-                                            totalCost = cleanNumber(item.totalCost)
+                                            unitPrice =
+                                                cleanNumber(item.unitPrice),
+                                            totalCost =
+                                                cleanNumber(item.totalCost),
+                                            priceSource =
+                                                PurchasePriceSource.TOTAL
                                         )
                                     )
                                 }
@@ -2762,8 +2587,6 @@ private fun PurchaseScreen(
                 editingOrderId = null
                 historicalBuyerName = ""
                 remark = ""
-                purchaseType =
-                    PurchaseTypes.PLANNED
                 resetRowsToOneBlank()
             }
 
@@ -2782,35 +2605,194 @@ private fun PurchaseDraftRowEditor(
     onAddFruit: () -> Unit,
     onDelete: () -> Unit
 ) {
-    var fruitMenu by remember(row.rowId) { mutableStateOf(false) }
-    var unitMenu by remember(row.rowId) { mutableStateOf(false) }
+    var fruitMenu by remember(
+        row.rowId
+    ) {
+        mutableStateOf(false)
+    }
 
-    val selectedFruit = fruits.firstOrNull { it.id == row.fruitId }
-    val fruitDisplay =
-        selectedFruit?.name
-            ?: row.fruitNameSnapshot.takeIf { it.isNotBlank() }
-            ?: "请选择水果"
+    var unitMenu by remember(
+        row.rowId
+    ) {
+        mutableStateOf(false)
+    }
 
-    val quantityNumber = row.quantity.toDoubleOrNull() ?: 0.0
-    val totalNumber = row.totalCost.toDoubleOrNull() ?: 0.0
-    val unitPrice =
-        if (quantityNumber > 0 && totalNumber > 0) {
-            totalNumber / quantityNumber
-        } else {
-            0.0
+    val selectedFruit =
+        fruits.firstOrNull {
+            it.id ==
+                row.fruitId
         }
 
-    Card(Modifier.fillMaxWidth()) {
-        Column(
-            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            // 第一行：水果 + 单位
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.Bottom
+    val fruitDisplay =
+        selectedFruit?.name
+            ?: row.fruitNameSnapshot
+                .takeIf {
+                    it.isNotBlank()
+                }
+            ?: "选择水果"
+
+    fun updateQuantity(
+        value: String
+    ) {
+        val quantity =
+            value.toDoubleOrNull()
+                ?: 0.0
+
+        val updated =
+            when (
+                row.priceSource
             ) {
-                Box(Modifier.weight(1f)) {
+                PurchasePriceSource.UNIT -> {
+                    val unitPrice =
+                        row.unitPrice
+                            .toDoubleOrNull()
+                            ?: 0.0
+
+                    row.copy(
+                        quantity = value,
+                        totalCost =
+                            if (
+                                quantity > 0 &&
+                                unitPrice > 0
+                            ) {
+                                fmt(
+                                    quantity *
+                                        unitPrice
+                                )
+                            } else {
+                                row.totalCost
+                            }
+                    )
+                }
+
+                PurchasePriceSource.TOTAL -> {
+                    val total =
+                        row.totalCost
+                            .toDoubleOrNull()
+                            ?: 0.0
+
+                    row.copy(
+                        quantity = value,
+                        unitPrice =
+                            if (
+                                quantity > 0 &&
+                                total > 0
+                            ) {
+                                fmt(
+                                    total /
+                                        quantity
+                                )
+                            } else {
+                                row.unitPrice
+                            }
+                    )
+                }
+            }
+
+        onChange(updated)
+    }
+
+    fun updateUnitPrice(
+        value: String
+    ) {
+        val quantity =
+            row.quantity
+                .toDoubleOrNull()
+                ?: 0.0
+        val unitPrice =
+            value.toDoubleOrNull()
+                ?: 0.0
+
+        onChange(
+            row.copy(
+                unitPrice = value,
+                totalCost =
+                    if (
+                        quantity > 0 &&
+                        unitPrice > 0
+                    ) {
+                        fmt(
+                            quantity *
+                                unitPrice
+                        )
+                    } else if (
+                        value.isBlank()
+                    ) {
+                        ""
+                    } else {
+                        row.totalCost
+                    },
+                priceSource =
+                    PurchasePriceSource.UNIT
+            )
+        )
+    }
+
+    fun updateTotal(
+        value: String
+    ) {
+        val quantity =
+            row.quantity
+                .toDoubleOrNull()
+                ?: 0.0
+        val total =
+            value.toDoubleOrNull()
+                ?: 0.0
+
+        onChange(
+            row.copy(
+                totalCost = value,
+                unitPrice =
+                    if (
+                        quantity > 0 &&
+                        total > 0
+                    ) {
+                        fmt(
+                            total /
+                                quantity
+                        )
+                    } else if (
+                        value.isBlank()
+                    ) {
+                        ""
+                    } else {
+                        row.unitPrice
+                    },
+                priceSource =
+                    PurchasePriceSource.TOTAL
+            )
+        )
+    }
+
+    Card(
+        Modifier.fillMaxWidth(),
+        shape =
+            RoundedCornerShape(12.dp),
+        colors =
+            CardDefaults.cardColors(
+                containerColor =
+                    Color(0xFFF7F5F8)
+            )
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(
+                    horizontal = 8.dp,
+                    vertical = 6.dp
+                ),
+            verticalArrangement =
+                Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                horizontalArrangement =
+                    Arrangement.spacedBy(6.dp),
+                verticalAlignment =
+                    Alignment.Bottom
+            ) {
+                Box(
+                    Modifier.weight(1.65f)
+                ) {
                     CompactSelectButton(
                         "水果",
                         fruitDisplay,
@@ -2820,27 +2802,42 @@ private fun PurchaseDraftRowEditor(
                     }
 
                     DropdownMenu(
-                        expanded = fruitMenu,
-                        onDismissRequest = { fruitMenu = false }
+                        expanded =
+                            fruitMenu,
+                        onDismissRequest = {
+                            fruitMenu = false
+                        }
                     ) {
-                        fruits.forEach { f ->
+                        fruits.forEach {
+                            fruit ->
                             DropdownMenuItem(
-                                text = { Text(f.name) },
+                                text = {
+                                    Text(
+                                        fruit.name
+                                    )
+                                },
                                 onClick = {
                                     onChange(
                                         row.copy(
-                                            fruitId = f.id,
-                                            fruitNameSnapshot = f.name,
+                                            fruitId =
+                                                fruit.id,
+                                            fruitNameSnapshot =
+                                                fruit.name,
                                             unit = "件"
                                         )
                                     )
-                                    fruitMenu = false
+                                    fruitMenu =
+                                        false
                                 }
                             )
                         }
 
                         DropdownMenuItem(
-                            text = { Text("＋新增水果") },
+                            text = {
+                                Text(
+                                    "＋新增水果"
+                                )
+                            },
                             onClick = {
                                 fruitMenu = false
                                 onAddFruit()
@@ -2849,7 +2846,18 @@ private fun PurchaseDraftRowEditor(
                     }
                 }
 
-                Box(Modifier.width(82.dp)) {
+                CompactNumberField(
+                    "数量",
+                    row.quantity,
+                    {
+                        updateQuantity(it)
+                    },
+                    Modifier.weight(0.72f)
+                )
+
+                Box(
+                    Modifier.width(74.dp)
+                ) {
                     CompactSelectButton(
                         "单位",
                         row.unit,
@@ -2859,57 +2867,79 @@ private fun PurchaseDraftRowEditor(
                     }
 
                     DropdownMenu(
-                        expanded = unitMenu,
-                        onDismissRequest = { unitMenu = false }
+                        expanded =
+                            unitMenu,
+                        onDismissRequest = {
+                            unitMenu = false
+                        }
                     ) {
-                        listOf("斤", "筐", "箱", "件").forEach { u ->
+                        listOf(
+                            "斤",
+                            "筐",
+                            "箱",
+                            "件"
+                        ).forEach {
+                            unit ->
                             DropdownMenuItem(
-                                text = { Text(u) },
+                                text = {
+                                    Text(unit)
+                                },
                                 onClick = {
-                                    onChange(row.copy(unit = u))
-                                    unitMenu = false
+                                    onChange(
+                                        row.copy(
+                                            unit = unit
+                                        )
+                                    )
+                                    unitMenu =
+                                        false
                                 }
                             )
                         }
                     }
                 }
+
+                if (canDelete) {
+                    IconButton(
+                        onClick =
+                            onDelete,
+                        modifier =
+                            Modifier.size(36.dp)
+                    ) {
+                        Text(
+                            "🗑",
+                            fontSize = 16.sp
+                        )
+                    }
+                } else {
+                    Spacer(
+                        Modifier.width(36.dp)
+                    )
+                }
             }
 
-            // 第二行：数量 + 总价 + 单件
             Row(
-                horizontalArrangement = Arrangement.spacedBy(7.dp),
-                verticalAlignment = Alignment.Bottom
+                horizontalArrangement =
+                    Arrangement.spacedBy(6.dp),
+                verticalAlignment =
+                    Alignment.Bottom
             ) {
                 CompactNumberField(
-                    "数量",
-                    row.quantity,
-                    { onChange(row.copy(quantity = it)) },
-                    Modifier.weight(0.9f)
+                    "单价",
+                    row.unitPrice,
+                    {
+                        updateUnitPrice(it)
+                    },
+                    Modifier.weight(1f)
                 )
 
                 CompactNumberField(
                     "总价",
                     row.totalCost,
-                    { onChange(row.copy(totalCost = it)) },
+                    {
+                        updateTotal(it)
+                    },
                     Modifier.weight(1f)
                 )
-
-                CompactReadOnlyField(
-                    "单件",
-                    if (unitPrice > 0) money(unitPrice) else "—",
-                    Modifier.weight(1f)
-                )
-            }
-
-            if (canDelete) {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    TextButton(onClick = onDelete) {
-                        Text("删除此商品")
-                    }
-                }
             }
         }
     }
@@ -3069,7 +3099,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(7.dp)
     ) {
-        item { PageHeader("摊位营业记录", "营业原始数据优先保存；修改后相关利润分配/结算会按需重新计算") }
+        item { PageHeader("摊位营业记录", null) }
 
         if (editingRecordId != null) {
             item {
@@ -3097,6 +3127,100 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                 chineseDisplay = true,
                 showWeekday = true
             ) { date = it }
+        }
+
+        if (todayRecords.isNotEmpty()) {
+            item {
+                Column(
+                    verticalArrangement =
+                        Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        "当天已记录",
+                        fontWeight =
+                            FontWeight.Bold,
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodyMedium
+                    )
+
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(
+                                rememberScrollState()
+                            ),
+                        horizontalArrangement =
+                            Arrangement.spacedBy(7.dp)
+                    ) {
+                        todayRecords.forEach {
+                            record ->
+                            Card(
+                                onClick = {
+                                    loadRecord(
+                                        record
+                                    )
+                                },
+                                modifier =
+                                    Modifier.width(184.dp),
+                                colors =
+                                    CardDefaults.cardColors(
+                                        containerColor =
+                                            if (
+                                                editingRecordId ==
+                                                record.id
+                                            ) {
+                                                Color(0xFFE9F8F0)
+                                            } else {
+                                                Color(0xFFF7F7F8)
+                                            }
+                                    )
+                            ) {
+                                Column(
+                                    Modifier.padding(
+                                        horizontal = 10.dp,
+                                        vertical = 7.dp
+                                    )
+                                ) {
+                                    Text(
+                                        if (
+                                            record.storeName ==
+                                            "共用货品"
+                                        ) {
+                                            "未知摊位（旧数据）"
+                                        } else {
+                                            record.storeName
+                                        },
+                                        fontWeight =
+                                            FontWeight.Bold,
+                                        maxLines = 1
+                                    )
+
+                                    Text(
+                                        "营业 ${money(record.revenue)} · 客户 ${record.customerTotal}",
+                                        style =
+                                            MaterialTheme
+                                                .typography
+                                                .bodySmall,
+                                        color = Color.Gray,
+                                        maxLines = 1
+                                    )
+
+                                    Text(
+                                        "点此继续修改",
+                                        style =
+                                            MaterialTheme
+                                                .typography
+                                                .labelSmall,
+                                        color = BrandGreen
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         item {
@@ -3324,45 +3448,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
             }
         }
 
-        if (todayRecords.isNotEmpty()) {
-            item {
-                Text(
-                    "当天已记录摊位",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
 
-            items(todayRecords, key = { it.id }) { r ->
-                RecordCard {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            if (r.storeName == "共用货品") "未知摊位（旧数据）" else r.storeName,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            "营业 ${money(r.revenue)} · 微信 ${money(r.wechatIncome)} · 支付宝 ${money(r.alipayIncome)} · 现金 ${money(r.cashIncome)}",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        Text(
-                            "客户 ${r.customerTotal} · 收款 ${r.wechatCollectorName}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.Gray
-                        )
-                    }
-
-                    Column(horizontalAlignment = Alignment.End) {
-                        TextButton(onClick = {
-                            loadRecord(r)
-                        }) { Text("编辑") }
-
-                        TextButton(onClick = {
-                            deleteRecord = r
-                        }) { Text("删除") }
-                    }
-                }
-            }
-        }
     }
 
     if (addStoreDialog) {
@@ -4899,12 +4985,15 @@ private fun MoreScreen(
                         if (
                             allowed(
                                 BookPermissions.PURCHASE_ACTIVITY_VIEW
+                            ) ||
+                            allowed(
+                                BookPermissions.PURCHASE_PLAN_EDIT
                             )
                         ) {
                             SettingsDivider()
                             SettingsRow(
-                                "⚡",
-                                "采购动态"
+                                "🛒",
+                                "协作采购"
                             ) {
                                 sub =
                                     MorePage.PURCHASE_ACTIVITY
@@ -4992,9 +5081,6 @@ private fun MoreScreen(
                     ) ||
                     allowed(
                         BookPermissions.PROFIT_VIEW
-                    ) ||
-                    allowed(
-                        BookPermissions.PURCHASE_PLAN_EDIT
                     )
                 ) {
                     item {
@@ -5055,21 +5141,6 @@ private fun MoreScreen(
                                     true
                             }
 
-                            if (
-                                allowed(
-                                    BookPermissions.PURCHASE_PLAN_EDIT
-                                )
-                            ) {
-                                if (needDivider) {
-                                    SettingsDivider()
-                                }
-                                SettingsRow(
-                                    "🛒",
-                                    "采购清单",
-                                    onClick =
-                                        onPlan
-                                )
-                            }
                         }
                     }
                 }
@@ -5306,20 +5377,22 @@ private fun MoreScreen(
 
         MorePage.PURCHASE_ACTIVITY -> {
             SubPage(
-                "采购动态",
+                "协作采购",
                 {
                     sub =
                         MorePage.MENU
                 }
             ) {
-                PurchaseActivityContent(
+                CollaborativePurchaseContent(
                     db = db,
                     dataVersion =
                         dataVersion,
                     currentBook =
                         currentBook,
                     cloudSyncManager =
-                        cloudSyncManager
+                        cloudSyncManager,
+                    onChanged =
+                        onChanged
                 )
             }
         }
@@ -8201,7 +8274,7 @@ private fun LedgerManagementContent(
                     Modifier.padding(12.dp)
                 ) {
                     Text(
-                        "V1.4.1 成员权限中心",
+                        "V1.4.2 协作采购与高频录入优化",
                         fontWeight =
                             FontWeight.Bold
                     )
@@ -9973,7 +10046,7 @@ private fun AboutAppContent(
                 )
 
                 Text(
-                    "当前云同步服务需要 TianXian Sync Server V1.0.6-Lucky。",
+                    "当前云同步服务需要 TianXian Sync Server V1.0.7-Lucky。",
                     style =
                         MaterialTheme
                             .typography
