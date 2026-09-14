@@ -423,6 +423,9 @@ class AppDatabase(
         createV13PurchaseCollaborationTable(
             db
         )
+        createV14SortOrder(
+            db
+        )
         createV8SyncFoundation(
             db,
             initialData = false
@@ -475,6 +478,67 @@ class AppDatabase(
                 db
             )
         }
+        if (oldVersion < 14) {
+            createV14SortOrder(
+                db
+            )
+        }
+    }
+
+    private fun createV14SortOrder(
+        db: SQLiteDatabase
+    ) {
+        if (
+            !columnExists(
+                db,
+                "fruit",
+                "sort_order"
+            )
+        ) {
+            db.execSQL(
+                "ALTER TABLE fruit " +
+                    "ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
+            )
+        }
+
+        if (
+            !columnExists(
+                db,
+                "store",
+                "sort_order"
+            )
+        ) {
+            db.execSQL(
+                "ALTER TABLE store " +
+                    "ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
+            )
+        }
+
+        db.execSQL(
+            """
+            UPDATE fruit
+            SET sort_order=
+                CASE
+                    WHEN created_at>0
+                        THEN created_at
+                    ELSE id
+                END
+            WHERE sort_order=0
+            """.trimIndent()
+        )
+
+        db.execSQL(
+            """
+            UPDATE store
+            SET sort_order=
+                CASE
+                    WHEN created_at>0
+                        THEN -created_at
+                    ELSE -id
+                END
+            WHERE sort_order=0
+            """.trimIndent()
+        )
     }
 
     override fun onOpen(
@@ -501,6 +565,7 @@ class AppDatabase(
                 name TEXT NOT NULL UNIQUE,
                 default_unit TEXT NOT NULL DEFAULT '件',
                 enabled INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
                 sync_id TEXT NOT NULL,
                 sync_status INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
@@ -519,6 +584,7 @@ class AppDatabase(
                 address TEXT NOT NULL DEFAULT '',
                 enabled INTEGER NOT NULL DEFAULT 1,
                 deleted INTEGER NOT NULL DEFAULT 0,
+                sort_order INTEGER NOT NULL DEFAULT 0,
                 sync_id TEXT NOT NULL,
                 sync_status INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
@@ -2553,13 +2619,32 @@ class AppDatabase(
     }
 
     private fun seedFruits(db: SQLiteDatabase) {
-        listOf("巨峰葡萄", "阳光玫瑰", "蓝莓", "草莓", "西瓜", "芒果", "荔枝").forEach {
+        listOf(
+            "巨峰葡萄",
+            "阳光玫瑰",
+            "蓝莓",
+            "草莓",
+            "西瓜",
+            "芒果",
+            "荔枝"
+        ).forEachIndexed {
+            index,
+            name ->
             val values = baseSyncValues().apply {
-                put("name", it)
+                put("name", name)
                 put("default_unit", "件")
                 put("enabled", 1)
+                put(
+                    "sort_order",
+                    index.toLong()
+                )
             }
-            db.insertWithOnConflict("fruit", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+            db.insertWithOnConflict(
+                "fruit",
+                null,
+                values,
+                SQLiteDatabase.CONFLICT_IGNORE
+            )
         }
     }
 
@@ -2577,8 +2662,23 @@ class AppDatabase(
     }
 
     fun getFruits(): List<FruitOption> = readableDatabase.rawQuery(
-        "SELECT id,name,default_unit FROM fruit WHERE enabled=1 ORDER BY id", null
-    ).use { c -> buildList { while (c.moveToNext()) add(FruitOption(c.long("id"), c.str("name"), c.str("default_unit"))) } }
+        "SELECT id,name,default_unit FROM fruit " +
+            "WHERE enabled=1 " +
+            "ORDER BY sort_order ASC,id ASC",
+        null
+    ).use { c ->
+        buildList {
+            while (c.moveToNext()) {
+                add(
+                    FruitOption(
+                        c.long("id"),
+                        c.str("name"),
+                        c.str("default_unit")
+                    )
+                )
+            }
+        }
+    }
 
     fun addFruit(name: String, defaultUnit: String): Long {
         val clean = name.trim()
@@ -2593,11 +2693,30 @@ class AppDatabase(
 
         if (existing != null) {
             val id = existing.first
+
+            val nextOrder =
+                readableDatabase.rawQuery(
+                    "SELECT COALESCE(MAX(sort_order),0)+1 AS n " +
+                        "FROM fruit WHERE enabled=1",
+                    null
+                ).use {
+                    c ->
+                    if (c.moveToFirst()) {
+                        c.long("n")
+                    } else {
+                        1L
+                    }
+                }
+
             writableDatabase.update(
                 "fruit",
                 ContentValues().apply {
                     put("enabled", 1)
                     put("default_unit", defaultUnit)
+                    put(
+                        "sort_order",
+                        nextOrder
+                    )
                     put("sync_status", 2)
                     put("updated_at", System.currentTimeMillis())
                 },
@@ -2607,19 +2726,36 @@ class AppDatabase(
             return id
         }
 
+        val nextOrder =
+            readableDatabase.rawQuery(
+                "SELECT COALESCE(MAX(sort_order),0)+1 AS n FROM fruit",
+                null
+            ).use {
+                c ->
+                if (c.moveToFirst()) {
+                    c.long("n")
+                } else {
+                    1L
+                }
+            }
+
         return writableDatabase.insert("fruit", null, baseSyncValues().apply {
             put("name", clean)
             put("default_unit", defaultUnit)
             put("enabled", 1)
+            put("sort_order", nextOrder)
         })
     }
 
     fun getAllFruits(includeDisabled: Boolean = false): List<FruitOption> =
         readableDatabase.rawQuery(
             if (includeDisabled)
-                "SELECT id,name,default_unit FROM fruit ORDER BY id"
+                "SELECT id,name,default_unit FROM fruit " +
+                    "ORDER BY enabled DESC,sort_order ASC,id ASC"
             else
-                "SELECT id,name,default_unit FROM fruit WHERE enabled=1 ORDER BY id",
+                "SELECT id,name,default_unit FROM fruit " +
+                    "WHERE enabled=1 " +
+                    "ORDER BY sort_order ASC,id ASC",
             null
         ).use { c ->
             buildList {
@@ -2630,7 +2766,8 @@ class AppDatabase(
         }
 
     fun getFruitAdminRecords(): List<FruitAdminRecord> = readableDatabase.rawQuery(
-        "SELECT id,name,default_unit,enabled FROM fruit ORDER BY enabled DESC,id",
+        "SELECT id,name,default_unit,enabled FROM fruit " +
+            "ORDER BY enabled DESC,sort_order ASC,id ASC",
         null
     ).use { c ->
         buildList {
@@ -2644,6 +2781,55 @@ class AppDatabase(
                     )
                 )
             }
+        }
+    }
+
+    fun reorderFruits(
+        orderedIds: List<Long>
+    ): Boolean {
+        if (orderedIds.isEmpty()) {
+            return true
+        }
+
+        val db =
+            writableDatabase
+
+        db.beginTransaction()
+
+        return try {
+            val now =
+                System.currentTimeMillis()
+
+            orderedIds.forEachIndexed {
+                index,
+                id ->
+                db.update(
+                    "fruit",
+                    ContentValues().apply {
+                        put(
+                            "sort_order",
+                            index.toLong()
+                        )
+                        put(
+                            "sync_status",
+                            2
+                        )
+                        put(
+                            "updated_at",
+                            now
+                        )
+                    },
+                    "id=?",
+                    arrayOf(
+                        id.toString()
+                    )
+                )
+            }
+
+            db.setTransactionSuccessful()
+            true
+        } finally {
+            db.endTransaction()
         }
     }
 
@@ -2677,11 +2863,31 @@ class AppDatabase(
         ) > 0
     }
 
-    fun restoreFruit(id: Long): Boolean {
+    fun restoreFruit(
+        id: Long
+    ): Boolean {
+        val nextOrder =
+            readableDatabase.rawQuery(
+                "SELECT COALESCE(MAX(sort_order),0)+1 AS n " +
+                    "FROM fruit WHERE enabled=1",
+                null
+            ).use {
+                c ->
+                if (c.moveToFirst()) {
+                    c.long("n")
+                } else {
+                    1L
+                }
+            }
+
         return writableDatabase.update(
             "fruit",
             ContentValues().apply {
                 put("enabled", 1)
+                put(
+                    "sort_order",
+                    nextOrder
+                )
                 put("sync_status", 2)
                 put("updated_at", System.currentTimeMillis())
             },
@@ -2691,8 +2897,23 @@ class AppDatabase(
     }
 
     fun getStores(): List<StoreOption> = readableDatabase.rawQuery(
-        "SELECT id,name,address FROM store WHERE enabled=1 AND deleted=0 ORDER BY id DESC", null
-    ).use { c -> buildList { while (c.moveToNext()) add(StoreOption(c.long("id"), c.str("name"), c.str("address"))) } }
+        "SELECT id,name,address FROM store " +
+            "WHERE enabled=1 AND deleted=0 " +
+            "ORDER BY sort_order ASC,id ASC",
+        null
+    ).use { c ->
+        buildList {
+            while (c.moveToNext()) {
+                add(
+                    StoreOption(
+                        c.long("id"),
+                        c.str("name"),
+                        c.str("address")
+                    )
+                )
+            }
+        }
+    }
 
     fun getStoreById(id: Long): StoreOption? = readableDatabase.rawQuery(
         "SELECT id,name,address FROM store WHERE id=? AND enabled=1 AND deleted=0 LIMIT 1",
@@ -2708,12 +2929,97 @@ class AppDatabase(
         if (c.moveToFirst()) StoreOption(c.long("id"), c.str("name"), c.str("address")) else null
     }
 
-    fun addStore(name: String, address: String): Long {
-        val clean = name.trim()
-        if (clean.isBlank()) return -1
-        return writableDatabase.insertWithOnConflict("store", null, baseSyncValues().apply {
-            put("name", clean); put("address", address.trim()); put("enabled", 1); put("deleted", 0)
-        }, SQLiteDatabase.CONFLICT_IGNORE)
+    fun addStore(
+        name: String,
+        address: String
+    ): Long {
+        val clean =
+            name.trim()
+
+        if (clean.isBlank()) {
+            return -1
+        }
+
+        val firstOrder =
+            readableDatabase.rawQuery(
+                "SELECT COALESCE(MIN(sort_order),0)-1 AS n FROM store",
+                null
+            ).use {
+                c ->
+                if (c.moveToFirst()) {
+                    c.long("n")
+                } else {
+                    -1L
+                }
+            }
+
+        return writableDatabase.insertWithOnConflict(
+            "store",
+            null,
+            baseSyncValues().apply {
+                put("name", clean)
+                put(
+                    "address",
+                    address.trim()
+                )
+                put("enabled", 1)
+                put("deleted", 0)
+                put(
+                    "sort_order",
+                    firstOrder
+                )
+            },
+            SQLiteDatabase.CONFLICT_IGNORE
+        )
+    }
+
+    fun reorderStores(
+        orderedIds: List<Long>
+    ): Boolean {
+        if (orderedIds.isEmpty()) {
+            return true
+        }
+
+        val db =
+            writableDatabase
+
+        db.beginTransaction()
+
+        return try {
+            val now =
+                System.currentTimeMillis()
+
+            orderedIds.forEachIndexed {
+                index,
+                id ->
+                db.update(
+                    "store",
+                    ContentValues().apply {
+                        put(
+                            "sort_order",
+                            index.toLong()
+                        )
+                        put(
+                            "sync_status",
+                            2
+                        )
+                        put(
+                            "updated_at",
+                            now
+                        )
+                    },
+                    "id=?",
+                    arrayOf(
+                        id.toString()
+                    )
+                )
+            }
+
+            db.setTransactionSuccessful()
+            true
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun deleteStore(id: Long) {
@@ -5467,9 +5773,36 @@ class AppDatabase(
         }
     }
 
-    fun getDailyRecords(date: String): List<StoreDailyRecord> = readableDatabase.rawQuery(
-        "SELECT * FROM store_daily_record WHERE date=? AND deleted=0 ORDER BY id", arrayOf(date)
-    ).use { c -> buildList { while (c.moveToNext()) add(dailyRecord(c)) } }
+    fun getDailyRecords(
+        date: String
+    ): List<StoreDailyRecord> =
+        readableDatabase.rawQuery(
+            """
+            SELECT d.*
+            FROM store_daily_record d
+            LEFT JOIN store s
+              ON s.id=d.store_id
+            WHERE
+                d.date=?
+                AND d.deleted=0
+            ORDER BY
+                COALESCE(
+                    s.sort_order,
+                    d.id
+                ) ASC,
+                d.id ASC
+            """.trimIndent(),
+            arrayOf(date)
+        ).use {
+            c ->
+            buildList {
+                while (c.moveToNext()) {
+                    add(
+                        dailyRecord(c)
+                    )
+                }
+            }
+        }
 
     fun getRecentDailyRecords(limit: Int = 120): List<StoreDailyRecord> = readableDatabase.rawQuery(
         "SELECT * FROM store_daily_record WHERE deleted=0 ORDER BY date DESC,id DESC LIMIT ?", arrayOf(limit.toString())
@@ -6435,7 +6768,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 13
+        const val DB_VERSION = 14
     }
 }
 

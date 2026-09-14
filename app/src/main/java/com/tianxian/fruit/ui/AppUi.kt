@@ -11,6 +11,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -28,11 +29,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -2981,7 +2984,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
     val historicalSelectedStore = if (editingRecordId != null && storeId != null && activeSelectedStore == null) {
         StoreOption(
             storeId!!,
-            historicalStoreName.ifBlank { db.getStoreByIdIncludingDeleted(storeId!!)?.name ?: "已删除摊位" },
+            historicalStoreName.ifBlank { db.getStoreByIdIncludingDeleted(storeId!!)?.name ?: "已删除位置" },
             ""
         )
     } else null
@@ -3008,7 +3011,40 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         else -> "未指定"
     }
 
-    val todayRecords = remember(dataVersion, date) { db.getDailyRecords(date) }
+    val todayRecords =
+        remember(
+            dataVersion,
+            date
+        ) {
+            db.getDailyRecords(
+                date
+            )
+        }
+
+    val recent7Records =
+        remember(
+            dataVersion,
+            date
+        ) {
+            runCatching {
+                val selected =
+                    LocalDate.parse(
+                        date
+                    )
+
+                db.getDailyRecordsBetween(
+                    selected
+                        .minusDays(7)
+                        .toString(),
+                    selected
+                        .minusDays(1)
+                        .toString()
+                )
+            }.getOrDefault(
+                emptyList()
+            )
+        }
+
     val sharedPurchase = remember(dataVersion, date) { db.getPurchaseTotal(date) }
 
     fun clearForm(keepDate: Boolean = true) {
@@ -3099,7 +3135,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(7.dp)
     ) {
-        item { PageHeader("摊位营业记录", null) }
+        item { PageHeader("营业记录", null) }
 
         if (editingRecordId != null) {
             item {
@@ -3131,93 +3167,202 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
 
         if (todayRecords.isNotEmpty()) {
             item {
-                Column(
-                    verticalArrangement =
-                        Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(
-                        "当天已记录",
-                        fontWeight =
-                            FontWeight.Bold,
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodyMedium
-                    )
+                Text(
+                    "当天营业记录",
+                    fontWeight =
+                        FontWeight.Bold,
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodyMedium
+                )
+            }
 
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(
-                                rememberScrollState()
-                            ),
-                        horizontalArrangement =
-                            Arrangement.spacedBy(7.dp)
-                    ) {
-                        todayRecords.forEach {
-                            record ->
-                            Card(
-                                onClick = {
-                                    loadRecord(
-                                        record
-                                    )
-                                },
-                                modifier =
-                                    Modifier.width(184.dp),
-                                colors =
-                                    CardDefaults.cardColors(
-                                        containerColor =
-                                            if (
-                                                editingRecordId ==
-                                                record.id
-                                            ) {
-                                                Color(0xFFE9F8F0)
-                                            } else {
-                                                Color(0xFFF7F7F8)
-                                            }
-                                    )
-                            ) {
-                                Column(
-                                    Modifier.padding(
-                                        horizontal = 10.dp,
-                                        vertical = 7.dp
-                                    )
+            items(
+                todayRecords,
+                key = {
+                    "today_business_${it.id}"
+                }
+            ) {
+                record ->
+                Card(
+                    onClick = {
+                        loadRecord(
+                            record
+                        )
+                    },
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                if (
+                                    editingRecordId ==
+                                    record.id
                                 ) {
-                                    Text(
-                                        if (
-                                            record.storeName ==
-                                            "共用货品"
-                                        ) {
-                                            "未知摊位（旧数据）"
-                                        } else {
-                                            record.storeName
-                                        },
-                                        fontWeight =
-                                            FontWeight.Bold,
-                                        maxLines = 1
+                                    Color(
+                                        0xFFE9F8F0
                                     )
-
-                                    Text(
-                                        "营业 ${money(record.revenue)} · 客户 ${record.customerTotal}",
-                                        style =
-                                            MaterialTheme
-                                                .typography
-                                                .bodySmall,
-                                        color = Color.Gray,
-                                        maxLines = 1
-                                    )
-
-                                    Text(
-                                        "点此继续修改",
-                                        style =
-                                            MaterialTheme
-                                                .typography
-                                                .labelSmall,
-                                        color = BrandGreen
+                                } else {
+                                    Color(
+                                        0xFFF7F7F8
                                     )
                                 }
-                            }
+                        )
+                ) {
+                    Column(
+                        Modifier.padding(
+                            horizontal = 12.dp,
+                            vertical = 9.dp
+                        ),
+                        verticalArrangement =
+                            Arrangement.spacedBy(
+                                5.dp
+                            )
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment =
+                                Alignment.CenterVertically
+                        ) {
+                            Text(
+                                if (
+                                    record.storeName ==
+                                    "共用货品"
+                                ) {
+                                    "未知位置（旧数据）"
+                                } else {
+                                    record.storeName
+                                },
+                                modifier =
+                                    Modifier.weight(
+                                        1f
+                                    ),
+                                fontWeight =
+                                    FontWeight.Bold,
+                                maxLines = 1
+                            )
+
+                            Text(
+                                "营业额 ${money(record.revenue)}",
+                                color =
+                                    BrandGreen,
+                                fontWeight =
+                                    FontWeight.SemiBold
+                            )
                         }
+
+                        Text(
+                            "微信 ${money(record.wechatIncome)}   " +
+                                "支付宝 ${money(record.alipayIncome)}   " +
+                                "现金 ${money(record.cashIncome)}",
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall,
+                            color =
+                                Color.DarkGray,
+                            maxLines = 1
+                        )
+                    }
+                }
+            }
+        }
+
+        if (recent7Records.isNotEmpty()) {
+            item {
+                Text(
+                    "近7天出摊营业历史",
+                    fontWeight =
+                        FontWeight.Bold,
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodyMedium,
+                    modifier =
+                        Modifier.padding(
+                            top = 4.dp
+                        )
+                )
+            }
+
+            items(
+                recent7Records,
+                key = {
+                    "recent_business_${it.id}"
+                }
+            ) {
+                record ->
+                Card(
+                    onClick = {
+                        loadRecord(
+                            record
+                        )
+                    },
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                Color(
+                                    0xFFFCFCFC
+                                )
+                        )
+                ) {
+                    Column(
+                        Modifier.padding(
+                            horizontal = 12.dp,
+                            vertical = 8.dp
+                        ),
+                        verticalArrangement =
+                            Arrangement.spacedBy(
+                                4.dp
+                            )
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment =
+                                Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "${record.date.takeLast(5)} · " +
+                                    if (
+                                        record.storeName ==
+                                        "共用货品"
+                                    ) {
+                                        "未知位置（旧数据）"
+                                    } else {
+                                        record.storeName
+                                    },
+                                modifier =
+                                    Modifier.weight(
+                                        1f
+                                    ),
+                                fontWeight =
+                                    FontWeight.SemiBold
+                            )
+
+                            Text(
+                                money(
+                                    record.revenue
+                                ),
+                                fontWeight =
+                                    FontWeight.SemiBold
+                            )
+                        }
+
+                        Text(
+                            "微信 ${money(record.wechatIncome)}   " +
+                                "支付宝 ${money(record.alipayIncome)}   " +
+                                "现金 ${money(record.cashIncome)}",
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall,
+                            color =
+                                Color.Gray,
+                            maxLines = 1
+                        )
                     }
                 }
             }
@@ -3227,7 +3372,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                 Box(Modifier.weight(1f)) {
                     CompactSelectButton(
-                        "摊位",
+                        "位置",
                         storeDisplayName,
                         Modifier.fillMaxWidth()
                     ) { storeMenu = true }
@@ -3366,13 +3511,13 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                         db.getStoreById(id) ?: if (editingRecordId != null) {
                             StoreOption(
                                 id,
-                                historicalStoreName.ifBlank { db.getStoreByIdIncludingDeleted(id)?.name ?: "已删除摊位" },
+                                historicalStoreName.ifBlank { db.getStoreByIdIncludingDeleted(id)?.name ?: "已删除位置" },
                                 ""
                             )
                         } else null
                     }
                     if (requestedStore == null) {
-                        message = "保存失败：请选择有效摊位"
+                        message = "保存失败：请选择有效位置"
                         isError = true
                         return@Button
                     }
@@ -3435,7 +3580,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                 modifier = Modifier.fillMaxWidth().height(44.dp),
                 contentPadding = PaddingValues(vertical = 5.dp)
             ) {
-                Text(if (editingRecordId == null) "保存当前摊位" else "保存修改")
+                Text(if (editingRecordId == null) "保存营业记录" else "保存修改")
             }
 
             if (message.isNotBlank()) {
@@ -5105,7 +5250,7 @@ private fun MoreScreen(
                                 SettingsDivider()
                                 SettingsRow(
                                     "📍",
-                                    "摊位管理"
+                                    "位置管理"
                                 ) {
                                     sub =
                                         MorePage.STORES
@@ -5441,7 +5586,7 @@ private fun MoreScreen(
 
         MorePage.STORES -> {
             SubPage(
-                "摊位管理",
+                "位置管理",
                 { sub = MorePage.MENU }
             ) {
                 StoreContent(
@@ -8274,13 +8419,13 @@ private fun LedgerManagementContent(
                     Modifier.padding(12.dp)
                 ) {
                     Text(
-                        "V1.4.2 协作采购与高频录入优化",
+                        "V1.4.3 营业记录与排序优化",
                         fontWeight =
                             FontWeight.Bold
                     )
 
                     Text(
-                        "• 云端账本下载后仍使用独立 SQLite 数据库，不与自己的账本混在一起。",
+                        "• 营业页当天记录改为单行一位置，并显示营业额、微信、支付宝和现金。",
                         style =
                             MaterialTheme
                                 .typography
@@ -8288,7 +8433,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• 云端账本成员支持采购员、经营员、财务、只读和自定义权限。",
+                        "• 营业页增加近7天出摊营业历史，可直接点历史记录继续修改。",
                         style =
                             MaterialTheme
                                 .typography
@@ -8296,7 +8441,7 @@ private fun LedgerManagementContent(
                     )
 
                     Text(
-                        "• 首次打开只有登录入口；账号由超级管理员统一创建。",
+                        "• 位置管理和商品管理支持按住 ↕ 上下拖动排序，顺序会参与云同步。",
                         style =
                             MaterialTheme
                                 .typography
@@ -12926,126 +13071,739 @@ private fun PartnerContent(db: AppDatabase, dataVersion: Int, onChanged: () -> U
 }
 
 @Composable
-private fun FruitManagementContent(db: AppDatabase, dataVersion: Int, onChanged: () -> Unit) {
-    val fruits = remember(dataVersion) { db.getFruitAdminRecords() }
-    var addDialog by remember { mutableStateOf(false) }
-    var editFruit by remember { mutableStateOf<FruitAdminRecord?>(null) }
-    var disableFruit by remember { mutableStateOf<FruitAdminRecord?>(null) }
-    var message by remember { mutableStateOf("") }
+private fun ReorderHandle(
+    enabled: Boolean = true,
+    onStep: (Int) -> Unit,
+    onDrop: () -> Unit
+) {
+    val thresholdPx =
+        with(
+            LocalDensity.current
+        ) {
+            38.dp.toPx()
+        }
+
+    var dragDistance by remember {
+        mutableFloatStateOf(
+            0f
+        )
+    }
+
+    val latestOnStep by rememberUpdatedState(
+        onStep
+    )
+    val latestOnDrop by rememberUpdatedState(
+        onDrop
+    )
+
+    Box(
+        modifier =
+            Modifier
+                .size(
+                    width = 36.dp,
+                    height = 44.dp
+                )
+                .pointerInput(
+                    enabled,
+                    thresholdPx
+                ) {
+                    if (!enabled) {
+                        return@pointerInput
+                    }
+
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = {
+                            dragDistance =
+                                0f
+                        },
+                        onDragEnd = {
+                            dragDistance =
+                                0f
+                            latestOnDrop()
+                        },
+                        onDragCancel = {
+                            dragDistance =
+                                0f
+                        }
+                    ) {
+                        _,
+                        dragAmount ->
+                        dragDistance +=
+                            dragAmount.y
+
+                        while (
+                            kotlin.math.abs(
+                                dragDistance
+                            ) >=
+                            thresholdPx
+                        ) {
+                            val direction =
+                                if (
+                                    dragDistance >
+                                    0f
+                                ) {
+                                    1
+                                } else {
+                                    -1
+                                }
+
+                            latestOnStep(
+                                direction
+                            )
+
+                            dragDistance -=
+                                direction *
+                                    thresholdPx
+                        }
+                    }
+                },
+        contentAlignment =
+            Alignment.Center
+    ) {
+        Text(
+            "↕",
+            color =
+                if (enabled) {
+                    BrandGreen
+                } else {
+                    Color.LightGray
+                },
+            fontSize = 21.sp,
+            fontWeight =
+                FontWeight.Bold
+        )
+    }
+}
+
+@Composable
+private fun FruitManagementContent(
+    db: AppDatabase,
+    dataVersion: Int,
+    onChanged: () -> Unit
+) {
+    val fruits =
+        remember(
+            dataVersion
+        ) {
+            db.getFruitAdminRecords()
+        }
+
+    var orderedFruits by remember(
+        dataVersion
+    ) {
+        mutableStateOf(
+            fruits
+        )
+    }
+
+    var addDialog by remember {
+        mutableStateOf(false)
+    }
+
+    var editFruit by remember {
+        mutableStateOf<
+            FruitAdminRecord?
+        >(null)
+    }
+
+    var disableFruit by remember {
+        mutableStateOf<
+            FruitAdminRecord?
+        >(null)
+    }
+
+    var message by remember {
+        mutableStateOf("")
+    }
+
+    fun moveFruit(
+        fruitId: Long,
+        direction: Int
+    ) {
+        val from =
+            orderedFruits
+                .indexOfFirst {
+                    it.id ==
+                        fruitId
+                }
+
+        if (from < 0) {
+            return
+        }
+
+        val to =
+            from +
+                direction
+
+        if (
+            to !in
+            orderedFruits.indices
+        ) {
+            return
+        }
+
+        val current =
+            orderedFruits[
+                from
+            ]
+
+        val target =
+            orderedFruits[
+                to
+            ]
+
+        if (
+            current.enabled !=
+            target.enabled
+        ) {
+            return
+        }
+
+        orderedFruits =
+            orderedFruits
+                .toMutableList()
+                .apply {
+                    val temp =
+                        this[from]
+
+                    this[from] =
+                        this[to]
+
+                    this[to] =
+                        temp
+                }
+    }
+
+    fun persistFruitOrder() {
+        val activeIds =
+            orderedFruits
+                .filter {
+                    it.enabled
+                }
+                .map {
+                    it.id
+                }
+
+        if (
+            db.reorderFruits(
+                activeIds
+            )
+        ) {
+            message =
+                "商品顺序已保存"
+            onChanged()
+        } else {
+            message =
+                "商品排序保存失败"
+        }
+    }
 
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        contentPadding =
+            PaddingValues(
+                16.dp
+            ),
+        verticalArrangement =
+            Arrangement.spacedBy(
+                7.dp
+            )
     ) {
         item {
-            Text(
-                "停用后的水果不会出现在新的采购计划和进货选择中，但历史进货、历史价格和采购计划仍保留原商品名。",
-                color = Color.Gray,
-                style = MaterialTheme.typography.bodySmall
-            )
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment =
+                    Alignment.CenterVertically
+            ) {
+                Text(
+                    "按住 ↕ 上下拖动调整商品顺序",
+                    modifier =
+                        Modifier.weight(
+                            1f
+                        ),
+                    color = Color.Gray,
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall
+                )
+            }
         }
 
-        items(fruits, key = { it.id }) { f ->
+        items(
+            orderedFruits,
+            key = {
+                it.id
+            }
+        ) {
+            f ->
             RecordCard {
-                Column(Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(f.name, fontWeight = FontWeight.Bold)
+                ReorderHandle(
+                    enabled =
+                        f.enabled,
+                    onStep = {
+                        direction ->
+                        moveFruit(
+                            f.id,
+                            direction
+                        )
+                    },
+                    onDrop = {
+                        persistFruitOrder()
+                    }
+                )
+
+                Column(
+                    Modifier.weight(
+                        1f
+                    )
+                ) {
+                    Row(
+                        verticalAlignment =
+                            Alignment.CenterVertically
+                    ) {
+                        Text(
+                            f.name,
+                            fontWeight =
+                                FontWeight.Bold
+                        )
+
                         if (!f.enabled) {
-                            Spacer(Modifier.width(6.dp))
-                            Text("已停用", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                            Spacer(
+                                Modifier.width(
+                                    6.dp
+                                )
+                            )
+
+                            Text(
+                                "已停用",
+                                color = Color.Gray,
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .labelSmall
+                            )
                         }
                     }
+
                     Text(
                         "默认单位：${f.defaultUnit}",
-                        style = MaterialTheme.typography.bodySmall,
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall,
                         color = Color.Gray
                     )
                 }
 
                 if (f.enabled) {
-                    TextButton(onClick = { editFruit = f }) { Text("编辑") }
-                    TextButton(onClick = { disableFruit = f }) { Text("删除") }
+                    TextButton(
+                        onClick = {
+                            editFruit = f
+                        }
+                    ) {
+                        Text("编辑")
+                    }
+
+                    TextButton(
+                        onClick = {
+                            disableFruit = f
+                        }
+                    ) {
+                        Text("删除")
+                    }
                 } else {
                     TextButton(
                         onClick = {
-                            if (db.restoreFruit(f.id)) {
-                                message = "${f.name} 已恢复"
+                            if (
+                                db.restoreFruit(
+                                    f.id
+                                )
+                            ) {
+                                message =
+                                    "${f.name} 已恢复"
                                 onChanged()
                             }
                         }
-                    ) { Text("恢复") }
+                    ) {
+                        Text("恢复")
+                    }
                 }
             }
         }
 
         item {
             Button(
-                onClick = { addDialog = true },
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("＋ 新增商品") }
+                onClick = {
+                    addDialog = true
+                },
+                modifier =
+                    Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    "＋ 新增商品"
+                )
+            }
 
-            if (message.isNotBlank()) {
-                Text(message, color = BrandGreen, style = MaterialTheme.typography.bodySmall)
+            if (
+                message.isNotBlank()
+            ) {
+                Text(
+                    message,
+                    color =
+                        if (
+                            message.contains(
+                                "失败"
+                            )
+                        ) {
+                            MaterialTheme
+                                .colorScheme
+                                .error
+                        } else {
+                            BrandGreen
+                        },
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall
+                )
             }
         }
     }
 
     if (addDialog) {
         AddFruitDialog(
-            onDismiss = { addDialog = false },
-            onSave = { name, unit ->
-                val id = db.addFruit(name, unit)
+            onDismiss = {
                 addDialog = false
-                message = if (id > 0) "商品已保存" else "保存失败，商品名称可能重复"
+            },
+            onSave = {
+                name,
+                unit ->
+                val id =
+                    db.addFruit(
+                        name,
+                        unit
+                    )
+
+                addDialog = false
+
+                message =
+                    if (id > 0) {
+                        "商品已保存"
+                    } else {
+                        "保存失败，商品名称可能重复"
+                    }
+
                 onChanged()
             }
         )
     }
 
-    editFruit?.let { f ->
+    editFruit?.let {
+        f ->
         FruitEditDialog(
             fruit = f,
-            onDismiss = { editFruit = null },
-            onSave = { name, unit ->
-                val ok = db.updateFruit(f.id, name, unit)
-                message = if (ok) "商品已修改" else "修改失败"
+            onDismiss = {
+                editFruit = null
+            },
+            onSave = {
+                name,
+                unit ->
+                val ok =
+                    db.updateFruit(
+                        f.id,
+                        name,
+                        unit
+                    )
+
+                message =
+                    if (ok) {
+                        "商品已修改"
+                    } else {
+                        "修改失败"
+                    }
+
                 editFruit = null
                 onChanged()
             }
         )
     }
 
-    disableFruit?.let { f ->
+    disableFruit?.let {
+        f ->
         ConfirmDelete(
             "停用“${f.name}”？它将不再出现在新的采购/进货列表中，历史记录不会删除。",
-            { disableFruit = null }
+            {
+                disableFruit = null
+            }
         ) {
-            if (db.disableFruit(f.id)) {
-                message = "${f.name} 已停用"
+            if (
+                db.disableFruit(
+                    f.id
+                )
+            ) {
+                message =
+                    "${f.name} 已停用"
                 onChanged()
             }
+
             disableFruit = null
         }
     }
 }
 
 @Composable
-private fun StoreContent(db: AppDatabase, dataVersion: Int, onChanged: () -> Unit) {
-    val stores = remember(dataVersion) { db.getStores() }
-    var addDialog by remember { mutableStateOf(false) }
-    var delete by remember { mutableStateOf<StoreOption?>(null) }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(stores, key = { it.id }) { s ->
+private fun StoreContent(
+    db: AppDatabase,
+    dataVersion: Int,
+    onChanged: () -> Unit
+) {
+    val stores =
+        remember(
+            dataVersion
+        ) {
+            db.getStores()
+        }
+
+    var orderedStores by remember(
+        dataVersion
+    ) {
+        mutableStateOf(
+            stores
+        )
+    }
+
+    var addDialog by remember {
+        mutableStateOf(false)
+    }
+
+    var delete by remember {
+        mutableStateOf<
+            StoreOption?
+        >(null)
+    }
+
+    var message by remember {
+        mutableStateOf("")
+    }
+
+    fun moveStore(
+        storeId: Long,
+        direction: Int
+    ) {
+        val from =
+            orderedStores
+                .indexOfFirst {
+                    it.id ==
+                        storeId
+                }
+
+        if (from < 0) {
+            return
+        }
+
+        val to =
+            from +
+                direction
+
+        if (
+            to !in
+            orderedStores.indices
+        ) {
+            return
+        }
+
+        orderedStores =
+            orderedStores
+                .toMutableList()
+                .apply {
+                    val temp =
+                        this[from]
+
+                    this[from] =
+                        this[to]
+
+                    this[to] =
+                        temp
+                }
+    }
+
+    fun persistStoreOrder() {
+        if (
+            db.reorderStores(
+                orderedStores
+                    .map {
+                        it.id
+                    }
+            )
+        ) {
+            message =
+                "位置顺序已保存"
+            onChanged()
+        } else {
+            message =
+                "位置排序保存失败"
+        }
+    }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding =
+            PaddingValues(
+                16.dp
+            ),
+        verticalArrangement =
+            Arrangement.spacedBy(
+                7.dp
+            )
+    ) {
+        item {
+            Text(
+                "按住 ↕ 上下拖动调整位置顺序",
+                color = Color.Gray,
+                style =
+                    MaterialTheme
+                        .typography
+                        .bodySmall
+            )
+        }
+
+        items(
+            orderedStores,
+            key = {
+                it.id
+            }
+        ) {
+            s ->
             RecordCard {
-                Column(Modifier.weight(1f)) { Text(s.name, fontWeight = FontWeight.Bold); if (s.address.isNotBlank()) Text(s.address, style = MaterialTheme.typography.bodySmall, color = Color.Gray) }
-                TextButton(onClick = { delete = s }) { Text("删除") }
+                ReorderHandle(
+                    onStep = {
+                        direction ->
+                        moveStore(
+                            s.id,
+                            direction
+                        )
+                    },
+                    onDrop = {
+                        persistStoreOrder()
+                    }
+                )
+
+                Column(
+                    Modifier.weight(
+                        1f
+                    )
+                ) {
+                    Text(
+                        s.name,
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+
+                    if (
+                        s.address
+                            .isNotBlank()
+                    ) {
+                        Text(
+                            s.address,
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall,
+                            color = Color.Gray
+                        )
+                    }
+                }
+
+                TextButton(
+                    onClick = {
+                        delete = s
+                    }
+                ) {
+                    Text("删除")
+                }
             }
         }
-        item { Button(onClick = { addDialog = true }, modifier = Modifier.fillMaxWidth()) { Text("＋ 新增摆摊位置") } }
+
+        item {
+            Button(
+                onClick = {
+                    addDialog = true
+                },
+                modifier =
+                    Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    "＋ 新增位置"
+                )
+            }
+
+            if (
+                message.isNotBlank()
+            ) {
+                Text(
+                    message,
+                    color =
+                        if (
+                            message.contains(
+                                "失败"
+                            )
+                        ) {
+                            MaterialTheme
+                                .colorScheme
+                                .error
+                        } else {
+                            BrandGreen
+                        },
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall
+                )
+            }
+        }
     }
-    if (addDialog) AddStoreDialog({ addDialog = false }) { name, address -> db.addStore(name, address); addDialog = false; onChanged() }
-    delete?.let { s -> ConfirmDelete("删除位置“${s.name}”？历史营业和进货记录不会被删除。", { delete = null }) { db.deleteStore(s.id); delete = null; onChanged() } }
+
+    if (addDialog) {
+        AddStoreDialog(
+            {
+                addDialog = false
+            }
+        ) {
+            name,
+            address ->
+            val id =
+                db.addStore(
+                    name,
+                    address
+                )
+
+            addDialog = false
+            message =
+                if (id > 0) {
+                    "位置已保存"
+                } else {
+                    "保存失败，位置名称可能重复"
+                }
+            onChanged()
+        }
+    }
+
+    delete?.let {
+        s ->
+        ConfirmDelete(
+            "删除位置“${s.name}”？历史营业和进货记录不会被删除。",
+            {
+                delete = null
+            }
+        ) {
+            db.deleteStore(
+                s.id
+            )
+            delete = null
+            onChanged()
+        }
+    }
 }
 
 @Composable
@@ -13756,7 +14514,7 @@ private fun AddStoreDialog(onDismiss: () -> Unit, onSave: (String, String) -> Un
     var name by remember { mutableStateOf("") }
     var address by remember { mutableStateOf("") }
     AlertDialog(
-        onDismissRequest = onDismiss, title = { Text("新增摆摊位置") },
+        onDismissRequest = onDismiss, title = { Text("新增位置") },
         text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(name, { name = it }, label = { Text("位置简称，例如：龙归A摊") }, singleLine = true)
             OutlinedTextField(address, { address = it }, label = { Text("详细位置（可选）") })
