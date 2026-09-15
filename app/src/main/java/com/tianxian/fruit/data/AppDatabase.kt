@@ -3425,90 +3425,107 @@ class AppDatabase(
     fun deletePurchaseOrder(
         id: Long
     ) {
-        val now =
-            System.currentTimeMillis()
-
-        val db =
-            writableDatabase
-
-        val orderSyncId =
-            getPurchaseOrderSyncId(
-                db,
-                id
-            )
+        val now = System.currentTimeMillis()
+        val db = writableDatabase
+        val orderSyncId = getPurchaseOrderSyncId(db, id)
 
         db.beginTransaction()
 
         try {
+            val affectedPlanIds = mutableSetOf<Long>()
+
+            if (orderSyncId.isNotBlank()) {
+                val linkedPlanItems =
+                    db.rawQuery(
+                        "SELECT ppi.id,ppi.plan_id,ppi.sync_id " +
+                            "FROM purchase_plan_item ppi " +
+                            "JOIN purchase_collaboration pc " +
+                            "ON pc.plan_item_sync_id=ppi.sync_id " +
+                            "WHERE pc.purchase_order_sync_id=? " +
+                            "AND pc.deleted=0 AND ppi.deleted=0",
+                        arrayOf(orderSyncId)
+                    ).use { c ->
+                        buildList {
+                            while (c.moveToNext()) {
+                                add(
+                                    Triple(
+                                        c.long("id"),
+                                        c.long("plan_id"),
+                                        c.str("sync_id")
+                                    )
+                                )
+                            }
+                        }
+                    }
+
+                linkedPlanItems.forEach { linked ->
+                    affectedPlanIds += linked.second
+                    db.update(
+                        "purchase_plan_item",
+                        ContentValues().apply {
+                            put("status", 0)
+                            put("sync_status", 2)
+                            put("updated_at", now)
+                        },
+                        "id=?",
+                        arrayOf(linked.first.toString())
+                    )
+
+                    db.update(
+                        "purchase_collaboration",
+                        ContentValues().apply {
+                            put("actual_quantity", 0)
+                            put("actual_amount", 0)
+                            put("completed_by_username", "")
+                            put("completed_by_display_name", "")
+                            put("completed_at", 0)
+                            put("purchase_order_sync_id", "")
+                            put("sync_status", 2)
+                            put("updated_at", now)
+                        },
+                        "plan_item_sync_id=? AND deleted=0",
+                        arrayOf(linked.third)
+                    )
+                }
+            }
+
             db.update(
                 "purchase_order",
                 ContentValues().apply {
-                    put(
-                        "deleted",
-                        1
-                    )
-                    put(
-                        "sync_status",
-                        2
-                    )
-                    put(
-                        "updated_at",
-                        now
-                    )
+                    put("deleted", 1)
+                    put("sync_status", 2)
+                    put("updated_at", now)
                 },
                 "id=?",
-                arrayOf(
-                    id.toString()
-                )
+                arrayOf(id.toString())
             )
 
             db.update(
                 "purchase_item",
                 ContentValues().apply {
-                    put(
-                        "deleted",
-                        1
-                    )
-                    put(
-                        "sync_status",
-                        2
-                    )
-                    put(
-                        "updated_at",
-                        now
-                    )
+                    put("deleted", 1)
+                    put("sync_status", 2)
+                    put("updated_at", now)
                 },
                 "order_id=?",
-                arrayOf(
-                    id.toString()
-                )
+                arrayOf(id.toString())
             )
 
-            if (
-                orderSyncId
-                    .isNotBlank()
-            ) {
+            if (orderSyncId.isNotBlank()) {
                 db.update(
                     "purchase_activity",
                     ContentValues().apply {
-                        put(
-                            "deleted",
-                            1
-                        )
-                        put(
-                            "sync_status",
-                            2
-                        )
-                        put(
-                            "updated_at",
-                            now
-                        )
+                        put("deleted", 1)
+                        put("sync_status", 2)
+                        put("updated_at", now)
                     },
                     "order_sync_id=?",
-                    arrayOf(
-                        orderSyncId
-                    )
+                    arrayOf(orderSyncId)
                 )
+            }
+
+            affectedPlanIds.forEach { planId ->
+                refreshPurchasePlanStatus(db, planId)
             }
 
             db.setTransactionSuccessful()
@@ -4070,7 +4087,8 @@ class AppDatabase(
         fruit: FruitOption,
         quantity: Double,
         unit: String,
-        estimatedAmount: Double
+        estimatedAmount: Double,
+        buyer: PartnerOption? = null
     ): Long {
         if (quantity <= 0 || estimatedAmount < 0) {
             return -1
@@ -4116,15 +4134,72 @@ class AppDatabase(
                 }
             }
 
-        return upsertCollaborationPlanItem(
-            date = date,
-            itemId = existing?.first,
-            fruit = fruit,
-            quantity = quantity,
-            unit = unit,
-            estimatedAmount = estimatedAmount,
-            remark = existing?.second.orEmpty()
-        )
+        val resolvedItemId =
+            upsertCollaborationPlanItem(
+                date = date,
+                itemId = existing?.first,
+                fruit = fruit,
+                quantity = quantity,
+                unit = unit,
+                estimatedAmount = estimatedAmount,
+                remark = existing?.second.orEmpty()
+            )
+
+        if (resolvedItemId <= 0) {
+            return resolvedItemId
+        }
+
+        val now = System.currentTimeMillis()
+        val planItemSyncId =
+            readableDatabase.rawQuery(
+                "SELECT sync_id FROM purchase_plan_item " +
+                    "WHERE id=? AND deleted=0 AND status=0 LIMIT 1",
+                arrayOf(resolvedItemId.toString())
+            ).use { c ->
+                if (c.moveToFirst()) c.str("sync_id") else ""
+            }
+
+        if (planItemSyncId.isNotBlank()) {
+            writableDatabase.update(
+                "purchase_collaboration",
+                ContentValues().apply {
+                    put("buyer_id", buyer?.id ?: 0L)
+                    put("buyer_name", buyer?.name.orEmpty())
+                    put("sync_status", 2)
+                    put("updated_at", now)
+                },
+                "plan_item_sync_id=? AND deleted=0",
+                arrayOf(planItemSyncId)
+            )
+        }
+
+        return resolvedItemId
+    }
+
+    fun updatePurchasePlanNote(
+        date: String,
+        note: String
+    ): Boolean {
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        val planId =
+            db.rawQuery(
+                "SELECT id FROM purchase_plan WHERE plan_date=? AND deleted=0 LIMIT 1",
+                arrayOf(date)
+            ).use { c ->
+                if (c.moveToFirst()) c.long("id") else null
+            } ?: return note.isBlank()
+
+        return db.update(
+            "purchase_plan",
+            ContentValues().apply {
+                put("note", note.trim())
+                put("sync_status", 2)
+                put("updated_at", now)
+            },
+            "id=?",
+            arrayOf(planId.toString())
+        ) > 0
     }
 
     fun deleteCollaborationPlanItem(
