@@ -1356,7 +1356,7 @@ private fun CollaborationPlanEditDialog(
 }
 
 @Composable
-private fun CollaborationCompleteDialog(
+internal fun CollaborationCompleteDialog(
     db: AppDatabase,
     item: PurchasePlanItemRecord,
     editingCompleted: Boolean,

@@ -145,6 +145,13 @@ private enum class PurchasePriceSource {
     UNIT
 }
 
+private data class ReceiptDraftRow(
+    val rowId: Long,
+    val partnerId: Long? = null,
+    val partnerNameSnapshot: String = "",
+    val amount: String = ""
+)
+
 private data class PurchaseDraftRow(
     val rowId: Long,
     val planItemId: Long? = null,
@@ -1781,7 +1788,7 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
         }
 
         item {
-            CompactDateSelector("采购日期", date, Modifier.fillMaxWidth()) { date = it }
+            CompactDateSelector("采购日期", date, Modifier.fillMaxWidth(), showWeekday = true) { date = it }
         }
 
         if (totalCount > 0) {
@@ -2145,6 +2152,12 @@ private fun PurchaseScreen(
     var deleteOrder by remember { mutableStateOf<PurchaseOrderDetail?>(null) }
     var historyActionDetail by remember { mutableStateOf<PurchaseOrderDetail?>(null) }
     var historyActionFruitName by remember { mutableStateOf("") }
+    var editingPlanItemId by remember { mutableStateOf<Long?>(null) }
+    var planActionItem by remember { mutableStateOf<PurchasePlanItemRecord?>(null) }
+    var completeDialogItem by remember { mutableStateOf<PurchasePlanItemRecord?>(null) }
+    var completeDialogEditing by remember { mutableStateOf(false) }
+    var restoreCompletedItem by remember { mutableStateOf<PurchasePlanItemRecord?>(null) }
+    var deleteCollaborationItem by remember { mutableStateOf<PurchasePlanItemRecord?>(null) }
 
     val history = remember(dataVersion) { db.getRecentPurchaseOrdersByDays(7) }
     val collaborationPlan = remember(dataVersion, date) { db.getPurchasePlan(date) }
@@ -2419,7 +2432,9 @@ private fun PurchaseScreen(
                 CompactDateNavigator(
                     label = "日期",
                     date = date,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    chineseDisplay = true,
+                    showWeekday = true
                 ) { date = it }
             } else {
                 Row(
@@ -2430,7 +2445,9 @@ private fun PurchaseScreen(
                     CompactDateNavigator(
                         label = "日期",
                         date = date,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        chineseDisplay = true,
+                        showWeekday = true
                     ) { date = it }
 
                     Box(Modifier.width(110.dp)) {
@@ -2462,78 +2479,118 @@ private fun PurchaseScreen(
         items(rows, key = { row -> "purchase_draft_${row.rowId}" }) { row ->
             val collaborationItem = collaborationItemFor(row)
             val completed = editingOrderId == null && collaborationItem?.status == 1
+            val savedPending =
+                editingOrderId == null &&
+                    collaborationItem?.status == 0 &&
+                    row.planItemId != null
+            val editingSavedPending =
+                savedPending && editingPlanItemId == collaborationItem?.id
 
-            LaunchedEffect(
-                date,
-                editingOrderId,
-                row.rowId,
-                row.planItemId,
-                row.fruitId,
-                row.quantity,
-                row.unit,
-                row.totalCost,
-                row.buyerId
-            ) {
-                if (editingOrderId == null && !completed) {
-                    val fruit = fruits.firstOrNull { it.id == row.fruitId }
-                    val quantityValue = row.quantity.toDoubleOrNull() ?: 0.0
-                    val amountValue = row.totalCost.toDoubleOrNull() ?: 0.0
-                    val fingerprint = rowFingerprint(row)
+            when {
+                completed -> {
+                    // 已完成项目统一放到“保存采购”下方，避免和待采购混在一起。
+                }
 
-                    if (
-                        fruit != null &&
-                        quantityValue > 0 &&
-                        syncedFingerprints[row.rowId] != fingerprint
+                savedPending && !editingSavedPending -> {
+                    PurchasePlanStatusCard(
+                        item = collaborationItem!!,
+                        completed = false,
+                        onClick = { planActionItem = collaborationItem }
+                    )
+                }
+
+                else -> {
+                    LaunchedEffect(
+                        date,
+                        editingOrderId,
+                        row.rowId,
+                        row.planItemId,
+                        row.fruitId,
+                        row.quantity,
+                        row.unit,
+                        row.totalCost,
+                        row.buyerId
                     ) {
-                        kotlinx.coroutines.delay(700L)
-                        val latest = rows.firstOrNull { it.rowId == row.rowId }
-                        if (latest != null && rowFingerprint(latest) == fingerprint) {
-                            val assignedBuyer =
-                                latest.buyerId?.let { id -> partners.firstOrNull { it.id == id } }
-                            val planItemId =
-                                db.upsertPurchaseDraftToCollaboration(
-                                    date = date,
-                                    itemId = latest.planItemId,
-                                    fruit = fruit,
-                                    quantity = quantityValue,
-                                    unit = latest.unit,
-                                    estimatedAmount = amountValue.coerceAtLeast(0.0),
-                                    buyer = assignedBuyer
-                                )
-                            if (planItemId > 0) {
-                                val updated = latest.copy(planItemId = planItemId)
-                                syncedFingerprints[row.rowId] = rowFingerprint(updated)
-                                if (latest.planItemId != planItemId) updateRow(row.rowId, updated)
+                        if (editingOrderId == null) {
+                            val fruit = fruits.firstOrNull { it.id == row.fruitId }
+                            val quantityValue = row.quantity.toDoubleOrNull() ?: 0.0
+                            val amountValue = row.totalCost.toDoubleOrNull() ?: 0.0
+                            val fingerprint = rowFingerprint(row)
+
+                            if (
+                                fruit != null &&
+                                quantityValue > 0 &&
+                                syncedFingerprints[row.rowId] != fingerprint
+                            ) {
+                                kotlinx.coroutines.delay(700L)
+                                val latest = rows.firstOrNull { it.rowId == row.rowId }
+                                if (latest != null && rowFingerprint(latest) == fingerprint) {
+                                    val assignedBuyer =
+                                        latest.buyerId?.let { id -> partners.firstOrNull { it.id == id } }
+                                    val planItemId =
+                                        db.upsertPurchaseDraftToCollaboration(
+                                            date = date,
+                                            itemId = latest.planItemId,
+                                            fruit = fruit,
+                                            quantity = quantityValue,
+                                            unit = latest.unit,
+                                            estimatedAmount = amountValue.coerceAtLeast(0.0),
+                                            buyer = assignedBuyer
+                                        )
+                                    if (planItemId > 0) {
+                                        val updated = latest.copy(planItemId = planItemId)
+                                        syncedFingerprints[row.rowId] = rowFingerprint(updated)
+                                        if (latest.planItemId != planItemId) updateRow(row.rowId, updated)
+                                        onChanged()
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    PurchaseDraftRowEditor(
+                        row = row,
+                        fruits = fruits,
+                        partners = partners,
+                        completedItem = null,
+                        showBuyer = editingOrderId == null,
+                        canDelete = rows.size > 1,
+                        onChange = { updated -> updateRow(row.rowId, updated) },
+                        onAddFruit = {
+                            pendingFruitRowId = row.rowId
+                            addFruitDialog = true
+                        },
+                        onDelete = {
+                            if (editingOrderId == null && row.planItemId != null) {
+                                db.deleteCollaborationPlanItem(row.planItemId)
+                                editingPlanItemId = null
                                 onChanged()
+                            }
+                            syncedFingerprints.remove(row.rowId)
+                            val index = rows.indexOfFirst { it.rowId == row.rowId }
+                            if (index >= 0) rows.removeAt(index)
+                            if (rows.isEmpty()) rows.add(newBlankRow())
+                        }
+                    )
+
+                    if (editingSavedPending) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    focusManager.clearFocus()
+                                    editingPlanItemId = null
+                                    message = "${collaborationItem?.fruitName.orEmpty()} 修改已保存"
+                                }
+                            ) {
+                                Text("完成修改")
                             }
                         }
                     }
                 }
             }
-
-            PurchaseDraftRowEditor(
-                row = row,
-                fruits = fruits,
-                partners = partners,
-                completedItem = collaborationItem?.takeIf { it.status == 1 },
-                showBuyer = editingOrderId == null,
-                canDelete = rows.size > 1 && !completed,
-                onChange = { updated -> updateRow(row.rowId, updated) },
-                onAddFruit = {
-                    pendingFruitRowId = row.rowId
-                    addFruitDialog = true
-                },
-                onDelete = {
-                    if (editingOrderId == null && row.planItemId != null) {
-                        db.deleteCollaborationPlanItem(row.planItemId)
-                        onChanged()
-                    }
-                    syncedFingerprints.remove(row.rowId)
-                    val index = rows.indexOfFirst { it.rowId == row.rowId }
-                    if (index >= 0) rows.removeAt(index)
-                    if (rows.isEmpty()) rows.add(newBlankRow())
-                }
-            )
         }
 
         item {
@@ -2551,7 +2608,10 @@ private fun PurchaseScreen(
             ) { Text("＋ 添加商品") }
         }
 
-        val activeRows = meaningfulRows()
+        val activeRows =
+            meaningfulRows().filter { row ->
+                editingOrderId != null || collaborationItemFor(row)?.status != 1
+            }
         if (activeRows.isNotEmpty()) {
             item {
                 val total = activeRows.sumOf { it.totalCost.toDoubleOrNull() ?: 0.0 }
@@ -2627,6 +2687,47 @@ private fun PurchaseScreen(
             item { Text(message, color = BrandGreen, style = MaterialTheme.typography.bodySmall) }
         }
 
+        if (editingOrderId == null) {
+            val completedItems =
+                collaborationPlan
+                    ?.items
+                    .orEmpty()
+                    .filter { it.status == 1 }
+
+            if (completedItems.isNotEmpty()) {
+                item {
+                    HorizontalDivider()
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "已完成采购",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            "${completedItems.size} 项",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = BrandGreen
+                        )
+                    }
+                }
+
+                items(
+                    completedItems,
+                    key = { item -> "purchase_completed_${item.id}" }
+                ) { completedItem ->
+                    PurchasePlanStatusCard(
+                        item = completedItem,
+                        completed = true,
+                        onClick = { planActionItem = completedItem }
+                    )
+                }
+            }
+        }
+
         item {
             HorizontalDivider()
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -2656,7 +2757,14 @@ private fun PurchaseScreen(
                     Modifier.fillMaxWidth().padding(top = 3.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(historyDate, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                    val parsedHistoryDate = runCatching { LocalDate.parse(historyDate) }.getOrNull()
+                    Text(
+                        historyDate +
+                            (parsedHistoryDate?.let { "  ${chineseWeekday(it)}" } ?: ""),
+                        modifier = Modifier.weight(1f),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
                     Text(
                         "$dayFruitCount 种 · ${money(dayTotal)}",
                         style = MaterialTheme.typography.bodySmall,
@@ -2820,6 +2928,206 @@ private fun PurchaseScreen(
             }
             deleteOrder = null
             onChanged()
+        }
+    }
+
+    planActionItem?.let { item ->
+        val completed = item.status == 1
+        val quantity = if (completed && item.actualQuantity > 0) item.actualQuantity else item.quantity
+        val amount = if (completed && item.actualAmount > 0) item.actualAmount else item.estimatedAmount
+
+        AlertDialog(
+            onDismissRequest = { planActionItem = null },
+            title = { Text(item.fruitName) },
+            text = {
+                Text(
+                    (if (completed) "已完成采购" else "待采购") +
+                        "\n数量 ${fmt(quantity)}${item.unit} · 总价 ${money(amount)}" +
+                        if (item.buyerName.isNotBlank()) " · ${item.buyerName}" else ""
+                )
+            },
+            confirmButton = {
+                Row {
+                    TextButton(
+                        onClick = {
+                            planActionItem = null
+                            if (completed) {
+                                completeDialogItem = item
+                                completeDialogEditing = true
+                            } else {
+                                editingPlanItemId = item.id
+                                message = "正在修改 ${item.fruitName}"
+                            }
+                        }
+                    ) { Text("修改") }
+
+                    if (completed) {
+                        TextButton(
+                            onClick = {
+                                planActionItem = null
+                                restoreCompletedItem = item
+                            }
+                        ) { Text("恢复未完成") }
+                    } else {
+                        TextButton(
+                            onClick = {
+                                planActionItem = null
+                                completeDialogItem = item
+                                completeDialogEditing = false
+                            }
+                        ) { Text("完成采购") }
+                    }
+
+                    TextButton(
+                        onClick = {
+                            planActionItem = null
+                            deleteCollaborationItem = item
+                        }
+                    ) {
+                        Text("删除", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { planActionItem = null }) { Text("关闭") }
+            }
+        )
+    }
+
+    completeDialogItem?.let { item ->
+        CollaborationCompleteDialog(
+            db = db,
+            item = item,
+            editingCompleted = completeDialogEditing,
+            recorderUsername = "",
+            recorderDisplayName = "",
+            onDismiss = { completeDialogItem = null },
+            onCompleted = { resultMessage ->
+                message = resultMessage
+                completeDialogItem = null
+                editingPlanItemId = null
+                loadRowsFromCollaborationPlan()
+                onChanged()
+            }
+        )
+    }
+
+    restoreCompletedItem?.let { item ->
+        AlertDialog(
+            onDismissRequest = { restoreCompletedItem = null },
+            title = { Text("恢复未完成？") },
+            text = {
+                Text(
+                    "${item.fruitName} 会重新回到待采购，对应正式采购记录会同步移除，不再计入当天进货。"
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val result = db.restoreCompletedCollaborationPlanItem(item.id)
+                        message = result.message
+                        restoreCompletedItem = null
+                        if (result.success) {
+                            loadRowsFromCollaborationPlan()
+                            onChanged()
+                        }
+                    }
+                ) { Text("确认恢复") }
+            },
+            dismissButton = {
+                TextButton(onClick = { restoreCompletedItem = null }) { Text("取消") }
+            }
+        )
+    }
+
+    deleteCollaborationItem?.let { item ->
+        ConfirmDelete(
+            if (item.status == 1) {
+                "删除 ${item.fruitName} 的已完成采购？对应正式采购记录也会同步删除。"
+            } else {
+                "删除待采购商品 ${item.fruitName}？"
+            },
+            { deleteCollaborationItem = null }
+        ) {
+            val success =
+                if (item.status == 1) {
+                    val result = db.deleteCompletedCollaborationPlanItem(item.id)
+                    message = result.message
+                    result.success
+                } else {
+                    val ok = db.deleteCollaborationPlanItem(item.id)
+                    message = if (ok) "${item.fruitName} 已删除" else "删除失败"
+                    ok
+                }
+            deleteCollaborationItem = null
+            editingPlanItemId = null
+            if (success) {
+                loadRowsFromCollaborationPlan()
+                onChanged()
+            }
+        }
+    }
+}
+
+@Composable
+private fun PurchasePlanStatusCard(
+    item: PurchasePlanItemRecord,
+    completed: Boolean,
+    onClick: () -> Unit
+) {
+    val quantity =
+        if (completed && item.actualQuantity > 0) item.actualQuantity else item.quantity
+    val amount =
+        if (completed && item.actualAmount > 0) item.actualAmount else item.estimatedAmount
+    val unitPrice = if (quantity > 0 && amount > 0) amount / quantity else 0.0
+    val buyer = item.buyerName.ifBlank { "未指定采购人" }
+
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors =
+            CardDefaults.cardColors(
+                containerColor =
+                    if (completed) Color(0xFFE7F7ED)
+                    else Color(0xFFF7F5F8)
+            )
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    if (completed) "✓" else "○",
+                    color = if (completed) BrandGreen else Color(0xFF8A6D00),
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    item.fruitName,
+                    modifier = Modifier.weight(1f),
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    if (completed) "已完成采购" else "待采购  ›",
+                    color = if (completed) BrandGreen else Color(0xFF8A6D00),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            Text(
+                "数量 ${fmt(quantity)}${item.unit}   " +
+                    (if (unitPrice > 0) "单价 ${money(unitPrice)}/${item.unit}   " else "") +
+                    "总价 ${money(amount)}   $buyer",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (completed) Color(0xFF35624A) else Color.DarkGray
+            )
         }
     }
 }
@@ -3125,9 +3433,16 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
     var wechat by remember { mutableStateOf("") }
     var alipay by remember { mutableStateOf("") }
     var cash by remember { mutableStateOf("") }
-    var collectorId by remember { mutableStateOf<Long?>(null) }
-    var historicalCollectorName by remember { mutableStateOf("") }
-    var collectorMenu by remember { mutableStateOf(false) }
+    var nextReceiptRowId by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val receiptRows = remember {
+        mutableStateListOf(
+            ReceiptDraftRow(
+                rowId = nextReceiptRowId++,
+                partnerId = partners.firstOrNull()?.id,
+                partnerNameSnapshot = partners.firstOrNull()?.name.orEmpty()
+            )
+        )
+    }
 
     var expense by remember { mutableStateOf("") }
     var expensePayerId by remember { mutableStateOf<Long?>(null) }
@@ -3156,14 +3471,6 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         activeSelectedStore != null -> activeSelectedStore.name
         historicalSelectedStore != null -> "${historicalSelectedStore.name}（已删除）"
         else -> "请添加位置"
-    }
-
-    val activeCollector = partners.firstOrNull { it.id == collectorId }
-    val collectorDisplayName = when {
-        activeCollector != null -> activeCollector.name
-        editingRecordId != null && collectorId != null ->
-            "${historicalCollectorName.ifBlank { db.getPartnerByIdIncludingDeleted(collectorId!!)?.name ?: "已删除合伙人" }}（已删除）"
-        else -> "未指定"
     }
 
     val activeExpensePayer = partners.firstOrNull { it.id == expensePayerId }
@@ -3202,7 +3509,6 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         if (!keepDate) date = LocalDate.now().toString()
         editingRecordId = null
         historicalStoreName = ""
-        historicalCollectorName = ""
         historicalExpensePayerName = ""
         wechat = ""
         alipay = ""
@@ -3211,7 +3517,14 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         closingStock = ""
         newCustomer = ""
         oldCustomer = ""
-        collectorId = partners.firstOrNull()?.id
+        receiptRows.clear()
+        receiptRows.add(
+            ReceiptDraftRow(
+                rowId = nextReceiptRowId++,
+                partnerId = partners.firstOrNull()?.id,
+                partnerNameSnapshot = partners.firstOrNull()?.name.orEmpty()
+            )
+        )
         expensePayerId = partners.firstOrNull()?.id
         val s = storeId?.let { db.getStoreById(it) }
         openingStock = if (s != null) cleanNumber(db.getPreviousClosingStock(s.id, date)) else ""
@@ -3225,13 +3538,47 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         wechat = cleanNumber(r.wechatIncome)
         alipay = cleanNumber(r.alipayIncome)
         cash = cleanNumber(r.cashIncome)
-        collectorId = listOf(r.wechatCollectorId, r.alipayCollectorId, r.cashCollectorId)
-            .firstOrNull { it > 0 }
-        historicalCollectorName = when (collectorId) {
-            r.wechatCollectorId -> r.wechatCollectorName
-            r.alipayCollectorId -> r.alipayCollectorName
-            r.cashCollectorId -> r.cashCollectorName
-            else -> ""
+        receiptRows.clear()
+        val savedSplits =
+            if (r.receiptSplits.isNotEmpty()) {
+                r.receiptSplits
+            } else {
+                val legacyId =
+                    listOf(
+                        r.wechatCollectorId,
+                        r.alipayCollectorId,
+                        r.cashCollectorId
+                    ).firstOrNull { it > 0 } ?: 0L
+                val legacyName =
+                    listOf(
+                        r.wechatCollectorName,
+                        r.alipayCollectorName,
+                        r.cashCollectorName
+                    ).firstOrNull { it.isNotBlank() && it != "未指定" } ?: "未指定"
+                if (r.revenue > 0.005) {
+                    listOf(ReceiptSplitRecord(legacyId, legacyName, r.revenue))
+                } else {
+                    emptyList()
+                }
+            }
+        savedSplits.forEach { split ->
+            receiptRows.add(
+                ReceiptDraftRow(
+                    rowId = nextReceiptRowId++,
+                    partnerId = split.partnerId.takeIf { it > 0L },
+                    partnerNameSnapshot = split.partnerName,
+                    amount = cleanNumber(split.amount)
+                )
+            )
+        }
+        if (receiptRows.isEmpty()) {
+            receiptRows.add(
+                ReceiptDraftRow(
+                    rowId = nextReceiptRowId++,
+                    partnerId = partners.firstOrNull()?.id,
+                    partnerNameSnapshot = partners.firstOrNull()?.name.orEmpty()
+                )
+            )
         }
         expense = cleanNumber(r.expense)
         expensePayerId = r.expensePayerId.takeIf { it > 0 }
@@ -3249,10 +3596,6 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
             if (storeId == null || stores.none { it.id == storeId }) {
                 storeId = stores.firstOrNull()?.id
                 historicalStoreName = ""
-            }
-            if (collectorId != null && partners.none { it.id == collectorId }) {
-                collectorId = partners.firstOrNull()?.id
-                historicalCollectorName = ""
             }
             if (expensePayerId != null && partners.none { it.id == expensePayerId }) {
                 expensePayerId = partners.firstOrNull()?.id
@@ -3403,21 +3746,32 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                             )
                         }
 
-                        val collectorName =
-                            listOf(
-                                record.wechatCollectorName,
-                                record.alipayCollectorName,
-                                record.cashCollectorName
-                            ).firstOrNull {
-                                it.isNotBlank() && it != "未指定"
-                            }.orEmpty()
+                        val receiptSummary =
+                            if (record.receiptSplits.isNotEmpty()) {
+                                record.receiptSplits
+                                    .joinToString(" · ") { split ->
+                                        "${split.partnerName} ${money(split.amount)}"
+                                    }
+                            } else {
+                                val legacyName =
+                                    listOf(
+                                        record.wechatCollectorName,
+                                        record.alipayCollectorName,
+                                        record.cashCollectorName
+                                    ).firstOrNull { it.isNotBlank() && it != "未指定" }.orEmpty()
+                                if (legacyName.isNotBlank() && record.revenue > 0) {
+                                    "$legacyName ${money(record.revenue)}"
+                                } else {
+                                    ""
+                                }
+                            }
 
                         Text(
                             "微信 ${money(record.wechatIncome)}   " +
                                 "支付宝 ${money(record.alipayIncome)}   " +
                                 "现金 ${money(record.cashIncome)}" +
-                                if (collectorName.isNotBlank()) {
-                                    "   $collectorName"
+                                if (receiptSummary.isNotBlank()) {
+                                    "   ·   $receiptSummary"
                                 } else {
                                     ""
                                 },
@@ -3427,7 +3781,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                                     .bodySmall,
                             color =
                                 Color.DarkGray,
-                            maxLines = 1
+                            maxLines = 2
                         )
                     }
                 }
@@ -3435,62 +3789,31 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         }
 
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                Box(Modifier.weight(1f)) {
-                    CompactSelectButton(
-                        "位置",
-                        storeDisplayName,
-                        Modifier.fillMaxWidth()
-                    ) { storeMenu = true }
+            Box(Modifier.fillMaxWidth()) {
+                CompactSelectButton(
+                    "位置",
+                    storeDisplayName,
+                    Modifier.fillMaxWidth()
+                ) { storeMenu = true }
 
-                    DropdownMenu(expanded = storeMenu, onDismissRequest = { storeMenu = false }) {
-                        stores.forEach { s ->
-                            DropdownMenuItem(
-                                text = { Text(s.name) },
-                                onClick = {
-                                    storeId = s.id
-                                    historicalStoreName = ""
-                                    storeMenu = false
-                                }
-                            )
-                        }
+                DropdownMenu(expanded = storeMenu, onDismissRequest = { storeMenu = false }) {
+                    stores.forEach { s ->
                         DropdownMenuItem(
-                            text = { Text("＋新增位置") },
+                            text = { Text(s.name) },
                             onClick = {
+                                storeId = s.id
+                                historicalStoreName = ""
                                 storeMenu = false
-                                addStoreDialog = true
                             }
                         )
                     }
-                }
-
-                Box(Modifier.weight(1f)) {
-                    CompactSelectButton(
-                        "收款归属",
-                        collectorDisplayName,
-                        Modifier.fillMaxWidth()
-                    ) { collectorMenu = true }
-
-                    DropdownMenu(expanded = collectorMenu, onDismissRequest = { collectorMenu = false }) {
-                        partners.forEach { p ->
-                            DropdownMenuItem(
-                                text = { Text(p.name) },
-                                onClick = {
-                                    collectorId = p.id
-                                    historicalCollectorName = ""
-                                    collectorMenu = false
-                                }
-                            )
+                    DropdownMenuItem(
+                        text = { Text("＋新增位置") },
+                        onClick = {
+                            storeMenu = false
+                            addStoreDialog = true
                         }
-                        DropdownMenuItem(
-                            text = { Text("未指定") },
-                            onClick = {
-                                collectorId = null
-                                historicalCollectorName = ""
-                                collectorMenu = false
-                            }
-                        )
-                    }
+                    )
                 }
             }
         }
@@ -3501,6 +3824,71 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                 CompactNumberField("微信", wechat, { wechat = it }, Modifier.weight(1f))
                 CompactNumberField("支付宝", alipay, { alipay = it }, Modifier.weight(1f))
                 CompactNumberField("现金", cash, { cash = it }, Modifier.weight(1f))
+            }
+        }
+
+        item {
+            val allocated = receiptRows.sumOf { it.amount.toDoubleOrNull() ?: 0.0 }
+            val remaining = revenue - allocated
+
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "归属收款人",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    if (receiptRows.size == 1 && receiptRows.first().amount.isBlank()) {
+                        "单人自动归属全部"
+                    } else if (kotlin.math.abs(remaining) <= 0.01) {
+                        "已全部归属 ✓"
+                    } else if (remaining > 0) {
+                        "待分配 ${money(remaining)}"
+                    } else {
+                        "超出 ${money(-remaining)}"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (kotlin.math.abs(remaining) <= 0.01 || (receiptRows.size == 1 && receiptRows.first().amount.isBlank())) BrandGreen else MaterialTheme.colorScheme.error
+                )
+            }
+
+            receiptRows.forEachIndexed { index, row ->
+                ReceiptSplitDraftRow(
+                    row = row,
+                    partners = partners,
+                    historical = editingRecordId != null,
+                    canDelete = receiptRows.size > 1,
+                    remaining = if (index == receiptRows.lastIndex) remaining else null,
+                    onChange = { updated ->
+                        val target = receiptRows.indexOfFirst { it.rowId == updated.rowId }
+                        if (target >= 0) receiptRows[target] = updated
+                    },
+                    onDelete = {
+                        val target = receiptRows.indexOfFirst { it.rowId == row.rowId }
+                        if (target >= 0) receiptRows.removeAt(target)
+                    }
+                )
+                if (index != receiptRows.lastIndex) Spacer(Modifier.height(5.dp))
+            }
+
+            OutlinedButton(
+                onClick = {
+                    receiptRows.add(
+                        ReceiptDraftRow(
+                            rowId = nextReceiptRowId++,
+                            partnerId = partners.firstOrNull { p -> receiptRows.none { it.partnerId == p.id } }?.id,
+                            partnerNameSnapshot = partners.firstOrNull { p -> receiptRows.none { it.partnerId == p.id } }?.name.orEmpty()
+                        )
+                    )
+                },
+                modifier = Modifier.fillMaxWidth().padding(top = 5.dp).height(38.dp),
+                enabled = partners.isNotEmpty()
+            ) {
+                Text("＋ 添加收款人")
             }
         }
 
@@ -3588,19 +3976,54 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                         return@Button
                     }
 
-                    val requestedCollector = collectorId?.let { id ->
-                        db.getPartnerById(id) ?: if (editingRecordId != null) {
-                            PartnerOption(
-                                id,
-                                historicalCollectorName.ifBlank { db.getPartnerByIdIncludingDeleted(id)?.name ?: "已删除合伙人" }
-                            )
-                        } else null
-                    }
-                    if (collectorId != null && requestedCollector == null) {
-                        message = "保存失败：收款归属已失效，请重新选择"
+                    val normalizedReceiptRows =
+                        when {
+                            revenue <= 0.005 -> emptyList<ReceiptDraftRow>()
+                            receiptRows.size == 1 && receiptRows.first().amount.isBlank() ->
+                                listOf(receiptRows.first().copy(amount = cleanNumber(revenue)))
+                            else -> receiptRows.filter { it.amount.isNotBlank() }
+                        }
+
+                    if (normalizedReceiptRows.any { (it.amount.toDoubleOrNull() ?: 0.0) <= 0.0 }) {
+                        message = "保存失败：每个收款人的归属金额都必须大于0"
                         isError = true
                         return@Button
                     }
+
+                    val receiptTotal =
+                        normalizedReceiptRows.sumOf { it.amount.toDoubleOrNull() ?: 0.0 }
+                    if (kotlin.math.abs(receiptTotal - revenue) > 0.01) {
+                        message =
+                            if (receiptTotal < revenue) {
+                                "保存失败：还有 ${money(revenue - receiptTotal)} 未归属收款人"
+                            } else {
+                                "保存失败：收款归属比营业额多 ${money(receiptTotal - revenue)}"
+                            }
+                        isError = true
+                        return@Button
+                    }
+
+                    val requestedReceiptSplits =
+                        normalizedReceiptRows.map { row ->
+                            val active = row.partnerId?.let { db.getPartnerById(it) }
+                            val historical =
+                                if (editingRecordId != null && row.partnerId != null) {
+                                    db.getPartnerByIdIncludingDeleted(row.partnerId!!)
+                                } else {
+                                    null
+                                }
+                            ReceiptSplitRecord(
+                                partnerId = active?.id ?: historical?.id ?: 0L,
+                                partnerName = active?.name ?: historical?.name ?: row.partnerNameSnapshot.ifBlank { "未指定" },
+                                amount = row.amount.toDoubleOrNull() ?: 0.0
+                            )
+                        }
+                    val legacyCollector =
+                        requestedReceiptSplits.singleOrNull()?.let { split ->
+                            split.partnerId.takeIf { it > 0L }?.let { id ->
+                                PartnerOption(id, split.partnerName)
+                            }
+                        }
 
                     val requestedExpensePayer = expensePayerId?.let { id ->
                         db.getPartnerById(id) ?: if (editingRecordId != null) {
@@ -3621,11 +4044,12 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                         date = date,
                         store = requestedStore,
                         wechat = w,
-                        wechatCollector = requestedCollector,
+                        wechatCollector = legacyCollector,
                         alipay = a,
-                        alipayCollector = requestedCollector,
+                        alipayCollector = legacyCollector,
                         cash = c,
-                        cashCollector = requestedCollector,
+                        cashCollector = legacyCollector,
+                        receiptSplits = requestedReceiptSplits,
                         expense = e,
                         expensePayer = requestedExpensePayer,
                         openingStock = open,
@@ -3763,21 +4187,32 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                         )
                     }
 
-                    val collectorName =
-                        listOf(
-                            record.wechatCollectorName,
-                            record.alipayCollectorName,
-                            record.cashCollectorName
-                        ).firstOrNull {
-                            it.isNotBlank() && it != "未指定"
-                        }.orEmpty()
+                    val receiptSummary =
+                        if (record.receiptSplits.isNotEmpty()) {
+                            record.receiptSplits
+                                .joinToString(" · ") { split ->
+                                    "${split.partnerName} ${money(split.amount)}"
+                                }
+                        } else {
+                            val legacyName =
+                                listOf(
+                                    record.wechatCollectorName,
+                                    record.alipayCollectorName,
+                                    record.cashCollectorName
+                                ).firstOrNull { it.isNotBlank() && it != "未指定" }.orEmpty()
+                            if (legacyName.isNotBlank() && record.revenue > 0) {
+                                "$legacyName ${money(record.revenue)}"
+                            } else {
+                                ""
+                            }
+                        }
 
                     Text(
                         "微信 ${money(record.wechatIncome)}   " +
                             "支付宝 ${money(record.alipayIncome)}   " +
                             "现金 ${money(record.cashIncome)}" +
-                            if (collectorName.isNotBlank()) {
-                                "   $collectorName"
+                            if (receiptSummary.isNotBlank()) {
+                                "   ·   $receiptSummary"
                             } else {
                                 ""
                             },
@@ -3786,7 +4221,7 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                                 .typography
                                 .bodySmall,
                         color = Color.Gray,
-                        maxLines = 1
+                        maxLines = 2
                     )
                 }
             }
@@ -3820,6 +4255,110 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                 isError = true
             }
             deleteRecord = null
+        }
+    }
+}
+
+@Composable
+private fun ReceiptSplitDraftRow(
+    row: ReceiptDraftRow,
+    partners: List<PartnerOption>,
+    historical: Boolean,
+    canDelete: Boolean,
+    remaining: Double?,
+    onChange: (ReceiptDraftRow) -> Unit,
+    onDelete: () -> Unit
+) {
+    var menu by remember(row.rowId) { mutableStateOf(false) }
+    val selected = partners.firstOrNull { it.id == row.partnerId }
+    val display =
+        when {
+            selected != null -> selected.name
+            row.partnerId != null && historical && row.partnerNameSnapshot.isNotBlank() ->
+                "${row.partnerNameSnapshot}（已删除）"
+            row.partnerNameSnapshot.isNotBlank() -> row.partnerNameSnapshot
+            else -> "未指定"
+        }
+
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.Bottom
+    ) {
+        Box(Modifier.weight(1.1f)) {
+            CompactSelectButton(
+                "收款人",
+                display,
+                Modifier.fillMaxWidth()
+            ) { menu = true }
+            DropdownMenu(
+                expanded = menu,
+                onDismissRequest = { menu = false }
+            ) {
+                partners.forEach { partner ->
+                    DropdownMenuItem(
+                        text = { Text(partner.name) },
+                        onClick = {
+                            onChange(
+                                row.copy(
+                                    partnerId = partner.id,
+                                    partnerNameSnapshot = partner.name
+                                )
+                            )
+                            menu = false
+                        }
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("未指定") },
+                    onClick = {
+                        onChange(
+                            row.copy(
+                                partnerId = null,
+                                partnerNameSnapshot = "未指定"
+                            )
+                        )
+                        menu = false
+                    }
+                )
+            }
+        }
+
+        CompactNumberField(
+            "归属金额",
+            row.amount,
+            { onChange(row.copy(amount = it)) },
+            Modifier.weight(0.9f)
+        )
+
+        if (remaining != null && remaining > 0.01) {
+            TextButton(
+                onClick = {
+                    val current = row.amount.toDoubleOrNull() ?: 0.0
+                    onChange(
+                        row.copy(
+                            amount = cleanNumber(current + remaining)
+                        )
+                    )
+                },
+                modifier = Modifier.height(38.dp),
+                contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp)
+            ) {
+                Text("填剩余", fontSize = 11.sp)
+            }
+        } else {
+            Spacer(Modifier.width(38.dp))
+        }
+    }
+
+    if (canDelete) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(
+                onClick = onDelete,
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+            ) {
+                Text("删除此收款人", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+            }
         }
     }
 }
@@ -14184,8 +14723,20 @@ private fun SelectButton(label: String, value: String, modifier: Modifier = Modi
 @Composable
 private fun DateField(label: String, date: String, onDate: (String) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    OutlinedButton(onClick = { showDatePicker(context, date, onDate) }, modifier = Modifier.fillMaxWidth()) {
-        Text("$label：$date", Modifier.weight(1f)); Text("选择日期")
+    val parsed = runCatching { LocalDate.parse(date) }.getOrNull()
+    val display = date + (parsed?.let { "  ${chineseWeekday(it)}" } ?: "")
+    OutlinedButton(
+        onClick = { showDatePicker(context, date, onDate) },
+        modifier = Modifier.fillMaxWidth().height(48.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+    ) {
+        Text(
+            "$label：$display",
+            Modifier.weight(1f),
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text("📅", fontSize = 14.sp)
     }
 }
 
@@ -14354,13 +14905,13 @@ private fun TimeFilterSelector(
                     "开始日期",
                     customStart,
                     Modifier.weight(1f),
-                    onCustomStart
+                    onDate = onCustomStart
                 )
                 CompactDateSelector(
                     "结束日期",
                     customEnd,
                     Modifier.weight(1f),
-                    onCustomEnd
+                    onDate = onCustomEnd
                 )
             }
         } else if (
@@ -14426,7 +14977,7 @@ internal fun CompactDateNavigator(
                 onClick = {
                     onDate(parsedDate.minusDays(1).toString())
                 },
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier.size(40.dp)
             ) {
                 Text(
                     "‹",
@@ -14446,19 +14997,19 @@ internal fun CompactDateNavigator(
                 },
                 modifier = Modifier
                     .weight(1f)
-                    .height(40.dp),
-                contentPadding = PaddingValues(horizontal = 5.dp, vertical = 2.dp)
+                    .height(48.dp),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 3.dp)
             ) {
                 Text(
                     displayText,
                     modifier = Modifier.weight(1f),
-                    fontSize = if (chineseDisplay) 13.sp else 12.sp,
-                    fontWeight = if (chineseDisplay) FontWeight.Normal else FontWeight.Medium,
+                    fontSize = if (chineseDisplay) 16.sp else 15.sp,
+                    fontWeight = FontWeight.SemiBold,
                     maxLines = 1
                 )
                 Text(
                     "📅",
-                    fontSize = 11.sp
+                    fontSize = 14.sp
                 )
             }
 
@@ -14466,7 +15017,7 @@ internal fun CompactDateNavigator(
                 onClick = {
                     onDate(parsedDate.plusDays(1).toString())
                 },
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier.size(40.dp)
             ) {
                 Text(
                     "›",
@@ -14480,17 +15031,36 @@ internal fun CompactDateNavigator(
 }
 
 @Composable
-private fun CompactDateSelector(label: String, date: String, modifier: Modifier = Modifier, onDate: (String) -> Unit) {
+private fun CompactDateSelector(
+    label: String,
+    date: String,
+    modifier: Modifier = Modifier,
+    showWeekday: Boolean = false,
+    onDate: (String) -> Unit
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val parsed = runCatching { LocalDate.parse(date) }.getOrNull()
+    val display =
+        if (showWeekday && parsed != null) {
+            "$date  ${chineseWeekday(parsed)}"
+        } else {
+            date
+        }
     Column(modifier) {
         Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
         OutlinedButton(
             onClick = { showDatePicker(context, date, onDate) },
-            modifier = Modifier.fillMaxWidth().height(40.dp),
-            contentPadding = PaddingValues(horizontal = 9.dp, vertical = 2.dp)
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp)
         ) {
-            Text(date, modifier = Modifier.weight(1f), fontSize = 13.sp)
-            Text("📅", fontSize = 12.sp)
+            Text(
+                display,
+                modifier = Modifier.weight(1f),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
+            Text("📅", fontSize = 14.sp)
         }
     }
 }
