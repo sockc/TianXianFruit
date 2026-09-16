@@ -11,11 +11,13 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -107,6 +109,13 @@ private enum class HistoryTimeFilter(val label: String) {
     THIS_MONTH("本月"),
     LAST_MONTH("上月"),
     CUSTOM("自定义")
+}
+
+private enum class HistorySection(val label: String) {
+    BUSINESS("营业历史"),
+    PURCHASE("采购历史"),
+    PROFIT("利润历史"),
+    PLAN("采购计划")
 }
 
 private enum class SettlementView(val label: String) {
@@ -202,6 +211,11 @@ fun TianXianApp(
     var moreTarget by remember {
         mutableStateOf(
             MorePage.MENU
+        )
+    }
+    var historyTarget by remember {
+        mutableStateOf(
+            HistorySection.BUSINESS
         )
     }
     var dataVersion by remember {
@@ -517,6 +531,8 @@ fun TianXianApp(
                             }
                         },
                         onHistory = {
+                            historyTarget =
+                                HistorySection.BUSINESS
                             moreTarget =
                                 MorePage.HISTORY
                             page =
@@ -573,6 +589,14 @@ fun TianXianApp(
                                 dataVersion,
                             onChanged = {
                                 notifyDataChanged()
+                            },
+                            onOpenHistory = {
+                                historyTarget =
+                                    HistorySection.PURCHASE
+                                moreTarget =
+                                    MorePage.HISTORY
+                                page =
+                                    AppPage.MORE
                             }
                         )
                     AppPage.PLAN ->
@@ -588,12 +612,26 @@ fun TianXianApp(
                                 notifyDataChanged()
                             }
                         )
-                    AppPage.SESSION -> SessionScreen(db, dataVersion) { notifyDataChanged() }
+                    AppPage.SESSION ->
+                        SessionScreen(
+                            db = db,
+                            dataVersion = dataVersion,
+                            onChanged = { notifyDataChanged() },
+                            onOpenHistory = {
+                                historyTarget =
+                                    HistorySection.BUSINESS
+                                moreTarget =
+                                    MorePage.HISTORY
+                                page =
+                                    AppPage.MORE
+                            }
+                        )
                     AppPage.SETTLEMENT -> SettlementScreen(db, dataVersion) { notifyDataChanged() }
                     AppPage.MORE -> MoreScreen(
                         db = db,
                         dataVersion = dataVersion,
                         initialSub = moreTarget,
+                        initialHistorySection = historyTarget,
                         ledgerManager =
                             ledgerManager,
                         cloudSyncManager =
@@ -2122,11 +2160,13 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PurchaseScreen(
     db: AppDatabase,
     dataVersion: Int,
-    onChanged: () -> Unit
+    onChanged: () -> Unit,
+    onOpenHistory: () -> Unit
 ) {
     val focusManager = LocalFocusManager.current
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
@@ -2511,54 +2551,8 @@ private fun PurchaseScreen(
                 }
 
                 else -> {
-                    LaunchedEffect(
-                        date,
-                        editingOrderId,
-                        row.rowId,
-                        row.planItemId,
-                        row.fruitId,
-                        row.quantity,
-                        row.unit,
-                        row.totalCost,
-                        row.buyerId
-                    ) {
-                        if (editingOrderId == null) {
-                            val fruit = fruits.firstOrNull { it.id == row.fruitId }
-                            val quantityValue = row.quantity.toDoubleOrNull() ?: 0.0
-                            val amountValue = row.totalCost.toDoubleOrNull() ?: 0.0
-                            val fingerprint = rowFingerprint(row)
-
-                            if (
-                                fruit != null &&
-                                quantityValue > 0 &&
-                                syncedFingerprints[row.rowId] != fingerprint
-                            ) {
-                                kotlinx.coroutines.delay(700L)
-                                val latest = rows.firstOrNull { it.rowId == row.rowId }
-                                if (latest != null && rowFingerprint(latest) == fingerprint) {
-                                    val assignedBuyer =
-                                        latest.buyerId?.let { id -> partners.firstOrNull { it.id == id } }
-                                    val planItemId =
-                                        db.upsertPurchaseDraftToCollaboration(
-                                            date = date,
-                                            itemId = latest.planItemId,
-                                            fruit = fruit,
-                                            quantity = quantityValue,
-                                            unit = latest.unit,
-                                            estimatedAmount = amountValue.coerceAtLeast(0.0),
-                                            buyer = assignedBuyer
-                                        )
-                                    if (planItemId > 0) {
-                                        val updated = latest.copy(planItemId = planItemId)
-                                        syncedFingerprints[row.rowId] = rowFingerprint(updated)
-                                        if (latest.planItemId != planItemId) updateRow(row.rowId, updated)
-                                        onChanged()
-                                    }
-                                }
-                            }
-                        }
-                    }
-
+                    // FIX2：采购录入不再随输入自动写入协作采购。
+                    // 只有点击“保存采购”/“保存修改”时才持久化，避免输入数量时误保存。
                     PurchaseDraftRowEditor(
                         row = row,
                         fruits = fruits,
@@ -2742,12 +2736,18 @@ private fun PurchaseScreen(
         item {
             HorizontalDivider()
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "采购历史",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
+                TextButton(
+                    onClick = onOpenHistory,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text(
+                        "采购历史  ›",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
                 Text("最近7个采购日", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             }
         }
@@ -2819,10 +2819,14 @@ private fun PurchaseScreen(
                                     Row(
                                         Modifier
                                             .fillMaxWidth()
-                                            .clickable {
-                                                historyActionDetail = detail
-                                                historyActionFruitName = item.fruitName
-                                            }
+                                            .combinedClickable(
+                                                onClick = {
+                                                    loadHistoryOrderForEdit(detail)
+                                                },
+                                                onLongClick = {
+                                                    deleteOrder = detail
+                                                }
+                                            )
                                             .padding(vertical = 3.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
@@ -3430,8 +3434,14 @@ private fun PurchaseDraftRowEditor(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Unit) {
+private fun SessionScreen(
+    db: AppDatabase,
+    dataVersion: Int,
+    onChanged: () -> Unit,
+    onOpenHistory: () -> Unit
+) {
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
     val stores = remember(dataVersion) { db.getStores() }
     val partners = remember(dataVersion) { db.getPartners() }
@@ -4177,17 +4187,18 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                 verticalAlignment =
                     Alignment.CenterVertically
             ) {
-                Text(
-                    "营业历史",
-                    modifier =
-                        Modifier.weight(1f),
-                    fontWeight =
-                        FontWeight.Bold,
-                    style =
-                        MaterialTheme
-                            .typography
-                            .titleMedium
-                )
+                TextButton(
+                    onClick = onOpenHistory,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text(
+                        "营业历史  ›",
+                        modifier = Modifier.fillMaxWidth(),
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
                 Text(
                     "最近7个营业日",
                     style =
@@ -4220,11 +4231,17 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         ) {
             record ->
             Card(
-                onClick = {
-                    loadRecord(record)
-                },
                 modifier =
-                    Modifier.fillMaxWidth(),
+                    Modifier
+                        .fillMaxWidth()
+                        .combinedClickable(
+                            onClick = {
+                                loadRecord(record)
+                            },
+                            onLongClick = {
+                                deleteRecord = record
+                            }
+                        ),
                 colors =
                     CardDefaults.cardColors(
                         containerColor =
@@ -5898,6 +5915,7 @@ private fun MoreScreen(
     db: AppDatabase,
     dataVersion: Int,
     initialSub: MorePage = MorePage.MENU,
+    initialHistorySection: HistorySection = HistorySection.BUSINESS,
     ledgerManager: LedgerManager,
     cloudSyncManager: CloudSyncManager,
     currentBook: LedgerBook,
@@ -6352,19 +6370,21 @@ private fun MoreScreen(
                 }
             ) {
                 HistoryContent(
-                    db,
-                    dataVersion,
-                    BookPermissions.has(
-                        currentBook,
-                        systemRole,
-                        BookPermissions.BUSINESS_EDIT
-                    ) ||
+                    db = db,
+                    dataVersion = dataVersion,
+                    canEdit =
                         BookPermissions.has(
                             currentBook,
                             systemRole,
-                            BookPermissions.PURCHASE_EDIT
-                        ),
-                    onChanged
+                            BookPermissions.BUSINESS_EDIT
+                        ) ||
+                            BookPermissions.has(
+                                currentBook,
+                                systemRole,
+                                BookPermissions.PURCHASE_EDIT
+                            ),
+                    initialSection = initialHistorySection,
+                    onChanged = onChanged
                 )
             }
         }
@@ -11249,8 +11269,12 @@ private fun HistoryContent(
     db: AppDatabase,
     dataVersion: Int,
     canEdit: Boolean,
+    initialSection: HistorySection = HistorySection.BUSINESS,
     onChanged: () -> Unit
 ) {
+    var section by remember(initialSection) {
+        mutableStateOf(initialSection)
+    }
     var timeFilter by remember {
         mutableStateOf(HistoryTimeFilter.ALL)
     }
@@ -11269,42 +11293,29 @@ private fun HistoryContent(
 
     val range = remember(timeFilter, customStart, customEnd) {
         when (timeFilter) {
-            HistoryTimeFilter.ALL ->
-                null to null
-
-            HistoryTimeFilter.TODAY ->
-                today.toString() to today.toString()
-
+            HistoryTimeFilter.ALL -> null to null
+            HistoryTimeFilter.TODAY -> today.toString() to today.toString()
             HistoryTimeFilter.YESTERDAY -> {
                 val d = today.minusDays(1)
                 d.toString() to d.toString()
             }
-
             HistoryTimeFilter.LAST_7 ->
                 today.minusDays(6).toString() to today.toString()
-
             HistoryTimeFilter.LAST_30 ->
                 today.minusDays(29).toString() to today.toString()
-
             HistoryTimeFilter.THIS_MONTH ->
                 today.withDayOfMonth(1).toString() to today.toString()
-
             HistoryTimeFilter.LAST_MONTH -> {
                 val firstThisMonth = today.withDayOfMonth(1)
                 val firstLastMonth = firstThisMonth.minusMonths(1)
-                firstLastMonth.toString() to
-                    firstThisMonth.minusDays(1).toString()
+                firstLastMonth.toString() to firstThisMonth.minusDays(1).toString()
             }
-
-            HistoryTimeFilter.CUSTOM ->
-                customStart to customEnd
+            HistoryTimeFilter.CUSTOM -> customStart to customEnd
         }
     }
 
     val invalidCustomRange =
-        timeFilter == HistoryTimeFilter.CUSTOM &&
-            customStart > customEnd
-
+        timeFilter == HistoryTimeFilter.CUSTOM && customStart > customEnd
     val queryStart =
         if (invalidCustomRange) "9999-12-31" else range.first
     val queryEnd =
@@ -11313,19 +11324,15 @@ private fun HistoryContent(
     val purchases = remember(dataVersion, queryStart, queryEnd) {
         db.getPurchaseOrdersBetween(queryStart, queryEnd)
     }
-
     val sessions = remember(dataVersion, queryStart, queryEnd) {
         db.getDailyRecordsBetween(queryStart, queryEnd)
     }
-
     val profitRows = remember(dataVersion, queryStart, queryEnd) {
         db.getProfitDistributionsBetween(queryStart, queryEnd)
     }
-
     val purchasePlans = remember(dataVersion, queryStart, queryEnd) {
         db.getPurchasePlansBetween(queryStart, queryEnd)
     }
-
     val profitByDate = remember(profitRows) {
         profitRows
             .groupBy { it.date }
@@ -11342,41 +11349,54 @@ private fun HistoryContent(
 
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         item {
-            Text(
-                "时间筛选",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-
-            Box(
+            Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(top = 5.dp)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(7.dp)
             ) {
-                CompactSelectButton(
-                    "查看范围",
-                    timeFilter.label,
-                    Modifier.fillMaxWidth()
-                ) {
-                    filterMenu = true
+                HistorySection.entries.forEach { option ->
+                    FilterChip(
+                        selected = section == option,
+                        onClick = { section = option },
+                        label = { Text(option.label) }
+                    )
                 }
+            }
+        }
 
-                DropdownMenu(
-                    expanded = filterMenu,
-                    onDismissRequest = { filterMenu = false }
-                ) {
-                    HistoryTimeFilter.entries.forEach { option ->
-                        DropdownMenuItem(
-                            text = { Text(option.label) },
-                            onClick = {
-                                timeFilter = option
-                                filterMenu = false
-                            }
-                        )
+        item {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                Box(Modifier.weight(1f)) {
+                    CompactSelectButton(
+                        "查看范围",
+                        timeFilter.label,
+                        Modifier.fillMaxWidth()
+                    ) {
+                        filterMenu = true
+                    }
+
+                    DropdownMenu(
+                        expanded = filterMenu,
+                        onDismissRequest = { filterMenu = false }
+                    ) {
+                        HistoryTimeFilter.entries.forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text(option.label) },
+                                onClick = {
+                                    timeFilter = option
+                                    filterMenu = false
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -11384,24 +11404,17 @@ private fun HistoryContent(
 
         if (timeFilter == HistoryTimeFilter.CUSTOM) {
             item {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CompactDateSelector(
                         "开始日期",
                         customStart,
                         Modifier.weight(1f)
-                    ) {
-                        customStart = it
-                    }
-
+                    ) { customStart = it }
                     CompactDateSelector(
                         "结束日期",
                         customEnd,
                         Modifier.weight(1f)
-                    ) {
-                        customEnd = it
-                    }
+                    ) { customEnd = it }
                 }
 
                 if (invalidCustomRange) {
@@ -11415,11 +11428,7 @@ private fun HistoryContent(
             }
         }
 
-        if (
-            !invalidCustomRange &&
-            range.first != null &&
-            range.second != null
-        ) {
+        if (!invalidCustomRange && range.first != null && range.second != null) {
             item {
                 Text(
                     "${range.first} ～ ${range.second}",
@@ -11430,6 +11439,13 @@ private fun HistoryContent(
         }
 
         item {
+            val countText =
+                when (section) {
+                    HistorySection.BUSINESS -> "${sessions.size} 条营业记录"
+                    HistorySection.PURCHASE -> "${purchases.size} 张采购单"
+                    HistorySection.PROFIT -> "${profitByDate.size} 天利润记录"
+                    HistorySection.PLAN -> "${purchasePlans.size} 张采购计划"
+                }
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = Color(0xFFF5F8F6)
@@ -11439,258 +11455,166 @@ private fun HistoryContent(
                     Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 11.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "营业 ${sessions.size} 条",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Text(
-                        "采购 ${purchases.size} 单",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Text(
-                        "利润 ${profitByDate.size} 天",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Text(
-                        "采购 ${purchasePlans.size} 张",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-        }
-
-        item {
-            Text(
-                "营业历史",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
-        if (sessions.isEmpty()) {
-            item {
-                Text(
-                    "当前时间范围暂无营业记录",
-                    color = Color.Gray
-                )
-            }
-        }
-
-        items(
-            sessions,
-            key = { "s${it.id}" }
-        ) { s ->
-            RecordCard {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "${s.date} · ${s.storeName}",
+                        section.label,
+                        modifier = Modifier.weight(1f),
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        "营业 ${money(s.revenue)} · " +
-                            "利润 ${money(s.profit)} · " +
-                            "客户 ${s.customerTotal}",
-                        style = MaterialTheme.typography.bodySmall
+                        countText,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = BrandGreen
                     )
                 }
+            }
+        }
 
-                if (canEdit) {
-                    TextButton(
-                        onClick = {
-                            deleteSession = s
-                        }
-                    ) {
-                        Text("删除")
+        when (section) {
+            HistorySection.BUSINESS -> {
+                if (sessions.isEmpty()) {
+                    item {
+                        Text("当前时间范围暂无营业记录", color = Color.Gray)
                     }
                 }
-            }
-        }
 
-        item {
-            HorizontalDivider()
-
-            Text(
-                "采购历史",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-
-            Text(
-                "修改采购记录请到“采购”页点击对应记录的“编辑”。",
-                style = MaterialTheme.typography.bodySmall,
-                color = Color.Gray
-            )
-        }
-
-        if (purchases.isEmpty()) {
-            item {
-                Text(
-                    "当前时间范围暂无采购记录",
-                    color = Color.Gray
-                )
-            }
-        }
-
-        items(
-            purchases,
-            key = { "p${it.order.id}" }
-        ) { p ->
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(12.dp)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                items(sessions, key = { "s${it.id}" }) { s ->
+                    RecordCard {
                         Column(Modifier.weight(1f)) {
                             Text(
-                                "${p.order.date} · ${p.order.buyerName}",
+                                "${s.date} · ${s.storeName}",
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                "采购 · ${money(p.order.totalCost)}"
+                                "营业 ${money(s.revenue)} · " +
+                                    "利润 ${money(s.profit)} · " +
+                                    "客户 ${s.customerTotal}",
+                                style = MaterialTheme.typography.bodySmall
                             )
                         }
 
                         if (canEdit) {
-                            TextButton(
-                                onClick = {
-                                    deleteOrder = p
-                                }
-                            ) {
+                            TextButton(onClick = { deleteSession = s }) {
                                 Text("删除")
                             }
                         }
                     }
-
-                    p.items.forEach { i ->
-                        Text(
-                            "• ${i.fruitName} " +
-                                "${fmt(i.quantity)}${i.unit} " +
-                                money(i.totalCost),
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
                 }
             }
-        }
 
-        item {
-            HorizontalDivider()
+            HistorySection.PURCHASE -> {
+                if (purchases.isEmpty()) {
+                    item {
+                        Text("当前时间范围暂无采购记录", color = Color.Gray)
+                    }
+                }
 
-            Text(
-                "利润分配历史",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-        }
+                items(purchases, key = { "p${it.order.id}" }) { p ->
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        "${p.order.date} · ${p.order.buyerName}",
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text("采购 · ${money(p.order.totalCost)}")
+                                }
 
-        if (profitByDate.isEmpty()) {
-            item {
-                Text(
-                    "当前时间范围暂无利润分配记录",
-                    color = Color.Gray
-                )
-            }
-        }
+                                if (canEdit) {
+                                    TextButton(onClick = { deleteOrder = p }) {
+                                        Text("删除")
+                                    }
+                                }
+                            }
 
-        profitByDate.forEach { entry ->
-            val date = entry.first
-            val rows = entry.second
-
-            item(key = "profit-$date") {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(11.dp)) {
-                        Text(
-                            date,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        Text(
-                            "利润 " +
-                                money(
-                                    rows.firstOrNull()?.sourceProfit ?: 0.0
-                                ) +
-                                " · 已分配 " +
-                                money(
-                                    rows.sumOf { it.allocatedProfit }
-                                ),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.Gray
-                        )
-
-                        rows.forEach { r ->
-                            Text(
-                                "• ${r.partnerName} " +
-                                    "${fmt(profitRatioPercent(r.ratio))}%  " +
-                                    money(r.allocatedProfit),
-                                style = MaterialTheme.typography.bodySmall
-                            )
+                            p.items.forEach { i ->
+                                Text(
+                                    "• ${i.fruitName} " +
+                                        "${fmt(i.quantity)}${i.unit} " +
+                                        money(i.totalCost),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
                         }
                     }
                 }
             }
-        }
 
-        item {
-            HorizontalDivider()
+            HistorySection.PROFIT -> {
+                if (profitByDate.isEmpty()) {
+                    item {
+                        Text("当前时间范围暂无利润记录", color = Color.Gray)
+                    }
+                }
 
-            Text(
-                "采购计划历史",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
-        if (purchasePlans.isEmpty()) {
-            item {
-                Text(
-                    "当前时间范围暂无采购计划",
-                    color = Color.Gray
-                )
-            }
-        }
-
-        items(
-            purchasePlans,
-            key = { "plan${it.plan.id}" }
-        ) { detail ->
-            val pending =
-                detail.items.count { it.status == 0 }
-            val purchased =
-                detail.items.count { it.status == 1 }
-            val cancelled =
-                detail.items.count { it.status == 2 }
-
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(11.dp)) {
-                    Text(
-                        detail.plan.planDate,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Text(
-                        "待采购 $pending · " +
-                            "已采购 $purchased · " +
-                            "取消 $cancelled",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.Gray
-                    )
-
-                    detail.items.forEach { item ->
-                        val statusText =
-                            when (item.status) {
-                                1 -> "已采购"
-                                2 -> "取消"
-                                else -> "待采购"
+                profitByDate.forEach { entry ->
+                    val historyDate = entry.first
+                    val rows = entry.second
+                    item(key = "profit-$historyDate") {
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(11.dp)) {
+                                Text(historyDate, fontWeight = FontWeight.Bold)
+                                Text(
+                                    "利润 " +
+                                        money(rows.firstOrNull()?.sourceProfit ?: 0.0) +
+                                        " · 已分配 " +
+                                        money(rows.sumOf { it.allocatedProfit }),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.Gray
+                                )
+                                rows.forEach { r ->
+                                    Text(
+                                        "• ${r.partnerName} " +
+                                            "${fmt(profitRatioPercent(r.ratio))}%  " +
+                                            money(r.allocatedProfit),
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
                             }
+                        }
+                    }
+                }
+            }
 
-                        Text(
-                            "• ${item.fruitName} " +
-                                "${fmt(item.quantity)}${item.unit} · " +
-                                statusText,
-                            style = MaterialTheme.typography.bodySmall
-                        )
+            HistorySection.PLAN -> {
+                if (purchasePlans.isEmpty()) {
+                    item {
+                        Text("当前时间范围暂无采购计划", color = Color.Gray)
+                    }
+                }
+
+                items(purchasePlans, key = { "plan${it.plan.id}" }) { detail ->
+                    val pending = detail.items.count { it.status == 0 }
+                    val purchased = detail.items.count { it.status == 1 }
+                    val cancelled = detail.items.count { it.status == 2 }
+
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(11.dp)) {
+                            Text(
+                                detail.plan.planDate,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                "待采购 $pending · 已采购 $purchased · 取消 $cancelled",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray
+                            )
+                            detail.items.forEach { item ->
+                                val statusText =
+                                    when (item.status) {
+                                        1 -> "已采购"
+                                        2 -> "取消"
+                                        else -> "待采购"
+                                    }
+                                Text(
+                                    "• ${item.fruitName} " +
+                                        "${fmt(item.quantity)}${item.unit} · $statusText",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -11700,25 +11624,25 @@ private fun HistoryContent(
     if (canEdit) {
         deleteOrder?.let { p ->
             ConfirmDelete(
-            "删除这张采购单？",
-            { deleteOrder = null }
-        ) {
-            db.deletePurchaseOrder(p.order.id)
-            deleteOrder = null
-            onChanged()
+                "删除这张采购单？",
+                { deleteOrder = null }
+            ) {
+                db.deletePurchaseOrder(p.order.id)
+                deleteOrder = null
+                onChanged()
+            }
         }
-    }
 
-    deleteSession?.let { s ->
-        ConfirmDelete(
-            "删除 ${s.date} ${s.storeName} 营业记录？",
-            { deleteSession = null }
-        ) {
-            db.deleteStoreDailyRecord(s.id)
-            deleteSession = null
-            onChanged()
+        deleteSession?.let { s ->
+            ConfirmDelete(
+                "删除 ${s.date} ${s.storeName} 营业记录？",
+                { deleteSession = null }
+            ) {
+                db.deleteStoreDailyRecord(s.id)
+                deleteSession = null
+                onChanged()
+            }
         }
-    }
     }
 }
 
