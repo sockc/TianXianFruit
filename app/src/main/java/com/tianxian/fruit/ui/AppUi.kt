@@ -149,8 +149,19 @@ private data class ReceiptDraftRow(
     val rowId: Long,
     val partnerId: Long? = null,
     val partnerNameSnapshot: String = "",
-    val amount: String = ""
-)
+    val wechat: String = "",
+    val alipay: String = "",
+    val cash: String = ""
+) {
+    val total: Double
+        get() =
+            (wechat.toDoubleOrNull() ?: 0.0) +
+                (alipay.toDoubleOrNull() ?: 0.0) +
+                (cash.toDoubleOrNull() ?: 0.0)
+
+    val hasIncome: Boolean
+        get() = total > 0.005
+}
 
 private data class PurchaseDraftRow(
     val rowId: Long,
@@ -3430,9 +3441,6 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
     var storeMenu by remember { mutableStateOf(false) }
     var addStoreDialog by remember { mutableStateOf(false) }
 
-    var wechat by remember { mutableStateOf("") }
-    var alipay by remember { mutableStateOf("") }
-    var cash by remember { mutableStateOf("") }
     var nextReceiptRowId by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val receiptRows = remember {
         mutableStateListOf(
@@ -3510,9 +3518,6 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         editingRecordId = null
         historicalStoreName = ""
         historicalExpensePayerName = ""
-        wechat = ""
-        alipay = ""
-        cash = ""
         expense = ""
         closingStock = ""
         newCustomer = ""
@@ -3535,9 +3540,6 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         date = r.date
         storeId = r.storeId
         historicalStoreName = r.storeName
-        wechat = cleanNumber(r.wechatIncome)
-        alipay = cleanNumber(r.alipayIncome)
-        cash = cleanNumber(r.cashIncome)
         receiptRows.clear()
         val savedSplits =
             if (r.receiptSplits.isNotEmpty()) {
@@ -3561,15 +3563,73 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                     emptyList()
                 }
             }
-        savedSplits.forEach { split ->
+        val hasChannelDetails =
+            savedSplits.any {
+                it.wechatIncome > 0.005 ||
+                    it.alipayIncome > 0.005 ||
+                    it.cashIncome > 0.005
+            }
+
+        if (hasChannelDetails) {
+            savedSplits.forEach { split ->
+                receiptRows.add(
+                    ReceiptDraftRow(
+                        rowId = nextReceiptRowId++,
+                        partnerId = split.partnerId.takeIf { it > 0L },
+                        partnerNameSnapshot = split.partnerName,
+                        wechat = cleanNumber(split.wechatIncome),
+                        alipay = cleanNumber(split.alipayIncome),
+                        cash = cleanNumber(split.cashIncome)
+                    )
+                )
+            }
+        } else if (savedSplits.size == 1) {
+            val split = savedSplits.first()
             receiptRows.add(
                 ReceiptDraftRow(
                     rowId = nextReceiptRowId++,
                     partnerId = split.partnerId.takeIf { it > 0L },
                     partnerNameSnapshot = split.partnerName,
-                    amount = cleanNumber(split.amount)
+                    wechat = cleanNumber(r.wechatIncome),
+                    alipay = cleanNumber(r.alipayIncome),
+                    cash = cleanNumber(r.cashIncome)
                 )
             )
+        } else if (savedSplits.isNotEmpty()) {
+            // V1.4.7 初版只保存了“每人总收款”，没有保存每人的微信/支付宝/现金拆分。
+            // 为了编辑旧记录时不丢数据，按每人总收款占比临时拆回三个渠道；
+            // 总微信/支付宝/现金及每人总额保持不变。新保存后会写入精确渠道明细。
+            var leftWechat = r.wechatIncome
+            var leftAlipay = r.alipayIncome
+            var leftCash = r.cashIncome
+            savedSplits.forEachIndexed { index, split ->
+                val ratio =
+                    if (r.revenue > 0.005) {
+                        split.amount / r.revenue
+                    } else {
+                        0.0
+                    }
+                val rowWechat =
+                    if (index == savedSplits.lastIndex) leftWechat
+                    else uiRoundMoney(r.wechatIncome * ratio).also { leftWechat = uiRoundMoney(leftWechat - it) }
+                val rowAlipay =
+                    if (index == savedSplits.lastIndex) leftAlipay
+                    else uiRoundMoney(r.alipayIncome * ratio).also { leftAlipay = uiRoundMoney(leftAlipay - it) }
+                val rowCash =
+                    if (index == savedSplits.lastIndex) leftCash
+                    else uiRoundMoney(r.cashIncome * ratio).also { leftCash = uiRoundMoney(leftCash - it) }
+
+                receiptRows.add(
+                    ReceiptDraftRow(
+                        rowId = nextReceiptRowId++,
+                        partnerId = split.partnerId.takeIf { it > 0L },
+                        partnerNameSnapshot = split.partnerName,
+                        wechat = cleanNumber(rowWechat),
+                        alipay = cleanNumber(rowAlipay),
+                        cash = cleanNumber(rowCash)
+                    )
+                )
+            }
         }
         if (receiptRows.isEmpty()) {
             receiptRows.add(
@@ -3587,8 +3647,15 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         closingStock = cleanNumber(r.stockLeftValue)
         newCustomer = r.newCustomer.toString()
         oldCustomer = r.oldCustomer.toString()
-        message = "已载入 ${r.storeName} 的营业记录，可直接修改"
-        isError = false
+        val missingMultiReceipt =
+            savedSplits.any { it.partnerName == "多人收款明细未同步" }
+        message =
+            if (missingMultiReceipt) {
+                "这条记录的多人收款明细尚未同步，请先让原录入设备升级 FIX1 并完成同步后再修改"
+            } else {
+                "已载入 ${r.storeName} 的营业记录，可直接修改"
+            }
+        isError = missingMultiReceipt
     }
 
     LaunchedEffect(dataVersion, stores.map { it.id }, partners.map { it.id }, editingRecordId) {
@@ -3613,9 +3680,9 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         }
     }
 
-    val w = wechat.toDoubleOrNull() ?: 0.0
-    val a = alipay.toDoubleOrNull() ?: 0.0
-    val c = cash.toDoubleOrNull() ?: 0.0
+    val w = receiptRows.sumOf { it.wechat.toDoubleOrNull() ?: 0.0 }
+    val a = receiptRows.sumOf { it.alipay.toDoubleOrNull() ?: 0.0 }
+    val c = receiptRows.sumOf { it.cash.toDoubleOrNull() ?: 0.0 }
     val e = expense.toDoubleOrNull() ?: 0.0
     val open = openingStock.toDoubleOrNull() ?: 0.0
     val close = closingStock.toDoubleOrNull() ?: 0.0
@@ -3819,50 +3886,44 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
         }
 
         item {
-            Text("收款", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                CompactNumberField("微信", wechat, { wechat = it }, Modifier.weight(1f))
-                CompactNumberField("支付宝", alipay, { alipay = it }, Modifier.weight(1f))
-                CompactNumberField("现金", cash, { cash = it }, Modifier.weight(1f))
-            }
-        }
-
-        item {
-            val allocated = receiptRows.sumOf { it.amount.toDoubleOrNull() ?: 0.0 }
-            val remaining = revenue - allocated
-
             Row(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "归属收款人",
+                    "收款明细",
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.weight(1f)
                 )
                 Text(
-                    if (receiptRows.size == 1 && receiptRows.first().amount.isBlank()) {
-                        "单人自动归属全部"
-                    } else if (kotlin.math.abs(remaining) <= 0.01) {
-                        "已全部归属 ✓"
-                    } else if (remaining > 0) {
-                        "待分配 ${money(remaining)}"
-                    } else {
-                        "超出 ${money(-remaining)}"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (kotlin.math.abs(remaining) <= 0.01 || (receiptRows.size == 1 && receiptRows.first().amount.isBlank())) BrandGreen else MaterialTheme.colorScheme.error
+                    "营业额 ${money(revenue)}",
+                    color = BrandGreen,
+                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.bodySmall
                 )
             }
 
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                CompactReadOnlyField("微信合计", money(w), Modifier.weight(1f))
+                CompactReadOnlyField("支付宝合计", money(a), Modifier.weight(1f))
+                CompactReadOnlyField("现金合计", money(c), Modifier.weight(1f))
+            }
+
+            Text(
+                "每个收款人分别填写自己的微信、支付宝、现金，系统自动汇总，不需要再手工分配归属金额。",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.Gray
+            )
+        }
+
+        item {
             receiptRows.forEachIndexed { index, row ->
                 ReceiptSplitDraftRow(
                     row = row,
                     partners = partners,
                     historical = editingRecordId != null,
                     canDelete = receiptRows.size > 1,
-                    remaining = if (index == receiptRows.lastIndex) remaining else null,
                     onChange = { updated ->
                         val target = receiptRows.indexOfFirst { it.rowId == updated.rowId }
                         if (target >= 0) receiptRows[target] = updated
@@ -3872,23 +3933,31 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                         if (target >= 0) receiptRows.removeAt(target)
                     }
                 )
-                if (index != receiptRows.lastIndex) Spacer(Modifier.height(5.dp))
+                if (index != receiptRows.lastIndex) Spacer(Modifier.height(7.dp))
             }
 
             OutlinedButton(
                 onClick = {
+                    val unused =
+                        partners.firstOrNull { p ->
+                            receiptRows.none { it.partnerId == p.id }
+                        }
                     receiptRows.add(
                         ReceiptDraftRow(
                             rowId = nextReceiptRowId++,
-                            partnerId = partners.firstOrNull { p -> receiptRows.none { it.partnerId == p.id } }?.id,
-                            partnerNameSnapshot = partners.firstOrNull { p -> receiptRows.none { it.partnerId == p.id } }?.name.orEmpty()
+                            partnerId = unused?.id,
+                            partnerNameSnapshot = unused?.name.orEmpty()
                         )
                     )
                 },
-                modifier = Modifier.fillMaxWidth().padding(top = 5.dp).height(38.dp),
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp)
+                        .height(42.dp),
                 enabled = partners.isNotEmpty()
             ) {
-                Text("＋ 添加收款人")
+                Text("＋ 再添加收款人")
             }
         }
 
@@ -3977,47 +4046,59 @@ private fun SessionScreen(db: AppDatabase, dataVersion: Int, onChanged: () -> Un
                     }
 
                     val normalizedReceiptRows =
-                        when {
-                            revenue <= 0.005 -> emptyList<ReceiptDraftRow>()
-                            receiptRows.size == 1 && receiptRows.first().amount.isBlank() ->
-                                listOf(receiptRows.first().copy(amount = cleanNumber(revenue)))
-                            else -> receiptRows.filter { it.amount.isNotBlank() }
-                        }
+                        receiptRows.filter { it.hasIncome }
 
-                    if (normalizedReceiptRows.any { (it.amount.toDoubleOrNull() ?: 0.0) <= 0.0 }) {
-                        message = "保存失败：每个收款人的归属金额都必须大于0"
+                    if (revenue > 0.005 && normalizedReceiptRows.isEmpty()) {
+                        message = "保存失败：请填写至少一位收款人的微信、支付宝或现金"
                         isError = true
                         return@Button
                     }
 
-                    val receiptTotal =
-                        normalizedReceiptRows.sumOf { it.amount.toDoubleOrNull() ?: 0.0 }
-                    if (kotlin.math.abs(receiptTotal - revenue) > 0.01) {
-                        message =
-                            if (receiptTotal < revenue) {
-                                "保存失败：还有 ${money(revenue - receiptTotal)} 未归属收款人"
-                            } else {
-                                "保存失败：收款归属比营业额多 ${money(receiptTotal - revenue)}"
-                            }
+                    if (normalizedReceiptRows.any { it.partnerId == null }) {
+                        message = "保存失败：请为每一组有收款金额的记录选择收款人"
                         isError = true
                         return@Button
                     }
 
                     val requestedReceiptSplits =
-                        normalizedReceiptRows.map { row ->
-                            val active = row.partnerId?.let { db.getPartnerById(it) }
-                            val historical =
-                                if (editingRecordId != null && row.partnerId != null) {
-                                    db.getPartnerByIdIncludingDeleted(row.partnerId!!)
-                                } else {
-                                    null
-                                }
-                            ReceiptSplitRecord(
-                                partnerId = active?.id ?: historical?.id ?: 0L,
-                                partnerName = active?.name ?: historical?.name ?: row.partnerNameSnapshot.ifBlank { "未指定" },
-                                amount = row.amount.toDoubleOrNull() ?: 0.0
-                            )
-                        }
+                        normalizedReceiptRows
+                            .map { row ->
+                                val active = row.partnerId?.let { db.getPartnerById(it) }
+                                val historical =
+                                    if (editingRecordId != null && row.partnerId != null) {
+                                        db.getPartnerByIdIncludingDeleted(row.partnerId!!)
+                                    } else {
+                                        null
+                                    }
+                                val rowWechat = row.wechat.toDoubleOrNull() ?: 0.0
+                                val rowAlipay = row.alipay.toDoubleOrNull() ?: 0.0
+                                val rowCash = row.cash.toDoubleOrNull() ?: 0.0
+                                ReceiptSplitRecord(
+                                    partnerId = active?.id ?: historical?.id ?: 0L,
+                                    partnerName =
+                                        active?.name
+                                            ?: historical?.name
+                                            ?: row.partnerNameSnapshot.ifBlank { "未指定" },
+                                    amount = rowWechat + rowAlipay + rowCash,
+                                    wechatIncome = rowWechat,
+                                    alipayIncome = rowAlipay,
+                                    cashIncome = rowCash
+                                )
+                            }
+                            .groupBy { it.partnerId to it.partnerName }
+                            .map { (key, parts) ->
+                                val rowWechat = parts.sumOf { it.wechatIncome }
+                                val rowAlipay = parts.sumOf { it.alipayIncome }
+                                val rowCash = parts.sumOf { it.cashIncome }
+                                ReceiptSplitRecord(
+                                    partnerId = key.first,
+                                    partnerName = key.second,
+                                    amount = rowWechat + rowAlipay + rowCash,
+                                    wechatIncome = rowWechat,
+                                    alipayIncome = rowAlipay,
+                                    cashIncome = rowCash
+                                )
+                            }
                     val legacyCollector =
                         requestedReceiptSplits.singleOrNull()?.let { split ->
                             split.partnerId.takeIf { it > 0L }?.let { id ->
@@ -4265,7 +4346,6 @@ private fun ReceiptSplitDraftRow(
     partners: List<PartnerOption>,
     historical: Boolean,
     canDelete: Boolean,
-    remaining: Double?,
     onChange: (ReceiptDraftRow) -> Unit,
     onDelete: () -> Unit
 ) {
@@ -4277,87 +4357,98 @@ private fun ReceiptSplitDraftRow(
             row.partnerId != null && historical && row.partnerNameSnapshot.isNotBlank() ->
                 "${row.partnerNameSnapshot}（已删除）"
             row.partnerNameSnapshot.isNotBlank() -> row.partnerNameSnapshot
-            else -> "未指定"
+            else -> "请选择收款人"
         }
 
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.Bottom
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(0xFFF8FAF9)
+        )
     ) {
-        Box(Modifier.weight(1.1f)) {
-            CompactSelectButton(
-                "收款人",
-                display,
-                Modifier.fillMaxWidth()
-            ) { menu = true }
-            DropdownMenu(
-                expanded = menu,
-                onDismissRequest = { menu = false }
+        Column(
+            Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                partners.forEach { partner ->
-                    DropdownMenuItem(
-                        text = { Text(partner.name) },
-                        onClick = {
-                            onChange(
-                                row.copy(
-                                    partnerId = partner.id,
-                                    partnerNameSnapshot = partner.name
-                                )
+                Box(Modifier.weight(1f)) {
+                    CompactSelectButton(
+                        "收款人",
+                        display,
+                        Modifier.fillMaxWidth()
+                    ) { menu = true }
+                    DropdownMenu(
+                        expanded = menu,
+                        onDismissRequest = { menu = false }
+                    ) {
+                        partners.forEach { partner ->
+                            DropdownMenuItem(
+                                text = { Text(partner.name) },
+                                onClick = {
+                                    onChange(
+                                        row.copy(
+                                            partnerId = partner.id,
+                                            partnerNameSnapshot = partner.name
+                                        )
+                                    )
+                                    menu = false
+                                }
                             )
-                            menu = false
                         }
+                    }
+                }
+
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        "小计",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Gray
+                    )
+                    Text(
+                        money(row.total),
+                        fontWeight = FontWeight.Bold,
+                        color = BrandGreen
                     )
                 }
-                DropdownMenuItem(
-                    text = { Text("未指定") },
-                    onClick = {
-                        onChange(
-                            row.copy(
-                                partnerId = null,
-                                partnerNameSnapshot = "未指定"
-                            )
+
+                if (canDelete) {
+                    TextButton(
+                        onClick = onDelete,
+                        modifier = Modifier.height(38.dp),
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                    ) {
+                        Text(
+                            "删除",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.error
                         )
-                        menu = false
                     }
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                CompactNumberField(
+                    "微信",
+                    row.wechat,
+                    { onChange(row.copy(wechat = it)) },
+                    Modifier.weight(1f)
                 )
-            }
-        }
-
-        CompactNumberField(
-            "归属金额",
-            row.amount,
-            { onChange(row.copy(amount = it)) },
-            Modifier.weight(0.9f)
-        )
-
-        if (remaining != null && remaining > 0.01) {
-            TextButton(
-                onClick = {
-                    val current = row.amount.toDoubleOrNull() ?: 0.0
-                    onChange(
-                        row.copy(
-                            amount = cleanNumber(current + remaining)
-                        )
-                    )
-                },
-                modifier = Modifier.height(38.dp),
-                contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp)
-            ) {
-                Text("填剩余", fontSize = 11.sp)
-            }
-        } else {
-            Spacer(Modifier.width(38.dp))
-        }
-    }
-
-    if (canDelete) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(
-                onClick = onDelete,
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-            ) {
-                Text("删除此收款人", fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+                CompactNumberField(
+                    "支付宝",
+                    row.alipay,
+                    { onChange(row.copy(alipay = it)) },
+                    Modifier.weight(1f)
+                )
+                CompactNumberField(
+                    "现金",
+                    row.cash,
+                    { onChange(row.copy(cash = it)) },
+                    Modifier.weight(1f)
+                )
             }
         }
     }
@@ -4484,7 +4575,7 @@ private fun SettlementDayContent(
         summary.profit,
         profitRows.size
     ) {
-        if (profitRows.isEmpty() && summary.profit > 0) {
+        if (profitRows.isEmpty() && kotlin.math.abs(summary.profit) > 0.005) {
             val rules = db.getProfitRules()
             if (rules.isNotEmpty()) {
                 val partners = db.getPartners()
@@ -4582,7 +4673,7 @@ private fun SettlementDayContent(
 
         item {
             Text(
-                "利润结算状态",
+                "利润 / 亏损分担状态",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -4596,10 +4687,13 @@ private fun SettlementDayContent(
                     )
                 ) {
                     Text(
-                        if (summary.profit > 0) {
-                            "当天利润分配正在生成或尚未保存。"
-                        } else {
-                            "当天没有可结算的正利润。"
+                        when {
+                            summary.profit > 0.005 ->
+                                "当天利润分配正在生成或尚未保存。"
+                            summary.profit < -0.005 ->
+                                "当天为亏损，请先保存亏损分担比例；保存后仍可正常生成当日资金轧差方案。"
+                            else ->
+                                "当天利润为0，无需利润分配；如有垫付和收款仍可核对资金。"
                         },
                         modifier = Modifier.padding(12.dp),
                         color = Color.Gray
@@ -4630,7 +4724,11 @@ private fun SettlementDayContent(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                "应得 ${money(row.earnedProfit)}",
+                                if (row.earnedProfit < -0.005) {
+                                    "应承担亏损 ${money(-row.earnedProfit)}"
+                                } else {
+                                    "应得利润 ${money(row.earnedProfit)}"
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.Gray
                             )
@@ -4645,9 +4743,17 @@ private fun SettlementDayContent(
                                 )
                             }
 
+                            row.earnedProfit < -0.005 -> {
+                                Text(
+                                    "已计入当日轧差",
+                                    color = BrandGreen,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
                             row.pendingProfit < -0.005 -> {
                                 Text(
-                                    "多结算 ${money(-row.pendingProfit)}",
+                                    "结算差额 ${money(-row.pendingProfit)}",
                                     color = MaterialTheme.colorScheme.error,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -4771,10 +4877,9 @@ private fun SettlementDayContent(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                "这里计算进货垫付、费用垫付、应得利润和实际收款的资金差额。" +
-                    "它与上面的“利润已发放确认”是两套状态。" +
-                    "如果利润每3～7天才发一次，可只使用利润结算/批量结算；" +
-                    "资金轧差方案仍按当天全部应得利润计算。",
+                "这里计算进货垫付、费用垫付、实际收款以及当天利润/亏损分担后的资金差额。" +
+                    "正利润按合伙人应得利润计算；负利润按同一分配比例变成各自应承担的亏损。" +
+                    "每天利润独立计算，不会拿昨天亏损去扣今天利润；未实际转清的只是资金往来余额。",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.Gray
             )
@@ -4804,7 +4909,7 @@ private fun SettlementDayContent(
                         money(expenses.sumOf { it.amount })
                     )
                     SummaryRow(
-                        "已保存利润分配",
+                        "已保存利润/亏损分担",
                         money(
                             profitRows.sumOf {
                                 it.allocatedProfit
@@ -4896,16 +5001,23 @@ private fun SettlementDayContent(
                         }
 
                         Text(
-                            "进货 ${money(p.purchasePaid)} + " +
-                                "费用 ${money(p.expensePaid)} + " +
-                                "利润 ${money(p.profitShare)} − " +
-                                "已收 ${money(p.revenueReceived)}",
+                            "进货垫付 ${money(p.purchasePaid)} + " +
+                                "费用垫付 ${money(p.expensePaid)} + " +
+                                if (p.profitShare < -0.005) {
+                                    "亏损分担 -${money(-p.profitShare)} − 已收 ${money(p.revenueReceived)}"
+                                } else {
+                                    "利润 ${money(p.profitShare)} − 已收 ${money(p.revenueReceived)}"
+                                },
                             style =
                                 MaterialTheme.typography.bodySmall,
                             color = Color.Gray
                         )
                         Text(
-                            "最终应留 ${money(p.shouldKeep)}",
+                            if (p.shouldKeep < -0.005) {
+                                "除已收款外还应补入 ${money(-p.shouldKeep)}"
+                            } else {
+                                "最终应留 / 收回 ${money(p.shouldKeep)}"
+                            },
                             style =
                                 MaterialTheme.typography.bodySmall
                         )
@@ -5241,7 +5353,7 @@ private fun SettlementBatchContent(
                                 "待结算 ${money(stat.pendingProfit)}"
 
                             stat.pendingProfit < -0.005 ->
-                                "多结算 ${money(-stat.pendingProfit)}"
+                                "净亏损 ${money(-stat.pendingProfit)}"
 
                             else ->
                                 "已结清"
@@ -5546,7 +5658,7 @@ private fun SettlementStatsContent(
                         if (stat.pendingProfit >= 0) {
                             "待结算利润"
                         } else {
-                            "多结算"
+                            "净亏损分担"
                         },
                         money(
                             kotlin.math.abs(
@@ -5582,7 +5694,7 @@ private fun SettlementStatsContent(
                             if (totalPending >= 0) {
                                 "待结算 ${money(totalPending)}"
                             } else {
-                                "多结算 ${money(-totalPending)}"
+                                "净亏损 ${money(-totalPending)}"
                             },
                         style =
                             MaterialTheme.typography.bodySmall
@@ -5660,7 +5772,7 @@ private fun SettlementStatsContent(
                                             "待 ${money(row.pendingProfit)}"
 
                                         row.pendingProfit < -0.005 ->
-                                            "多 ${money(-row.pendingProfit)}"
+                                            "亏损 ${money(-row.pendingProfit)}"
 
                                         else ->
                                             "已结算"
@@ -7564,7 +7676,11 @@ private fun buildSettlementReportLines(
             stat ->
             lines +=
                 ReportLine(
-                    "${stat.partnerName}  应得 ${money(stat.earnedProfit)}  已结算 ${money(stat.settledProfit)}  待结算 ${money(stat.pendingProfit)}"
+                    if (stat.earnedProfit < -0.005) {
+                        "${stat.partnerName}  亏损分担 ${money(-stat.earnedProfit)}  已结算利润 ${money(stat.settledProfit)}"
+                    } else {
+                        "${stat.partnerName}  应得 ${money(stat.earnedProfit)}  已结算 ${money(stat.settledProfit)}  待结算 ${money(stat.pendingProfit)}"
+                    }
                 )
         }
 
@@ -7631,6 +7747,9 @@ private fun buildSettlementReportLines(
                         row ->
                         val status =
                             when {
+                                row.earnedProfit < -0.005 ->
+                                    "亏损已计入当日资金轧差"
+
                                 row.pendingProfit <=
                                     0.005 ->
                                     if (
@@ -7652,7 +7771,11 @@ private fun buildSettlementReportLines(
 
                         lines +=
                             ReportLine(
-                                "${row.partnerName}  应得 ${money(row.earnedProfit)}  已结算 ${money(row.settledProfit)}  待结算 ${money(row.pendingProfit)}  $status"
+                                if (row.earnedProfit < -0.005) {
+                                    "${row.partnerName}  亏损分担 ${money(-row.earnedProfit)}  $status"
+                                } else {
+                                    "${row.partnerName}  应得 ${money(row.earnedProfit)}  已结算 ${money(row.settledProfit)}  待结算 ${money(row.pendingProfit)}  $status"
+                                }
                             )
                     }
                 }
@@ -14550,7 +14673,14 @@ private fun ProfitContent(
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item { DateField("分配日期", date) { date = it } }
-        item { MetricCard("当天可分利润", money(summary.profit), Modifier.fillMaxWidth(), SoftOrange) }
+        item {
+            MetricCard(
+                if (summary.profit < 0) "当天亏损" else "当天可分利润",
+                money(summary.profit),
+                Modifier.fillMaxWidth(),
+                SoftOrange
+            )
+        }
         item {
             Text("分配百分比", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text("当前合计：${String.format(Locale.CHINA, "%.2f", totalPercent)}%（必须等于100%）", color = if (kotlin.math.abs(totalPercent - 100.0) < 0.01) BrandGreen else MaterialTheme.colorScheme.error)
@@ -14595,7 +14725,7 @@ private fun ProfitContent(
                         }
                     }, modifier = Modifier.weight(1f)) { Text("保存百分比规则") }
                     Button(onClick = {
-                        if (summary.profit <= 0) message = "当天利润必须大于0才能生成利润分配"
+                        if (kotlin.math.abs(summary.profit) <= 0.005) message = "当天利润为0，无需生成分配"
                         else if (partners.isEmpty()) message = "请先添加合伙人"
                         else if (kotlin.math.abs(totalPercent - 100.0) >= 0.01) message = "百分比合计必须等于100%"
                         else {
@@ -14619,11 +14749,14 @@ private fun ProfitContent(
             }
         }
 
-        if (summary.profit > 0 && partners.isNotEmpty()) {
+        if (kotlin.math.abs(summary.profit) > 0.005 && partners.isNotEmpty()) {
             item {
                 Card(colors = CardDefaults.cardColors(containerColor = SoftGreen)) {
                     Column(Modifier.padding(14.dp)) {
-                        Text("分配预览", fontWeight = FontWeight.Bold)
+                        Text(
+                            if (summary.profit < 0) "亏损分担预览" else "分配预览",
+                            fontWeight = FontWeight.Bold
+                        )
                         allocations.forEach { (p, pct) -> SummaryRow("${p.name} · ${cleanPercent(pct)}%", money(summary.profit * pct / 100.0)) }
                     }
                 }
@@ -15354,5 +15487,7 @@ private fun profitRatioPercent(
     } else {
         ratio
     }
+
+private fun uiRoundMoney(v: Double): Double = kotlin.math.round(v * 100.0) / 100.0
 
 private fun cleanNumber(v: Double): String = if (v == 0.0) "" else fmt(v)

@@ -121,7 +121,10 @@ data class PriceHistoryRecord(
 data class ReceiptSplitRecord(
     val partnerId: Long,
     val partnerName: String,
-    val amount: Double
+    val amount: Double,
+    val wechatIncome: Double = 0.0,
+    val alipayIncome: Double = 0.0,
+    val cashIncome: Double = 0.0
 )
 
 data class StoreDailyRecord(
@@ -503,6 +506,29 @@ class AppDatabase(
         if (oldVersion < 15) {
             createV15MultiReceipt(
                 db
+            )
+        }
+        if (oldVersion < 16) {
+            createV16ReceiptDetailResync(
+                db
+            )
+        }
+    }
+
+    private fun createV16ReceiptDetailResync(
+        db: SQLiteDatabase
+    ) {
+        if (
+            tableExists(db, "store_daily_record") &&
+            columnExists(db, "store_daily_record", "receipt_splits_json")
+        ) {
+            // FIX1 重新触发已有多人收款记录的同步。
+            // V1.4.7 初版已经有 receipt_splits_json，但部分另一台旧设备只显示
+            // 兼容字段“多人收款”。升级后把真实明细重新推送一次。
+            db.execSQL(
+                "UPDATE store_daily_record " +
+                    "SET receipt_splits_json=receipt_splits_json " +
+                    "WHERE deleted=0 AND receipt_splits_json<>'[]'"
             )
         }
     }
@@ -6449,13 +6475,23 @@ class AppDatabase(
 
         val normalizedReceiptSplits =
             receiptSplits
-                .filter { it.amount > 0.005 }
-                .map { split ->
-                    if (split.partnerId <= 0L) {
+                .mapNotNull { split ->
+                    val wechatPart = roundMoney(split.wechatIncome)
+                    val alipayPart = roundMoney(split.alipayIncome)
+                    val cashPart = roundMoney(split.cashIncome)
+                    val channelTotal = roundMoney(wechatPart + alipayPart + cashPart)
+                    val normalizedAmount =
+                        if (channelTotal > 0.005) channelTotal else roundMoney(split.amount)
+                    if (normalizedAmount <= 0.005) {
+                        null
+                    } else if (split.partnerId <= 0L) {
                         split.copy(
                             partnerId = 0L,
                             partnerName = split.partnerName.ifBlank { "未指定" },
-                            amount = roundMoney(split.amount)
+                            amount = normalizedAmount,
+                            wechatIncome = wechatPart,
+                            alipayIncome = alipayPart,
+                            cashIncome = cashPart
                         )
                     } else {
                         val active = getPartnerById(split.partnerId)
@@ -6485,7 +6521,10 @@ class AppDatabase(
                         split.copy(
                             partnerId = resolved.id,
                             partnerName = resolved.name,
-                            amount = roundMoney(split.amount)
+                            amount = normalizedAmount,
+                            wechatIncome = wechatPart,
+                            alipayIncome = alipayPart,
+                            cashIncome = cashPart
                         )
                     }
                 }
@@ -6511,26 +6550,40 @@ class AppDatabase(
                 revenue > 0.005 -> {
                     val legacyParts =
                         listOf(
-                            Triple(freshWechatCollector, wechat, "微信"),
-                            Triple(freshAlipayCollector, alipay, "支付宝"),
-                            Triple(freshCashCollector, cash, "现金")
+                            ReceiptSplitRecord(
+                                partnerId = freshWechatCollector?.id ?: 0L,
+                                partnerName = freshWechatCollector?.name ?: "未指定",
+                                amount = roundMoney(wechat),
+                                wechatIncome = roundMoney(wechat)
+                            ),
+                            ReceiptSplitRecord(
+                                partnerId = freshAlipayCollector?.id ?: 0L,
+                                partnerName = freshAlipayCollector?.name ?: "未指定",
+                                amount = roundMoney(alipay),
+                                alipayIncome = roundMoney(alipay)
+                            ),
+                            ReceiptSplitRecord(
+                                partnerId = freshCashCollector?.id ?: 0L,
+                                partnerName = freshCashCollector?.name ?: "未指定",
+                                amount = roundMoney(cash),
+                                cashIncome = roundMoney(cash)
+                            )
                         )
-                            .filter { (_, amount, _) -> amount > 0.005 }
-                            .map { (partner, amount, _) ->
-                                ReceiptSplitRecord(
-                                    partnerId = partner?.id ?: 0L,
-                                    partnerName = partner?.name ?: "未指定",
-                                    amount = roundMoney(amount)
-                                )
-                            }
+                            .filter { it.amount > 0.005 }
 
                     legacyParts
                         .groupBy { it.partnerId to it.partnerName }
                         .map { (key, parts) ->
+                            val rowWechat = roundMoney(parts.sumOf { it.wechatIncome })
+                            val rowAlipay = roundMoney(parts.sumOf { it.alipayIncome })
+                            val rowCash = roundMoney(parts.sumOf { it.cashIncome })
                             ReceiptSplitRecord(
                                 partnerId = key.first,
                                 partnerName = key.second,
-                                amount = roundMoney(parts.sumOf { it.amount })
+                                amount = roundMoney(rowWechat + rowAlipay + rowCash),
+                                wechatIncome = rowWechat,
+                                alipayIncome = rowAlipay,
+                                cashIncome = rowCash
                             )
                         }
                 }
@@ -7039,8 +7092,15 @@ class AppDatabase(
         if (summary.revenue <= 0.0) return CashSettlementResult(false, "当天还没有营业额")
 
         val profitRows = getProfitDistribution(date)
-        if (profitRows.isEmpty()) {
-            return CashSettlementResult(false, "请先到“更多 → 利润分配”保存当天利润分配")
+        if (profitRows.isEmpty() && kotlin.math.abs(summary.profit) > 0.005) {
+            return CashSettlementResult(
+                false,
+                if (summary.profit < 0) {
+                    "请先到“更多 → 利润分配”保存当天亏损分担"
+                } else {
+                    "请先到“更多 → 利润分配”保存当天利润分配"
+                }
+            )
         }
 
         val records = getDailyRecords(date)
@@ -7266,7 +7326,7 @@ class AppDatabase(
         val totalPercent = allocations.sumOf { it.second }
         if (kotlin.math.abs(totalPercent - 100.0) >= 0.01) return false
         val profit = getDailySummary(date).profit
-        if (profit <= 0) return false
+        if (kotlin.math.abs(profit) <= 0.005) return false
 
         val db = writableDatabase
         db.beginTransaction()
@@ -7779,6 +7839,9 @@ class AppDatabase(
                         put("partner_id", split.partnerId)
                         put("partner_name", split.partnerName)
                         put("amount", roundMoney(split.amount))
+                        put("wechat_income", roundMoney(split.wechatIncome))
+                        put("alipay_income", roundMoney(split.alipayIncome))
+                        put("cash_income", roundMoney(split.cashIncome))
                     }
                 )
             }
@@ -7793,13 +7856,25 @@ class AppDatabase(
             buildList {
                 for (i in 0 until array.length()) {
                     val item = array.optJSONObject(i) ?: continue
-                    val amount = item.optDouble("amount", 0.0)
+                    val wechat = roundMoney(item.optDouble("wechat_income", 0.0))
+                    val alipay = roundMoney(item.optDouble("alipay_income", 0.0))
+                    val cash = roundMoney(item.optDouble("cash_income", 0.0))
+                    val channelTotal = roundMoney(wechat + alipay + cash)
+                    val amount =
+                        if (channelTotal > 0.005) {
+                            channelTotal
+                        } else {
+                            roundMoney(item.optDouble("amount", 0.0))
+                        }
                     if (amount <= 0.005) continue
                     add(
                         ReceiptSplitRecord(
                             partnerId = item.optLong("partner_id", 0L),
                             partnerName = item.optString("partner_name", "未指定").ifBlank { "未指定" },
-                            amount = roundMoney(amount)
+                            amount = amount,
+                            wechatIncome = wechat,
+                            alipayIncome = alipay,
+                            cashIncome = cash
                         )
                     )
                 }
@@ -7819,21 +7894,55 @@ class AppDatabase(
 
         // V1.4.6 及更早记录没有 receipt_splits_json。按原来的三个支付渠道
         // 回放收款归属，避免旧记录中不同渠道由不同人收款时被合并错人。
+        // V1.4.7 初版如果另一台旧设备只拿到兼容字段，会看到“多人收款”。
+        // “多人收款”不是实际合伙人，不能把整笔钱错误记到这个虚拟名称下。
+        val legacyNames =
+            listOf(
+                c.str("wechat_collector_name"),
+                c.str("alipay_collector_name"),
+                c.str("cash_collector_name")
+            )
+        if (legacyNames.any { it == "多人收款" }) {
+            val revenue =
+                roundMoney(
+                    c.dbl("wechat_income") +
+                        c.dbl("alipay_income") +
+                        c.dbl("cash_income")
+                )
+            return if (revenue > 0.005) {
+                listOf(
+                    ReceiptSplitRecord(
+                        partnerId = 0L,
+                        partnerName = "多人收款明细未同步",
+                        amount = revenue,
+                        wechatIncome = c.dbl("wechat_income"),
+                        alipayIncome = c.dbl("alipay_income"),
+                        cashIncome = c.dbl("cash_income")
+                    )
+                )
+            } else {
+                emptyList()
+            }
+        }
+
         return listOf(
             ReceiptSplitRecord(
-                c.long("wechat_collector_id"),
-                c.str("wechat_collector_name").ifBlank { "未指定" },
-                c.dbl("wechat_income")
+                partnerId = c.long("wechat_collector_id"),
+                partnerName = c.str("wechat_collector_name").ifBlank { "未指定" },
+                amount = c.dbl("wechat_income"),
+                wechatIncome = c.dbl("wechat_income")
             ),
             ReceiptSplitRecord(
-                c.long("alipay_collector_id"),
-                c.str("alipay_collector_name").ifBlank { "未指定" },
-                c.dbl("alipay_income")
+                partnerId = c.long("alipay_collector_id"),
+                partnerName = c.str("alipay_collector_name").ifBlank { "未指定" },
+                amount = c.dbl("alipay_income"),
+                alipayIncome = c.dbl("alipay_income")
             ),
             ReceiptSplitRecord(
-                c.long("cash_collector_id"),
-                c.str("cash_collector_name").ifBlank { "未指定" },
-                c.dbl("cash_income")
+                partnerId = c.long("cash_collector_id"),
+                partnerName = c.str("cash_collector_name").ifBlank { "未指定" },
+                amount = c.dbl("cash_income"),
+                cashIncome = c.dbl("cash_income")
             )
         )
             .filter { it.amount > 0.005 }
@@ -7842,7 +7951,10 @@ class AppDatabase(
                 ReceiptSplitRecord(
                     partnerId = key.first,
                     partnerName = key.second,
-                    amount = roundMoney(parts.sumOf { it.amount })
+                    amount = roundMoney(parts.sumOf { it.amount }),
+                    wechatIncome = roundMoney(parts.sumOf { it.wechatIncome }),
+                    alipayIncome = roundMoney(parts.sumOf { it.alipayIncome }),
+                    cashIncome = roundMoney(parts.sumOf { it.cashIncome })
                 )
             }
     }
@@ -7905,7 +8017,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 15
+        const val DB_VERSION = 16
     }
 }
 
