@@ -120,8 +120,8 @@ private enum class HistorySection(val label: String) {
 
 private enum class SettlementView(val label: String) {
     DAY("当日结算"),
-    BATCH("批量结算"),
-    STATS("结算统计")
+    BATCH("资金余额"),
+    STATS("结算记录")
 }
 
 private enum class ReportType(val label: String) {
@@ -193,6 +193,42 @@ private data class PurchaseDraftRow(
             unitPrice.isBlank() &&
             totalCost.isBlank()
 }
+
+
+private enum class PurchaseHistoryEditMode {
+    ITEM,
+    BUYER_DAY,
+    DAY
+}
+
+private data class PurchaseHistoryEditTarget(
+    val mode: PurchaseHistoryEditMode,
+    val date: String,
+    val details: List<PurchaseOrderDetail>,
+    val focusItemId: Long? = null,
+    val buyerName: String = ""
+) {
+    val stateKey: String
+        get() =
+            listOf(
+                mode.name,
+                date,
+                focusItemId?.toString().orEmpty(),
+                details.joinToString(",") {
+                    it.order.id.toString()
+                }
+            ).joinToString("|")
+}
+
+private data class PurchaseHistoryEditDraft(
+    val orderId: Long,
+    val itemId: Long,
+    val fruitId: Long,
+    val fruitName: String,
+    val unit: String,
+    val quantity: String,
+    val totalCost: String
+)
 
 
 @Composable
@@ -2203,6 +2239,9 @@ private fun PurchaseScreen(
     var deleteOrder by remember { mutableStateOf<PurchaseOrderDetail?>(null) }
     var historyActionDetail by remember { mutableStateOf<PurchaseOrderDetail?>(null) }
     var historyActionFruitName by remember { mutableStateOf("") }
+    var historyEditTarget by remember {
+        mutableStateOf<PurchaseHistoryEditTarget?>(null)
+    }
     var editingPlanItemId by remember { mutableStateOf<Long?>(null) }
     var planActionItem by remember { mutableStateOf<PurchasePlanItemRecord?>(null) }
     var completeDialogItem by remember { mutableStateOf<PurchasePlanItemRecord?>(null) }
@@ -2772,7 +2811,18 @@ private fun PurchaseScreen(
                     Text(
                         historyDate +
                             (parsedHistoryDate?.let { "  ${chineseWeekday(it)}" } ?: ""),
-                        modifier = Modifier.weight(1f),
+                        modifier =
+                            Modifier
+                                .weight(1f)
+                                .clickable {
+                                    historyEditTarget =
+                                        PurchaseHistoryEditTarget(
+                                            mode =
+                                                PurchaseHistoryEditMode.DAY,
+                                            date = historyDate,
+                                            details = dayOrders
+                                        )
+                                },
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp
                     )
@@ -2803,7 +2853,22 @@ private fun PurchaseScreen(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     buyerName,
-                                    modifier = Modifier.weight(1f),
+                                    modifier =
+                                        Modifier
+                                            .weight(1f)
+                                            .clickable {
+                                                historyEditTarget =
+                                                    PurchaseHistoryEditTarget(
+                                                        mode =
+                                                            PurchaseHistoryEditMode.BUYER_DAY,
+                                                        date =
+                                                            historyDate,
+                                                        details =
+                                                            buyerDetails,
+                                                        buyerName =
+                                                            buyerName
+                                                    )
+                                            },
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
@@ -2821,7 +2886,19 @@ private fun PurchaseScreen(
                                             .fillMaxWidth()
                                             .combinedClickable(
                                                 onClick = {
-                                                    loadHistoryOrderForEdit(detail)
+                                                    historyEditTarget =
+                                                        PurchaseHistoryEditTarget(
+                                                            mode =
+                                                                PurchaseHistoryEditMode.ITEM,
+                                                            date =
+                                                                historyDate,
+                                                            details =
+                                                                listOf(detail),
+                                                            focusItemId =
+                                                                item.id,
+                                                            buyerName =
+                                                                buyerName
+                                                        )
                                                 },
                                                 onLongClick = {
                                                     deleteOrder = detail
@@ -2848,6 +2925,23 @@ private fun PurchaseScreen(
                 }
             }
         }
+    }
+
+    historyEditTarget?.let { target ->
+        PurchaseHistoryEditDialog(
+            db = db,
+            target = target,
+            fruits = fruits,
+            partners = partners,
+            onDismiss = {
+                historyEditTarget = null
+            },
+            onSaved = { savedMessage ->
+                historyEditTarget = null
+                message = savedMessage
+                onChanged()
+            }
+        )
     }
 
     if (addFruitDialog) {
@@ -3079,6 +3173,632 @@ private fun PurchaseScreen(
             if (success) {
                 loadRowsFromCollaborationPlan()
                 onChanged()
+            }
+        }
+    }
+}
+
+@Composable
+private fun PurchaseHistoryEditDialog(
+    db: AppDatabase,
+    target: PurchaseHistoryEditTarget,
+    fruits: List<FruitOption>,
+    partners: List<PartnerOption>,
+    onDismiss: () -> Unit,
+    onSaved: (String) -> Unit
+) {
+    val drafts =
+        remember(target.stateKey) {
+            mutableStateListOf<PurchaseHistoryEditDraft>()
+                .apply {
+                    target.details.forEach { detail ->
+                        detail.items.forEach { item ->
+                            add(
+                                PurchaseHistoryEditDraft(
+                                    orderId =
+                                        detail.order.id,
+                                    itemId =
+                                        item.id,
+                                    fruitId =
+                                        item.fruitId,
+                                    fruitName =
+                                        item.fruitName,
+                                    unit =
+                                        item.unit,
+                                    quantity =
+                                        cleanNumber(
+                                            item.quantity
+                                        ),
+                                    totalCost =
+                                        cleanNumber(
+                                            item.totalCost
+                                        )
+                                )
+                            )
+                        }
+                    }
+                }
+        }
+
+    val selectedBuyers =
+        remember(target.stateKey) {
+            mutableStateMapOf<Long, Long>()
+                .apply {
+                    target.details.forEach {
+                        put(
+                            it.order.id,
+                            it.order.buyerId
+                        )
+                    }
+                }
+        }
+
+    var error by remember(target.stateKey) {
+        mutableStateOf("")
+    }
+
+    val visibleDrafts =
+        if (
+            target.mode ==
+            PurchaseHistoryEditMode.ITEM
+        ) {
+            drafts.filter {
+                it.itemId == target.focusItemId
+            }
+        } else {
+            drafts.toList()
+        }
+
+    fun updateDraft(
+        itemId: Long,
+        updated: PurchaseHistoryEditDraft
+    ) {
+        val index =
+            drafts.indexOfFirst {
+                it.itemId == itemId
+            }
+        if (index >= 0) {
+            drafts[index] = updated
+        }
+    }
+
+    fun saveAll() {
+        error = ""
+
+        target.details.forEach { detail ->
+            val orderRows =
+                drafts.filter {
+                    it.orderId ==
+                        detail.order.id
+                }
+
+            if (orderRows.isEmpty()) {
+                error =
+                    "${detail.order.buyerName} 没有可保存的采购商品"
+                return
+            }
+
+            val lines =
+                mutableListOf<PurchaseLineInput>()
+
+            orderRows.forEach { row ->
+                val quantity =
+                    row.quantity.toDoubleOrNull()
+                val total =
+                    row.totalCost.toDoubleOrNull()
+
+                if (
+                    quantity == null ||
+                    quantity <= 0
+                ) {
+                    error =
+                        "${row.fruitName} 的数量必须大于0"
+                    return
+                }
+
+                if (
+                    total == null ||
+                    total < 0
+                ) {
+                    error =
+                        "${row.fruitName} 的总价不正确"
+                    return
+                }
+
+                val fruit =
+                    fruits.firstOrNull {
+                        it.id == row.fruitId
+                    } ?: FruitOption(
+                        row.fruitId,
+                        row.fruitName,
+                        row.unit
+                    )
+
+                lines +=
+                    PurchaseLineInput(
+                        fruit = fruit,
+                        unit = row.unit,
+                        quantity = quantity,
+                        totalCost = total
+                    )
+            }
+
+            if (error.isNotBlank()) {
+                return
+            }
+
+            val buyerId =
+                selectedBuyers[
+                    detail.order.id
+                ] ?: detail.order.buyerId
+
+            val buyer =
+                partners.firstOrNull {
+                    it.id == buyerId
+                } ?: if (
+                    buyerId ==
+                    detail.order.buyerId
+                ) {
+                    PartnerOption(
+                        detail.order.buyerId,
+                        detail.order.buyerName
+                    )
+                } else {
+                    null
+                }
+
+            if (buyer == null) {
+                error = "请选择有效采购人"
+                return
+            }
+
+            val ok =
+                db.updatePurchaseOrder(
+                    id = detail.order.id,
+                    date = detail.order.date,
+                    buyer = buyer,
+                    lines = lines,
+                    remark = detail.order.remark
+                )
+
+            if (!ok) {
+                error =
+                    "${detail.order.buyerName} 的采购记录保存失败"
+                return
+            }
+        }
+
+        if (error.isBlank()) {
+            onSaved(
+                when (target.mode) {
+                    PurchaseHistoryEditMode.ITEM ->
+                        "采购商品已更新"
+
+                    PurchaseHistoryEditMode.BUYER_DAY ->
+                        "${target.date} · ${target.buyerName} 的采购已更新"
+
+                    PurchaseHistoryEditMode.DAY ->
+                        "${target.date} 当天全部采购已更新"
+                }
+            )
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                when (target.mode) {
+                    PurchaseHistoryEditMode.ITEM ->
+                        "编辑采购商品"
+
+                    PurchaseHistoryEditMode.BUYER_DAY ->
+                        "${target.buyerName} · 当天采购"
+
+                    PurchaseHistoryEditMode.DAY ->
+                        "${target.date} · 全部采购"
+                }
+            )
+        },
+        text = {
+            Column(
+                verticalArrangement =
+                    Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    when (target.mode) {
+                        PurchaseHistoryEditMode.ITEM ->
+                            "只修改当前商品；保存后停留在采购历史当前位置。"
+
+                        PurchaseHistoryEditMode.BUYER_DAY ->
+                            "一次修改该采购人当天的全部采购商品。"
+
+                        PurchaseHistoryEditMode.DAY ->
+                            "按采购人分组修改当天全部采购商品，也可调整采购人。"
+                    },
+                    style =
+                        MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+
+                LazyColumn(
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 480.dp),
+                    verticalArrangement =
+                        Arrangement.spacedBy(8.dp)
+                ) {
+                    val grouped =
+                        visibleDrafts.groupBy {
+                            it.orderId
+                        }
+
+                    grouped.forEach {
+                        (orderId, groupRows) ->
+                        val detail =
+                            target.details
+                                .first {
+                                    it.order.id ==
+                                        orderId
+                                }
+
+                        item(
+                            key =
+                                "history_edit_order_$orderId"
+                        ) {
+                            Column(
+                                verticalArrangement =
+                                    Arrangement.spacedBy(
+                                        6.dp
+                                    )
+                            ) {
+                                if (
+                                    target.mode ==
+                                    PurchaseHistoryEditMode.DAY
+                                ) {
+                                    HistoryPurchaseBuyerSelector(
+                                        partners =
+                                            partners,
+                                        historicalBuyer =
+                                            PartnerOption(
+                                                detail.order.buyerId,
+                                                detail.order.buyerName
+                                            ),
+                                        selectedId =
+                                            selectedBuyers[
+                                                orderId
+                                            ] ?: detail.order.buyerId,
+                                        onSelected = {
+                                            selectedBuyers[
+                                                orderId
+                                            ] = it
+                                        }
+                                    )
+                                } else if (
+                                    target.mode !=
+                                    PurchaseHistoryEditMode.ITEM
+                                ) {
+                                    Text(
+                                        detail.order.buyerName,
+                                        fontWeight =
+                                            FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+
+                        items(
+                            groupRows,
+                            key = {
+                                "history_edit_item_${it.itemId}"
+                            }
+                        ) { row ->
+                            HistoryPurchaseItemEditor(
+                                row = row,
+                                fruits = fruits,
+                                onChange = {
+                                    updateDraft(
+                                        row.itemId,
+                                        it
+                                    )
+                                    error = ""
+                                }
+                            )
+                        }
+                    }
+                }
+
+                if (error.isNotBlank()) {
+                    Text(
+                        error,
+                        color =
+                            MaterialTheme.colorScheme.error,
+                        style =
+                            MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    saveAll()
+                }
+            ) {
+                Text("保存修改")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss
+            ) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+private fun HistoryPurchaseBuyerSelector(
+    partners: List<PartnerOption>,
+    historicalBuyer: PartnerOption,
+    selectedId: Long,
+    onSelected: (Long) -> Unit
+) {
+    var menu by remember {
+        mutableStateOf(false)
+    }
+
+    val active =
+        partners.firstOrNull {
+            it.id == selectedId
+        }
+    val displayName =
+        active?.name
+            ?: if (
+                selectedId ==
+                historicalBuyer.id
+            ) {
+                historicalBuyer.name
+            } else {
+                "请选择采购人"
+            }
+
+    Box(Modifier.fillMaxWidth()) {
+        CompactSelectButton(
+            "采购人",
+            displayName,
+            Modifier.fillMaxWidth()
+        ) {
+            menu = true
+        }
+
+        DropdownMenu(
+            expanded = menu,
+            onDismissRequest = {
+                menu = false
+            }
+        ) {
+            if (
+                partners.none {
+                    it.id ==
+                        historicalBuyer.id
+                }
+            ) {
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            "${historicalBuyer.name}（历史）"
+                        )
+                    },
+                    onClick = {
+                        onSelected(
+                            historicalBuyer.id
+                        )
+                        menu = false
+                    }
+                )
+            }
+
+            partners.forEach { partner ->
+                DropdownMenuItem(
+                    text = {
+                        Text(partner.name)
+                    },
+                    onClick = {
+                        onSelected(
+                            partner.id
+                        )
+                        menu = false
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryPurchaseItemEditor(
+    row: PurchaseHistoryEditDraft,
+    fruits: List<FruitOption>,
+    onChange: (PurchaseHistoryEditDraft) -> Unit
+) {
+    var fruitMenu by remember(row.itemId) {
+        mutableStateOf(false)
+    }
+    var unitMenu by remember(row.itemId) {
+        mutableStateOf(false)
+    }
+
+    val activeFruit =
+        fruits.firstOrNull {
+            it.id == row.fruitId
+        }
+    val fruitName =
+        activeFruit?.name
+            ?: row.fruitName
+
+    Card(
+        Modifier.fillMaxWidth(),
+        colors =
+            CardDefaults.cardColors(
+                containerColor =
+                    Color(0xFFF8FAFC)
+            )
+    ) {
+        Column(
+            Modifier.padding(9.dp),
+            verticalArrangement =
+                Arrangement.spacedBy(6.dp)
+        ) {
+            Box(Modifier.fillMaxWidth()) {
+                CompactSelectButton(
+                    "商品",
+                    fruitName,
+                    Modifier.fillMaxWidth()
+                ) {
+                    fruitMenu = true
+                }
+
+                DropdownMenu(
+                    expanded = fruitMenu,
+                    onDismissRequest = {
+                        fruitMenu = false
+                    }
+                ) {
+                    if (
+                        activeFruit == null
+                    ) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    "${row.fruitName}（历史）"
+                                )
+                            },
+                            onClick = {
+                                fruitMenu = false
+                            }
+                        )
+                    }
+
+                    fruits.forEach { fruit ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(fruit.name)
+                            },
+                            onClick = {
+                                onChange(
+                                    row.copy(
+                                        fruitId =
+                                            fruit.id,
+                                        fruitName =
+                                            fruit.name,
+                                        unit =
+                                            if (
+                                                row.unit.isBlank()
+                                            ) {
+                                                fruit.defaultUnit
+                                            } else {
+                                                row.unit
+                                            }
+                                    )
+                                )
+                                fruitMenu = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            Row(
+                horizontalArrangement =
+                    Arrangement.spacedBy(6.dp)
+            ) {
+                NumberField(
+                    "数量",
+                    row.quantity,
+                    {
+                        onChange(
+                            row.copy(
+                                quantity = it
+                            )
+                        )
+                    },
+                    Modifier.weight(1f)
+                )
+
+                Box(Modifier.weight(0.8f)) {
+                    CompactSelectButton(
+                        "单位",
+                        row.unit,
+                        Modifier.fillMaxWidth()
+                    ) {
+                        unitMenu = true
+                    }
+
+                    DropdownMenu(
+                        expanded = unitMenu,
+                        onDismissRequest = {
+                            unitMenu = false
+                        }
+                    ) {
+                        listOf(
+                            "件",
+                            "斤",
+                            "箱",
+                            "盒",
+                            "袋",
+                            "筐"
+                        ).forEach { unit ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(unit)
+                                },
+                                onClick = {
+                                    onChange(
+                                        row.copy(
+                                            unit = unit
+                                        )
+                                    )
+                                    unitMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                NumberField(
+                    "总价",
+                    row.totalCost,
+                    {
+                        onChange(
+                            row.copy(
+                                totalCost = it
+                            )
+                        )
+                    },
+                    Modifier.weight(1f)
+                )
+            }
+
+            val quantity =
+                row.quantity.toDoubleOrNull()
+                    ?: 0.0
+            val total =
+                row.totalCost.toDoubleOrNull()
+                    ?: 0.0
+
+            if (
+                quantity > 0 &&
+                total >= 0
+            ) {
+                Text(
+                    "单价 ${money(total / quantity)}/${row.unit}",
+                    style =
+                        MaterialTheme.typography.labelSmall,
+                    color = Color.Gray
+                )
             }
         }
     }
@@ -3920,11 +4640,6 @@ private fun SessionScreen(
                 CompactReadOnlyField("现金合计", money(c), Modifier.weight(1f))
             }
 
-            Text(
-                "每个收款人分别填写自己的微信、支付宝、现金，系统自动汇总，不需要再手工分配归属金额。",
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.Gray
-            )
         }
 
         item {
@@ -4566,6 +5281,12 @@ private fun SettlementDayContent(
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
     var message by remember { mutableStateOf("") }
     var deleteId by remember { mutableStateOf<Long?>(null) }
+    var settleTransfer by remember {
+        mutableStateOf<SettlementTransferRecord?>(null)
+    }
+    var settleInput by remember {
+        mutableStateOf("")
+    }
 
     val summary = remember(dataVersion, date) {
         db.getDailySummary(date)
@@ -4894,9 +5615,7 @@ private fun SettlementDayContent(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                "这里计算进货垫付、费用垫付、实际收款以及当天利润/亏损分担后的资金差额。" +
-                    "正利润按合伙人应得利润计算；负利润按同一分配比例变成各自应承担的亏损。" +
-                    "每天利润独立计算，不会拿昨天亏损去扣今天利润；未实际转清的只是资金往来余额。",
+                "这里计算当天采购垫付、费用、收款和利润/亏损形成的资金差额；当天未结清的金额会继续进入“资金余额”。",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.Gray
             )
@@ -4973,10 +5692,10 @@ private fun SettlementDayContent(
                         onClick = {},
                         label = {
                             Text(
-                                if (b.settlement.status == 1) {
-                                    "资金已确认"
-                                } else {
-                                    "待确认"
+                                when (b.settlement.status) {
+                                    1 -> "已结清"
+                                    2 -> "部分结算"
+                                    else -> "未结算"
                                 }
                             )
                         }
@@ -4988,8 +5707,32 @@ private fun SettlementDayContent(
                 b.partners,
                 key = { "cp${it.id}" }
             ) { p ->
+                val relatedTransfers =
+                    if (p.balance >= 0) {
+                        b.transfers.filter {
+                            it.toPartnerId == p.partnerId
+                        }
+                    } else {
+                        b.transfers.filter {
+                            it.fromPartnerId == p.partnerId
+                        }
+                    }
+                val settledAmount =
+                    relatedTransfers.sumOf {
+                        it.settledAmount
+                    }
+                val totalNeed =
+                    kotlin.math.abs(p.balance)
+                val remainingAmount =
+                    (totalNeed - settledAmount)
+                        .coerceAtLeast(0.0)
+
                 Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(11.dp)) {
+                    Column(
+                        Modifier.padding(11.dp),
+                        verticalArrangement =
+                            Arrangement.spacedBy(4.dp)
+                    ) {
                         Row {
                             Text(
                                 p.partnerName,
@@ -5002,42 +5745,72 @@ private fun SettlementDayContent(
                                         "应收 ${money(p.balance)}"
 
                                     p.balance < -0.005 ->
-                                        "应转出 ${money(-p.balance)}"
+                                        "应补 ${money(-p.balance)}"
 
                                     else ->
                                         "已平"
                                 },
                                 fontWeight = FontWeight.Bold,
                                 color =
-                                    if (p.balance >= -0.005) {
+                                    if (p.balance > 0.005) {
                                         BrandGreen
-                                    } else {
+                                    } else if (
+                                        p.balance < -0.005
+                                    ) {
                                         MaterialTheme.colorScheme.error
+                                    } else {
+                                        Color.Gray
                                     }
                             )
                         }
 
                         Text(
-                            "进货垫付 ${money(p.purchasePaid)} + " +
-                                "费用垫付 ${money(p.expensePaid)} + " +
+                            "采购垫付 +${money(p.purchasePaid)} · " +
+                                "费用 +${money(p.expensePaid)} · " +
                                 if (p.profitShare < -0.005) {
-                                    "亏损分担 -${money(-p.profitShare)} − 已收 ${money(p.revenueReceived)}"
+                                    "亏损 -${money(-p.profitShare)} · 已收 -${money(p.revenueReceived)}"
                                 } else {
-                                    "利润 ${money(p.profitShare)} − 已收 ${money(p.revenueReceived)}"
+                                    "利润 +${money(p.profitShare)} · 已收 -${money(p.revenueReceived)}"
                                 },
                             style =
                                 MaterialTheme.typography.bodySmall,
                             color = Color.Gray
                         )
-                        Text(
-                            if (p.shouldKeep < -0.005) {
-                                "除已收款外还应补入 ${money(-p.shouldKeep)}"
-                            } else {
-                                "最终应留 / 收回 ${money(p.shouldKeep)}"
-                            },
-                            style =
-                                MaterialTheme.typography.bodySmall
-                        )
+
+                        if (totalNeed > 0.005) {
+                            Text(
+                                when {
+                                    settledAmount <= 0.005 ->
+                                        "当日资金：未结算 · 结转 ${money(totalNeed)}"
+
+                                    remainingAmount <= 0.005 ->
+                                        "当日资金：已结清 ${money(settledAmount)}"
+
+                                    else ->
+                                        "当日资金：已结 ${money(settledAmount)} · 结转 ${money(remainingAmount)}"
+                                },
+                                style =
+                                    MaterialTheme.typography.bodySmall,
+                                color =
+                                    if (remainingAmount <= 0.005) {
+                                        BrandGreen
+                                    } else {
+                                        Color.DarkGray
+                                    },
+                                fontWeight =
+                                    FontWeight.SemiBold
+                            )
+
+                            Text(
+                                if (p.purchasePaid > 0.005) {
+                                    "采购 / 当日资金请在下方转账方案逐笔确认，可分别保留不同合伙人的结算周期。"
+                                } else {
+                                    "当日资金请在下方转账方案逐笔确认。"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.Gray
+                            )
+                        }
                     }
                 }
             }
@@ -5080,17 +5853,55 @@ private fun SettlementDayContent(
                             modifier = Modifier.weight(1f),
                             fontWeight = FontWeight.Bold
                         )
-                        Text(
-                            money(t.amount),
-                            fontWeight = FontWeight.Bold,
-                            color = BrandGreen
-                        )
+                        Column(
+                            horizontalAlignment = Alignment.End
+                        ) {
+                            Text(
+                                money(t.amount),
+                                fontWeight = FontWeight.Bold,
+                                color = BrandGreen
+                            )
+                            if (t.settledAmount > 0.005) {
+                                Text(
+                                    if (t.pendingAmount <= 0.005) {
+                                        "已结清"
+                                    } else {
+                                        "已结 ${money(t.settledAmount)} · 剩 ${money(t.pendingAmount)}"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.Gray
+                                )
+                            } else {
+                                Text(
+                                    "未结算",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.Gray
+                                )
+                            }
+                            TextButton(
+                                onClick = {
+                                    settleTransfer = t
+                                    settleInput =
+                                        if (t.settledAmount > 0.005) {
+                                            cleanNumber(t.settledAmount)
+                                        } else {
+                                            ""
+                                        }
+                                },
+                                contentPadding = PaddingValues(
+                                    horizontal = 6.dp,
+                                    vertical = 0.dp
+                                )
+                            ) {
+                                Text("处理")
+                            }
+                        }
                     }
                 }
             }
 
             item {
-                if (b.settlement.status == 0) {
+                if (b.settlement.status != 1) {
                     Button(
                         onClick = {
                             if (
@@ -5105,7 +5916,7 @@ private fun SettlementDayContent(
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("确认资金轧差方案已执行")
+                        Text("全部确认当日资金已结清")
                     }
                 }
 
@@ -5150,21 +5961,161 @@ private fun SettlementDayContent(
                         )
                     }
                     Text(
-                        if (h.status == 1) {
-                            "已确认"
-                        } else {
-                            "待确认"
+                        when (h.status) {
+                            1 -> "已结清"
+                            2 -> "部分结算"
+                            else -> "未结算"
                         },
                         color =
-                            if (h.status == 1) {
-                                BrandGreen
-                            } else {
-                                MaterialTheme.colorScheme.error
+                            when (h.status) {
+                                1 -> BrandGreen
+                                2 -> Color(0xFF8A6D00)
+                                else -> MaterialTheme.colorScheme.error
                             }
                     )
                 }
             }
         }
+    }
+
+    settleTransfer?.let { transfer ->
+        val maxAmount = transfer.amount
+        val currentSettled = transfer.settledAmount
+
+        AlertDialog(
+            onDismissRequest = {
+                settleTransfer = null
+                settleInput = ""
+            },
+            title = {
+                Text(
+                    "${transfer.fromPartnerName} → ${transfer.toPartnerName}"
+                )
+            },
+            text = {
+                Column(
+                    verticalArrangement =
+                        Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        "这笔转账单独记录结算状态，不会自动把其他合伙人的转账一起标记为已结算。",
+                        style =
+                            MaterialTheme.typography.bodySmall
+                    )
+
+                    NumberField(
+                        "累计已结算金额",
+                        settleInput,
+                        {
+                            settleInput = it
+                        },
+                        Modifier.fillMaxWidth()
+                    )
+
+                    Text(
+                        "当前已结 ${money(currentSettled)} · 最多 ${money(maxAmount)}",
+                        style =
+                            MaterialTheme.typography.labelSmall,
+                        color = Color.Gray
+                    )
+                }
+            },
+            confirmButton = {
+                Column(
+                    horizontalAlignment = Alignment.End
+                ) {
+                    Row {
+                        TextButton(
+                            onClick = {
+                                if (
+                                    db.setCashSettlementTransferSettledAmount(
+                                        transfer.id,
+                                        0.0
+                                    )
+                                ) {
+                                    message =
+                                        "${transfer.fromPartnerName} → ${transfer.toPartnerName} 已设为未结算"
+                                    settleTransfer = null
+                                    settleInput = ""
+                                    onChanged()
+                                }
+                            }
+                        ) {
+                            Text("未结算")
+                        }
+
+                        TextButton(
+                            onClick = {
+                                if (
+                                    db.setCashSettlementTransferSettledAmount(
+                                        transfer.id,
+                                        maxAmount
+                                    )
+                                ) {
+                                    message =
+                                        "${transfer.fromPartnerName} → ${transfer.toPartnerName} 已全部结清"
+                                    settleTransfer = null
+                                    settleInput = ""
+                                    onChanged()
+                                }
+                            }
+                        ) {
+                            Text("全部结算")
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            val amount =
+                                settleInput
+                                    .toDoubleOrNull()
+
+                            if (amount == null) {
+                                message =
+                                    "请输入累计已结算金额"
+                            } else if (
+                                amount < 0 ||
+                                amount >
+                                maxAmount + 0.005
+                            ) {
+                                message =
+                                    "结算金额不能超过 ${money(maxAmount)}"
+                            } else if (
+                                db.setCashSettlementTransferSettledAmount(
+                                    transfer.id,
+                                    amount
+                                )
+                            ) {
+                                message =
+                                    if (
+                                        amount + 0.005 >=
+                                        maxAmount
+                                    ) {
+                                        "${transfer.fromPartnerName} → ${transfer.toPartnerName} 已全部结清"
+                                    } else {
+                                        "本笔已结 ${money(amount)}，剩余自动结转"
+                                    }
+                                settleTransfer = null
+                                settleInput = ""
+                                onChanged()
+                            }
+                        }
+                    ) {
+                        Text("保存部分结算")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        settleTransfer = null
+                        settleInput = ""
+                    }
+                ) {
+                    Text("取消")
+                }
+            }
+        )
     }
 
     deleteId?.let { id ->
@@ -5186,54 +6137,27 @@ private fun SettlementBatchContent(
     dataVersion: Int,
     onChanged: () -> Unit
 ) {
-    var filter by remember {
-        mutableStateOf(HistoryTimeFilter.LAST_7)
-    }
-    val today = LocalDate.now()
-    var customStart by remember {
-        mutableStateOf(today.minusDays(6).toString())
-    }
-    var customEnd by remember {
-        mutableStateOf(today.toString())
-    }
     var message by remember {
         mutableStateOf("")
     }
 
-    val invalidCustom =
-        filter == HistoryTimeFilter.CUSTOM &&
-            customStart > customEnd
-    val range =
-        resolveTimeRange(
-            filter,
-            customStart,
-            customEnd,
-            today
-        )
-    val queryStart =
-        if (invalidCustom) "9999-12-31" else range.first
-    val queryEnd =
-        if (invalidCustom) "0000-01-01" else range.second
-
-    val dailyRows =
-        remember(dataVersion, queryStart, queryEnd) {
-            db.getProfitSettlementDaily(
-                queryStart,
-                queryEnd
-            )
-        }
-    val partnerStats =
-        remember(dataVersion, queryStart, queryEnd) {
-            db.getPartnerProfitSettlementSummary(
-                queryStart,
-                queryEnd
-            )
+    val fundBalances =
+        remember(dataVersion) {
+            db.getPartnerFundBalances()
         }
 
-    val actualStart =
-        dailyRows.minOfOrNull { it.date }
-    val actualEnd =
-        dailyRows.maxOfOrNull { it.date }
+    val totalReceivable =
+        fundBalances
+            .filter { it.currentBalance > 0.005 }
+            .sumOf { it.currentBalance }
+    val totalPayable =
+        fundBalances
+            .filter { it.currentBalance < -0.005 }
+            .sumOf { -it.currentBalance }
+    val settledTotal =
+        fundBalances.sumOf {
+            it.settlementReceived
+        }
 
     val selected =
         remember {
@@ -5241,35 +6165,49 @@ private fun SettlementBatchContent(
         }
 
     LaunchedEffect(
-        queryStart,
-        queryEnd,
-        partnerStats.map {
-            "${it.partnerId}:${it.pendingProfit}"
+        dataVersion,
+        fundBalances.map {
+            "${it.partnerId}:${it.currentBalance}"
         }
     ) {
+        val existing = selected.toMap()
         selected.clear()
-        partnerStats
-            .filter { it.pendingProfit > 0.005 }
-            .forEach {
-                selected[it.partnerId] = true
+        fundBalances.forEach { balance ->
+            if (kotlin.math.abs(balance.currentBalance) > 0.005) {
+                selected[balance.partnerId] =
+                    existing[balance.partnerId] ?: true
             }
+        }
     }
 
     val selectedIds =
-        partnerStats
+        fundBalances
             .filter {
                 selected[it.partnerId] == true &&
-                    it.pendingProfit > 0.005
+                    kotlin.math.abs(it.currentBalance) > 0.005
             }
             .map { it.partnerId }
             .toSet()
 
-    val selectedPending =
-        partnerStats
+    val selectedPayable =
+        fundBalances
             .filter {
-                it.partnerId in selectedIds
+                it.partnerId in selectedIds &&
+                    it.currentBalance < -0.005
             }
-            .sumOf { it.pendingProfit }
+            .sumOf { -it.currentBalance }
+    val selectedReceivable =
+        fundBalances
+            .filter {
+                it.partnerId in selectedIds &&
+                    it.currentBalance > 0.005
+            }
+            .sumOf { it.currentBalance }
+    val previewAmount =
+        minOf(
+            selectedPayable,
+            selectedReceivable
+        )
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -5281,118 +6219,191 @@ private fun SettlementBatchContent(
     ) {
         item {
             PageHeader(
-                "批量利润结算",
-                "适合每3～7天或任意时间范围统一结算；只会结算当前仍待结算的利润"
+                "资金余额",
+                "采购垫付、费用、收款、利润/亏损和已执行结算统一累计。利润为负会直接抵扣后续正利润。"
             )
         }
 
         item {
-            TimeFilterSelector(
-                filter = filter,
-                onFilterChange = {
-                    filter = it
-                    message = ""
-                },
-                customStart = customStart,
-                onCustomStart = {
-                    customStart = it
-                    message = ""
-                },
-                customEnd = customEnd,
-                onCustomEnd = {
-                    customEnd = it
-                    message = ""
-                }
-            )
-        }
-
-        if (invalidCustom) {
-            item {
-                Text(
-                    "开始日期不能晚于结束日期",
-                    color = MaterialTheme.colorScheme.error
+            Row(
+                horizontalArrangement =
+                    Arrangement.spacedBy(8.dp)
+            ) {
+                MiniSummaryCard(
+                    "合伙人应收",
+                    money(totalReceivable),
+                    Modifier.weight(1f),
+                    SoftGreen
+                )
+                MiniSummaryCard(
+                    "合伙人应补",
+                    money(totalPayable),
+                    Modifier.weight(1f),
+                    SoftOrange
+                )
+                MiniSummaryCard(
+                    "累计已结",
+                    money(settledTotal),
+                    Modifier.weight(1f),
+                    SoftPurple
                 )
             }
         }
 
-        if (partnerStats.isEmpty()) {
+        item {
+            Card(
+                Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFFF8FAFC)
+                )
+            ) {
+                Column(
+                    Modifier.padding(12.dp),
+                    verticalArrangement =
+                        Arrangement.spacedBy(5.dp)
+                ) {
+                    Text(
+                        "统一结算",
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "勾选本次参与结算的合伙人。系统只在所选人员之间按当前余额自动轧差，未结部分继续保留。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray
+                    )
+                    SummaryRow(
+                        "所选应补",
+                        money(selectedPayable)
+                    )
+                    SummaryRow(
+                        "所选应收",
+                        money(selectedReceivable)
+                    )
+                    SummaryRow(
+                        "本次最多可结",
+                        money(previewAmount)
+                    )
+
+                    Button(
+                        onClick = {
+                            val result =
+                                db.settleCurrentFundBalances(
+                                    selectedIds
+                                )
+                            message = result.message
+                            if (result.success) {
+                                onChanged()
+                            }
+                        },
+                        enabled =
+                            selectedIds.size >= 2 &&
+                                selectedPayable > 0.005 &&
+                                selectedReceivable > 0.005,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            "确认统一结算 · ${money(previewAmount)}"
+                        )
+                    }
+                }
+            }
+        }
+
+        if (fundBalances.isEmpty()) {
             item {
                 Text(
-                    "当前时间范围没有可结算的利润分配记录。",
+                    "暂无资金余额数据。",
                     color = Color.Gray
                 )
             }
         }
 
         items(
-            partnerStats,
-            key = { "batch_partner_${it.partnerId}" }
-        ) { stat ->
-            val canSettle =
-                stat.pendingProfit > 0.005
+            fundBalances,
+            key = { "fund_balance_${it.partnerId}" }
+        ) { balance ->
+            val hasBalance =
+                kotlin.math.abs(
+                    balance.currentBalance
+                ) > 0.005
 
             Card(Modifier.fillMaxWidth()) {
-                Row(
+                Column(
                     Modifier.padding(
-                        horizontal = 10.dp,
-                        vertical = 8.dp
+                        horizontal = 12.dp,
+                        vertical = 10.dp
                     ),
-                    verticalAlignment =
-                        Alignment.CenterVertically
+                    verticalArrangement =
+                        Arrangement.spacedBy(4.dp)
                 ) {
-                    Checkbox(
-                        checked =
-                            selected[stat.partnerId] == true,
-                        enabled = canSettle,
-                        onCheckedChange = { checked ->
-                            selected[stat.partnerId] =
-                                checked
-                        }
-                    )
-
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            stat.partnerName,
-                            fontWeight = FontWeight.Bold
+                    Row(
+                        verticalAlignment =
+                            Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked =
+                                selected[balance.partnerId] == true,
+                            enabled = hasBalance,
+                            onCheckedChange = { checked ->
+                                selected[balance.partnerId] = checked
+                                message = ""
+                            }
                         )
                         Text(
-                            "应得 ${money(stat.earnedProfit)} · " +
-                                "已结算 ${money(stat.settledProfit)}",
-                            style =
-                                MaterialTheme.typography.bodySmall,
-                            color = Color.Gray
+                            balance.partnerName,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            when {
+                                balance.currentBalance > 0.005 ->
+                                    "应收 ${money(balance.currentBalance)}"
+
+                                balance.currentBalance < -0.005 ->
+                                    "应补 ${money(-balance.currentBalance)}"
+
+                                else ->
+                                    "已结清"
+                            },
+                            color =
+                                when {
+                                    balance.currentBalance > 0.005 ->
+                                        BrandGreen
+
+                                    balance.currentBalance < -0.005 ->
+                                        MaterialTheme.colorScheme.error
+
+                                    else ->
+                                        Color.Gray
+                                },
+                            fontWeight = FontWeight.Bold
                         )
                     }
 
                     Text(
-                        when {
-                            stat.pendingProfit > 0.005 ->
-                                "待结算 ${money(stat.pendingProfit)}"
-
-                            stat.pendingProfit < -0.005 ->
-                                "净亏损 ${money(-stat.pendingProfit)}"
-
-                            else ->
-                                "已结清"
-                        },
-                        color =
-                            if (
-                                kotlin.math.abs(
-                                    stat.pendingProfit
-                                ) <= 0.005
-                            ) {
-                                BrandGreen
+                        "采购垫付 +${money(balance.purchasePaid)} · " +
+                            "费用 +${money(balance.expensePaid)} · " +
+                            if (balance.profitShare >= 0) {
+                                "累计利润 +${money(balance.profitShare)}"
                             } else {
-                                MaterialTheme.colorScheme.error
+                                "累计亏损 -${money(-balance.profitShare)}"
                             },
-                        fontWeight = FontWeight.Bold
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.DarkGray
+                    )
+                    Text(
+                        "实际收款 -${money(balance.revenueReceived)} · " +
+                            "已转出 ${money(balance.settlementSent)} · " +
+                            "已收到 ${money(balance.settlementReceived)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray
                     )
                 }
             }
         }
 
-        if (partnerStats.any {
-                it.pendingProfit > 0.005
+        if (fundBalances.any {
+                kotlin.math.abs(it.currentBalance) > 0.005
             }
         ) {
             item {
@@ -5402,9 +6413,11 @@ private fun SettlementBatchContent(
                 ) {
                     OutlinedButton(
                         onClick = {
-                            partnerStats
+                            fundBalances
                                 .filter {
-                                    it.pendingProfit > 0.005
+                                    kotlin.math.abs(
+                                        it.currentBalance
+                                    ) > 0.005
                                 }
                                 .forEach {
                                     selected[it.partnerId] = true
@@ -5412,7 +6425,7 @@ private fun SettlementBatchContent(
                         },
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("全选")
+                        Text("全选未结余额")
                     }
 
                     OutlinedButton(
@@ -5424,49 +6437,15 @@ private fun SettlementBatchContent(
                         Text("取消全选")
                     }
                 }
-
-                Button(
-                    onClick = {
-                        val start =
-                            range.first ?: actualStart
-                        val end =
-                            range.second ?: actualEnd
-
-                        if (
-                            start == null ||
-                            end == null
-                        ) {
-                            message =
-                                "当前范围没有利润记录"
-                        } else {
-                            val result =
-                                db.createProfitSettlementBatch(
-                                    start = start,
-                                    end = end,
-                                    partnerIds = selectedIds,
-                                    note =
-                                        "批量利润结算"
-                                )
-                            message = result.message
-                            if (result.success) {
-                                onChanged()
-                            }
-                        }
-                    },
-                    enabled =
-                        selectedIds.isNotEmpty() &&
-                            !invalidCustom,
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(top = 8.dp)
-                ) {
-                    Text(
-                        "确认选中合伙人已结算 · " +
-                            money(selectedPending)
-                    )
-                }
             }
+        }
+
+        item {
+            Text(
+                "例：B 前一天亏 ¥100、后一天赚 ¥200，累计利润净额就是 +¥100；资金余额只会保留最终未结的 ¥100，不会再按 ¥200 结算。",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray
+            )
         }
 
         if (message.isNotBlank()) {
@@ -5474,7 +6453,10 @@ private fun SettlementBatchContent(
                 Text(
                     message,
                     color =
-                        if (message.contains("已确认")) {
+                        if (
+                            message.contains("已完成") ||
+                            message.contains("成功")
+                        ) {
                             BrandGreen
                         } else {
                             MaterialTheme.colorScheme.error
@@ -5486,6 +6468,7 @@ private fun SettlementBatchContent(
         }
     }
 }
+
 
 @Composable
 private fun SettlementStatsContent(
@@ -7860,17 +8843,17 @@ private fun buildSettlementReportLines(
                     bundle ->
 
                     val confirmedText =
-                        if (
-                            bundle.settlement.status == 1
+                        when (
+                            bundle.settlement.status
                         ) {
-                            "已确认执行"
-                        } else {
-                            "待确认"
+                            1 -> "已结清"
+                            2 -> "部分结算"
+                            else -> "未结算"
                         }
 
                     val confirmedTime =
                         if (
-                            bundle.settlement.status == 1
+                            bundle.settlement.status != 0
                         ) {
                             settlementTimeText(
                                 bundle.settlement.updatedAt
