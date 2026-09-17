@@ -7,7 +7,7 @@ on:
         description: "同时发布 GitHub Release"
         required: true
         type: boolean
-        default: false
+        default: true
   push:
     branches:
       - main
@@ -66,52 +66,6 @@ jobs:
             exit 1
           fi
 
-      - name: Resolve release tag for manual publish
-        id: release_tag
-        if: >-
-          github.event_name == 'workflow_dispatch' &&
-          inputs.publish_release
-        shell: bash
-        run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          CAN_PUBLISH="true"
-
-          git fetch --tags --force
-
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            TAG_SHA="$(git rev-list -n 1 "$TAG")"
-
-            if [ "$TAG_SHA" != "$GITHUB_SHA" ]; then
-              CAN_PUBLISH="false"
-
-              echo "::warning::Tag $TAG already exists on another commit. The APK will still be built and uploaded to Actions Artifacts, but GitHub Release publishing is skipped."
-              echo "::warning::Existing: $TAG_SHA"
-              echo "::warning::Current:  $GITHUB_SHA"
-              echo "::warning::To publish another installable Android update, increase versionCode and versionName, then run the workflow again."
-
-              {
-                echo "### Release skipped"
-                echo ""
-                echo "Tag \`$TAG\` already belongs to another commit."
-                echo ""
-                echo "- Existing: \`$TAG_SHA\`"
-                echo "- Current: \`$GITHUB_SHA\`"
-                echo "- The signed APK build will continue."
-                echo "- Bump **versionCode + versionName** before publishing a new Android update."
-              } >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "Tag $TAG already exists on the current commit."
-            fi
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag "$TAG" "$GITHUB_SHA"
-            git push origin "$TAG"
-            echo "Created tag $TAG"
-          fi
-
-          echo "can_publish=$CAN_PUBLISH" >> "$GITHUB_OUTPUT"
-
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -126,9 +80,6 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
-          # setup-android defaults to installing the obsolete SDK package `tools`.
-          # New cmdline-tools no longer exposes that package, so only bootstrap
-          # sdkmanager/licenses here and install the exact SDK packages below.
           packages: ""
 
       - name: Install Android SDK 36
@@ -180,18 +131,104 @@ jobs:
           path: ${{ steps.version.outputs.apk_name }}
           if-no-files-found: error
 
-      - name: Publish GitHub Release
+      # IMPORTANT: tag/release handling is intentionally AFTER a successful APK build.
+      # A failed Kotlin/Gradle build must never reserve the version tag.
+      - name: Prepare release tag after successful build
+        id: release_tag
         if: >-
           startsWith(github.ref, 'refs/tags/v') ||
-          (github.event_name == 'workflow_dispatch' &&
-          inputs.publish_release &&
-          steps.release_tag.outputs.can_publish == 'true')
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: 天鲜账本 V${{ steps.version.outputs.version_name }}
-          body_path: RELEASE_NOTES.md
-          files: ${{ steps.version.outputs.apk_name }}
-          draft: false
-          prerelease: false
-          fail_on_unmatched_files: true
+          github.ref == 'refs/heads/main' ||
+          (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${{ steps.version.outputs.tag }}"
+          CAN_PUBLISH="true"
+          git fetch --tags --force
+
+          # A tag-push workflow is already pinned to the correct version tag.
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "Tag-triggered build: $GITHUB_REF_NAME"
+            echo "can_publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          RELEASE_EXISTS="false"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            RELEASE_EXISTS="true"
+          fi
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            TAG_SHA="$(git rev-list -n 1 "$TAG")"
+
+            if [ "$TAG_SHA" != "$GITHUB_SHA" ]; then
+              if [ "$RELEASE_EXISTS" = "true" ]; then
+                # A real published release already owns this version. Do not silently
+                # move its tag: publishing new code requires a new version number.
+                CAN_PUBLISH="false"
+                echo "::warning::Release $TAG already exists on commit $TAG_SHA."
+                echo "::warning::Current commit is $GITHUB_SHA. Increase versionName/versionCode for another published update."
+              else
+                # Typical recovery case: an older workflow created the tag BEFORE
+                # compilation, compilation failed, and therefore no Release exists.
+                # It is safe to repair that stale/unpublished tag now that this build
+                # has completed successfully.
+                git config user.name "github-actions[bot]"
+                git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                git tag -f "$TAG" "$GITHUB_SHA"
+                git push --force origin "refs/tags/$TAG"
+                echo "Repaired stale unpublished tag $TAG: $TAG_SHA -> $GITHUB_SHA"
+              fi
+            else
+              echo "Tag $TAG already points to the successful build commit."
+            fi
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag "$TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/$TAG"
+            echo "Created release tag $TAG after successful build."
+          fi
+
+          echo "can_publish=$CAN_PUBLISH" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub Release and upload APK
+        if: >-
+          steps.release_tag.outputs.can_publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${{ steps.version.outputs.tag }}"
+          APK="${{ steps.version.outputs.apk_name }}"
+          TITLE="天鲜账本 V${{ steps.version.outputs.version_name }}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" \
+              --title "$TITLE" \
+              --notes-file RELEASE_NOTES.md \
+              --draft=false \
+              --prerelease=false
+
+            gh release upload "$TAG" "$APK" --clobber
+            echo "Updated Release $TAG and replaced APK asset."
+          else
+            gh release create "$TAG" "$APK" \
+              --title "$TITLE" \
+              --notes-file RELEASE_NOTES.md \
+              --verify-tag
+            echo "Created Release $TAG and uploaded APK."
+          fi
+
+          {
+            echo "### GitHub Release published"
+            echo ""
+            echo "- Tag: \`$TAG\`"
+            echo "- APK: \`$APK\`"
+            echo "- Release: ${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG"
+          } >> "$GITHUB_STEP_SUMMARY"
