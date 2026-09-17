@@ -387,6 +387,10 @@ internal fun MemberPermissionContent(
     val session =
         cloudSyncManager.session()
 
+    val isSuperAdmin =
+        session?.systemRole ==
+            "SUPERADMIN"
+
     var members by remember {
         mutableStateOf<List<CloudMemberInfo>>(
             emptyList()
@@ -406,12 +410,33 @@ internal fun MemberPermissionContent(
             null
         )
     }
+    var visibilityEditing by remember {
+        mutableStateOf<CloudMemberInfo?>(
+            null
+        )
+    }
 
     val canManage =
-        session?.systemRole ==
-            "SUPERADMIN" ||
+        isSuperAdmin ||
             currentBook.permission ==
             "OWNER"
+
+    val displayedMembers =
+        remember(
+            members,
+            isSuperAdmin
+        ) {
+            if (isSuperAdmin) {
+                members
+            } else {
+                // FIX6：普通成员的可见列表由服务器按超级管理员配置过滤；
+                // 客户端再兜底隐藏任何 SUPERADMIN，避免旧服务端泄露。
+                members.filter {
+                    it.systemRole != "SUPERADMIN" &&
+                        it.role != "SUPERADMIN"
+                }
+            }
+        }
 
     fun reload() {
         if (
@@ -441,7 +466,11 @@ internal fun MemberPermissionContent(
                     .onSuccess {
                         members = it
                         message =
-                            "成员 ${it.size} 人"
+                            if (isSuperAdmin) {
+                                "成员 ${it.size} 人"
+                            } else {
+                                "仅显示超级管理员授权可见的成员"
+                            }
                     }
                     .onFailure {
                         message =
@@ -531,7 +560,7 @@ internal fun MemberPermissionContent(
                 Arrangement.spacedBy(7.dp)
         ) {
             items(
-                members,
+                displayedMembers,
                 key = {
                     it.userId
                 }
@@ -555,17 +584,30 @@ internal fun MemberPermissionContent(
                             )
 
                             Text(
-                                if (
+                                when {
+                                    member.systemRole ==
+                                        "SUPERADMIN" ||
+                                        member.role ==
+                                        "SUPERADMIN" ->
+                                        "超级管理员"
+
                                     member.role ==
-                                    "OWNER"
-                                ) {
-                                    "所有者 · 全部权限"
-                                } else {
-                                    BookPermissions
-                                        .templateLabel(
-                                            member.permissionTemplate
-                                        ) +
-                                        " · ${member.permissions.size}项"
+                                    "OWNER" ->
+                                        "所有者 · 全部权限"
+
+                                    else ->
+                                        BookPermissions
+                                            .templateLabel(
+                                                member.permissionTemplate
+                                            ) +
+                                            " · " +
+                                            member.permissions
+                                                .count {
+                                                    it in
+                                                        BookPermissions
+                                                            .allMemberPermissions
+                                                } +
+                                            "项"
                                 },
                                 style =
                                     MaterialTheme
@@ -575,18 +617,37 @@ internal fun MemberPermissionContent(
                             )
                         }
 
-                        if (
-                            canManage &&
-                            member.role !=
-                            "OWNER"
-                        ) {
-                            TextButton(
-                                onClick = {
-                                    editing =
-                                        member
-                                }
+                        Row {
+                            if (
+                                isSuperAdmin &&
+                                member.role != "SUPERADMIN" &&
+                                member.systemRole != "SUPERADMIN"
                             ) {
-                                Text("权限")
+                                TextButton(
+                                    onClick = {
+                                        visibilityEditing = member
+                                    }
+                                ) {
+                                    Text("互访")
+                                }
+                            }
+
+                            if (
+                                canManage &&
+                                member.role !=
+                                "OWNER" &&
+                                member.role !=
+                                "SUPERADMIN" &&
+                                member.systemRole !=
+                                "SUPERADMIN"
+                            ) {
+                                TextButton(
+                                    onClick = {
+                                        editing = member
+                                    }
+                                ) {
+                                    Text("权限")
+                                }
                             }
                         }
                     }
@@ -744,6 +805,128 @@ internal fun MemberPermissionContent(
             }
         )
     }
+    visibilityEditing?.let { member ->
+        MemberVisibilityDialog(
+            member = member,
+            allMembers = members,
+            busy = loading,
+            onDismiss = { visibilityEditing = null },
+            onSave = { visibleUserIds ->
+                visibilityEditing = null
+                loading = true
+                Thread {
+                    val result =
+                        runCatching {
+                            cloudSyncManager
+                                .updateMemberVisibility(
+                                    bookId = currentBook.id,
+                                    userId = member.userId,
+                                    visibleUserIds = visibleUserIds
+                                )
+                            cloudSyncManager
+                                .listMembers(currentBook.id)
+                        }
+                    Handler(Looper.getMainLooper()).post {
+                        loading = false
+                        result
+                            .onSuccess {
+                                members = it
+                                message =
+                                    "${member.displayName} 的成员互访已保存"
+                                onChanged()
+                            }
+                            .onFailure {
+                                message = it.message ?: "保存互访失败"
+                            }
+                    }
+                }.start()
+            }
+        )
+    }
+}
+
+@Composable
+private fun MemberVisibilityDialog(
+    member: CloudMemberInfo,
+    allMembers: List<CloudMemberInfo>,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (Set<String>) -> Unit
+) {
+    val candidates =
+        remember(allMembers, member.userId) {
+            allMembers.filter {
+                it.userId != member.userId &&
+                    it.systemRole != "SUPERADMIN" &&
+                    it.role != "SUPERADMIN"
+            }
+        }
+    val selected =
+        remember(member.userId, member.visibleUserIds, candidates) {
+            mutableStateMapOf<String, Boolean>().apply {
+                candidates.forEach { candidate ->
+                    this[candidate.userId] =
+                        candidate.userId in member.visibleUserIds
+                }
+            }
+        }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("${member.displayName} · 成员互访") },
+        text = {
+            Column(
+                Modifier
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    "选择该成员在“成员与权限”中可以看到的人。自己始终可见，超级管理员始终对普通成员隐藏。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+
+                if (candidates.isEmpty()) {
+                    Text("暂无其他可配置成员", color = Color.Gray)
+                } else {
+                    candidates.forEach { candidate ->
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "${candidate.displayName}（${candidate.username}）",
+                                modifier = Modifier.weight(1f)
+                            )
+                            Switch(
+                                checked = selected[candidate.userId] == true,
+                                onCheckedChange = {
+                                    selected[candidate.userId] = it
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(
+                        selected
+                            .filterValues { it }
+                            .keys
+                            .toSet()
+                    )
+                },
+                enabled = !busy
+            ) { Text("保存互访") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
 }
 
 @Composable
@@ -909,6 +1092,8 @@ private fun PermissionEditorDialog(
                 }
         }
 
+
+
     fun applyTemplate(
         value: String
     ) {
@@ -1045,6 +1230,8 @@ private fun PermissionEditorDialog(
                             }
                     }
 
+
+
                 TextButton(
                     onClick = onRemove,
                     enabled = !busy,
@@ -1067,9 +1254,7 @@ private fun PermissionEditorDialog(
                     onSave(
                         template,
                         selected
-                            .filterValues {
-                                it
-                            }
+                            .filterValues { it }
                             .keys
                             .toSet()
                     )

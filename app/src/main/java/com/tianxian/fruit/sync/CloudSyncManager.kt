@@ -79,8 +79,10 @@ data class CloudMemberInfo(
     val username: String,
     val displayName: String,
     val role: String,
+    val systemRole: String = "USER",
     val permissionTemplate: String = "LEGACY",
-    val permissions: Set<String> = emptySet()
+    val permissions: Set<String> = emptySet(),
+    val visibleUserIds: Set<String> = emptySet()
 )
 
 data class CloudAuditInfo(
@@ -484,6 +486,11 @@ class CloudSyncManager(
                 item.getString("display_name"),
             role =
                 item.getString("role"),
+            systemRole =
+                item.optString(
+                    "system_role",
+                    "USER"
+                ),
             permissionTemplate =
                 item.optString(
                     "permission_template",
@@ -497,7 +504,11 @@ class CloudSyncManager(
                         .fallbackForRole(
                             item.getString("role")
                         )
-                }
+                },
+            visibleUserIds =
+                parseStringSet(
+                    item.optJSONArray("visible_user_ids")
+                )
         )
 
     fun listMembers(
@@ -718,6 +729,42 @@ class CloudSyncManager(
                                     .forEach {
                                         put(it)
                                     }
+                            }
+                        )
+                    },
+                token = current.token
+            ) as JSONObject
+
+        return parseMember(item)
+    }
+
+    fun updateMemberVisibility(
+        bookId: String,
+        userId: String,
+        visibleUserIds: Set<String>
+    ): CloudMemberInfo {
+        val current = requireSession()
+        val encodedBook =
+            URLEncoder.encode(bookId, "UTF-8")
+        val encodedUser =
+            URLEncoder.encode(userId, "UTF-8")
+
+        val item =
+            requestJson(
+                baseUrl = current.baseUrl,
+                method = "PATCH",
+                path =
+                    "/api/v1/books/" +
+                        "$encodedBook/members/" +
+                        "$encodedUser/visibility",
+                body =
+                    JSONObject().apply {
+                        put(
+                            "visible_user_ids",
+                            JSONArray().apply {
+                                visibleUserIds
+                                    .sorted()
+                                    .forEach { put(it) }
                             }
                         )
                     },

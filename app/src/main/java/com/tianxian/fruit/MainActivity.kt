@@ -2,7 +2,7 @@ package com.tianxian.fruit
 
 import android.graphics.Color
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.core.view.WindowCompat
 import com.tianxian.fruit.data.AppDatabase
@@ -11,7 +11,7 @@ import com.tianxian.fruit.sync.LedgerBook
 import com.tianxian.fruit.sync.LedgerManager
 import com.tianxian.fruit.ui.TianXianApp
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private lateinit var db: AppDatabase
     private lateinit var ledgerManager:
         LedgerManager

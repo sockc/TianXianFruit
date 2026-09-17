@@ -88,6 +88,7 @@ private enum class MorePage {
     MEMBER_PERMISSIONS,
     SYSTEM_ADMIN,
     HOME_HEADER,
+    SECURITY,
     ABOUT,
     HISTORY,
     PURCHASE_ACTIVITY,
@@ -288,6 +289,30 @@ fun TianXianApp(
 
     val context =
         LocalContext.current
+
+    val operationSecurityManager =
+        remember {
+            OperationSecurityManager(
+                context.applicationContext
+            )
+        }
+
+    val historySecurityGate =
+        remember {
+            HistorySecurityGate(
+                operationSecurityManager
+            )
+        }
+
+    val protectHistoricalAction:
+        (String, String, () -> Unit) -> Unit =
+        { recordDate, description, action ->
+            historySecurityGate.run(
+                recordDate,
+                description,
+                action
+            )
+        }
 
     val ledgerUiSettingsManager =
         remember {
@@ -626,6 +651,8 @@ fun TianXianApp(
                             onChanged = {
                                 notifyDataChanged()
                             },
+                            protectHistoricalAction =
+                                protectHistoricalAction,
                             onOpenHistory = {
                                 historyTarget =
                                     HistorySection.PURCHASE
@@ -653,6 +680,8 @@ fun TianXianApp(
                             db = db,
                             dataVersion = dataVersion,
                             onChanged = { notifyDataChanged() },
+                            protectHistoricalAction =
+                                protectHistoricalAction,
                             onOpenHistory = {
                                 historyTarget =
                                     HistorySection.BUSINESS
@@ -678,6 +707,10 @@ fun TianXianApp(
                             authSession.systemRole,
                         canEdit =
                             canEdit,
+                        operationSecurityManager =
+                            operationSecurityManager,
+                        protectHistoricalAction =
+                            protectHistoricalAction,
                         onSwitchBook =
                             onSwitchBook,
                         onPlan = {
@@ -712,6 +745,10 @@ fun TianXianApp(
             }
         }
     }
+
+    HistorySecurityHost(
+        historySecurityGate
+    )
 
     updateInfo?.let {
         info ->
@@ -1167,20 +1204,25 @@ private fun HomeScreen(
                                     )
                                 }
 
-                            HorizontalDivider()
+                            if (
+                                systemRole ==
+                                "SUPERADMIN"
+                            ) {
+                                HorizontalDivider()
 
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        "⚙ 账本管理"
-                                    )
-                                },
-                                onClick = {
-                                    bookMenuExpanded =
-                                        false
-                                    onBookManage()
-                                }
-                            )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            "⚙ 账本管理"
+                                        )
+                                    },
+                                    onClick = {
+                                        bookMenuExpanded =
+                                            false
+                                        onBookManage()
+                                    }
+                                )
+                            }
                         }
                     }
 
@@ -2202,6 +2244,8 @@ private fun PurchaseScreen(
     db: AppDatabase,
     dataVersion: Int,
     onChanged: () -> Unit,
+    protectHistoricalAction:
+        (String, String, () -> Unit) -> Unit,
     onOpenHistory: () -> Unit
 ) {
     val focusManager = LocalFocusManager.current
@@ -2585,7 +2629,14 @@ private fun PurchaseScreen(
                     PurchasePlanStatusCard(
                         item = collaborationItem!!,
                         completed = false,
-                        onClick = { planActionItem = collaborationItem }
+                        onClick = {
+                            protectHistoricalAction(
+                                date,
+                                "查看或修改 ${collaborationItem.fruitName} 的历史采购"
+                            ) {
+                                planActionItem = collaborationItem
+                            }
+                        }
                     )
                 }
 
@@ -2605,15 +2656,28 @@ private fun PurchaseScreen(
                             addFruitDialog = true
                         },
                         onDelete = {
-                            if (editingOrderId == null && row.planItemId != null) {
-                                db.deleteCollaborationPlanItem(row.planItemId)
-                                editingPlanItemId = null
-                                onChanged()
+                            val deleteDraftRow = {
+                                if (editingOrderId == null && row.planItemId != null) {
+                                    db.deleteCollaborationPlanItem(row.planItemId)
+                                    editingPlanItemId = null
+                                    onChanged()
+                                }
+                                syncedFingerprints.remove(row.rowId)
+                                val index = rows.indexOfFirst { it.rowId == row.rowId }
+                                if (index >= 0) rows.removeAt(index)
+                                if (rows.isEmpty()) rows.add(newBlankRow())
                             }
-                            syncedFingerprints.remove(row.rowId)
-                            val index = rows.indexOfFirst { it.rowId == row.rowId }
-                            if (index >= 0) rows.removeAt(index)
-                            if (rows.isEmpty()) rows.add(newBlankRow())
+
+                            if (editingOrderId == null && row.planItemId != null) {
+                                protectHistoricalAction(
+                                    date,
+                                    "删除历史采购计划 ${row.fruitName.ifBlank { "商品" }}"
+                                ) {
+                                    deleteDraftRow()
+                                }
+                            } else {
+                                deleteDraftRow()
+                            }
                         }
                     )
 
@@ -2766,7 +2830,14 @@ private fun PurchaseScreen(
                     PurchasePlanStatusCard(
                         item = completedItem,
                         completed = true,
-                        onClick = { planActionItem = completedItem }
+                        onClick = {
+                            protectHistoricalAction(
+                                date,
+                                "修改或删除 $date · ${completedItem.fruitName} 已采购记录"
+                            ) {
+                                planActionItem = completedItem
+                            }
+                        }
                     )
                 }
             }
@@ -2815,13 +2886,18 @@ private fun PurchaseScreen(
                             Modifier
                                 .weight(1f)
                                 .clickable {
-                                    historyEditTarget =
-                                        PurchaseHistoryEditTarget(
-                                            mode =
-                                                PurchaseHistoryEditMode.DAY,
-                                            date = historyDate,
-                                            details = dayOrders
-                                        )
+                                    protectHistoricalAction(
+                                        historyDate,
+                                        "编辑 $historyDate 全部采购记录"
+                                    ) {
+                                        historyEditTarget =
+                                            PurchaseHistoryEditTarget(
+                                                mode =
+                                                    PurchaseHistoryEditMode.DAY,
+                                                date = historyDate,
+                                                details = dayOrders
+                                            )
+                                    }
                                 },
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp
@@ -2857,17 +2933,22 @@ private fun PurchaseScreen(
                                         Modifier
                                             .weight(1f)
                                             .clickable {
-                                                historyEditTarget =
-                                                    PurchaseHistoryEditTarget(
-                                                        mode =
-                                                            PurchaseHistoryEditMode.BUYER_DAY,
-                                                        date =
-                                                            historyDate,
-                                                        details =
-                                                            buyerDetails,
-                                                        buyerName =
-                                                            buyerName
-                                                    )
+                                                protectHistoricalAction(
+                                                    historyDate,
+                                                    "编辑 $historyDate · $buyerName 的采购记录"
+                                                ) {
+                                                    historyEditTarget =
+                                                        PurchaseHistoryEditTarget(
+                                                            mode =
+                                                                PurchaseHistoryEditMode.BUYER_DAY,
+                                                            date =
+                                                                historyDate,
+                                                            details =
+                                                                buyerDetails,
+                                                            buyerName =
+                                                                buyerName
+                                                        )
+                                                }
                                             },
                                     fontWeight = FontWeight.Bold
                                 )
@@ -2886,22 +2967,32 @@ private fun PurchaseScreen(
                                             .fillMaxWidth()
                                             .combinedClickable(
                                                 onClick = {
-                                                    historyEditTarget =
-                                                        PurchaseHistoryEditTarget(
-                                                            mode =
-                                                                PurchaseHistoryEditMode.ITEM,
-                                                            date =
-                                                                historyDate,
-                                                            details =
-                                                                listOf(detail),
-                                                            focusItemId =
-                                                                item.id,
-                                                            buyerName =
-                                                                buyerName
-                                                        )
+                                                    protectHistoricalAction(
+                                                        historyDate,
+                                                        "修改 $historyDate · ${item.fruitName} 采购记录"
+                                                    ) {
+                                                        historyEditTarget =
+                                                            PurchaseHistoryEditTarget(
+                                                                mode =
+                                                                    PurchaseHistoryEditMode.ITEM,
+                                                                date =
+                                                                    historyDate,
+                                                                details =
+                                                                    listOf(detail),
+                                                                focusItemId =
+                                                                    item.id,
+                                                                buyerName =
+                                                                    buyerName
+                                                            )
+                                                    }
                                                 },
                                                 onLongClick = {
-                                                    deleteOrder = detail
+                                                    protectHistoricalAction(
+                                                        historyDate,
+                                                        "删除 $historyDate · ${item.fruitName} 采购记录"
+                                                    ) {
+                                                        deleteOrder = detail
+                                                    }
                                                 }
                                             )
                                             .padding(vertical = 3.dp),
@@ -2996,15 +3087,33 @@ private fun PurchaseScreen(
                     TextButton(
                         onClick = {
                             historyActionDetail = null
+                            val label =
+                                historyActionFruitName.ifBlank {
+                                    "采购记录"
+                                }
                             historyActionFruitName = ""
-                            loadHistoryOrderForEdit(detail)
+                            protectHistoricalAction(
+                                detail.order.date,
+                                "修改 ${detail.order.date} · $label"
+                            ) {
+                                loadHistoryOrderForEdit(detail)
+                            }
                         }
                     ) { Text("编辑") }
                     TextButton(
                         onClick = {
                             historyActionDetail = null
+                            val label =
+                                historyActionFruitName.ifBlank {
+                                    "采购记录"
+                                }
                             historyActionFruitName = ""
-                            deleteOrder = detail
+                            protectHistoricalAction(
+                                detail.order.date,
+                                "删除 ${detail.order.date} · $label"
+                            ) {
+                                deleteOrder = detail
+                            }
                         }
                     ) {
                         Text("删除", color = MaterialTheme.colorScheme.error)
@@ -3059,13 +3168,18 @@ private fun PurchaseScreen(
                 Row {
                     TextButton(
                         onClick = {
-                            planActionItem = null
-                            if (completed) {
-                                completeDialogItem = item
-                                completeDialogEditing = true
-                            } else {
-                                editingPlanItemId = item.id
-                                message = "正在修改 ${item.fruitName}"
+                            protectHistoricalAction(
+                                date,
+                                "修改 ${item.fruitName} 的历史采购记录"
+                            ) {
+                                planActionItem = null
+                                if (completed) {
+                                    completeDialogItem = item
+                                    completeDialogEditing = true
+                                } else {
+                                    editingPlanItemId = item.id
+                                    message = "正在修改 ${item.fruitName}"
+                                }
                             }
                         }
                     ) { Text("修改") }
@@ -3073,24 +3187,39 @@ private fun PurchaseScreen(
                     if (completed) {
                         TextButton(
                             onClick = {
-                                planActionItem = null
-                                restoreCompletedItem = item
+                                protectHistoricalAction(
+                                    date,
+                                    "把 ${item.fruitName} 的历史采购恢复为未完成"
+                                ) {
+                                    planActionItem = null
+                                    restoreCompletedItem = item
+                                }
                             }
                         ) { Text("恢复未完成") }
                     } else {
                         TextButton(
                             onClick = {
-                                planActionItem = null
-                                completeDialogItem = item
-                                completeDialogEditing = false
+                                protectHistoricalAction(
+                                    date,
+                                    "完成 ${item.fruitName} 的历史采购"
+                                ) {
+                                    planActionItem = null
+                                    completeDialogItem = item
+                                    completeDialogEditing = false
+                                }
                             }
                         ) { Text("完成采购") }
                     }
 
                     TextButton(
                         onClick = {
-                            planActionItem = null
-                            deleteCollaborationItem = item
+                            protectHistoricalAction(
+                                date,
+                                "删除 ${item.fruitName} 的历史采购记录"
+                            ) {
+                                planActionItem = null
+                                deleteCollaborationItem = item
+                            }
                         }
                     ) {
                         Text("删除", color = MaterialTheme.colorScheme.error)
@@ -3133,12 +3262,17 @@ private fun PurchaseScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        val result = db.restoreCompletedCollaborationPlanItem(item.id)
-                        message = result.message
-                        restoreCompletedItem = null
-                        if (result.success) {
-                            loadRowsFromCollaborationPlan()
-                            onChanged()
+                        protectHistoricalAction(
+                            date,
+                            "恢复 ${item.fruitName} 的历史采购"
+                        ) {
+                            val result = db.restoreCompletedCollaborationPlanItem(item.id)
+                            message = result.message
+                            restoreCompletedItem = null
+                            if (result.success) {
+                                loadRowsFromCollaborationPlan()
+                                onChanged()
+                            }
                         }
                     }
                 ) { Text("确认恢复") }
@@ -3158,21 +3292,26 @@ private fun PurchaseScreen(
             },
             { deleteCollaborationItem = null }
         ) {
-            val success =
-                if (item.status == 1) {
-                    val result = db.deleteCompletedCollaborationPlanItem(item.id)
-                    message = result.message
-                    result.success
-                } else {
-                    val ok = db.deleteCollaborationPlanItem(item.id)
-                    message = if (ok) "${item.fruitName} 已删除" else "删除失败"
-                    ok
+            protectHistoricalAction(
+                date,
+                "删除 ${item.fruitName} 的历史采购记录"
+            ) {
+                val success =
+                    if (item.status == 1) {
+                        val result = db.deleteCompletedCollaborationPlanItem(item.id)
+                        message = result.message
+                        result.success
+                    } else {
+                        val ok = db.deleteCollaborationPlanItem(item.id)
+                        message = if (ok) "${item.fruitName} 已删除" else "删除失败"
+                        ok
+                    }
+                deleteCollaborationItem = null
+                editingPlanItemId = null
+                if (success) {
+                    loadRowsFromCollaborationPlan()
+                    onChanged()
                 }
-            deleteCollaborationItem = null
-            editingPlanItemId = null
-            if (success) {
-                loadRowsFromCollaborationPlan()
-                onChanged()
             }
         }
     }
@@ -4160,6 +4299,8 @@ private fun SessionScreen(
     db: AppDatabase,
     dataVersion: Int,
     onChanged: () -> Unit,
+    protectHistoricalAction:
+        (String, String, () -> Unit) -> Unit,
     onOpenHistory: () -> Unit
 ) {
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
@@ -4486,9 +4627,14 @@ private fun SessionScreen(
                 record ->
                 Card(
                     onClick = {
-                        loadRecord(
-                            record
-                        )
+                        protectHistoricalAction(
+                            record.date,
+                            "修改 ${record.date} · ${record.storeName} 营业记录"
+                        ) {
+                            loadRecord(
+                                record
+                            )
+                        }
                     },
                     modifier =
                         Modifier.fillMaxWidth(),
@@ -4998,10 +5144,20 @@ private fun SessionScreen(
                                 .fillMaxWidth()
                                 .combinedClickable(
                                     onClick = {
-                                        loadRecord(record)
+                                        protectHistoricalAction(
+                                            record.date,
+                                            "修改 ${record.date} · ${record.storeName} 营业记录"
+                                        ) {
+                                            loadRecord(record)
+                                        }
                                     },
                                     onLongClick = {
-                                        deleteRecord = record
+                                        protectHistoricalAction(
+                                            record.date,
+                                            "删除 ${record.date} · ${record.storeName} 营业记录"
+                                        ) {
+                                            deleteRecord = record
+                                        }
                                     }
                                 )
                                 .padding(vertical = 3.dp),
@@ -7377,6 +7533,10 @@ private fun MoreScreen(
     currentBook: LedgerBook,
     systemRole: String,
     canEdit: Boolean,
+    operationSecurityManager:
+        OperationSecurityManager,
+    protectHistoricalAction:
+        (String, String, () -> Unit) -> Unit,
     onSwitchBook: (String) -> Unit,
     onPlan: () -> Unit,
     updateChecking: Boolean,
@@ -7427,12 +7587,18 @@ private fun MoreScreen(
                     SettingsSection(
                         "账本与数据"
                     ) {
-                        SettingsRow(
-                            "📚",
-                            "账本管理"
+                        if (
+                            systemRole ==
+                            "SUPERADMIN"
                         ) {
-                            sub =
-                                MorePage.BOOKS
+                            SettingsRow(
+                                "📚",
+                                "账本管理"
+                            ) {
+                                sub =
+                                    MorePage.BOOKS
+                            }
+                            SettingsDivider()
                         }
 
                         if (
@@ -7440,7 +7606,12 @@ private fun MoreScreen(
                                 BookPermissions.HISTORY_VIEW
                             )
                         ) {
-                            SettingsDivider()
+                            if (
+                                systemRole !=
+                                "SUPERADMIN"
+                            ) {
+                                // 普通成员没有“账本管理”，历史记录作为本组第一项。
+                            }
                             SettingsRow(
                                 "🧾",
                                 "历史记录"
@@ -7615,6 +7786,26 @@ private fun MoreScreen(
 
                 item {
                     SettingsSection(
+                        "安全"
+                    ) {
+                        SettingsRow(
+                            "🔐",
+                            "安全与验证",
+                            trailing =
+                                if (operationSecurityManager.hasPassword()) {
+                                    "已设置"
+                                } else {
+                                    "未设置"
+                                }
+                        ) {
+                            sub =
+                                MorePage.SECURITY
+                        }
+                    }
+                }
+
+                item {
+                    SettingsSection(
                         "界面与显示"
                     ) {
                         SettingsRow(
@@ -7703,6 +7894,20 @@ private fun MoreScreen(
                         )
                     }
                 }
+            }
+        }
+
+        MorePage.SECURITY -> {
+            SubPage(
+                "安全与验证",
+                {
+                    sub =
+                        MorePage.MENU
+                }
+            ) {
+                SecuritySettingsContent(
+                    operationSecurityManager
+                )
             }
         }
 
@@ -7839,6 +8044,8 @@ private fun MoreScreen(
                                 systemRole,
                                 BookPermissions.PURCHASE_EDIT
                             ),
+                    protectHistoricalAction =
+                        protectHistoricalAction,
                     initialSection = initialHistorySection,
                     onChanged = onChanged
                 )
@@ -12540,7 +12747,7 @@ private fun AboutAppContent(
 }
 
 @Composable
-private fun SettingsSection(
+internal fun SettingsSection(
     title: String,
     content:
         @Composable
@@ -12593,7 +12800,7 @@ private fun SettingsSection(
 }
 
 @Composable
-private fun SettingsRow(
+internal fun SettingsRow(
     icon: String,
     title: String,
     subtitle: String? = null,
@@ -12667,7 +12874,7 @@ private fun SettingsRow(
 }
 
 @Composable
-private fun SettingsDivider() {
+internal fun SettingsDivider() {
     HorizontalDivider(
         modifier =
             Modifier.padding(
@@ -12725,6 +12932,8 @@ private fun HistoryContent(
     db: AppDatabase,
     dataVersion: Int,
     canEdit: Boolean,
+    protectHistoricalAction:
+        (String, String, () -> Unit) -> Unit,
     initialSection: HistorySection = HistorySection.BUSINESS,
     onChanged: () -> Unit
 ) {
@@ -12951,7 +13160,16 @@ private fun HistoryContent(
                         }
 
                         if (canEdit) {
-                            TextButton(onClick = { deleteSession = s }) {
+                            TextButton(
+                                onClick = {
+                                    protectHistoricalAction(
+                                        s.date,
+                                        "删除 ${s.date} · ${s.storeName} 营业记录"
+                                    ) {
+                                        deleteSession = s
+                                    }
+                                }
+                            ) {
                                 Text("删除")
                             }
                         }
@@ -12979,7 +13197,16 @@ private fun HistoryContent(
                                 }
 
                                 if (canEdit) {
-                                    TextButton(onClick = { deleteOrder = p }) {
+                                    TextButton(
+                                        onClick = {
+                                            protectHistoricalAction(
+                                                p.order.date,
+                                                "删除 ${p.order.date} · ${p.order.buyerName} 采购单"
+                                            ) {
+                                                deleteOrder = p
+                                            }
+                                        }
+                                    ) {
                                         Text("删除")
                                     }
                                 }
@@ -13125,6 +13352,10 @@ private fun StatsContent(
         )
     }
 
+    var calendarPartnerId by remember {
+        mutableStateOf<Long?>(null)
+    }
+
     val today =
         LocalDate.now()
 
@@ -13192,6 +13423,40 @@ private fun StatsContent(
                 queryStart,
                 queryEnd
             )
+        }
+
+    val statsProfitRows =
+        remember(
+            dataVersion,
+            queryStart,
+            queryEnd
+        ) {
+            db.getProfitDistributionsBetween(
+                queryStart,
+                queryEnd
+            )
+        }
+
+    val statsPartners =
+        remember(
+            dataVersion,
+            statsProfitRows
+        ) {
+            val active =
+                db.getPartners()
+                    .associateBy { it.id }
+                    .toMutableMap()
+            statsProfitRows.forEach { row ->
+                if (row.partnerId !in active) {
+                    active[row.partnerId] =
+                        PartnerOption(
+                            row.partnerId,
+                            row.partnerName
+                        )
+                }
+            }
+            active.values
+                .sortedBy { it.id }
         }
 
     val activityDates =
@@ -13871,6 +14136,37 @@ private fun StatsContent(
                 it.date
             }
         }
+
+    val selectedCalendarPartner =
+        statsPartners.firstOrNull {
+            it.id == calendarPartnerId
+        }
+
+    val calendarPartnerProfitByDate =
+        remember(
+            statsProfitRows,
+            calendarPartnerId
+        ) {
+            calendarPartnerId?.let { partnerId ->
+                statsProfitRows
+                    .filter {
+                        it.partnerId ==
+                            partnerId
+                    }
+                    .groupBy { it.date }
+                    .mapValues { entry ->
+                        entry.value.sumOf {
+                            it.allocatedProfit
+                        }
+                    }
+            }
+        }
+
+    val calendarPartnerTotal =
+        calendarPartnerProfitByDate
+            ?.values
+            ?.sum()
+            ?: 0.0
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -14756,17 +15052,111 @@ private fun StatsContent(
 
             BusinessStatsTab.CALENDAR -> {
                 item {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(
+                                rememberScrollState()
+                            ),
+                        horizontalArrangement =
+                            Arrangement.spacedBy(6.dp)
+                    ) {
+                        FilterChip(
+                            selected =
+                                calendarPartnerId ==
+                                    null,
+                            onClick = {
+                                calendarPartnerId =
+                                    null
+                            },
+                            label = {
+                                Text("总利润")
+                            }
+                        )
+
+                        statsPartners.forEach {
+                            partner ->
+                            FilterChip(
+                                selected =
+                                    calendarPartnerId ==
+                                        partner.id,
+                                onClick = {
+                                    calendarPartnerId =
+                                        partner.id
+                                },
+                                label = {
+                                    Text(partner.name)
+                                }
+                            )
+                        }
+                    }
+                }
+
+                if (selectedCalendarPartner != null) {
+                    item {
+                        Card(
+                            colors =
+                                CardDefaults.cardColors(
+                                    containerColor =
+                                        Color(0xFFF5FAF7)
+                                )
+                        ) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment =
+                                    Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    selectedCalendarPartner.name +
+                                        " · 当前筛选利润",
+                                    modifier =
+                                        Modifier.weight(1f),
+                                    fontWeight =
+                                        FontWeight.SemiBold
+                                )
+                                Text(
+                                    money(
+                                        calendarPartnerTotal
+                                    ),
+                                    color =
+                                        if (calendarPartnerTotal < 0) {
+                                            MaterialTheme
+                                                .colorScheme
+                                                .error
+                                        } else {
+                                            BrandGreen
+                                        },
+                                    fontWeight =
+                                        FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                item {
                     BusinessCalendarCard(
                         month =
                             calendarMonth,
                         summaryByDate =
-                            summaryByDate
+                            summaryByDate,
+                        partnerProfitByDate =
+                            calendarPartnerProfitByDate,
+                        partnerName =
+                            selectedCalendarPartner
+                                ?.name
                     )
                 }
 
                 item {
                     Text(
-                        "日历以当前筛选结束日期所在月份显示；绿色表示有正利润经营记录，红色表示当日利润为负。",
+                        if (selectedCalendarPartner == null) {
+                            "日历以当前筛选结束日期所在月份显示；绿色表示总利润为正，红色表示总利润为负。"
+                        } else {
+                            "当前显示 ${selectedCalendarPartner.name} 的实际利润分配记录；有经营但未生成该合伙人分配记录的日期显示“待分配”。"
+                        },
                         style =
                             MaterialTheme
                                 .typography
@@ -14911,7 +15301,10 @@ private fun BusinessTrendRow(
 private fun BusinessCalendarCard(
     month: LocalDate,
     summaryByDate:
-        Map<String, DailySummary>
+        Map<String, DailySummary>,
+    partnerProfitByDate:
+        Map<String, Double>? = null,
+    partnerName: String? = null
 ) {
     val first =
         month.withDayOfMonth(
@@ -14952,7 +15345,12 @@ private fun BusinessCalendarCard(
                         .ofPattern(
                             "yyyy年M月"
                         )
-                ),
+                ) +
+                    if (partnerName.isNullOrBlank()) {
+                        ""
+                    } else {
+                        " · $partnerName"
+                    },
                 style =
                     MaterialTheme
                         .typography
@@ -15042,30 +15440,42 @@ private fun BusinessCalendarCard(
                                     date
                                 ]
 
+                            val partnerMode =
+                                partnerProfitByDate !=
+                                    null
+                            val hasPartnerRecord =
+                                partnerProfitByDate
+                                    ?.containsKey(date) ==
+                                    true
+                            val displayProfit =
+                                if (partnerMode) {
+                                    partnerProfitByDate
+                                        ?.get(date)
+                                } else {
+                                    summary?.profit
+                                }
+
                             val background =
                                 when {
-                                    summary ==
-                                        null ->
-                                        Color.Transparent
+                                    partnerMode &&
+                                        summary != null &&
+                                        !hasPartnerRecord ->
+                                        Color(0xFFF5F5F5)
 
-                                    summary.profit <
+                                    displayProfit != null &&
+                                        displayProfit <
                                         -0.005 ->
                                         Color(
                                             0xFFFFECEA
                                         )
 
-                                    summary.revenue >
-                                        0.0 ||
-                                        summary.purchaseCost >
-                                        0.0 ->
+                                    displayProfit != null ->
                                         Color(
                                             0xFFEAF8F0
                                         )
 
                                     else ->
-                                        Color(
-                                            0xFFF5F5F5
-                                        )
+                                        Color.Transparent
                                 }
 
                             Column(
@@ -15099,8 +15509,8 @@ private fun BusinessCalendarCard(
                                             .bodySmall,
                                     fontWeight =
                                         if (
-                                            summary !=
-                                            null
+                                            summary != null ||
+                                            hasPartnerRecord
                                         ) {
                                             FontWeight
                                                 .SemiBold
@@ -15111,34 +15521,38 @@ private fun BusinessCalendarCard(
                                 )
 
                                 Text(
-                                    summary
-                                        ?.let {
-                                            if (
-                                                kotlin.math
-                                                    .abs(
-                                                        it.profit
-                                                    ) <
-                                                0.005
-                                            ) {
-                                                "—"
-                                            } else {
-                                                fmt(
-                                                    it.profit
-                                                )
-                                            }
-                                        }
-                                        ?: "",
+                                    when {
+                                        partnerMode &&
+                                            summary != null &&
+                                            !hasPartnerRecord ->
+                                            "待分配"
+
+                                        displayProfit == null ->
+                                            ""
+
+                                        kotlin.math.abs(
+                                            displayProfit
+                                        ) < 0.005 ->
+                                            "—"
+
+                                        else ->
+                                            fmt(displayProfit)
+                                    },
                                     style =
                                         MaterialTheme
                                             .typography
                                             .labelSmall,
                                     color =
                                         when {
-                                            summary ==
-                                                null ->
+                                            partnerMode &&
+                                                summary != null &&
+                                                !hasPartnerRecord ->
+                                                Color.Gray
+
+                                            displayProfit == null ->
                                                 Color.Transparent
 
-                                            summary.profit <
+                                            displayProfit <
                                                 -0.005 ->
                                                 MaterialTheme
                                                     .colorScheme
