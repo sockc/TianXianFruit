@@ -241,6 +241,34 @@ data class PartnerFundBalanceSummary(
     val currentBalance: Double
 )
 
+data class PartnerDailyFundBalanceRecord(
+    val date: String,
+    val partnerId: Long,
+    val partnerName: String,
+    val purchasePaid: Double,
+    val expensePaid: Double,
+    val revenueReceived: Double,
+    val profitShare: Double,
+    val dayBalance: Double,
+    val settledAmount: Double,
+    val remainingBalance: Double,
+    val settlementId: Long,
+    val transfers: List<SettlementTransferRecord>
+) {
+    val status: Int
+        get() = when {
+            kotlin.math.abs(dayBalance) <= 0.005 -> 3 // 无需结算
+            settledAmount <= 0.005 -> 0 // 未结算
+            kotlin.math.abs(remainingBalance) <= 0.005 -> 1 // 已结清
+            else -> 2 // 部分结算
+        }
+}
+
+data class PartnerDateSettlementResult(
+    val success: Boolean,
+    val message: String
+)
+
 data class FundBalanceSettlementResult(
     val success: Boolean,
     val message: String,
@@ -7716,6 +7744,205 @@ class AppDatabase(
                 currentBalance = current
             )
         }.sortedBy { it.partnerId }
+    }
+
+    fun getPartnerDailyFundBalances(
+        partnerId: Long,
+        startDate: String? = null,
+        endDate: String? = null
+    ): List<PartnerDailyFundBalanceRecord> {
+        val clauses = mutableListOf<String>()
+        val args = mutableListOf<String>()
+        if (startDate != null) {
+            clauses += "date>=?"
+            args += startDate
+        }
+        if (endDate != null) {
+            clauses += "date<=?"
+            args += endDate
+        }
+        val where =
+            if (clauses.isEmpty()) ""
+            else "WHERE " + clauses.joinToString(" AND ")
+
+        val dates =
+            readableDatabase.rawQuery(
+                """
+                SELECT date FROM (
+                    SELECT date FROM purchase_order WHERE deleted=0
+                    UNION
+                    SELECT date FROM store_daily_record WHERE deleted=0
+                    UNION
+                    SELECT date FROM profit_distribution WHERE deleted=0
+                    UNION
+                    SELECT date FROM settlement_transfer WHERE deleted=0
+                )
+                $where
+                ORDER BY date DESC
+                """.trimIndent(),
+                args.toTypedArray()
+            ).use { c ->
+                buildList {
+                    while (c.moveToNext()) add(c.str("date"))
+                }
+            }
+
+        return dates.mapNotNull { date ->
+            val purchase =
+                getPurchaseTotalsByPartner(date)
+                    .firstOrNull { it.partnerId == partnerId }
+            val expense =
+                getExpenseTotalsByPartner(date)
+                    .firstOrNull { it.partnerId == partnerId }
+            val receipt =
+                getReceiptsByPartner(date)
+                    .firstOrNull { it.partnerId == partnerId }
+            val profit =
+                getProfitDistribution(date)
+                    .firstOrNull { it.partnerId == partnerId }
+            val bundle = getCashSettlement(date)
+            val settlementPartner =
+                bundle?.partners?.firstOrNull { it.partnerId == partnerId }
+
+            val name =
+                settlementPartner?.partnerName
+                    ?: profit?.partnerName
+                    ?: purchase?.partnerName
+                    ?: receipt?.partnerName
+                    ?: expense?.partnerName
+                    ?: getPartnerFundBalances(endDate = date)
+                        .firstOrNull { it.partnerId == partnerId }
+                        ?.partnerName
+                    ?: "合伙人$partnerId"
+
+            val purchaseAmount = roundMoney(purchase?.amount ?: 0.0)
+            val expenseAmount = roundMoney(expense?.amount ?: 0.0)
+            val receiptAmount = roundMoney(receipt?.amount ?: 0.0)
+            val profitAmount = roundMoney(profit?.allocatedProfit ?: 0.0)
+            val sourceBalance =
+                roundMoney(
+                    purchaseAmount +
+                        expenseAmount +
+                        profitAmount -
+                        receiptAmount
+                )
+
+            val relatedTransfers =
+                bundle?.transfers
+                    ?.filter {
+                        it.fromPartnerId == partnerId ||
+                            it.toPartnerId == partnerId
+                    }
+                    .orEmpty()
+
+            val settledAmount =
+                when {
+                    sourceBalance > 0.005 ->
+                        roundMoney(
+                            relatedTransfers
+                                .filter { it.toPartnerId == partnerId }
+                                .sumOf { it.settledAmount }
+                        )
+
+                    sourceBalance < -0.005 ->
+                        roundMoney(
+                            relatedTransfers
+                                .filter { it.fromPartnerId == partnerId }
+                                .sumOf { it.settledAmount }
+                        )
+
+                    else -> 0.0
+                }
+
+            val remaining =
+                when {
+                    sourceBalance > 0.005 ->
+                        roundMoney(sourceBalance - settledAmount)
+                    sourceBalance < -0.005 ->
+                        roundMoney(sourceBalance + settledAmount)
+                    else -> 0.0
+                }
+
+            val hasActivity =
+                kotlin.math.abs(purchaseAmount) > 0.005 ||
+                    kotlin.math.abs(expenseAmount) > 0.005 ||
+                    kotlin.math.abs(receiptAmount) > 0.005 ||
+                    kotlin.math.abs(profitAmount) > 0.005 ||
+                    relatedTransfers.isNotEmpty()
+            if (!hasActivity) {
+                null
+            } else {
+                PartnerDailyFundBalanceRecord(
+                    date = date,
+                    partnerId = partnerId,
+                    partnerName = name,
+                    purchasePaid = purchaseAmount,
+                    expensePaid = expenseAmount,
+                    revenueReceived = receiptAmount,
+                    profitShare = profitAmount,
+                    dayBalance = sourceBalance,
+                    settledAmount = settledAmount,
+                    remainingBalance = remaining,
+                    settlementId = bundle?.settlement?.id ?: 0L,
+                    transfers = relatedTransfers
+                )
+            }
+        }
+    }
+
+    fun settlePartnerForDate(
+        date: String,
+        partnerId: Long
+    ): PartnerDateSettlementResult {
+        var bundle = getCashSettlement(date)
+        if (bundle == null) {
+            val generated = generateCashSettlement(date)
+            if (!generated.success) {
+                return PartnerDateSettlementResult(false, generated.message)
+            }
+            bundle = generated.bundle ?: getCashSettlement(date)
+        }
+
+        val partner =
+            bundle?.partners?.firstOrNull { it.partnerId == partnerId }
+                ?: return PartnerDateSettlementResult(false, "当天没有该合伙人的资金结算数据")
+        val amount = roundMoney(kotlin.math.abs(partner.balance))
+        if (amount <= 0.005) {
+            return PartnerDateSettlementResult(true, "当天无需转账")
+        }
+        val changed =
+            setCashSettlementPartnerSettledAmount(
+                bundle.settlement.id,
+                partnerId,
+                amount
+            )
+        return if (changed) {
+            PartnerDateSettlementResult(true, "${partner.partnerName} · $date 已结清 ${roundMoney(amount)} 元")
+        } else {
+            PartnerDateSettlementResult(false, "结算失败，请检查当天资金轧差方案")
+        }
+    }
+
+    fun markPartnerDateUnsettled(
+        date: String,
+        partnerId: Long
+    ): PartnerDateSettlementResult {
+        val bundle = getCashSettlement(date)
+            ?: return PartnerDateSettlementResult(false, "当天还没有结算记录")
+        val partner =
+            bundle.partners.firstOrNull { it.partnerId == partnerId }
+                ?: return PartnerDateSettlementResult(false, "当天没有该合伙人的资金结算数据")
+        val changed =
+            setCashSettlementPartnerSettledAmount(
+                bundle.settlement.id,
+                partnerId,
+                0.0
+            )
+        return if (changed) {
+            PartnerDateSettlementResult(true, "${partner.partnerName} · $date 已改为未结算；对应转账双方余额已同步恢复")
+        } else {
+            PartnerDateSettlementResult(false, "修改失败")
+        }
     }
 
     fun settleCurrentFundBalances(
