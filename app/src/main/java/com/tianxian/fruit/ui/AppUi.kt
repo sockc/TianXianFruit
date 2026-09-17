@@ -4241,6 +4241,14 @@ private fun SessionScreen(
             )
         }
 
+    val recent7DayGroups =
+        remember(recent7Records) {
+            recent7Records
+                .groupBy { it.date }
+                .toList()
+                .sortedByDescending { it.first }
+        }
+
     val sharedPurchase = remember(dataVersion, date) { db.getPurchaseTotal(date) }
 
     fun clearForm(keepDate: Boolean = true) {
@@ -4939,102 +4947,128 @@ private fun SessionScreen(
         }
 
         items(
-            recent7Records,
-            key = {
-                "recent_business_${it.id}"
+            recent7DayGroups,
+            key = { (dayDate, _) ->
+                "recent_business_day_$dayDate"
             }
-        ) {
-            record ->
+        ) { (dayDate, dayRecords) ->
+            val dayRevenue = dayRecords.sumOf { it.revenue }
             Card(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .combinedClickable(
-                            onClick = {
-                                loadRecord(record)
-                            },
-                            onLongClick = {
-                                deleteRecord = record
-                            }
-                        ),
-                colors =
-                    CardDefaults.cardColors(
-                        containerColor =
-                            Color(0xFFFCFCFC)
-                    )
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFFFCFCFC)
+                )
             ) {
                 Column(
                     Modifier.padding(
                         horizontal = 12.dp,
-                        vertical = 8.dp
+                        vertical = 9.dp
                     ),
-                    verticalArrangement =
-                        Arrangement.spacedBy(4.dp)
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Row(
                         Modifier.fillMaxWidth(),
-                        verticalAlignment =
-                            Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            "${record.date.takeLast(5)} · " +
-                                if (
-                                    record.storeName ==
-                                    "共用货品"
-                                ) {
-                                    "未知位置（旧数据）"
-                                } else {
-                                    record.storeName
-                                },
-                            modifier =
-                                Modifier.weight(1f),
-                            fontWeight =
-                                FontWeight.SemiBold
+                            "${dayDate.takeLast(5)} · " +
+                                runCatching {
+                                    chineseWeekday(LocalDate.parse(dayDate))
+                                }.getOrDefault(""),
+                            modifier = Modifier.weight(1f),
+                            fontWeight = FontWeight.Bold
                         )
-
                         Text(
-                            "营业额 ${money(record.revenue)}",
+                            "${dayRecords.size}个位置 · ${money(dayRevenue)}",
                             color = BrandGreen,
-                            fontWeight =
-                                FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.bodySmall
                         )
                     }
 
-                    val receiptSummary =
-                        if (record.receiptSplits.isNotEmpty()) {
-                            record.receiptSplits
-                                .joinToString(" · ") { split ->
-                                    "${split.partnerName} ${money(split.amount)}"
-                                }
-                        } else {
-                            val legacyName =
-                                listOf(
-                                    record.wechatCollectorName,
-                                    record.alipayCollectorName,
-                                    record.cashCollectorName
-                                ).firstOrNull { it.isNotBlank() && it != "未指定" }.orEmpty()
-                            if (legacyName.isNotBlank() && record.revenue > 0) {
-                                "$legacyName ${money(record.revenue)}"
-                            } else {
-                                ""
-                            }
+                    dayRecords.forEachIndexed { index, record ->
+                        if (index > 0) {
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+                            )
                         }
 
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .combinedClickable(
+                                    onClick = {
+                                        loadRecord(record)
+                                    },
+                                    onLongClick = {
+                                        deleteRecord = record
+                                    }
+                                )
+                                .padding(vertical = 3.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    if (record.storeName == "共用货品") {
+                                        "未知位置（旧数据）"
+                                    } else {
+                                        record.storeName
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    "营业额 ${money(record.revenue)}",
+                                    color = BrandGreen,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+
+                            val receiptSummary =
+                                if (record.receiptSplits.isNotEmpty()) {
+                                    record.receiptSplits
+                                        .joinToString(" · ") { split ->
+                                            "${split.partnerName} ${money(split.amount)}"
+                                        }
+                                } else {
+                                    val legacyName =
+                                        listOf(
+                                            record.wechatCollectorName,
+                                            record.alipayCollectorName,
+                                            record.cashCollectorName
+                                        ).firstOrNull {
+                                            it.isNotBlank() && it != "未指定"
+                                        }.orEmpty()
+                                    if (legacyName.isNotBlank() && record.revenue > 0) {
+                                        "$legacyName ${money(record.revenue)}"
+                                    } else {
+                                        ""
+                                    }
+                                }
+
+                            Text(
+                                "微信 ${money(record.wechatIncome)}   " +
+                                    "支付宝 ${money(record.alipayIncome)}   " +
+                                    "现金 ${money(record.cashIncome)}" +
+                                    if (receiptSummary.isNotBlank()) {
+                                        "   ·   $receiptSummary"
+                                    } else {
+                                        ""
+                                    },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray,
+                                maxLines = 2
+                            )
+                        }
+                    }
+
                     Text(
-                        "微信 ${money(record.wechatIncome)}   " +
-                            "支付宝 ${money(record.alipayIncome)}   " +
-                            "现金 ${money(record.cashIncome)}" +
-                            if (receiptSummary.isNotBlank()) {
-                                "   ·   $receiptSummary"
-                            } else {
-                                ""
-                            },
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall,
-                        color = Color.Gray,
-                        maxLines = 2
+                        "点位置编辑 · 长按位置删除",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Gray
                     )
                 }
             }
@@ -6232,6 +6266,27 @@ private fun SettlementBatchContent(
         if (result.success) onChanged()
     }
 
+    val selectedPartner =
+        partners.firstOrNull { it.id == selectedPartnerId }
+    val selectedPartnerPeriodRows =
+        remember(
+            dataVersion,
+            selectedPartner?.id,
+            rangeStart,
+            rangeEnd,
+            invalidCustom
+        ) {
+            if (selectedPartner != null && !invalidCustom) {
+                db.getPartnerDailyFundBalances(
+                    selectedPartner.id,
+                    rangeStart,
+                    rangeEnd
+                )
+            } else {
+                emptyList()
+            }
+        }
+
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(
@@ -6569,21 +6624,9 @@ private fun SettlementBatchContent(
                 }
             }
         } else {
-            val partner = partners.firstOrNull { it.id == selectedPartnerId }
+            val partner = selectedPartner
             if (partner != null && !invalidCustom) {
-                val periodRows =
-                    remember(
-                        dataVersion,
-                        partner.id,
-                        rangeStart,
-                        rangeEnd
-                    ) {
-                        db.getPartnerDailyFundBalances(
-                            partner.id,
-                            rangeStart,
-                            rangeEnd
-                        )
-                    }
+                val periodRows = selectedPartnerPeriodRows
                 val visibleRows =
                     if (onlyUnsettled) {
                         periodRows.filter {
