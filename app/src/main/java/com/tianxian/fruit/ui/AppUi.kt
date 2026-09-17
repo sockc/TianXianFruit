@@ -2671,7 +2671,7 @@ private fun PurchaseScreen(
                             if (editingOrderId == null && row.planItemId != null) {
                                 protectHistoricalAction(
                                     date,
-                                    "删除历史采购计划 ${row.fruitName.ifBlank { "商品" }}"
+                                    "删除历史采购计划 ${row.fruitNameSnapshot.ifBlank { "商品" }}"
                                 ) {
                                     deleteDraftRow()
                                 }
