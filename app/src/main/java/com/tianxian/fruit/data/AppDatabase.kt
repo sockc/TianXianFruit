@@ -223,7 +223,15 @@ data class SettlementTransferRecord(
     val toPartnerId: Long,
     val toPartnerName: String,
     val amount: Double,
-    val settledAmount: Double
+    val settledAmount: Double,
+    val settlementKind: String = "DAILY",
+    val batchKey: String = "",
+    val rangeStartDate: String = "",
+    val rangeEndDate: String = "",
+    val businessDayCount: Int = 1,
+    val confirmedAt: Long = 0L,
+    val focusPartnerId: Long = 0L,
+    val focusPartnerName: String = ""
 ) {
     val pendingAmount: Double
         get() = (amount - settledAmount).coerceAtLeast(0.0)
@@ -276,6 +284,35 @@ data class FundBalanceSettlementResult(
     val transferCount: Int = 0
 )
 
+
+data class PartnerOutstandingWindow(
+    val partnerId: Long,
+    val partnerName: String,
+    val endDate: String,
+    val currentBalance: Double,
+    val rangeStartDate: String,
+    val rangeEndDate: String,
+    val businessDayCount: Int,
+    val lastClearedDate: String,
+    val settledTransferAmount: Double
+)
+
+data class FundSettlementHistoryRecord(
+    val recordKey: String,
+    val kind: String,
+    val settlementDate: String,
+    val periodStart: String,
+    val periodEnd: String,
+    val businessDayCount: Int,
+    val focusPartnerId: Long,
+    val focusPartnerName: String,
+    val totalAmount: Double,
+    val settledAmount: Double,
+    val status: Int,
+    val confirmedAt: Long,
+    val transfers: List<SettlementTransferRecord>
+)
+
 data class DailyCashSettlementRecord(
     val id: Long,
     val date: String,
@@ -285,7 +322,8 @@ data class DailyCashSettlementRecord(
     val profit: Double,
     val status: Int,
     val createdAt: Long,
-    val updatedAt: Long
+    val updatedAt: Long,
+    val confirmedAt: Long = 0L
 )
 
 data class CashSettlementBundle(
@@ -512,6 +550,9 @@ class AppDatabase(
         createV20CompatibilitySchema(
             db
         )
+        createV21FundSettlementExtension(
+            db
+        )
         createV8SyncFoundation(
             db,
             initialData = false
@@ -599,9 +640,102 @@ class AppDatabase(
                 db
             )
         }
+        if (oldVersion < 21) {
+            createV21FundSettlementExtension(
+                db
+            )
+        }
     }
 
-    // DB18-DB20 were introduced after the V1.4.7.6 feature baseline.
+    private fun createV21FundSettlementExtension(
+        db: SQLiteDatabase
+    ) {
+        if (!columnExists(db, "daily_cash_settlement", "confirmed_at")) {
+            db.execSQL(
+                "ALTER TABLE daily_cash_settlement ADD COLUMN confirmed_at INTEGER NOT NULL DEFAULT 0"
+            )
+        }
+        if (!columnExists(db, "settlement_transfer", "settlement_kind")) {
+            db.execSQL(
+                "ALTER TABLE settlement_transfer ADD COLUMN settlement_kind TEXT NOT NULL DEFAULT 'DAILY'"
+            )
+        }
+        if (!columnExists(db, "settlement_transfer", "batch_key")) {
+            db.execSQL(
+                "ALTER TABLE settlement_transfer ADD COLUMN batch_key TEXT NOT NULL DEFAULT ''"
+            )
+        }
+        if (!columnExists(db, "settlement_transfer", "range_start_date")) {
+            db.execSQL(
+                "ALTER TABLE settlement_transfer ADD COLUMN range_start_date TEXT NOT NULL DEFAULT ''"
+            )
+        }
+        if (!columnExists(db, "settlement_transfer", "range_end_date")) {
+            db.execSQL(
+                "ALTER TABLE settlement_transfer ADD COLUMN range_end_date TEXT NOT NULL DEFAULT ''"
+            )
+        }
+        if (!columnExists(db, "settlement_transfer", "business_day_count")) {
+            db.execSQL(
+                "ALTER TABLE settlement_transfer ADD COLUMN business_day_count INTEGER NOT NULL DEFAULT 1"
+            )
+        }
+        if (!columnExists(db, "settlement_transfer", "confirmed_at")) {
+            db.execSQL(
+                "ALTER TABLE settlement_transfer ADD COLUMN confirmed_at INTEGER NOT NULL DEFAULT 0"
+            )
+        }
+        if (!columnExists(db, "settlement_transfer", "focus_partner_id")) {
+            db.execSQL(
+                "ALTER TABLE settlement_transfer ADD COLUMN focus_partner_id INTEGER NOT NULL DEFAULT 0"
+            )
+        }
+        if (!columnExists(db, "settlement_transfer", "focus_partner_name")) {
+            db.execSQL(
+                "ALTER TABLE settlement_transfer ADD COLUMN focus_partner_name TEXT NOT NULL DEFAULT ''"
+            )
+        }
+
+        db.execSQL(
+            """
+            UPDATE daily_cash_settlement
+            SET confirmed_at=CASE
+                WHEN confirmed_at<=0 AND status IN(1,2) THEN updated_at
+                ELSE confirmed_at
+            END
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            UPDATE settlement_transfer
+            SET
+                settlement_kind=CASE
+                    WHEN settlement_id=0 AND settlement_kind='DAILY' THEN 'LEGACY'
+                    ELSE settlement_kind
+                END,
+                range_start_date=CASE
+                    WHEN range_start_date='' THEN date
+                    ELSE range_start_date
+                END,
+                range_end_date=CASE
+                    WHEN range_end_date='' THEN date
+                    ELSE range_end_date
+                END,
+                business_day_count=CASE
+                    WHEN settlement_id=0 AND batch_key='' THEN 0
+                    WHEN business_day_count<=0 THEN 1
+                    ELSE business_day_count
+                END,
+                confirmed_at=CASE
+                    WHEN confirmed_at<=0 AND settled_amount>0.005 THEN updated_at
+                    ELSE confirmed_at
+                END
+            WHERE deleted=0
+            """.trimIndent()
+        )
+    }
+
+    // DB18-DB21 preserve compatibility while this branch evolves from the V1.4.7.6 baseline.
     // ROLLBACK1 preserves only their schema so an existing DB20 database can be
     // opened without downgrade/delete. No FIX7-FIX11 settlement behavior is enabled.
     private fun createV20CompatibilitySchema(
@@ -1005,6 +1139,7 @@ class AppDatabase(
                 expense REAL NOT NULL DEFAULT 0,
                 profit REAL NOT NULL DEFAULT 0,
                 status INTEGER NOT NULL DEFAULT 0,
+                confirmed_at INTEGER NOT NULL DEFAULT 0,
                 deleted INTEGER NOT NULL DEFAULT 0,
                 sync_id TEXT NOT NULL,
                 sync_status INTEGER NOT NULL DEFAULT 0,
@@ -1051,6 +1186,14 @@ class AppDatabase(
                 to_partner_name TEXT NOT NULL,
                 amount REAL NOT NULL DEFAULT 0,
                 settled_amount REAL NOT NULL DEFAULT 0,
+                settlement_kind TEXT NOT NULL DEFAULT 'DAILY',
+                batch_key TEXT NOT NULL DEFAULT '',
+                range_start_date TEXT NOT NULL DEFAULT '',
+                range_end_date TEXT NOT NULL DEFAULT '',
+                business_day_count INTEGER NOT NULL DEFAULT 1,
+                confirmed_at INTEGER NOT NULL DEFAULT 0,
+                focus_partner_id INTEGER NOT NULL DEFAULT 0,
+                focus_partner_name TEXT NOT NULL DEFAULT '',
                 deleted INTEGER NOT NULL DEFAULT 0,
                 sync_id TEXT NOT NULL,
                 sync_status INTEGER NOT NULL DEFAULT 0,
@@ -7256,7 +7399,7 @@ class AppDatabase(
             if (!c.moveToFirst()) null else DailyCashSettlementRecord(
                 c.long("id"), c.str("date"), c.dbl("revenue"), c.dbl("purchase_cost"),
                 c.dbl("expense"), c.dbl("profit"), c.int("status"), c.long("created_at"),
-                c.long("updated_at")
+                c.long("updated_at"), c.long("confirmed_at")
             )
         } ?: return null
 
@@ -7280,7 +7423,10 @@ class AppDatabase(
                 c.long("id"), c.long("settlement_id"), c.str("date"),
                 c.long("from_partner_id"), c.str("from_partner_name"),
                 c.long("to_partner_id"), c.str("to_partner_name"), c.dbl("amount"),
-                c.dbl("settled_amount")
+                c.dbl("settled_amount"), c.str("settlement_kind"), c.str("batch_key"),
+                c.str("range_start_date"), c.str("range_end_date"),
+                c.int("business_day_count"), c.long("confirmed_at"),
+                c.long("focus_partner_id"), c.str("focus_partner_name")
             ))
         } }
 
@@ -7294,7 +7440,7 @@ class AppDatabase(
         while (c.moveToNext()) add(DailyCashSettlementRecord(
             c.long("id"), c.str("date"), c.dbl("revenue"), c.dbl("purchase_cost"),
             c.dbl("expense"), c.dbl("profit"), c.int("status"), c.long("created_at"),
-            c.long("updated_at")
+            c.long("updated_at"), c.long("confirmed_at")
         ))
     } }
 
@@ -7504,6 +7650,14 @@ class AppDatabase(
                     put("to_partner_name", t.toName)
                     put("amount", t.amount)
                     put("settled_amount", 0)
+                    put("settlement_kind", "DAILY")
+                    put("batch_key", "daily-$settlementId")
+                    put("range_start_date", date)
+                    put("range_end_date", date)
+                    put("business_day_count", 1)
+                    put("confirmed_at", 0)
+                    put("focus_partner_id", 0)
+                    put("focus_partner_name", "")
                     put("deleted", 0)
                 })
             }
@@ -7525,17 +7679,19 @@ class AppDatabase(
                 """
                 UPDATE settlement_transfer
                 SET settled_amount=amount,
+                    confirmed_at=?,
                     sync_status=2,
                     updated_at=?
                 WHERE settlement_id=? AND deleted=0
                 """.trimIndent(),
-                arrayOf<Any?>(now, id)
+                arrayOf<Any?>(now, now, id)
             )
             val changed =
                 db.update(
                     "daily_cash_settlement",
                     ContentValues().apply {
                         put("status", 1)
+                        put("confirmed_at", now)
                         put("sync_status", 2)
                         put("updated_at", now)
                     },
@@ -7589,6 +7745,7 @@ class AppDatabase(
                     "settlement_transfer",
                     ContentValues().apply {
                         put("settled_amount", target)
+                        put("confirmed_at", if (target > 0.005) now else 0L)
                         put("sync_status", 2)
                         put("updated_at", now)
                     },
@@ -7641,6 +7798,7 @@ class AppDatabase(
                     "settlement_transfer",
                     ContentValues().apply {
                         put("settled_amount", settled)
+                        put("confirmed_at", if (settled > 0.005) now else 0L)
                         put("sync_status", 2)
                         put("updated_at", now)
                     },
@@ -7692,6 +7850,10 @@ class AppDatabase(
             "daily_cash_settlement",
             ContentValues().apply {
                 put("status", status)
+                put(
+                    "confirmed_at",
+                    if (amounts.second > 0.005) now else 0L
+                )
                 put("sync_status", 2)
                 put("updated_at", now)
             },
@@ -7848,6 +8010,438 @@ class AppDatabase(
         }.sortedBy { it.partnerId }
     }
 
+    private fun readSettlementTransfer(c: Cursor): SettlementTransferRecord =
+        SettlementTransferRecord(
+            c.long("id"),
+            c.long("settlement_id"),
+            c.str("date"),
+            c.long("from_partner_id"),
+            c.str("from_partner_name"),
+            c.long("to_partner_id"),
+            c.str("to_partner_name"),
+            c.dbl("amount"),
+            c.dbl("settled_amount"),
+            c.str("settlement_kind"),
+            c.str("batch_key"),
+            c.str("range_start_date"),
+            c.str("range_end_date"),
+            c.int("business_day_count"),
+            c.long("confirmed_at"),
+            c.long("focus_partner_id"),
+            c.str("focus_partner_name")
+        )
+
+    private fun getSettlementTransfersForPartnerOnDate(
+        partnerId: Long,
+        date: String
+    ): List<SettlementTransferRecord> =
+        readableDatabase.rawQuery(
+            """
+            SELECT *
+            FROM settlement_transfer
+            WHERE deleted=0
+              AND date=?
+              AND (from_partner_id=? OR to_partner_id=?)
+            ORDER BY id
+            """.trimIndent(),
+            arrayOf(date, partnerId.toString(), partnerId.toString())
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    add(readSettlementTransfer(c))
+                }
+            }
+        }
+
+    private fun countBusinessDays(
+        startDate: String,
+        endDate: String
+    ): Int {
+        if (startDate.isBlank() || endDate.isBlank()) return 0
+        val count =
+            readableDatabase.rawQuery(
+                """
+                SELECT COUNT(DISTINCT date) AS c
+                FROM store_daily_record
+                WHERE deleted=0
+                  AND date>=?
+                  AND date<=?
+                """.trimIndent(),
+                arrayOf(startDate, endDate)
+            ).use { c ->
+                if (c.moveToFirst()) c.int("c") else 0
+            }
+        return count
+    }
+
+    fun getPartnerOutstandingWindow(
+        partnerId: Long,
+        endDate: String = LocalDate.now().toString()
+    ): PartnerOutstandingWindow? {
+        val summary =
+            getPartnerFundBalances(endDate)
+                .firstOrNull { it.partnerId == partnerId }
+                ?: return null
+
+        val dates =
+            readableDatabase.rawQuery(
+                """
+                SELECT date FROM (
+                    SELECT date FROM purchase_order
+                    WHERE deleted=0 AND date<=?
+                    UNION
+                    SELECT date FROM store_daily_record
+                    WHERE deleted=0 AND date<=?
+                    UNION
+                    SELECT date FROM profit_distribution
+                    WHERE deleted=0 AND date<=?
+                    UNION
+                    SELECT date FROM settlement_transfer
+                    WHERE deleted=0 AND settled_amount>0.005 AND date<=?
+                )
+                ORDER BY date
+                """.trimIndent(),
+                arrayOf(endDate, endDate, endDate, endDate)
+            ).use { c ->
+                buildList {
+                    while (c.moveToNext()) add(c.str("date"))
+                }
+            }
+
+        var cumulative = 0.0
+        var lastClearedDate = ""
+        var lastClearedIndex = -1
+        var totalSettled = 0.0
+        val rawActivity = linkedMapOf<String, Double>()
+
+        dates.forEachIndexed { index, date ->
+            val purchase =
+                getPurchaseTotalsByPartner(date)
+                    .firstOrNull { it.partnerId == partnerId }
+                    ?.amount ?: 0.0
+            val expense =
+                getExpenseTotalsByPartner(date)
+                    .firstOrNull { it.partnerId == partnerId }
+                    ?.amount ?: 0.0
+            val receipt =
+                getReceiptsByPartner(date)
+                    .firstOrNull { it.partnerId == partnerId }
+                    ?.amount ?: 0.0
+            val profit =
+                getProfitDistribution(date)
+                    .firstOrNull { it.partnerId == partnerId }
+                    ?.allocatedProfit ?: 0.0
+            val raw = roundMoney(purchase + expense + profit - receipt)
+            rawActivity[date] = raw
+
+            val transfers =
+                getSettlementTransfersForPartnerOnDate(partnerId, date)
+                    .filter { it.settledAmount > 0.005 }
+            val sent =
+                transfers
+                    .filter { it.fromPartnerId == partnerId }
+                    .sumOf { it.settledAmount }
+            val received =
+                transfers
+                    .filter { it.toPartnerId == partnerId }
+                    .sumOf { it.settledAmount }
+            totalSettled += transfers.sumOf { it.settledAmount }
+            cumulative = roundMoney(cumulative + raw + sent - received)
+            val partnerHadActivity =
+                kotlin.math.abs(raw) > 0.005 || transfers.isNotEmpty()
+            if (
+                partnerHadActivity &&
+                kotlin.math.abs(cumulative) <= 0.005
+            ) {
+                lastClearedDate = date
+                lastClearedIndex = index
+            }
+        }
+
+        val current = roundMoney(summary.currentBalance)
+        var rangeStart = ""
+        if (kotlin.math.abs(current) > 0.005) {
+            val startIndex = (lastClearedIndex + 1).coerceAtLeast(0)
+            rangeStart =
+                dates.drop(startIndex)
+                    .firstOrNull { date ->
+                        kotlin.math.abs(rawActivity[date] ?: 0.0) > 0.005
+                    }
+                    ?: dates.drop(startIndex).firstOrNull().orEmpty()
+        }
+        val businessDays =
+            if (rangeStart.isBlank()) 0
+            else countBusinessDays(rangeStart, endDate).let { count ->
+                if (count > 0) count
+                else dates.count { it >= rangeStart && it <= endDate }
+            }
+
+        return PartnerOutstandingWindow(
+            partnerId = partnerId,
+            partnerName = summary.partnerName,
+            endDate = endDate,
+            currentBalance = current,
+            rangeStartDate = rangeStart,
+            rangeEndDate = if (rangeStart.isBlank()) "" else endDate,
+            businessDayCount = businessDays,
+            lastClearedDate = lastClearedDate,
+            settledTransferAmount = roundMoney(totalSettled)
+        )
+    }
+
+    fun settlePartnerThroughDate(
+        partnerId: Long,
+        endDate: String = LocalDate.now().toString()
+    ): FundBalanceSettlementResult {
+        val balances =
+            getPartnerFundBalances(endDate)
+                .filter { kotlin.math.abs(it.currentBalance) > 0.005 }
+        val target = balances.firstOrNull { it.partnerId == partnerId }
+            ?: return FundBalanceSettlementResult(
+                true,
+                "截至 $endDate 已经结清，无需再次处理"
+            )
+
+        val window = getPartnerOutstandingWindow(partnerId, endDate)
+            ?: return FundBalanceSettlementResult(false, "没有找到该合伙人的资金记录")
+
+        data class MutableFund(
+            val id: Long,
+            val name: String,
+            var amount: Double
+        )
+        data class Transfer(
+            val fromId: Long,
+            val fromName: String,
+            val toId: Long,
+            val toName: String,
+            val amount: Double
+        )
+
+        val transfers = mutableListOf<Transfer>()
+        var remaining = roundMoney(kotlin.math.abs(target.currentBalance))
+
+        if (target.currentBalance > 0.005) {
+            val payers =
+                balances
+                    .filter {
+                        it.partnerId != partnerId &&
+                            it.currentBalance < -0.005
+                    }
+                    .sortedBy { it.currentBalance }
+                    .map {
+                        MutableFund(
+                            it.partnerId,
+                            it.partnerName,
+                            roundMoney(-it.currentBalance)
+                        )
+                    }
+            payers.forEach { payer ->
+                if (remaining <= 0.005) return@forEach
+                val amount = roundMoney(minOf(remaining, payer.amount))
+                if (amount > 0.005) {
+                    transfers += Transfer(
+                        payer.id,
+                        payer.name,
+                        target.partnerId,
+                        target.partnerName,
+                        amount
+                    )
+                    remaining = roundMoney(remaining - amount)
+                }
+            }
+        } else {
+            val receivers =
+                balances
+                    .filter {
+                        it.partnerId != partnerId &&
+                            it.currentBalance > 0.005
+                    }
+                    .sortedByDescending { it.currentBalance }
+                    .map {
+                        MutableFund(
+                            it.partnerId,
+                            it.partnerName,
+                            roundMoney(it.currentBalance)
+                        )
+                    }
+            receivers.forEach { receiver ->
+                if (remaining <= 0.005) return@forEach
+                val amount = roundMoney(minOf(remaining, receiver.amount))
+                if (amount > 0.005) {
+                    transfers += Transfer(
+                        target.partnerId,
+                        target.partnerName,
+                        receiver.id,
+                        receiver.name,
+                        amount
+                    )
+                    remaining = roundMoney(remaining - amount)
+                }
+            }
+        }
+
+        if (remaining > 0.01) {
+            return FundBalanceSettlementResult(
+                false,
+                "其他合伙人的相反余额不足，仍有 ${roundMoney(remaining)} 元无法结清；请先核对账目"
+            )
+        }
+        if (transfers.isEmpty()) {
+            return FundBalanceSettlementResult(false, "当前没有可执行的结算转账")
+        }
+
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        val batchKey = UUID.randomUUID().toString()
+        db.beginTransaction()
+        return try {
+            transfers.forEach { t ->
+                val inserted =
+                    db.insert(
+                        "settlement_transfer",
+                        null,
+                        baseSyncValues().apply {
+                            put("settlement_id", 0)
+                            put("date", endDate)
+                            put("from_partner_id", t.fromId)
+                            put("from_partner_name", t.fromName)
+                            put("to_partner_id", t.toId)
+                            put("to_partner_name", t.toName)
+                            put("amount", t.amount)
+                            put("settled_amount", t.amount)
+                            put("settlement_kind", "CUTOFF")
+                            put("batch_key", batchKey)
+                            put("range_start_date", window.rangeStartDate.ifBlank { endDate })
+                            put("range_end_date", endDate)
+                            put("business_day_count", window.businessDayCount)
+                            put("confirmed_at", now)
+                            put("focus_partner_id", target.partnerId)
+                            put("focus_partner_name", target.partnerName)
+                            put("deleted", 0)
+                        }
+                    )
+                if (inserted <= 0) {
+                    throw IllegalStateException("写入结清记录失败")
+                }
+            }
+            db.setTransactionSuccessful()
+            val total = roundMoney(transfers.sumOf { it.amount })
+            FundBalanceSettlementResult(
+                true,
+                "${target.partnerName} 已结清截至 $endDate 的累计未结 ${roundMoney(total)} 元，共 ${transfers.size} 笔转账",
+                total,
+                transfers.size
+            )
+        } catch (e: Exception) {
+            FundBalanceSettlementResult(
+                false,
+                "结清失败：${e.message ?: "未知错误"}"
+            )
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun getFundSettlementHistory(
+        startDate: String? = null,
+        endDate: String? = null,
+        limit: Int = 120
+    ): List<FundSettlementHistoryRecord> {
+        val records = mutableListOf<FundSettlementHistoryRecord>()
+
+        getCashSettlementsBetween(startDate, endDate).forEach { bundle ->
+            val settledTransfers =
+                bundle.transfers.filter { it.settledAmount > 0.005 }
+            if (settledTransfers.isNotEmpty()) {
+                val total = roundMoney(bundle.transfers.sumOf { it.amount })
+                val settled = roundMoney(settledTransfers.sumOf { it.settledAmount })
+                val status =
+                    when {
+                        total <= 0.005 -> 1
+                        settled + 0.005 >= total -> 1
+                        settled > 0.005 -> 2
+                        else -> 0
+                    }
+                val confirmed =
+                    listOf(
+                        bundle.settlement.confirmedAt,
+                        settledTransfers.maxOfOrNull { it.confirmedAt } ?: 0L,
+                        bundle.settlement.updatedAt
+                    ).maxOrNull() ?: 0L
+                records +=
+                    FundSettlementHistoryRecord(
+                        recordKey = "daily-${bundle.settlement.id}",
+                        kind = "DAILY",
+                        settlementDate = bundle.settlement.date,
+                        periodStart = bundle.settlement.date,
+                        periodEnd = bundle.settlement.date,
+                        businessDayCount = 1,
+                        focusPartnerId = 0L,
+                        focusPartnerName = "",
+                        totalAmount = total,
+                        settledAmount = settled,
+                        status = status,
+                        confirmedAt = confirmed,
+                        transfers = bundle.transfers
+                    )
+            }
+        }
+
+        val clauses = mutableListOf("deleted=0", "settlement_id=0", "settled_amount>0.005")
+        val args = mutableListOf<String>()
+        if (startDate != null) {
+            clauses += "date>=?"
+            args += startDate
+        }
+        if (endDate != null) {
+            clauses += "date<=?"
+            args += endDate
+        }
+        val looseTransfers =
+            readableDatabase.rawQuery(
+                "SELECT * FROM settlement_transfer WHERE ${clauses.joinToString(" AND ")} ORDER BY date DESC,id DESC",
+                args.toTypedArray()
+            ).use { c ->
+                buildList {
+                    while (c.moveToNext()) add(readSettlementTransfer(c))
+                }
+            }
+
+        looseTransfers
+            .groupBy { transfer ->
+                transfer.batchKey.ifBlank { "legacy-${transfer.id}" }
+            }
+            .forEach { (key, rows) ->
+                val first = rows.first()
+                val total = roundMoney(rows.sumOf { it.amount })
+                val settled = roundMoney(rows.sumOf { it.settledAmount })
+                records +=
+                    FundSettlementHistoryRecord(
+                        recordKey = key,
+                        kind = first.settlementKind.ifBlank { "LEGACY" },
+                        settlementDate = first.date,
+                        periodStart = first.rangeStartDate.ifBlank { first.date },
+                        periodEnd = first.rangeEndDate.ifBlank { first.date },
+                        businessDayCount = first.businessDayCount.coerceAtLeast(0),
+                        focusPartnerId = first.focusPartnerId,
+                        focusPartnerName = first.focusPartnerName,
+                        totalAmount = total,
+                        settledAmount = settled,
+                        status = if (settled + 0.005 >= total) 1 else 2,
+                        confirmedAt = rows.maxOfOrNull { it.confirmedAt } ?: 0L,
+                        transfers = rows
+                    )
+            }
+
+        return records
+            .sortedWith(
+                compareByDescending<FundSettlementHistoryRecord> { it.settlementDate }
+                    .thenByDescending { it.confirmedAt }
+            )
+            .take(limit)
+    }
+
     fun getPartnerDailyFundBalances(
         partnerId: Long,
         startDate: String? = null,
@@ -7930,40 +8524,27 @@ class AppDatabase(
                 )
 
             val relatedTransfers =
-                bundle?.transfers
-                    ?.filter {
-                        it.fromPartnerId == partnerId ||
-                            it.toPartnerId == partnerId
-                    }
-                    .orEmpty()
+                getSettlementTransfersForPartnerOnDate(
+                    partnerId,
+                    date
+                )
 
             val settledAmount =
-                when {
-                    sourceBalance > 0.005 ->
-                        roundMoney(
-                            relatedTransfers
-                                .filter { it.toPartnerId == partnerId }
-                                .sumOf { it.settledAmount }
-                        )
+                roundMoney(
+                    relatedTransfers
+                        .filter { it.settledAmount > 0.005 }
+                        .sumOf { it.settledAmount }
+                )
 
-                    sourceBalance < -0.005 ->
-                        roundMoney(
-                            relatedTransfers
-                                .filter { it.fromPartnerId == partnerId }
-                                .sumOf { it.settledAmount }
-                        )
-
-                    else -> 0.0
-                }
-
+            // “资金余额”是当日结算后的扩展视图。
+            // 这里的 remainingBalance 表示截至该日的累计未结余额，
+            // 包括当天最少转账方案以及“结清截至今日”产生的真实转账。
             val remaining =
-                when {
-                    sourceBalance > 0.005 ->
-                        roundMoney(sourceBalance - settledAmount)
-                    sourceBalance < -0.005 ->
-                        roundMoney(sourceBalance + settledAmount)
-                    else -> 0.0
-                }
+                getPartnerFundBalances(endDate = date)
+                    .firstOrNull { it.partnerId == partnerId }
+                    ?.currentBalance
+                    ?.let(::roundMoney)
+                    ?: 0.0
 
             val hasActivity =
                 kotlin.math.abs(purchaseAmount) > 0.005 ||
@@ -8162,6 +8743,14 @@ class AppDatabase(
                             put("to_partner_name", t.toName)
                             put("amount", t.amount)
                             put("settled_amount", t.amount)
+                            put("settlement_kind", "LEGACY")
+                            put("batch_key", "legacy-${UUID.randomUUID()}")
+                            put("range_start_date", settlementDate)
+                            put("range_end_date", settlementDate)
+                            put("business_day_count", 0)
+                            put("confirmed_at", System.currentTimeMillis())
+                            put("focus_partner_id", 0)
+                            put("focus_partner_name", "")
                             put("deleted", 0)
                         }
                     )
@@ -8959,7 +9548,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 20
+        const val DB_VERSION = 21
     }
 }
 
