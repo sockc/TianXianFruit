@@ -5494,6 +5494,13 @@ private fun SettlementDayContent(
     val settlementCenter = remember(dataVersion) {
         db.getSettlementCenterPartner()
     }
+    val partnerOrderIndex = remember(dataVersion) {
+        db.getPartners()
+            .mapIndexed { index, partner ->
+                partner.id to index
+            }
+            .toMap()
+    }
 
     LaunchedEffect(
         dataVersion,
@@ -5561,10 +5568,58 @@ private fun SettlementDayContent(
                     it.settledAmount > 0.005
                 }
 
+        val staleUnsettledPlan =
+            if (
+                bundle != null &&
+                bundle.transfers.none {
+                    it.settledAmount > 0.005
+                }
+            ) {
+                val purchaseMap =
+                    db.getPurchaseTotalsByPartner(date)
+                        .associateBy { it.partnerId }
+                val receiptMap =
+                    db.getReceiptsByPartner(date)
+                        .associateBy { it.partnerId }
+                val profitMap =
+                    profitRows.associateBy { it.partnerId }
+                val storedMap =
+                    bundle.partners.associateBy { it.partnerId }
+                val ids =
+                    linkedSetOf<Long>().apply {
+                        addAll(db.getPartners().map { it.id })
+                        addAll(purchaseMap.keys)
+                        addAll(receiptMap.keys)
+                        addAll(profitMap.keys)
+                    }
+
+                storedMap.keys.any { it !in ids } ||
+                    ids.any { id ->
+                        val stored = storedMap[id]
+                        val purchase = purchaseMap[id]?.amount ?: 0.0
+                        val receipt = receiptMap[id]?.amount ?: 0.0
+                        val profit = profitMap[id]?.allocatedProfit ?: 0.0
+                        val keep = purchase + profit
+                        val balance = keep - receipt
+                        stored == null ||
+                            kotlin.math.abs(stored.purchasePaid - purchase) > 0.005 ||
+                            kotlin.math.abs(stored.revenueReceived - receipt) > 0.005 ||
+                            kotlin.math.abs(stored.profitShare - profit) > 0.005 ||
+                            kotlin.math.abs(stored.shouldKeep - keep) > 0.005 ||
+                            kotlin.math.abs(stored.balance - balance) > 0.005
+                    }
+            } else {
+                false
+            }
+
         if (
             summary.revenue > 0.005 &&
             profitReady &&
-            (bundle == null || oldUnsettledDirectPlan) &&
+            (
+                bundle == null ||
+                    oldUnsettledDirectPlan ||
+                    staleUnsettledPlan
+                ) &&
             autoGenerateBlockedDate !=
                 date
         ) {
@@ -5686,7 +5741,8 @@ private fun SettlementDayContent(
                     } else {
                         profitRows
                             .sortedBy {
-                                it.partnerId
+                                partnerOrderIndex[it.partnerId]
+                                    ?: Int.MAX_VALUE
                             }
                             .forEach {
                                 row ->
@@ -5785,6 +5841,14 @@ private fun SettlementDayContent(
             }
         }
 
+        item {
+            Text(
+                "根据当日采购垫付、营业收款和当日利润，自动计算当天实际资金往来。所有成员统一与资金中心结算。",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray
+            )
+        }
+
         if (bundle != null) {
             val b = bundle
             val centerId = settlementCenter?.id
@@ -5803,6 +5867,105 @@ private fun SettlementDayContent(
             val centerNet =
                 if (centerId == null) 0.0
                 else incoming.sumOf { it.amount } - outgoing.sumOf { it.amount }
+
+            val orderedPartnerRows =
+                b.partners.sortedBy {
+                    partnerOrderIndex[it.partnerId]
+                        ?: Int.MAX_VALUE
+                }
+
+            items(
+                orderedPartnerRows,
+                key = { "cash_partner_${it.id}" }
+            ) { row ->
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFFF8FAFC)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        Modifier.padding(
+                            horizontal = 10.dp,
+                            vertical = 8.dp
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                row.partnerName,
+                                modifier = Modifier.weight(1f),
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            if (row.partnerId == centerId) {
+                                Text(
+                                    "资金中心",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = BrandGreen
+                                )
+                            }
+                        }
+
+                        Row(Modifier.fillMaxWidth()) {
+                            Text(
+                                "采购 ${money(row.purchasePaid)}",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.DarkGray
+                            )
+                            Text(
+                                "收款 ${money(row.revenueReceived)}",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.DarkGray
+                            )
+                            Text(
+                                "利润 ${if (row.profitShare > 0.005) "+" else ""}${money(row.profitShare)}",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodySmall,
+                                color =
+                                    when {
+                                        row.profitShare > 0.005 -> BrandGreen
+                                        row.profitShare < -0.005 -> MaterialTheme.colorScheme.error
+                                        else -> Color.Gray
+                                    }
+                            )
+                        }
+
+                        val net = row.balance
+                        Text(
+                            when {
+                                row.partnerId == centerId ->
+                                    "当日净额 ${if (net > 0.005) "+" else ""}${money(net)}"
+                                net > 0.005 ->
+                                    "当日应收资金中心 ${money(net)}"
+                                net < -0.005 ->
+                                    "当日应转资金中心 ${money(-net)}"
+                                else ->
+                                    "当日无需转账"
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            color =
+                                when {
+                                    net > 0.005 -> BrandGreen
+                                    net < -0.005 -> MaterialTheme.colorScheme.error
+                                    else -> Color.Gray
+                                }
+                        )
+                    }
+                }
+            }
+
+            item {
+                Text(
+                    "确认实际转账后才记为已结算。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+            }
 
             if (b.transfers.isEmpty()) {
                 item {
@@ -15605,33 +15768,200 @@ private fun BackupContent(
 }
 
 @Composable
-private fun PartnerContent(db: AppDatabase, dataVersion: Int, onChanged: () -> Unit) {
-    val partners = remember(dataVersion) { db.getPartners() }
+private fun PartnerContent(
+    db: AppDatabase,
+    dataVersion: Int,
+    onChanged: () -> Unit
+) {
+    val partners =
+        remember(dataVersion) {
+            db.getPartners()
+        }
+    val settlementCenter =
+        remember(dataVersion) {
+            db.getSettlementCenterPartner()
+        }
+    var orderedPartners by
+        remember(dataVersion) {
+            mutableStateOf(partners)
+        }
     var addDialog by remember { mutableStateOf(false) }
     var edit by remember { mutableStateOf<PartnerOption?>(null) }
     var delete by remember { mutableStateOf<PartnerOption?>(null) }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item { Text("当前 ${partners.size} 位合伙人，人数不设上限。删除只代表今后不再参与新记录；历史采购、营业、利润和结算仍保留原 ID 与当时姓名，并可继续编辑。", color = Color.Gray) }
-        items(partners, key = { it.id }) { p ->
-            RecordCard {
-                Text(p.name, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
-                TextButton(onClick = { edit = p }) { Text("改名") }
-                TextButton(onClick = { delete = p }) { Text("删除") }
+
+    fun movePartner(
+        partnerId: Long,
+        direction: Int
+    ) {
+        val from =
+            orderedPartners.indexOfFirst {
+                it.id == partnerId
+            }
+        if (from < 0) return
+        val to = from + direction
+        if (to !in orderedPartners.indices) return
+
+        val reordered =
+            orderedPartners.toMutableList().apply {
+                val item = removeAt(from)
+                add(to, item)
+            }
+
+        if (
+            db.reorderPartners(
+                reordered.map { it.id }
+            )
+        ) {
+            orderedPartners = reordered
+            onChanged()
+        }
+    }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            horizontal = 12.dp,
+            vertical = 8.dp
+        ),
+        verticalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        items(
+            orderedPartners,
+            key = { it.id }
+        ) { p ->
+            val index =
+                orderedPartners.indexOfFirst {
+                    it.id == p.id
+                }
+
+            Card(Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            horizontal = 8.dp,
+                            vertical = 5.dp
+                        ),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(
+                        onClick = { movePartner(p.id, -1) },
+                        enabled = index > 0,
+                        modifier = Modifier.width(30.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text(
+                            "↑",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    TextButton(
+                        onClick = { movePartner(p.id, 1) },
+                        enabled =
+                            index >= 0 &&
+                                index < orderedPartners.lastIndex,
+                        modifier = Modifier.width(30.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text(
+                            "↓",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .padding(horizontal = 6.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                p.name,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            if (p.id == settlementCenter?.id) {
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    "资金中心",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = BrandGreen
+                                )
+                            }
+                        }
+                    }
+
+                    TextButton(
+                        onClick = { edit = p },
+                        contentPadding = PaddingValues(
+                            horizontal = 6.dp,
+                            vertical = 0.dp
+                        )
+                    ) {
+                        Text("编辑")
+                    }
+
+                    TextButton(
+                        onClick = { delete = p },
+                        contentPadding = PaddingValues(
+                            horizontal = 6.dp,
+                            vertical = 0.dp
+                        )
+                    ) {
+                        Text("删除")
+                    }
+                }
             }
         }
-        item { Button(onClick = { addDialog = true }, modifier = Modifier.fillMaxWidth()) { Text("＋ 添加合伙人") } }
-    }
-    if (addDialog) PartnerNameDialog("添加合伙人", "", { addDialog = false }) { name ->
-        db.addPartner(name); addDialog = false; onChanged()
-    }
-    edit?.let { p ->
-        PartnerNameDialog("修改合伙人名称", p.name, { edit = null }) { name ->
-            db.updatePartnerName(p.id, name); edit = null; onChanged()
+
+        item {
+            Button(
+                onClick = { addDialog = true },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("＋ 添加合伙人")
+            }
         }
     }
-    delete?.let { p -> ConfirmDelete("删除合伙人“${p.name}”？删除后不再出现在新记录选择列表中；已有采购、营业、利润分配和结算历史继续保留，并可编辑原历史记录。", { delete = null }) {
-        db.deletePartner(p.id); delete = null; onChanged()
-    } }
+
+    if (addDialog) {
+        PartnerNameDialog(
+            "添加合伙人",
+            "",
+            { addDialog = false }
+        ) { name ->
+            db.addPartner(name)
+            addDialog = false
+            onChanged()
+        }
+    }
+
+    edit?.let { p ->
+        PartnerNameDialog(
+            "修改合伙人名称",
+            p.name,
+            { edit = null }
+        ) { name ->
+            db.updatePartnerName(p.id, name)
+            edit = null
+            onChanged()
+        }
+    }
+
+    delete?.let { p ->
+        ConfirmDelete(
+            "删除合伙人“${p.name}”？历史记录不会删除。",
+            { delete = null }
+        ) {
+            db.deletePartner(p.id)
+            delete = null
+            onChanged()
+        }
+    }
 }
 
 @Composable

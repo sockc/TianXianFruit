@@ -610,6 +610,33 @@ class AppDatabase(
                 db
             )
         }
+        if (oldVersion < 20) {
+            createV20PartnerSortOrder(
+                db
+            )
+        }
+    }
+
+    private fun createV20PartnerSortOrder(
+        db: SQLiteDatabase
+    ) {
+        if (
+            !columnExists(
+                db,
+                "partner",
+                "sort_order"
+            )
+        ) {
+            db.execSQL(
+                "ALTER TABLE partner " +
+                    "ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
+            )
+        }
+
+        // 旧数据按原 ID 顺序初始化，之后排序只影响展示顺序，不影响资金中心。
+        db.execSQL(
+            "UPDATE partner SET sort_order=id WHERE sort_order<=0"
+        )
     }
 
     private fun createV19SettlementCenter(
@@ -904,6 +931,7 @@ class AppDatabase(
                 name TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 deleted INTEGER NOT NULL DEFAULT 0,
+                sort_order INTEGER NOT NULL DEFAULT 0,
                 sync_id TEXT NOT NULL,
                 sync_status INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
@@ -2956,13 +2984,15 @@ class AppDatabase(
     private fun seedPartners(db: SQLiteDatabase) {
         val count = db.rawQuery("SELECT COUNT(*) AS c FROM partner WHERE deleted=0", null).use { c -> if (c.moveToFirst()) c.int("c") else 0 }
         if (count == 0) {
-            listOf("合伙人1", "合伙人2", "合伙人3", "合伙人4").forEach { name ->
-                db.insert("partner", null, baseSyncValues().apply {
-                    put("name", name)
-                    put("enabled", 1)
-                    put("deleted", 0)
-                })
-            }
+            listOf("合伙人1", "合伙人2", "合伙人3", "合伙人4")
+                .forEachIndexed { index, name ->
+                    db.insert("partner", null, baseSyncValues().apply {
+                        put("name", name)
+                        put("enabled", 1)
+                        put("deleted", 0)
+                        put("sort_order", index + 1)
+                    })
+                }
         }
     }
 
@@ -3334,8 +3364,21 @@ class AppDatabase(
     }
 
     fun getPartners(): List<PartnerOption> = readableDatabase.rawQuery(
-        "SELECT id,name FROM partner WHERE enabled=1 AND deleted=0 ORDER BY id", null
-    ).use { c -> buildList { while (c.moveToNext()) add(PartnerOption(c.long("id"), c.str("name"))) } }
+        "SELECT id,name FROM partner WHERE enabled=1 AND deleted=0 " +
+            "ORDER BY CASE WHEN sort_order<=0 THEN id ELSE sort_order END,id",
+        null
+    ).use { c ->
+        buildList {
+            while (c.moveToNext()) {
+                add(
+                    PartnerOption(
+                        c.long("id"),
+                        c.str("name")
+                    )
+                )
+            }
+        }
+    }
 
     fun getPartnerById(id: Long): PartnerOption? = readableDatabase.rawQuery(
         "SELECT id,name FROM partner WHERE id=? AND enabled=1 AND deleted=0 LIMIT 1",
@@ -3356,9 +3399,44 @@ class AppDatabase(
         if (clean.isBlank()) return -1
         val duplicate = readableDatabase.rawQuery("SELECT id FROM partner WHERE name=? AND deleted=0 LIMIT 1", arrayOf(clean)).use { it.moveToFirst() }
         if (duplicate) return -1
+        val nextOrder =
+            readableDatabase.rawQuery(
+                "SELECT COALESCE(MAX(sort_order),0)+1 AS next_order FROM partner",
+                null
+            ).use { c ->
+                if (c.moveToFirst()) c.int("next_order") else 1
+            }
         return writableDatabase.insert("partner", null, baseSyncValues().apply {
-            put("name", clean); put("enabled", 1); put("deleted", 0)
+            put("name", clean)
+            put("enabled", 1)
+            put("deleted", 0)
+            put("sort_order", nextOrder)
         })
+    }
+
+    fun reorderPartners(orderedIds: List<Long>): Boolean {
+        if (orderedIds.isEmpty()) return false
+        val db = writableDatabase
+        db.beginTransaction()
+        return try {
+            val now = System.currentTimeMillis()
+            orderedIds.forEachIndexed { index, id ->
+                db.update(
+                    "partner",
+                    ContentValues().apply {
+                        put("sort_order", index + 1)
+                        put("sync_status", 2)
+                        put("updated_at", now)
+                    },
+                    "id=? AND enabled=1 AND deleted=0",
+                    arrayOf(id.toString())
+                )
+            }
+            db.setTransactionSuccessful()
+            true
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun updatePartnerName(id: Long, name: String): Boolean {
@@ -7545,40 +7623,26 @@ class AppDatabase(
             ).associateBy {
                 it.partnerId
             }
-        val cycleStatusMap =
-            getPartnerProfitCycleStatuses(
-                date
-            ).associateBy {
-                it.partnerId
-            }
-        val fundBalanceMap =
-            getPartnerFundBalances(
-                endDate = date
-            ).associateBy {
+        val profitMap =
+            profitRows.associateBy {
                 it.partnerId
             }
 
+        val orderedPartners =
+            getPartners()
         val partnerIds =
             linkedSetOf<Long>().apply {
                 addAll(
-                    purchaseMap.keys
-                        .filter { it > 0 }
+                    orderedPartners.map { it.id }
                 )
                 addAll(
-                    receiptMap.keys
-                        .filter { it > 0 }
+                    purchaseMap.keys.filter { it > 0 }
                 )
                 addAll(
-                    expenseMap.keys
-                        .filter { it > 0 }
+                    receiptMap.keys.filter { it > 0 }
                 )
                 addAll(
-                    cycleStatusMap.keys
-                        .filter { it > 0 }
-                )
-                addAll(
-                    fundBalanceMap.keys
-                        .filter { it > 0 }
+                    profitMap.keys.filter { it > 0 }
                 )
             }
 
@@ -7588,66 +7652,50 @@ class AppDatabase(
             val purchase: Double,
             val expense: Double,
             val receipt: Double,
-            val dueProfitToday: Double,
+            val profit: Double,
             val shouldKeepToday: Double,
             val balance: Double
         )
 
         val rows =
-            partnerIds.map {
-                id ->
-                val fund =
-                    fundBalanceMap[id]
-                val cycle =
-                    cycleStatusMap[id]
-
+            partnerIds.map { id ->
+                val partner =
+                    orderedPartners.firstOrNull { it.id == id }
                 val name =
-                    fund?.partnerName
-                        ?: cycle?.partnerName
-                        ?: purchaseMap[id]
-                            ?.partnerName
-                        ?: receiptMap[id]
-                            ?.partnerName
-                        ?: expenseMap[id]
-                            ?.partnerName
+                    partner?.name
+                        ?: profitMap[id]?.partnerName
+                        ?: purchaseMap[id]?.partnerName
+                        ?: receiptMap[id]?.partnerName
+                        ?: expenseMap[id]?.partnerName
                         ?: "合伙人$id"
 
                 val purchase =
                     roundMoney(
-                        purchaseMap[id]
-                            ?.amount
-                            ?: 0.0
+                        purchaseMap[id]?.amount ?: 0.0
                     )
                 val expense =
                     roundMoney(
-                        expenseMap[id]
-                            ?.amount
-                            ?: 0.0
+                        expenseMap[id]?.amount ?: 0.0
                     )
                 val receipt =
                     roundMoney(
-                        receiptMap[id]
-                            ?.amount
-                            ?: 0.0
+                        receiptMap[id]?.amount ?: 0.0
                     )
-                val dueProfitToday =
+                val profit =
                     roundMoney(
-                        cycle?.dueProfitOnDate
-                            ?: 0.0
+                        profitMap[id]?.allocatedProfit ?: 0.0
                     )
+
+                // FIX10: 当日资金轧差只看当天。
+                // 不带到期利润、历史未结或累计资金余额；
+                // 按用户当前业务规则：采购垫付 + 当日利润 - 当日营业收款。
                 val shouldKeepToday =
                     roundMoney(
-                        purchase +
-                            expense +
-                            dueProfitToday
+                        purchase + profit
                     )
                 val balance =
                     roundMoney(
-                        fund?.currentBalance
-                            ?: (
-                                shouldKeepToday -
-                                    receipt
-                                )
+                        shouldKeepToday - receipt
                     )
 
                 Row(
@@ -7656,10 +7704,8 @@ class AppDatabase(
                     purchase = purchase,
                     expense = expense,
                     receipt = receipt,
-                    dueProfitToday =
-                        dueProfitToday,
-                    shouldKeepToday =
-                        shouldKeepToday,
+                    profit = profit,
+                    shouldKeepToday = shouldKeepToday,
                     balance = balance
                 )
             }
@@ -7682,9 +7728,9 @@ class AppDatabase(
                     "请先设置资金结算中心"
                 )
 
-        // FIX9: 资金轧差固定以资金中心为中枢。
-        // 任何非中心合伙人只与资金中心发生实际转账，
-        // 不再生成 B→C / C→B 这类跨成员直转。
+        // FIX10: V1.4.7.1 的纯当日轧差 + 资金中心。
+        // 非中心成员当天应收时由中心支付；当天应补时转给中心。
+        // 不生成 B→C / C→B。
         val transfers =
             rows
                 .filter {
@@ -7866,7 +7912,7 @@ class AppDatabase(
                         )
                         put(
                             "profit_share",
-                            r.dueProfitToday
+                            r.profit
                         )
                         put(
                             "should_keep",
@@ -9208,7 +9254,7 @@ class AppDatabase(
         FROM profit_rule r
         JOIN partner p ON p.id=r.partner_id
         WHERE r.deleted=0 AND p.deleted=0 AND p.enabled=1
-        ORDER BY p.id
+        ORDER BY CASE WHEN p.sort_order<=0 THEN p.id ELSE p.sort_order END,p.id
         """.trimIndent(), null
     ).use { c ->
         buildList {
@@ -10146,7 +10192,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 19
+        const val DB_VERSION = 20
     }
 }
 
