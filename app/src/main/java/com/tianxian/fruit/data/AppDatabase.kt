@@ -203,7 +203,8 @@ data class ProfitRuleRecord(
     val percent: Double,
     val settlementCycle: String = "DAILY",
     val settlementWeekday: Int = 7,
-    val settlementMonthDay: Int = 0
+    val settlementMonthDay: Int = 0,
+    val isSettlementCenter: Boolean = false
 )
 
 data class PartnerProfitCycleStatus(
@@ -524,6 +525,9 @@ class AppDatabase(
         createV18ProfitSettlementCycle(
             db
         )
+        createV19SettlementCenter(
+            db
+        )
         createV8SyncFoundation(
             db,
             initialData = false
@@ -599,6 +603,41 @@ class AppDatabase(
         if (oldVersion < 18) {
             createV18ProfitSettlementCycle(
                 db
+            )
+        }
+        if (oldVersion < 19) {
+            createV19SettlementCenter(
+                db
+            )
+        }
+    }
+
+    private fun createV19SettlementCenter(
+        db: SQLiteDatabase
+    ) {
+        if (
+            !columnExists(
+                db,
+                "profit_rule",
+                "is_settlement_center"
+            )
+        ) {
+            db.execSQL(
+                "ALTER TABLE profit_rule " +
+                    "ADD COLUMN is_settlement_center INTEGER NOT NULL DEFAULT 0"
+            )
+        }
+
+        // 旧账本没有资金中心时，默认使用当前利润规则中的第一位合伙人。
+        val hasCenter =
+            db.rawQuery(
+                "SELECT 1 FROM profit_rule WHERE deleted=0 AND is_settlement_center=1 LIMIT 1",
+                null
+            ).use { it.moveToFirst() }
+        if (!hasCenter) {
+            db.execSQL(
+                "UPDATE profit_rule SET is_settlement_center=1 " +
+                    "WHERE id=(SELECT id FROM profit_rule WHERE deleted=0 ORDER BY partner_id,id LIMIT 1)"
             )
         }
     }
@@ -7625,50 +7664,6 @@ class AppDatabase(
                 )
             }
 
-        data class MutableBalance(
-            val id: Long,
-            val name: String,
-            var amount: Double
-        )
-
-        val payers =
-            rows
-                .filter {
-                    it.balance < -0.005
-                }
-                .map {
-                    MutableBalance(
-                        it.id,
-                        it.name,
-                        roundMoney(
-                            -it.balance
-                        )
-                    )
-                }
-                .sortedByDescending {
-                    it.amount
-                }
-                .toMutableList()
-
-        val receivers =
-            rows
-                .filter {
-                    it.balance > 0.005
-                }
-                .map {
-                    MutableBalance(
-                        it.id,
-                        it.name,
-                        roundMoney(
-                            it.balance
-                        )
-                    )
-                }
-                .sortedByDescending {
-                    it.amount
-                }
-                .toMutableList()
-
         data class TransferTmp(
             val fromId: Long,
             val fromName: String,
@@ -7677,61 +7672,57 @@ class AppDatabase(
             val amount: Double
         )
 
+        val center =
+            getSettlementCenterPartner()
+                ?: rows.firstOrNull()?.let {
+                    PartnerOption(it.id, it.name)
+                }
+                ?: return CashSettlementResult(
+                    false,
+                    "请先设置资金结算中心"
+                )
+
+        // FIX9: 资金轧差固定以资金中心为中枢。
+        // 任何非中心合伙人只与资金中心发生实际转账，
+        // 不再生成 B→C / C→B 这类跨成员直转。
         val transfers =
-            mutableListOf<TransferTmp>()
-        var i = 0
-        var j = 0
+            rows
+                .filter {
+                    it.id != center.id &&
+                        kotlin.math.abs(it.balance) > 0.005
+                }
+                .map { row ->
+                    if (row.balance < -0.005) {
+                        TransferTmp(
+                            fromId = row.id,
+                            fromName = row.name,
+                            toId = center.id,
+                            toName = center.name,
+                            amount = roundMoney(-row.balance)
+                        )
+                    } else {
+                        TransferTmp(
+                            fromId = center.id,
+                            fromName = center.name,
+                            toId = row.id,
+                            toName = row.name,
+                            amount = roundMoney(row.balance)
+                        )
+                    }
+                }
+                .filter {
+                    it.amount > 0.005
+                }
 
-        while (
-            i < payers.size &&
-            j < receivers.size
-        ) {
-            val amount =
-                roundMoney(
-                    minOf(
-                        payers[i].amount,
-                        receivers[j].amount
-                    )
-                )
-
-            if (amount > 0.005) {
-                transfers +=
-                    TransferTmp(
-                        fromId =
-                            payers[i].id,
-                        fromName =
-                            payers[i].name,
-                        toId =
-                            receivers[j].id,
-                        toName =
-                            receivers[j].name,
-                        amount =
-                            amount
-                    )
-            }
-
-            payers[i].amount =
-                roundMoney(
-                    payers[i].amount -
-                        amount
-                )
-            receivers[j].amount =
-                roundMoney(
-                    receivers[j].amount -
-                        amount
-                )
-
-            if (
-                payers[i].amount <= 0.005
-            ) {
-                i++
-            }
-            if (
-                receivers[j].amount <= 0.005
-            ) {
-                j++
-            }
-        }
+        val centerNetChange =
+            roundMoney(
+                transfers
+                    .filter { it.toId == center.id }
+                    .sumOf { it.amount } -
+                    transfers
+                        .filter { it.fromId == center.id }
+                        .sumOf { it.amount }
+            )
 
         val db =
             writableDatabase
@@ -7935,33 +7926,16 @@ class AppDatabase(
             db.endTransaction()
         }
 
-        val unmatchedPayable =
-            roundMoney(
-                receivers
-                    .drop(j)
-                    .sumOf {
-                        it.amount
-                    }
-            )
-        val retainedFunds =
-            roundMoney(
-                payers
-                    .drop(i)
-                    .sumOf {
-                        it.amount
-                    }
-            )
-
         val note =
             when {
                 transfers.isNotEmpty() ->
-                    "资金轧差方案已生成"
-
-                unmatchedPayable > 0.005 ->
-                    "当前没有足够可转资金，应收余额继续结转"
-
-                retainedFunds > 0.005 ->
-                    "当前有暂不需要转出的资金，余额继续结转"
+                    if (centerNetChange > 0.005) {
+                        "资金轧差已生成，${center.name}净收 ${roundMoney(centerNetChange)} 元"
+                    } else if (centerNetChange < -0.005) {
+                        "资金轧差已生成，${center.name}净付 ${roundMoney(-centerNetChange)} 元"
+                    } else {
+                        "资金轧差已生成"
+                    }
 
                 else ->
                     "当前无需转账"
@@ -8566,54 +8540,23 @@ class AppDatabase(
         settlementDate: String = LocalDate.now().toString()
     ): FundBalanceSettlementResult {
         if (partnerIds.isEmpty()) {
-            return FundBalanceSettlementResult(false, "请至少选择两位需要结算的合伙人")
+            return FundBalanceSettlementResult(false, "请选择需要结算的合伙人")
         }
+
+        val center =
+            getSettlementCenterPartner()
+                ?: return FundBalanceSettlementResult(false, "请先设置资金结算中心")
 
         val selected =
             getPartnerFundBalances()
                 .filter {
                     it.partnerId in partnerIds &&
+                        it.partnerId != center.id &&
                         kotlin.math.abs(it.currentBalance) > 0.005
                 }
 
-        if (selected.size < 2) {
-            return FundBalanceSettlementResult(false, "至少需要一位应补和一位应收的合伙人")
-        }
-
-        data class MutableFund(
-            val id: Long,
-            val name: String,
-            var amount: Double
-        )
-
-        val payers =
-            selected
-                .filter { it.currentBalance < -0.005 }
-                .map {
-                    MutableFund(
-                        it.partnerId,
-                        it.partnerName,
-                        roundMoney(-it.currentBalance)
-                    )
-                }
-                .toMutableList()
-        val receivers =
-            selected
-                .filter { it.currentBalance > 0.005 }
-                .map {
-                    MutableFund(
-                        it.partnerId,
-                        it.partnerName,
-                        roundMoney(it.currentBalance)
-                    )
-                }
-                .toMutableList()
-
-        if (payers.isEmpty() || receivers.isEmpty()) {
-            return FundBalanceSettlementResult(
-                false,
-                "所选合伙人没有可以互相轧差的应收和应补余额"
-            )
+        if (selected.isEmpty()) {
+            return FundBalanceSettlementResult(false, "当前没有需要结算的资金")
         }
 
         data class Transfer(
@@ -8624,37 +8567,29 @@ class AppDatabase(
             val amount: Double
         )
 
-        val transfers = mutableListOf<Transfer>()
-        var i = 0
-        var j = 0
-        while (i < payers.size && j < receivers.size) {
-            val amount =
-                roundMoney(
-                    minOf(
-                        payers[i].amount,
-                        receivers[j].amount
-                    )
-                )
-            if (amount > 0.005) {
-                transfers +=
+        val transfers =
+            selected.map { row ->
+                if (row.currentBalance < -0.005) {
                     Transfer(
-                        payers[i].id,
-                        payers[i].name,
-                        receivers[j].id,
-                        receivers[j].name,
-                        amount
+                        row.partnerId,
+                        row.partnerName,
+                        center.id,
+                        center.name,
+                        roundMoney(-row.currentBalance)
                     )
-            }
-            payers[i].amount =
-                roundMoney(payers[i].amount - amount)
-            receivers[j].amount =
-                roundMoney(receivers[j].amount - amount)
-            if (payers[i].amount <= 0.005) i++
-            if (receivers[j].amount <= 0.005) j++
-        }
+                } else {
+                    Transfer(
+                        center.id,
+                        center.name,
+                        row.partnerId,
+                        row.partnerName,
+                        roundMoney(row.currentBalance)
+                    )
+                }
+            }.filter { it.amount > 0.005 }
 
         if (transfers.isEmpty()) {
-            return FundBalanceSettlementResult(false, "当前没有可执行的资金结算")
+            return FundBalanceSettlementResult(false, "当前没有需要结算的资金")
         }
 
         val db = writableDatabase
@@ -8666,8 +8601,6 @@ class AppDatabase(
                         "settlement_transfer",
                         null,
                         baseSyncValues().apply {
-                            // settlement_id=0 表示 FIX3 的累计资金余额统一结算，
-                            // 不属于某一天的资金轧差方案。
                             put("settlement_id", 0)
                             put("date", settlementDate)
                             put("from_partner_id", t.fromId)
@@ -8680,21 +8613,21 @@ class AppDatabase(
                         }
                     )
                 if (id <= 0) {
-                    throw IllegalStateException("写入统一资金结算失败")
+                    throw IllegalStateException("写入资金结算失败")
                 }
             }
             db.setTransactionSuccessful()
             val total = roundMoney(transfers.sumOf { it.amount })
             FundBalanceSettlementResult(
                 true,
-                "统一结算已完成 ${roundMoney(total)} 元，共 ${transfers.size} 笔",
+                "资金结算已完成 ${roundMoney(total)} 元，共 ${transfers.size} 笔",
                 total,
                 transfers.size
             )
         } catch (e: Exception) {
             FundBalanceSettlementResult(
                 false,
-                "统一结算失败：${e.message ?: "未知错误"}"
+                "资金结算失败：${e.message ?: "未知错误"}"
             )
         } finally {
             db.endTransaction()
@@ -9270,7 +9203,8 @@ class AppDatabase(
             r.percent,
             COALESCE(r.settlement_cycle,'DAILY') AS settlement_cycle,
             COALESCE(r.settlement_weekday,7) AS settlement_weekday,
-            COALESCE(r.settlement_month_day,0) AS settlement_month_day
+            COALESCE(r.settlement_month_day,0) AS settlement_month_day,
+            COALESCE(r.is_settlement_center,0) AS is_settlement_center
         FROM profit_rule r
         JOIN partner p ON p.id=r.partner_id
         WHERE r.deleted=0 AND p.deleted=0 AND p.enabled=1
@@ -9293,10 +9227,26 @@ class AppDatabase(
                                 .coerceIn(1, 7),
                         settlementMonthDay =
                             c.int("settlement_month_day")
-                                .coerceIn(0, 28)
+                                .coerceIn(0, 28),
+                        isSettlementCenter =
+                            c.int("is_settlement_center") == 1
                     )
                 )
             }
+        }
+    }
+
+    fun getSettlementCenterPartner(): PartnerOption? {
+        val rules = getProfitRules()
+        val centerId =
+            rules.firstOrNull {
+                it.isSettlementCenter
+            }?.partnerId
+                ?: rules.firstOrNull()?.partnerId
+                ?: getPartners().firstOrNull()?.id
+                ?: return null
+        return getPartners().firstOrNull {
+            it.id == centerId
         }
     }
 
@@ -9319,7 +9269,9 @@ class AppDatabase(
                     settlementWeekday =
                         old?.settlementWeekday ?: 7,
                     settlementMonthDay =
-                        old?.settlementMonthDay ?: 0
+                        old?.settlementMonthDay ?: 0,
+                    isSettlementCenter =
+                        old?.isSettlementCenter ?: false
                 )
             }
         )
@@ -9338,6 +9290,11 @@ class AppDatabase(
         ) {
             return false
         }
+
+        val settlementCenterId =
+            rules.firstOrNull {
+                it.isSettlementCenter
+            }?.partnerId ?: rules.first().partnerId
 
         val db = writableDatabase
         db.beginTransaction()
@@ -9385,6 +9342,10 @@ class AppDatabase(
                             "settlement_month_day",
                             rule.settlementMonthDay
                                 .coerceIn(0, 28)
+                        )
+                        put(
+                            "is_settlement_center",
+                            if (rule.partnerId == settlementCenterId) 1 else 0
                         )
                         put("deleted", 0)
                     }
@@ -10185,7 +10146,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 18
+        const val DB_VERSION = 19
     }
 }
 
