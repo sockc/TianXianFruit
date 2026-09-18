@@ -157,7 +157,7 @@ jobs:
           fi
 
           RELEASE_EXISTS="false"
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" >/dev/null 2>&1; then
             RELEASE_EXISTS="true"
           fi
 
@@ -166,16 +166,22 @@ jobs:
 
             if [ "$TAG_SHA" != "$GITHUB_SHA" ]; then
               if [ "$RELEASE_EXISTS" = "true" ]; then
-                # A real published release already owns this version. Do not silently
-                # move its tag: publishing new code requires a new version number.
-                CAN_PUBLISH="false"
-                echo "::warning::Release $TAG already exists on commit $TAG_SHA."
-                echo "::warning::Current commit is $GITHUB_SHA. Increase versionName/versionCode for another published update."
+                # The release already exists. A workflow-only/docs-only repair is safe:
+                # keep the published tag where it is and allow the newly built identical
+                # app to replace the Release asset. If anything under app/ changed, require
+                # a real version bump instead of silently repointing a published tag.
+                if git diff --quiet "$TAG_SHA" "$GITHUB_SHA" -- app; then
+                  echo "Release $TAG already exists and app/ is unchanged since its tag."
+                  echo "Keeping tag at $TAG_SHA and allowing Release metadata/APK refresh."
+                else
+                  CAN_PUBLISH="false"
+                  echo "::warning::Release $TAG already exists on commit $TAG_SHA and app/ changed on current commit $GITHUB_SHA."
+                  echo "::warning::Increase versionName/versionCode before publishing changed app code."
+                fi
               else
-                # Typical recovery case: an older workflow created the tag BEFORE
-                # compilation, compilation failed, and therefore no Release exists.
-                # It is safe to repair that stale/unpublished tag now that this build
-                # has completed successfully.
+                # Recovery case: an older workflow created the tag before compilation,
+                # compilation failed, and therefore no Release exists. Repair the stale
+                # unpublished tag only after this APK build has succeeded.
                 git config user.name "github-actions[bot]"
                 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
                 git tag -f "$TAG" "$GITHUB_SHA"
@@ -208,12 +214,21 @@ jobs:
           APK="${{ steps.version.outputs.apk_name }}"
           TITLE="天鲜账本 V${{ steps.version.outputs.version_name }}"
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" \
-              --title "$TITLE" \
-              --notes-file RELEASE_NOTES.md \
-              --draft=false \
-              --prerelease=false
+          if RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$TAG" 2>/dev/null)"; then
+            RELEASE_ID="$(printf '%s' "$RELEASE_JSON" | jq -r '.id')"
+            NOTES="$(cat RELEASE_NOTES.md)"
+
+            # Update only mutable Release metadata. Do NOT send tag_name here.
+            # gh release edit can PATCH tag_name as part of its request and may fail
+            # with HTTP 422 "Release.tag_name already exists" on an existing Release.
+            gh api \
+              --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+              -f name="$TITLE" \
+              -f body="$NOTES" \
+              -F draft=false \
+              -F prerelease=false \
+              >/dev/null
 
             gh release upload "$TAG" "$APK" --clobber
             echo "Updated Release $TAG and replaced APK asset."
