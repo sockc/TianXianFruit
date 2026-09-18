@@ -125,6 +125,19 @@ private enum class SettlementView(val label: String) {
     STATS("结算记录")
 }
 
+private data class DailyFundUiRow(
+    val partnerId: Long,
+    val partnerName: String,
+    val purchasePaid: Double,
+    val expensePaid: Double,
+    val revenueReceived: Double,
+    val dueProfit: Double,
+    val dailyProfit: Double,
+    val balance: Double,
+    val settlementCycle: String,
+    val settlementWeekday: Int
+)
+
 private enum class ReportType(val label: String) {
     PROFIT("利润分配报表"),
     SETTLEMENT("利润结算报表"),
@@ -5546,12 +5559,130 @@ private fun SettlementDayContent(
                 date
             )
         }
-    val cycleStatusMap =
-        remember(cycleStatuses) {
-            cycleStatuses.associateBy {
+    // FIX8: “当日结算”里的资金余额只展示所选日期当天，不混入历史累计余额。
+    // 真正的资金轧差方案仍由数据库按到期利润 + 历史未结资金生成。
+    val dailyFundRows =
+        remember(
+            purchases,
+            receipts,
+            expenses,
+            cycleStatuses
+        ) {
+            val purchaseMap =
+                purchases.associateBy {
+                    it.partnerId
+                }
+            val receiptMap =
+                receipts.associateBy {
+                    it.partnerId
+                }
+            val expenseMap =
+                expenses.associateBy {
+                    it.partnerId
+                }
+            val cycleMap =
+                cycleStatuses.associateBy {
+                    it.partnerId
+                }
+
+            val ids =
+                linkedSetOf<Long>().apply {
+                    addAll(
+                        purchaseMap.keys.filter {
+                            it > 0
+                        }
+                    )
+                    addAll(
+                        receiptMap.keys.filter {
+                            it > 0
+                        }
+                    )
+                    addAll(
+                        expenseMap.keys.filter {
+                            it > 0
+                        }
+                    )
+                    addAll(
+                        cycleMap.keys.filter {
+                            id ->
+                            val status = cycleMap[id]
+                            status != null &&
+                                (
+                                    kotlin.math.abs(
+                                        status.dailyAllocatedProfit
+                                    ) > 0.005 ||
+                                        kotlin.math.abs(
+                                            status.dueProfitOnDate
+                                        ) > 0.005
+                                    )
+                        }
+                    )
+                }
+
+            ids.mapNotNull {
+                id ->
+                val cycle = cycleMap[id]
+                val purchase =
+                    purchaseMap[id]?.amount
+                        ?: 0.0
+                val expense =
+                    expenseMap[id]?.amount
+                        ?: 0.0
+                val receipt =
+                    receiptMap[id]?.amount
+                        ?: 0.0
+                val dueProfit =
+                    cycle?.dueProfitOnDate
+                        ?: 0.0
+                val dailyProfit =
+                    cycle?.dailyAllocatedProfit
+                        ?: 0.0
+                val balance =
+                    purchase +
+                        expense +
+                        dueProfit -
+                        receipt
+
+                val hasTodayData =
+                    kotlin.math.abs(purchase) > 0.005 ||
+                        kotlin.math.abs(expense) > 0.005 ||
+                        kotlin.math.abs(receipt) > 0.005 ||
+                        kotlin.math.abs(dueProfit) > 0.005 ||
+                        kotlin.math.abs(dailyProfit) > 0.005
+
+                if (!hasTodayData) {
+                    null
+                } else {
+                    DailyFundUiRow(
+                        partnerId = id,
+                        partnerName =
+                            cycle?.partnerName
+                                ?: purchaseMap[id]
+                                    ?.partnerName
+                                ?: receiptMap[id]
+                                    ?.partnerName
+                                ?: expenseMap[id]
+                                    ?.partnerName
+                                ?: "合伙人$id",
+                        purchasePaid = purchase,
+                        expensePaid = expense,
+                        revenueReceived = receipt,
+                        dueProfit = dueProfit,
+                        dailyProfit = dailyProfit,
+                        balance = balance,
+                        settlementCycle =
+                            cycle?.settlementCycle
+                                ?: "DAILY",
+                        settlementWeekday =
+                            cycle?.settlementWeekday
+                                ?: 7
+                    )
+                }
+            }.sortedBy {
                 it.partnerId
             }
         }
+
     val history =
         remember(dataVersion) {
             db.getRecentCashSettlements(20)
@@ -5905,57 +6036,29 @@ private fun SettlementDayContent(
             }
         }
 
-        bundle?.let { b ->
+        item {
+            Text(
+                "当日资金余额",
+                style =
+                    MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        if (dailyFundRows.isEmpty()) {
             item {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "当前资金余额",
-                        style =
-                            MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f)
-                    )
-                    AssistChip(
-                        onClick = {},
-                        label = {
-                            Text(
-                                when (b.settlement.status) {
-                                    1 -> "已结清"
-                                    2 -> "部分结算"
-                                    else -> "未结算"
-                                }
-                            )
-                        }
-                    )
-                }
+                Text(
+                    "所选日期暂无资金数据。",
+                    color = Color.Gray
+                )
             }
-
+        } else {
             items(
-                b.partners,
-                key = { "cp${it.id}" }
+                dailyFundRows,
+                key = {
+                    "day_fund_${it.partnerId}"
+                }
             ) { p ->
-                val relatedTransfers =
-                    if (p.balance >= 0) {
-                        b.transfers.filter {
-                            it.toPartnerId == p.partnerId
-                        }
-                    } else {
-                        b.transfers.filter {
-                            it.fromPartnerId == p.partnerId
-                        }
-                    }
-                val settledAmount =
-                    relatedTransfers.sumOf {
-                        it.settledAmount
-                    }
-                val totalNeed =
-                    kotlin.math.abs(p.balance)
-                val remainingAmount =
-                    (totalNeed - settledAmount)
-                        .coerceAtLeast(0.0)
-
                 Card(Modifier.fillMaxWidth()) {
                     Column(
                         Modifier.padding(11.dp),
@@ -5981,27 +6084,25 @@ private fun SettlementDayContent(
                                 },
                                 fontWeight = FontWeight.Bold,
                                 color =
-                                    if (p.balance > 0.005) {
-                                        BrandGreen
-                                    } else if (
-                                        p.balance < -0.005
-                                    ) {
-                                        MaterialTheme.colorScheme.error
-                                    } else {
-                                        Color.Gray
+                                    when {
+                                        p.balance > 0.005 ->
+                                            BrandGreen
+
+                                        p.balance < -0.005 ->
+                                            MaterialTheme
+                                                .colorScheme
+                                                .error
+
+                                        else ->
+                                            Color.Gray
                                     }
                             )
                         }
 
-                        val cycleStatus =
-                            cycleStatusMap[
-                                p.partnerId
-                            ]
-
                         Text(
                             buildString {
                                 append(
-                                    "今日采购 +${money(p.purchasePaid)} · "
+                                    "采购 +${money(p.purchasePaid)} · "
                                 )
                                 append(
                                     "费用 +${money(p.expensePaid)} · "
@@ -6010,11 +6111,11 @@ private fun SettlementDayContent(
                                     "收款 -${money(p.revenueReceived)}"
                                 )
                                 if (
-                                    p.profitShare >
+                                    p.dueProfit >
                                     0.005
                                 ) {
                                     append(
-                                        " · 新到期利润 +${money(p.profitShare)}"
+                                        " · 到期利润 +${money(p.dueProfit)}"
                                     )
                                 }
                             },
@@ -6025,95 +6126,54 @@ private fun SettlementDayContent(
                             color = Color.Gray
                         )
 
-                        cycleStatus?.let {
-                            status ->
-                            Text(
-                                buildString {
-                                    append(
-                                        settlementCycleLabel(
-                                            status.settlementCycle
-                                        )
+                        Text(
+                            buildString {
+                                append(
+                                    settlementCycleLabel(
+                                        p.settlementCycle
                                     )
-                                    if (
-                                        status.settlementCycle ==
-                                        "WEEKLY"
-                                    ) {
-                                        append(
-                                            " · ${settlementWeekdayLabel(status.settlementWeekday)}"
-                                        )
-                                    } else if (
-                                        status.settlementCycle ==
-                                        "MONTHLY"
-                                    ) {
-                                        append(
-                                            " · 月末"
-                                        )
-                                    }
-
+                                )
+                                if (
+                                    p.settlementCycle ==
+                                    "WEEKLY"
+                                ) {
                                     append(
-                                        " · 今日利润 ${if (status.dailyAllocatedProfit > 0.005) "+" else ""}${money(status.dailyAllocatedProfit)}"
+                                        " · ${settlementWeekdayLabel(p.settlementWeekday)}"
                                     )
-
-                                    if (
-                                        status.carryLoss >
-                                        0.005
-                                    ) {
-                                        append(
-                                            " · 待抵亏损 ${money(status.carryLoss)}"
-                                        )
-                                    }
-                                },
-                                style =
-                                    MaterialTheme
-                                        .typography
-                                        .labelSmall,
-                                color = Color.Gray
-                            )
-                        }
-
-                        if (totalNeed > 0.005) {
-                            Text(
-                                when {
-                                    settledAmount <= 0.005 ->
-                                        "当前余额未结 · ${if (p.balance > 0) "应收" else "应补"} ${money(totalNeed)}"
-
-                                    remainingAmount <= 0.005 ->
-                                        "本次方案已结清 ${money(settledAmount)}"
-
-                                    else ->
-                                        "本次已结 ${money(settledAmount)} · 仍余 ${money(remainingAmount)}"
-                                },
-                                style =
-                                    MaterialTheme.typography.bodySmall,
-                                color =
-                                    if (remainingAmount <= 0.005) {
-                                        BrandGreen
-                                    } else {
-                                        Color.DarkGray
-                                    },
-                                fontWeight =
-                                    FontWeight.SemiBold
-                            )
-
-                            Text(
-                                "只有下方真实转账被确认后，才会减少该合伙人的资金余额。",
-                                style =
-                                    MaterialTheme
-                                        .typography
-                                        .labelSmall,
-                                color = Color.Gray
-                            )
-                        }
+                                } else if (
+                                    p.settlementCycle ==
+                                    "MONTHLY"
+                                ) {
+                                    append(" · 月末")
+                                }
+                                append(
+                                    " · 今日利润 ${if (p.dailyProfit > 0.005) "+" else ""}${money(p.dailyProfit)}"
+                                )
+                            },
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .labelSmall,
+                            color = Color.Gray
+                        )
                     }
                 }
             }
+        }
 
+        bundle?.let { b ->
             item {
                 Text(
-                    "最少转账方案",
+                    "资金轧差方案",
                     style =
                         MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "上方只显示所选日期当天；这里会把已到期利润和历史未结资金一起用于实际转账。",
+                    style =
+                        MaterialTheme.typography.labelSmall,
+                    color = Color.Gray
                 )
 
                 if (b.transfers.isEmpty()) {
