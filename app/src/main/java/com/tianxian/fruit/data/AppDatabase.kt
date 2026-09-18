@@ -191,34 +191,13 @@ data class ProfitDistributionRecord(
     val ratio: Double,
     val weight: Int,
     val sourceProfit: Double,
-    val allocatedProfit: Double,
-    val settlementCycle: String = "DAILY",
-    val settlementWeekday: Int = 7,
-    val settlementMonthDay: Int = 0
+    val allocatedProfit: Double
 )
 
 data class ProfitRuleRecord(
     val partnerId: Long,
     val partnerName: String,
-    val percent: Double,
-    val settlementCycle: String = "DAILY",
-    val settlementWeekday: Int = 7,
-    val settlementMonthDay: Int = 0,
-    val isSettlementCenter: Boolean = false
-)
-
-data class PartnerProfitCycleStatus(
-    val partnerId: Long,
-    val partnerName: String,
-    val settlementCycle: String,
-    val settlementWeekday: Int,
-    val settlementMonthDay: Int,
-    val dailyAllocatedProfit: Double,
-    val dueProfitOnDate: Double,
-    val maturedProfitTotal: Double,
-    val carryLoss: Double,
-    val openPeriodProfit: Double,
-    val nextSettlementDate: String
+    val percent: Double
 )
 
 data class CashSettlementPartnerRecord(
@@ -270,7 +249,6 @@ data class PartnerDailyFundBalanceRecord(
     val expensePaid: Double,
     val revenueReceived: Double,
     val profitShare: Double,
-    val dailyChange: Double,
     val dayBalance: Double,
     val settledAmount: Double,
     val remainingBalance: Double,
@@ -522,10 +500,16 @@ class AppDatabase(
         createV17SettlementProgress(
             db
         )
-        createV18ProfitSettlementCycle(
+        // ROLLBACK1: keep the DB20 schema envelope so this FIX6-functionality
+        // build can safely open databases already upgraded by FIX7-FIX11.
+        // These columns are compatibility-only here; FIX6 business logic ignores them.
+        createV18CompatibilitySchema(
             db
         )
-        createV19SettlementCenter(
+        createV19CompatibilitySchema(
+            db
+        )
+        createV20CompatibilitySchema(
             db
         )
         createV8SyncFoundation(
@@ -601,23 +585,26 @@ class AppDatabase(
             )
         }
         if (oldVersion < 18) {
-            createV18ProfitSettlementCycle(
+            createV18CompatibilitySchema(
                 db
             )
         }
         if (oldVersion < 19) {
-            createV19SettlementCenter(
+            createV19CompatibilitySchema(
                 db
             )
         }
         if (oldVersion < 20) {
-            createV20PartnerSortOrder(
+            createV20CompatibilitySchema(
                 db
             )
         }
     }
 
-    private fun createV20PartnerSortOrder(
+    // DB18-DB20 were introduced after the V1.4.7.6 feature baseline.
+    // ROLLBACK1 preserves only their schema so an existing DB20 database can be
+    // opened without downgrade/delete. No FIX7-FIX11 settlement behavior is enabled.
+    private fun createV20CompatibilitySchema(
         db: SQLiteDatabase
     ) {
         if (
@@ -632,14 +619,12 @@ class AppDatabase(
                     "ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
             )
         }
-
-        // 旧数据按原 ID 顺序初始化，之后排序只影响展示顺序，不影响资金中心。
         db.execSQL(
             "UPDATE partner SET sort_order=id WHERE sort_order<=0"
         )
     }
 
-    private fun createV19SettlementCenter(
+    private fun createV19CompatibilitySchema(
         db: SQLiteDatabase
     ) {
         if (
@@ -654,95 +639,39 @@ class AppDatabase(
                     "ADD COLUMN is_settlement_center INTEGER NOT NULL DEFAULT 0"
             )
         }
-
-        // 旧账本没有资金中心时，默认使用当前利润规则中的第一位合伙人。
-        val hasCenter =
-            db.rawQuery(
-                "SELECT 1 FROM profit_rule WHERE deleted=0 AND is_settlement_center=1 LIMIT 1",
-                null
-            ).use { it.moveToFirst() }
-        if (!hasCenter) {
-            db.execSQL(
-                "UPDATE profit_rule SET is_settlement_center=1 " +
-                    "WHERE id=(SELECT id FROM profit_rule WHERE deleted=0 ORDER BY partner_id,id LIMIT 1)"
-            )
-        }
     }
 
-    private fun createV18ProfitSettlementCycle(
+    private fun createV18CompatibilitySchema(
         db: SQLiteDatabase
     ) {
-        if (
-            !columnExists(
-                db,
-                "profit_rule",
-                "settlement_cycle"
-            )
-        ) {
+        if (!columnExists(db, "profit_rule", "settlement_cycle")) {
             db.execSQL(
-                "ALTER TABLE profit_rule " +
-                    "ADD COLUMN settlement_cycle TEXT NOT NULL DEFAULT 'DAILY'"
+                "ALTER TABLE profit_rule ADD COLUMN settlement_cycle TEXT NOT NULL DEFAULT 'DAILY'"
             )
         }
-        if (
-            !columnExists(
-                db,
-                "profit_rule",
-                "settlement_weekday"
-            )
-        ) {
+        if (!columnExists(db, "profit_rule", "settlement_weekday")) {
             db.execSQL(
-                "ALTER TABLE profit_rule " +
-                    "ADD COLUMN settlement_weekday INTEGER NOT NULL DEFAULT 7"
+                "ALTER TABLE profit_rule ADD COLUMN settlement_weekday INTEGER NOT NULL DEFAULT 7"
             )
         }
-        if (
-            !columnExists(
-                db,
-                "profit_rule",
-                "settlement_month_day"
-            )
-        ) {
+        if (!columnExists(db, "profit_rule", "settlement_month_day")) {
             db.execSQL(
-                "ALTER TABLE profit_rule " +
-                    "ADD COLUMN settlement_month_day INTEGER NOT NULL DEFAULT 0"
+                "ALTER TABLE profit_rule ADD COLUMN settlement_month_day INTEGER NOT NULL DEFAULT 0"
             )
         }
-
-        if (
-            !columnExists(
-                db,
-                "profit_distribution",
-                "settlement_cycle"
-            )
-        ) {
+        if (!columnExists(db, "profit_distribution", "settlement_cycle")) {
             db.execSQL(
-                "ALTER TABLE profit_distribution " +
-                    "ADD COLUMN settlement_cycle TEXT NOT NULL DEFAULT 'DAILY'"
+                "ALTER TABLE profit_distribution ADD COLUMN settlement_cycle TEXT NOT NULL DEFAULT 'DAILY'"
             )
         }
-        if (
-            !columnExists(
-                db,
-                "profit_distribution",
-                "settlement_weekday"
-            )
-        ) {
+        if (!columnExists(db, "profit_distribution", "settlement_weekday")) {
             db.execSQL(
-                "ALTER TABLE profit_distribution " +
-                    "ADD COLUMN settlement_weekday INTEGER NOT NULL DEFAULT 7"
+                "ALTER TABLE profit_distribution ADD COLUMN settlement_weekday INTEGER NOT NULL DEFAULT 7"
             )
         }
-        if (
-            !columnExists(
-                db,
-                "profit_distribution",
-                "settlement_month_day"
-            )
-        ) {
+        if (!columnExists(db, "profit_distribution", "settlement_month_day")) {
             db.execSQL(
-                "ALTER TABLE profit_distribution " +
-                    "ADD COLUMN settlement_month_day INTEGER NOT NULL DEFAULT 0"
+                "ALTER TABLE profit_distribution ADD COLUMN settlement_month_day INTEGER NOT NULL DEFAULT 0"
             )
         }
     }
@@ -931,7 +860,6 @@ class AppDatabase(
                 name TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 deleted INTEGER NOT NULL DEFAULT 0,
-                sort_order INTEGER NOT NULL DEFAULT 0,
                 sync_id TEXT NOT NULL,
                 sync_status INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
@@ -2984,15 +2912,13 @@ class AppDatabase(
     private fun seedPartners(db: SQLiteDatabase) {
         val count = db.rawQuery("SELECT COUNT(*) AS c FROM partner WHERE deleted=0", null).use { c -> if (c.moveToFirst()) c.int("c") else 0 }
         if (count == 0) {
-            listOf("合伙人1", "合伙人2", "合伙人3", "合伙人4")
-                .forEachIndexed { index, name ->
-                    db.insert("partner", null, baseSyncValues().apply {
-                        put("name", name)
-                        put("enabled", 1)
-                        put("deleted", 0)
-                        put("sort_order", index + 1)
-                    })
-                }
+            listOf("合伙人1", "合伙人2", "合伙人3", "合伙人4").forEach { name ->
+                db.insert("partner", null, baseSyncValues().apply {
+                    put("name", name)
+                    put("enabled", 1)
+                    put("deleted", 0)
+                })
+            }
         }
     }
 
@@ -3364,21 +3290,8 @@ class AppDatabase(
     }
 
     fun getPartners(): List<PartnerOption> = readableDatabase.rawQuery(
-        "SELECT id,name FROM partner WHERE enabled=1 AND deleted=0 " +
-            "ORDER BY CASE WHEN sort_order<=0 THEN id ELSE sort_order END,id",
-        null
-    ).use { c ->
-        buildList {
-            while (c.moveToNext()) {
-                add(
-                    PartnerOption(
-                        c.long("id"),
-                        c.str("name")
-                    )
-                )
-            }
-        }
-    }
+        "SELECT id,name FROM partner WHERE enabled=1 AND deleted=0 ORDER BY id", null
+    ).use { c -> buildList { while (c.moveToNext()) add(PartnerOption(c.long("id"), c.str("name"))) } }
 
     fun getPartnerById(id: Long): PartnerOption? = readableDatabase.rawQuery(
         "SELECT id,name FROM partner WHERE id=? AND enabled=1 AND deleted=0 LIMIT 1",
@@ -3399,44 +3312,9 @@ class AppDatabase(
         if (clean.isBlank()) return -1
         val duplicate = readableDatabase.rawQuery("SELECT id FROM partner WHERE name=? AND deleted=0 LIMIT 1", arrayOf(clean)).use { it.moveToFirst() }
         if (duplicate) return -1
-        val nextOrder =
-            readableDatabase.rawQuery(
-                "SELECT COALESCE(MAX(sort_order),0)+1 AS next_order FROM partner",
-                null
-            ).use { c ->
-                if (c.moveToFirst()) c.int("next_order") else 1
-            }
         return writableDatabase.insert("partner", null, baseSyncValues().apply {
-            put("name", clean)
-            put("enabled", 1)
-            put("deleted", 0)
-            put("sort_order", nextOrder)
+            put("name", clean); put("enabled", 1); put("deleted", 0)
         })
-    }
-
-    fun reorderPartners(orderedIds: List<Long>): Boolean {
-        if (orderedIds.isEmpty()) return false
-        val db = writableDatabase
-        db.beginTransaction()
-        return try {
-            val now = System.currentTimeMillis()
-            orderedIds.forEachIndexed { index, id ->
-                db.update(
-                    "partner",
-                    ContentValues().apply {
-                        put("sort_order", index + 1)
-                        put("sync_status", 2)
-                        put("updated_at", now)
-                    },
-                    "id=? AND enabled=1 AND deleted=0",
-                    arrayOf(id.toString())
-                )
-            }
-            db.setTransactionSuccessful()
-            true
-        } finally {
-            db.endTransaction()
-        }
     }
 
     fun updatePartnerName(id: Long, name: String): Boolean {
@@ -7455,26 +7333,11 @@ class AppDatabase(
         }
     }
 
-    fun generateCashSettlement(
-        date: String
-    ): CashSettlementResult {
-        val summary =
-            getDailySummary(
-                date
-            )
+    fun generateCashSettlement(date: String): CashSettlementResult {
+        val summary = getDailySummary(date)
+        if (summary.revenue <= 0.0) return CashSettlementResult(false, "当天还没有营业额")
 
-        if (summary.revenue <= 0.0) {
-            return CashSettlementResult(
-                false,
-                "当天还没有营业额"
-            )
-        }
-
-        val existingSettlement =
-            getCashSettlement(
-                date
-            )
-
+        val existingSettlement = getCashSettlement(date)
         if (
             existingSettlement != null &&
             existingSettlement.transfers.any {
@@ -7483,22 +7346,13 @@ class AppDatabase(
         ) {
             return CashSettlementResult(
                 false,
-                "当天已经有实际转账记录，不能直接重新生成。若记录有误，请先把相关转账改为未结算后再重新生成。",
+                "当天已经有实际结算款，不能直接重新生成。若之前标记错误，请先把相关转账改为未结算后再重新生成。",
                 existingSettlement
             )
         }
 
-        val profitRows =
-            getProfitDistribution(
-                date
-            )
-
-        if (
-            profitRows.isEmpty() &&
-            kotlin.math.abs(
-                summary.profit
-            ) > 0.005
-        ) {
+        val profitRows = getProfitDistribution(date)
+        if (profitRows.isEmpty() && kotlin.math.abs(summary.profit) > 0.005) {
             return CashSettlementResult(
                 false,
                 if (summary.profit < 0) {
@@ -7509,461 +7363,149 @@ class AppDatabase(
             )
         }
 
-        val records =
-            getDailyRecords(
-                date
-            )
-
-        val unassignedReceipts =
-            records.sumOf {
-                record ->
-                if (
-                    record.receiptSplits
-                        .isNotEmpty()
-                ) {
-                    record.receiptSplits
-                        .filter {
-                            it.partnerId <= 0L
-                        }
-                        .sumOf {
-                            it.amount
-                        }
-                } else {
-                    (
-                        if (
-                            record.wechatIncome > 0 &&
-                            record.wechatCollectorId <= 0
-                        ) {
-                            record.wechatIncome
-                        } else {
-                            0.0
-                        }
-                        ) +
-                        (
-                            if (
-                                record.alipayIncome > 0 &&
-                                record.alipayCollectorId <= 0
-                            ) {
-                                record.alipayIncome
-                            } else {
-                                0.0
-                            }
-                            ) +
-                        (
-                            if (
-                                record.cashIncome > 0 &&
-                                record.cashCollectorId <= 0
-                            ) {
-                                record.cashIncome
-                            } else {
-                                0.0
-                            }
-                            )
-                }
+        val records = getDailyRecords(date)
+        val unassignedReceipts = records.sumOf { record ->
+            if (record.receiptSplits.isNotEmpty()) {
+                record.receiptSplits
+                    .filter { it.partnerId <= 0L }
+                    .sumOf { it.amount }
+            } else {
+                (if (record.wechatIncome > 0 && record.wechatCollectorId <= 0) record.wechatIncome else 0.0) +
+                    (if (record.alipayIncome > 0 && record.alipayCollectorId <= 0) record.alipayIncome else 0.0) +
+                    (if (record.cashIncome > 0 && record.cashCollectorId <= 0) record.cashIncome else 0.0)
             }
-
+        }
         if (unassignedReceipts > 0.005) {
-            return CashSettlementResult(
-                false,
-                "还有 ${roundMoney(unassignedReceipts)} 元收款没有指定归属"
-            )
+            return CashSettlementResult(false, "还有 ${roundMoney(unassignedReceipts)} 元收款没有指定归属")
         }
 
-        val unassignedExpense =
-            records.sumOf {
-                if (
-                    it.expense > 0 &&
-                    it.expensePayerId <= 0
-                ) {
-                    it.expense
-                } else {
-                    0.0
-                }
-            }
-
+        val unassignedExpense = records.sumOf {
+            if (it.expense > 0 && it.expensePayerId <= 0) it.expense else 0.0
+        }
         if (unassignedExpense > 0.005) {
+            return CashSettlementResult(false, "还有 ${roundMoney(unassignedExpense)} 元费用没有指定付款人")
+        }
+
+        val inventoryDelta = roundMoney(summary.closingStockValue - summary.openingStockValue)
+        if (kotlin.math.abs(inventoryDelta) > 0.01) {
             return CashSettlementResult(
                 false,
-                "还有 ${roundMoney(unassignedExpense)} 元费用没有指定付款人"
+                "开摊/收摊库存相差 ${roundMoney(inventoryDelta)} 元。当天现金轧差要求库存差为0；请先核对库存或当天暂不做现金结清。"
             )
         }
 
-        val inventoryDelta =
-            roundMoney(
-                summary.closingStockValue -
-                    summary.openingStockValue
-            )
+        val purchaseMap = getPurchaseTotalsByPartner(date).associateBy { it.partnerId }
+        val receiptMap = getReceiptsByPartner(date).associateBy { it.partnerId }
+        val expenseMap = getExpenseTotalsByPartner(date).associateBy { it.partnerId }
+        val profitMap = profitRows.associateBy { it.partnerId }
 
-        if (
-            kotlin.math.abs(
-                inventoryDelta
-            ) > 0.01
-        ) {
-            return CashSettlementResult(
-                false,
-                "开摊/收摊库存相差 ${roundMoney(inventoryDelta)} 元。请先核对库存，再生成资金轧差方案。"
-            )
+        val partnerIds = linkedSetOf<Long>().apply {
+            addAll(purchaseMap.keys.filter { it > 0 })
+            addAll(receiptMap.keys.filter { it > 0 })
+            addAll(expenseMap.keys.filter { it > 0 })
+            addAll(profitMap.keys.filter { it > 0 })
         }
-
-        val purchaseMap =
-            getPurchaseTotalsByPartner(
-                date
-            ).associateBy {
-                it.partnerId
-            }
-        val receiptMap =
-            getReceiptsByPartner(
-                date
-            ).associateBy {
-                it.partnerId
-            }
-        val expenseMap =
-            getExpenseTotalsByPartner(
-                date
-            ).associateBy {
-                it.partnerId
-            }
-        val profitMap =
-            profitRows.associateBy {
-                it.partnerId
-            }
-
-        val orderedPartners =
-            getPartners()
-        val partnerIds =
-            linkedSetOf<Long>().apply {
-                addAll(
-                    orderedPartners.map { it.id }
-                )
-                addAll(
-                    purchaseMap.keys.filter { it > 0 }
-                )
-                addAll(
-                    receiptMap.keys.filter { it > 0 }
-                )
-                addAll(
-                    profitMap.keys.filter { it > 0 }
-                )
-            }
 
         data class Row(
-            val id: Long,
-            val name: String,
-            val purchase: Double,
-            val expense: Double,
-            val receipt: Double,
-            val profit: Double,
-            val shouldKeepToday: Double,
-            val balance: Double
+            val id: Long, val name: String, val purchase: Double, val expense: Double,
+            val receipt: Double, val profit: Double, val keep: Double, val balance: Double
         )
 
-        val rows =
-            partnerIds.map { id ->
-                val partner =
-                    orderedPartners.firstOrNull { it.id == id }
-                val name =
-                    partner?.name
-                        ?: profitMap[id]?.partnerName
-                        ?: purchaseMap[id]?.partnerName
-                        ?: receiptMap[id]?.partnerName
-                        ?: expenseMap[id]?.partnerName
-                        ?: "合伙人$id"
+        val rows = partnerIds.map { id ->
+            val name = profitMap[id]?.partnerName
+                ?: purchaseMap[id]?.partnerName
+                ?: receiptMap[id]?.partnerName
+                ?: expenseMap[id]?.partnerName
+                ?: "合伙人$id"
+            val purchase = purchaseMap[id]?.amount ?: 0.0
+            val expense = expenseMap[id]?.amount ?: 0.0
+            val receipt = receiptMap[id]?.amount ?: 0.0
+            val profit = profitMap[id]?.allocatedProfit ?: 0.0
+            val keep = roundMoney(purchase + expense + profit)
+            Row(id, name, purchase, expense, receipt, profit, keep, roundMoney(keep - receipt))
+        }
 
-                val purchase =
-                    roundMoney(
-                        purchaseMap[id]?.amount ?: 0.0
-                    )
-                val expense =
-                    roundMoney(
-                        expenseMap[id]?.amount ?: 0.0
-                    )
-                val receipt =
-                    roundMoney(
-                        receiptMap[id]?.amount ?: 0.0
-                    )
-                val profit =
-                    roundMoney(
-                        profitMap[id]?.allocatedProfit ?: 0.0
-                    )
+        val balanceTotal = roundMoney(rows.sumOf { it.balance })
+        if (kotlin.math.abs(balanceTotal) > 0.01) {
+            return CashSettlementResult(false, "当前账目还有 ${roundMoney(balanceTotal)} 元无法轧平，请核对进货、收款、费用和利润分配")
+        }
 
-                // FIX11: 当日资金轧差恢复 V1.4.7.1 的清晰口径。
-                // 只看当天，不带历史；最终应留 = 进货 + 费用 + 当日利润。
-                val shouldKeepToday =
-                    roundMoney(
-                        purchase + expense + profit
-                    )
-                val balance =
-                    roundMoney(
-                        shouldKeepToday - receipt
-                    )
+        data class MutableBalance(val id: Long, val name: String, var amount: Double)
+        val payers = rows.filter { it.balance < -0.005 }
+            .map { MutableBalance(it.id, it.name, roundMoney(-it.balance)) }.toMutableList()
+        val receivers = rows.filter { it.balance > 0.005 }
+            .map { MutableBalance(it.id, it.name, roundMoney(it.balance)) }.toMutableList()
 
-                Row(
-                    id = id,
-                    name = name,
-                    purchase = purchase,
-                    expense = expense,
-                    receipt = receipt,
-                    profit = profit,
-                    shouldKeepToday = shouldKeepToday,
-                    balance = balance
-                )
-            }
+        data class TransferTmp(val fromId: Long, val fromName: String, val toId: Long, val toName: String, val amount: Double)
+        val transfers = mutableListOf<TransferTmp>()
+        var i = 0
+        var j = 0
+        while (i < payers.size && j < receivers.size) {
+            val amount = roundMoney(minOf(payers[i].amount, receivers[j].amount))
+            if (amount > 0.0) transfers += TransferTmp(payers[i].id, payers[i].name, receivers[j].id, receivers[j].name, amount)
+            payers[i].amount = roundMoney(payers[i].amount - amount)
+            receivers[j].amount = roundMoney(receivers[j].amount - amount)
+            if (payers[i].amount <= 0.005) i++
+            if (receivers[j].amount <= 0.005) j++
+        }
 
-        data class TransferTmp(
-            val fromId: Long,
-            val fromName: String,
-            val toId: Long,
-            val toName: String,
-            val amount: Double
-        )
-
-        val center =
-            getSettlementCenterPartner()
-                ?: rows.firstOrNull()?.let {
-                    PartnerOption(it.id, it.name)
-                }
-                ?: return CashSettlementResult(
-                    false,
-                    "请先设置资金结算中心"
-                )
-
-        // FIX10: V1.4.7.1 的纯当日轧差 + 资金中心。
-        // 非中心成员当天应收时由中心支付；当天应补时转给中心。
-        // 不生成 B→C / C→B。
-        val transfers =
-            rows
-                .filter {
-                    it.id != center.id &&
-                        kotlin.math.abs(it.balance) > 0.005
-                }
-                .map { row ->
-                    if (row.balance < -0.005) {
-                        TransferTmp(
-                            fromId = row.id,
-                            fromName = row.name,
-                            toId = center.id,
-                            toName = center.name,
-                            amount = roundMoney(-row.balance)
-                        )
-                    } else {
-                        TransferTmp(
-                            fromId = center.id,
-                            fromName = center.name,
-                            toId = row.id,
-                            toName = row.name,
-                            amount = roundMoney(row.balance)
-                        )
-                    }
-                }
-                .filter {
-                    it.amount > 0.005
-                }
-
-        val centerNetChange =
-            roundMoney(
-                transfers
-                    .filter { it.toId == center.id }
-                    .sumOf { it.amount } -
-                    transfers
-                        .filter { it.fromId == center.id }
-                        .sumOf { it.amount }
-            )
-
-        val db =
-            writableDatabase
+        val db = writableDatabase
         db.beginTransaction()
-
         try {
-            val now =
-                System.currentTimeMillis()
-
-            val oldIds =
-                db.rawQuery(
-                    "SELECT id FROM daily_cash_settlement " +
-                        "WHERE date=? AND deleted=0",
-                    arrayOf(date)
-                ).use {
-                    c ->
-                    buildList {
-                        while (
-                            c.moveToNext()
-                        ) {
-                            add(
-                                c.long("id")
-                            )
-                        }
-                    }
-                }
-
-            oldIds.forEach {
-                oldId ->
-                db.update(
-                    "daily_cash_settlement",
-                    ContentValues().apply {
-                        put("deleted", 1)
-                        put("sync_status", 2)
-                        put(
-                            "updated_at",
-                            now
-                        )
-                    },
-                    "id=?",
-                    arrayOf(
-                        oldId.toString()
-                    )
-                )
-                db.update(
-                    "settlement_partner",
-                    ContentValues().apply {
-                        put("deleted", 1)
-                        put("sync_status", 2)
-                        put(
-                            "updated_at",
-                            now
-                        )
-                    },
-                    "settlement_id=?",
-                    arrayOf(
-                        oldId.toString()
-                    )
-                )
-                db.update(
-                    "settlement_transfer",
-                    ContentValues().apply {
-                        put("deleted", 1)
-                        put("sync_status", 2)
-                        put(
-                            "updated_at",
-                            now
-                        )
-                    },
-                    "settlement_id=?",
-                    arrayOf(
-                        oldId.toString()
-                    )
-                )
+            val now = System.currentTimeMillis()
+            val oldIds = db.rawQuery(
+                "SELECT id FROM daily_cash_settlement WHERE date=? AND deleted=0", arrayOf(date)
+            ).use { c -> buildList { while (c.moveToNext()) add(c.long("id")) } }
+            oldIds.forEach { oldId ->
+                db.update("daily_cash_settlement", ContentValues().apply {
+                    put("deleted", 1); put("sync_status", 2); put("updated_at", now)
+                }, "id=?", arrayOf(oldId.toString()))
+                db.update("settlement_partner", ContentValues().apply {
+                    put("deleted", 1); put("sync_status", 2); put("updated_at", now)
+                }, "settlement_id=?", arrayOf(oldId.toString()))
+                db.update("settlement_transfer", ContentValues().apply {
+                    put("deleted", 1); put("sync_status", 2); put("updated_at", now)
+                }, "settlement_id=?", arrayOf(oldId.toString()))
             }
 
-            val settlementId =
-                db.insert(
-                    "daily_cash_settlement",
-                    null,
-                    baseSyncValues().apply {
-                        put("date", date)
-                        put(
-                            "revenue",
-                            summary.revenue
-                        )
-                        put(
-                            "purchase_cost",
-                            summary.purchaseCost
-                        )
-                        put(
-                            "expense",
-                            summary.expense
-                        )
-                        put(
-                            "profit",
-                            summary.profit
-                        )
-                        put("status", 0)
-                        put("deleted", 0)
-                    }
-                )
+            val settlementId = db.insert("daily_cash_settlement", null, baseSyncValues().apply {
+                put("date", date)
+                put("revenue", summary.revenue)
+                put("purchase_cost", summary.purchaseCost)
+                put("expense", summary.expense)
+                put("profit", summary.profit)
+                put("status", 0)
+                put("deleted", 0)
+            })
+            if (settlementId <= 0) return CashSettlementResult(false, "创建结算单失败")
 
-            if (settlementId <= 0) {
-                return CashSettlementResult(
-                    false,
-                    "创建资金轧差方案失败"
-                )
+            rows.forEach { r ->
+                db.insert("settlement_partner", null, baseSyncValues().apply {
+                    put("settlement_id", settlementId)
+                    put("date", date)
+                    put("partner_id", r.id)
+                    put("partner_name", r.name)
+                    put("purchase_paid", r.purchase)
+                    put("expense_paid", r.expense)
+                    put("revenue_received", r.receipt)
+                    put("profit_share", r.profit)
+                    put("should_keep", r.keep)
+                    put("balance", r.balance)
+                    put("deleted", 0)
+                })
             }
-
-            rows.forEach {
-                r ->
-                db.insert(
-                    "settlement_partner",
-                    null,
-                    baseSyncValues().apply {
-                        put(
-                            "settlement_id",
-                            settlementId
-                        )
-                        put("date", date)
-                        put(
-                            "partner_id",
-                            r.id
-                        )
-                        put(
-                            "partner_name",
-                            r.name
-                        )
-                        put(
-                            "purchase_paid",
-                            r.purchase
-                        )
-                        put(
-                            "expense_paid",
-                            r.expense
-                        )
-                        put(
-                            "revenue_received",
-                            r.receipt
-                        )
-                        put(
-                            "profit_share",
-                            r.profit
-                        )
-                        put(
-                            "should_keep",
-                            r.shouldKeepToday
-                        )
-                        put(
-                            "balance",
-                            r.balance
-                        )
-                        put("deleted", 0)
-                    }
-                )
-            }
-
-            transfers.forEach {
-                t ->
-                db.insert(
-                    "settlement_transfer",
-                    null,
-                    baseSyncValues().apply {
-                        put(
-                            "settlement_id",
-                            settlementId
-                        )
-                        put("date", date)
-                        put(
-                            "from_partner_id",
-                            t.fromId
-                        )
-                        put(
-                            "from_partner_name",
-                            t.fromName
-                        )
-                        put(
-                            "to_partner_id",
-                            t.toId
-                        )
-                        put(
-                            "to_partner_name",
-                            t.toName
-                        )
-                        put(
-                            "amount",
-                            t.amount
-                        )
-                        put(
-                            "settled_amount",
-                            0
-                        )
-                        put("deleted", 0)
-                    }
-                )
+            transfers.forEach { t ->
+                db.insert("settlement_transfer", null, baseSyncValues().apply {
+                    put("settlement_id", settlementId)
+                    put("date", date)
+                    put("from_partner_id", t.fromId)
+                    put("from_partner_name", t.fromName)
+                    put("to_partner_id", t.toId)
+                    put("to_partner_name", t.toName)
+                    put("amount", t.amount)
+                    put("settled_amount", 0)
+                    put("deleted", 0)
+                })
             }
 
             db.setTransactionSuccessful()
@@ -7971,30 +7513,8 @@ class AppDatabase(
             db.endTransaction()
         }
 
-        val note =
-            when {
-                transfers.isNotEmpty() ->
-                    if (centerNetChange > 0.005) {
-                        "资金轧差已生成，${center.name}净收 ${roundMoney(centerNetChange)} 元"
-                    } else if (centerNetChange < -0.005) {
-                        "资金轧差已生成，${center.name}净付 ${roundMoney(-centerNetChange)} 元"
-                    } else {
-                        "资金轧差已生成"
-                    }
-
-                else ->
-                    "当前无需转账"
-            }
-
-        return CashSettlementResult(
-            true,
-            note,
-            getCashSettlement(
-                date
-            )
-        )
+        return CashSettlementResult(true, "今日结算方案已生成", getCashSettlement(date))
     }
-
 
     fun confirmCashSettlement(id: Long): Boolean {
         val db = writableDatabase
@@ -8258,22 +7778,11 @@ class AppDatabase(
                 .forEach {
                     acc(it.partnerId, it.partnerName).receipt += it.amount
                 }
-        }
-
-        val profitAsOfDate =
-            endDate
-                ?: LocalDate.now()
-                    .toString()
-
-        getPartnerProfitCycleStatuses(
-            profitAsOfDate
-        ).forEach {
-            status ->
-            acc(
-                status.partnerId,
-                status.partnerName
-            ).profit =
-                status.maturedProfitTotal
+            getProfitDistribution(date)
+                .filter { it.partnerId > 0 }
+                .forEach {
+                    acc(it.partnerId, it.partnerName).profit += it.allocatedProfit
+                }
         }
 
         val transferWhere =
@@ -8358,7 +7867,7 @@ class AppDatabase(
             if (clauses.isEmpty()) ""
             else "WHERE " + clauses.joinToString(" AND ")
 
-        val sourceDates =
+        val dates =
             readableDatabase.rawQuery(
                 """
                 SELECT date FROM (
@@ -8376,34 +7885,9 @@ class AppDatabase(
                 args.toTypedArray()
             ).use { c ->
                 buildList {
-                    while (c.moveToNext()) {
-                        add(c.str("date"))
-                    }
+                    while (c.moveToNext()) add(c.str("date"))
                 }
             }
-
-        val eventEndDate =
-            endDate
-                ?: LocalDate.now()
-                    .toString()
-        val dueEvents =
-            getPartnerProfitDueEvents(
-                partnerId,
-                eventEndDate
-            )
-
-        val dates =
-            (
-                sourceDates +
-                    dueEvents.keys.filter {
-                        (startDate == null ||
-                            it >= startDate) &&
-                            (endDate == null ||
-                                it <= endDate)
-                    }
-                )
-                .distinct()
-                .sortedDescending()
 
         return dates.mapNotNull { date ->
             val purchase =
@@ -8418,18 +7902,12 @@ class AppDatabase(
             val profit =
                 getProfitDistribution(date)
                     .firstOrNull { it.partnerId == partnerId }
-            val cycleStatus =
-                getPartnerProfitCycleStatus(
-                    partnerId,
-                    date
-                )
             val bundle = getCashSettlement(date)
             val settlementPartner =
                 bundle?.partners?.firstOrNull { it.partnerId == partnerId }
 
             val name =
                 settlementPartner?.partnerName
-                    ?: cycleStatus.partnerName
                     ?: profit?.partnerName
                     ?: purchase?.partnerName
                     ?: receipt?.partnerName
@@ -8442,23 +7920,13 @@ class AppDatabase(
             val purchaseAmount = roundMoney(purchase?.amount ?: 0.0)
             val expenseAmount = roundMoney(expense?.amount ?: 0.0)
             val receiptAmount = roundMoney(receipt?.amount ?: 0.0)
-            val profitAmount =
-                roundMoney(
-                    dueEvents[date]
-                        ?: cycleStatus
-                            .dueProfitOnDate
-                )
-            val dailyChange =
+            val profitAmount = roundMoney(profit?.allocatedProfit ?: 0.0)
+            val sourceBalance =
                 roundMoney(
                     purchaseAmount +
                         expenseAmount +
                         profitAmount -
                         receiptAmount
-                )
-            val planBalance =
-                roundMoney(
-                    settlementPartner?.balance
-                        ?: dailyChange
                 )
 
             val relatedTransfers =
@@ -8471,14 +7939,14 @@ class AppDatabase(
 
             val settledAmount =
                 when {
-                    planBalance > 0.005 ->
+                    sourceBalance > 0.005 ->
                         roundMoney(
                             relatedTransfers
                                 .filter { it.toPartnerId == partnerId }
                                 .sumOf { it.settledAmount }
                         )
 
-                    planBalance < -0.005 ->
+                    sourceBalance < -0.005 ->
                         roundMoney(
                             relatedTransfers
                                 .filter { it.fromPartnerId == partnerId }
@@ -8490,10 +7958,10 @@ class AppDatabase(
 
             val remaining =
                 when {
-                    planBalance > 0.005 ->
-                        roundMoney(planBalance - settledAmount)
-                    planBalance < -0.005 ->
-                        roundMoney(planBalance + settledAmount)
+                    sourceBalance > 0.005 ->
+                        roundMoney(sourceBalance - settledAmount)
+                    sourceBalance < -0.005 ->
+                        roundMoney(sourceBalance + settledAmount)
                     else -> 0.0
                 }
 
@@ -8514,8 +7982,7 @@ class AppDatabase(
                     expensePaid = expenseAmount,
                     revenueReceived = receiptAmount,
                     profitShare = profitAmount,
-                    dailyChange = dailyChange,
-                    dayBalance = planBalance,
+                    dayBalance = sourceBalance,
                     settledAmount = settledAmount,
                     remainingBalance = remaining,
                     settlementId = bundle?.settlement?.id ?: 0L,
@@ -8585,23 +8052,54 @@ class AppDatabase(
         settlementDate: String = LocalDate.now().toString()
     ): FundBalanceSettlementResult {
         if (partnerIds.isEmpty()) {
-            return FundBalanceSettlementResult(false, "请选择需要结算的合伙人")
+            return FundBalanceSettlementResult(false, "请至少选择两位需要结算的合伙人")
         }
-
-        val center =
-            getSettlementCenterPartner()
-                ?: return FundBalanceSettlementResult(false, "请先设置资金结算中心")
 
         val selected =
             getPartnerFundBalances()
                 .filter {
                     it.partnerId in partnerIds &&
-                        it.partnerId != center.id &&
                         kotlin.math.abs(it.currentBalance) > 0.005
                 }
 
-        if (selected.isEmpty()) {
-            return FundBalanceSettlementResult(false, "当前没有需要结算的资金")
+        if (selected.size < 2) {
+            return FundBalanceSettlementResult(false, "至少需要一位应补和一位应收的合伙人")
+        }
+
+        data class MutableFund(
+            val id: Long,
+            val name: String,
+            var amount: Double
+        )
+
+        val payers =
+            selected
+                .filter { it.currentBalance < -0.005 }
+                .map {
+                    MutableFund(
+                        it.partnerId,
+                        it.partnerName,
+                        roundMoney(-it.currentBalance)
+                    )
+                }
+                .toMutableList()
+        val receivers =
+            selected
+                .filter { it.currentBalance > 0.005 }
+                .map {
+                    MutableFund(
+                        it.partnerId,
+                        it.partnerName,
+                        roundMoney(it.currentBalance)
+                    )
+                }
+                .toMutableList()
+
+        if (payers.isEmpty() || receivers.isEmpty()) {
+            return FundBalanceSettlementResult(
+                false,
+                "所选合伙人没有可以互相轧差的应收和应补余额"
+            )
         }
 
         data class Transfer(
@@ -8612,29 +8110,37 @@ class AppDatabase(
             val amount: Double
         )
 
-        val transfers =
-            selected.map { row ->
-                if (row.currentBalance < -0.005) {
-                    Transfer(
-                        row.partnerId,
-                        row.partnerName,
-                        center.id,
-                        center.name,
-                        roundMoney(-row.currentBalance)
+        val transfers = mutableListOf<Transfer>()
+        var i = 0
+        var j = 0
+        while (i < payers.size && j < receivers.size) {
+            val amount =
+                roundMoney(
+                    minOf(
+                        payers[i].amount,
+                        receivers[j].amount
                     )
-                } else {
+                )
+            if (amount > 0.005) {
+                transfers +=
                     Transfer(
-                        center.id,
-                        center.name,
-                        row.partnerId,
-                        row.partnerName,
-                        roundMoney(row.currentBalance)
+                        payers[i].id,
+                        payers[i].name,
+                        receivers[j].id,
+                        receivers[j].name,
+                        amount
                     )
-                }
-            }.filter { it.amount > 0.005 }
+            }
+            payers[i].amount =
+                roundMoney(payers[i].amount - amount)
+            receivers[j].amount =
+                roundMoney(receivers[j].amount - amount)
+            if (payers[i].amount <= 0.005) i++
+            if (receivers[j].amount <= 0.005) j++
+        }
 
         if (transfers.isEmpty()) {
-            return FundBalanceSettlementResult(false, "当前没有需要结算的资金")
+            return FundBalanceSettlementResult(false, "当前没有可执行的资金结算")
         }
 
         val db = writableDatabase
@@ -8646,6 +8152,8 @@ class AppDatabase(
                         "settlement_transfer",
                         null,
                         baseSyncValues().apply {
+                            // settlement_id=0 表示 FIX3 的累计资金余额统一结算，
+                            // 不属于某一天的资金轧差方案。
                             put("settlement_id", 0)
                             put("date", settlementDate)
                             put("from_partner_id", t.fromId)
@@ -8658,21 +8166,21 @@ class AppDatabase(
                         }
                     )
                 if (id <= 0) {
-                    throw IllegalStateException("写入资金结算失败")
+                    throw IllegalStateException("写入统一资金结算失败")
                 }
             }
             db.setTransactionSuccessful()
             val total = roundMoney(transfers.sumOf { it.amount })
             FundBalanceSettlementResult(
                 true,
-                "资金结算已完成 ${roundMoney(total)} 元，共 ${transfers.size} 笔",
+                "统一结算已完成 ${roundMoney(total)} 元，共 ${transfers.size} 笔",
                 total,
                 transfers.size
             )
         } catch (e: Exception) {
             FundBalanceSettlementResult(
                 false,
-                "资金结算失败：${e.message ?: "未知错误"}"
+                "统一结算失败：${e.message ?: "未知错误"}"
             )
         } finally {
             db.endTransaction()
@@ -8699,732 +8207,47 @@ class AppDatabase(
         }
     }
 
-    private fun normalizeSettlementCycle(
-        value: String
-    ): String =
-        when (
-            value.trim()
-                .uppercase()
-        ) {
-            "WEEKLY" -> "WEEKLY"
-            "MONTHLY" -> "MONTHLY"
-            else -> "DAILY"
-        }
-
-    private fun profitSettlementPeriodEnd(
-        profitDate: LocalDate,
-        rule: ProfitRuleRecord
-    ): LocalDate =
-        when (
-            normalizeSettlementCycle(
-                rule.settlementCycle
-            )
-        ) {
-            "WEEKLY" -> {
-                val weekday =
-                    rule.settlementWeekday
-                        .coerceIn(1, 7)
-                val addDays =
-                    (
-                        weekday -
-                            profitDate.dayOfWeek.value +
-                            7
-                        ) % 7
-                profitDate.plusDays(
-                    addDays.toLong()
-                )
-            }
-
-            "MONTHLY" -> {
-                val configuredDay =
-                    rule.settlementMonthDay
-                        .coerceIn(0, 28)
-
-                if (configuredDay <= 0) {
-                    profitDate.withDayOfMonth(
-                        profitDate.lengthOfMonth()
-                    )
-                } else {
-                    val thisMonthDay =
-                        minOf(
-                            configuredDay,
-                            profitDate.lengthOfMonth()
-                        )
-
-                    if (
-                        profitDate.dayOfMonth <=
-                        thisMonthDay
-                    ) {
-                        profitDate.withDayOfMonth(
-                            thisMonthDay
-                        )
-                    } else {
-                        val next =
-                            profitDate.plusMonths(1)
-
-                        next.withDayOfMonth(
-                            minOf(
-                                configuredDay,
-                                next.lengthOfMonth()
-                            )
-                        )
-                    }
-                }
-            }
-
-            else -> profitDate
-        }
-
-    fun getPartnerProfitCycleStatus(
-        partnerId: Long,
-        asOfDate: String
-    ): PartnerProfitCycleStatus {
-        val asOf =
-            runCatching {
-                LocalDate.parse(asOfDate)
-            }.getOrElse {
-                LocalDate.now()
-            }
-
-        val partner =
-            getPartners()
-                .firstOrNull {
-                    it.id == partnerId
-                }
-
-        val rule =
-            getProfitRules()
-                .firstOrNull {
-                    it.partnerId == partnerId
-                }
-                ?: ProfitRuleRecord(
-                    partnerId = partnerId,
-                    partnerName =
-                        partner?.name
-                            ?: "合伙人$partnerId",
-                    percent = 0.0
-                )
-
-        val dailyMap =
-            linkedMapOf<LocalDate, Double>()
-        val periodMap =
-            linkedMapOf<LocalDate, Double>()
-
-        readableDatabase.rawQuery(
-            """
-            SELECT
-                date,
-                allocated_profit,
-                COALESCE(settlement_cycle,'DAILY')
-                    AS settlement_cycle,
-                COALESCE(settlement_weekday,7)
-                    AS settlement_weekday,
-                COALESCE(settlement_month_day,0)
-                    AS settlement_month_day
-            FROM profit_distribution
-            WHERE deleted=0
-              AND partner_id=?
-              AND date<=?
-            ORDER BY date,id
-            """.trimIndent(),
-            arrayOf(
-                partnerId.toString(),
-                asOfDate
-            )
-        ).use {
-            c ->
-            while (c.moveToNext()) {
-                val profitDate =
-                    runCatching {
-                        LocalDate.parse(
-                            c.str("date")
-                        )
-                    }.getOrNull()
-                        ?: continue
-                val amount =
-                    roundMoney(
-                        c.dbl(
-                            "allocated_profit"
-                        )
-                    )
-
-                dailyMap[profitDate] =
-                    roundMoney(
-                        (
-                            dailyMap[profitDate]
-                                ?: 0.0
-                            ) +
-                            amount
-                    )
-
-                val snapshotRule =
-                    ProfitRuleRecord(
-                        partnerId =
-                            partnerId,
-                        partnerName =
-                            rule.partnerName,
-                        percent = 0.0,
-                        settlementCycle =
-                            normalizeSettlementCycle(
-                                c.str(
-                                    "settlement_cycle"
-                                )
-                            ),
-                        settlementWeekday =
-                            c.int(
-                                "settlement_weekday"
-                            ).coerceIn(1, 7),
-                        settlementMonthDay =
-                            c.int(
-                                "settlement_month_day"
-                            ).coerceIn(0, 28)
-                    )
-
-                val periodEnd =
-                    profitSettlementPeriodEnd(
-                        profitDate,
-                        snapshotRule
-                    )
-
-                periodMap[periodEnd] =
-                    roundMoney(
-                        (
-                            periodMap[periodEnd]
-                                ?: 0.0
-                            ) +
-                            amount
-                    )
-            }
-        }
-
-        var carryLoss = 0.0
-        var maturedTotal = 0.0
-        var dueOnDate = 0.0
-        var openPeriodProfit = 0.0
-
-        periodMap
-            .toSortedMap()
-            .forEach {
-                (periodEnd, rawAmount) ->
-                val amount =
-                    roundMoney(
-                        rawAmount
-                    )
-
-                if (periodEnd > asOf) {
-                    openPeriodProfit =
-                        roundMoney(
-                            openPeriodProfit +
-                                amount
-                        )
-                } else if (amount < -0.005) {
-                    carryLoss =
-                        roundMoney(
-                            carryLoss -
-                                amount
-                        )
-                } else if (amount > 0.005) {
-                    val offset =
-                        minOf(
-                            amount,
-                            carryLoss
-                        )
-                    carryLoss =
-                        roundMoney(
-                            carryLoss -
-                                offset
-                        )
-
-                    val due =
-                        roundMoney(
-                            amount -
-                                offset
-                        )
-                    maturedTotal =
-                        roundMoney(
-                            maturedTotal +
-                                due
-                        )
-
-                    if (periodEnd == asOf) {
-                        dueOnDate =
-                            roundMoney(
-                                dueOnDate +
-                                    due
-                            )
-                    }
-                }
-            }
-
-        val dailyAllocated =
-            roundMoney(
-                dailyMap[asOf]
-                    ?: 0.0
-            )
-
-        val nextDate =
-            when (
-                normalizeSettlementCycle(
-                    rule.settlementCycle
-                )
-            ) {
-                "WEEKLY" -> {
-                    val weekday =
-                        rule.settlementWeekday
-                            .coerceIn(1, 7)
-                    var addDays =
-                        (
-                            weekday -
-                                asOf.dayOfWeek.value +
-                                7
-                            ) % 7
-                    if (addDays == 0) {
-                        addDays = 7
-                    }
-                    asOf.plusDays(
-                        addDays.toLong()
-                    )
-                }
-
-                "MONTHLY" -> {
-                    val configuredDay =
-                        rule.settlementMonthDay
-                            .coerceIn(0, 28)
-                    val currentEnd =
-                        if (configuredDay <= 0) {
-                            asOf.withDayOfMonth(
-                                asOf.lengthOfMonth()
-                            )
-                        } else {
-                            asOf.withDayOfMonth(
-                                minOf(
-                                    configuredDay,
-                                    asOf.lengthOfMonth()
-                                )
-                            )
-                        }
-
-                    if (currentEnd > asOf) {
-                        currentEnd
-                    } else {
-                        val next =
-                            asOf.plusMonths(1)
-                        if (configuredDay <= 0) {
-                            next.withDayOfMonth(
-                                next.lengthOfMonth()
-                            )
-                        } else {
-                            next.withDayOfMonth(
-                                minOf(
-                                    configuredDay,
-                                    next.lengthOfMonth()
-                                )
-                            )
-                        }
-                    }
-                }
-
-                else -> asOf
-            }
-
-        return PartnerProfitCycleStatus(
-            partnerId = partnerId,
-            partnerName =
-                rule.partnerName
-                    .ifBlank {
-                        partner?.name
-                            ?: "合伙人$partnerId"
-                    },
-            settlementCycle =
-                normalizeSettlementCycle(
-                    rule.settlementCycle
-                ),
-            settlementWeekday =
-                rule.settlementWeekday
-                    .coerceIn(1, 7),
-            settlementMonthDay =
-                rule.settlementMonthDay
-                    .coerceIn(0, 28),
-            dailyAllocatedProfit =
-                dailyAllocated,
-            dueProfitOnDate =
-                dueOnDate,
-            maturedProfitTotal =
-                roundMoney(
-                    maturedTotal
-                ),
-            carryLoss =
-                roundMoney(
-                    carryLoss
-                ),
-            openPeriodProfit =
-                roundMoney(
-                    openPeriodProfit
-                ),
-            nextSettlementDate =
-                nextDate.toString()
-        )
-    }
-
-    fun getPartnerProfitDueEvents(
-        partnerId: Long,
-        asOfDate: String
-    ): Map<String, Double> {
-        val asOf =
-            runCatching {
-                LocalDate.parse(
-                    asOfDate
-                )
-            }.getOrElse {
-                LocalDate.now()
-            }
-
-        val partner =
-            getPartners()
-                .firstOrNull {
-                    it.id == partnerId
-                }
-
-        val rule =
-            getProfitRules()
-                .firstOrNull {
-                    it.partnerId ==
-                        partnerId
-                }
-                ?: ProfitRuleRecord(
-                    partnerId =
-                        partnerId,
-                    partnerName =
-                        partner?.name
-                            ?: "合伙人$partnerId",
-                    percent = 0.0
-                )
-
-        val periods =
-            linkedMapOf<LocalDate, Double>()
-
-        readableDatabase.rawQuery(
-            """
-            SELECT
-                date,
-                allocated_profit,
-                COALESCE(settlement_cycle,'DAILY')
-                    AS settlement_cycle,
-                COALESCE(settlement_weekday,7)
-                    AS settlement_weekday,
-                COALESCE(settlement_month_day,0)
-                    AS settlement_month_day
-            FROM profit_distribution
-            WHERE deleted=0
-              AND partner_id=?
-              AND date<=?
-            ORDER BY date,id
-            """.trimIndent(),
-            arrayOf(
-                partnerId.toString(),
-                asOfDate
-            )
-        ).use {
-            c ->
-            while (c.moveToNext()) {
-                val profitDate =
-                    runCatching {
-                        LocalDate.parse(
-                            c.str("date")
-                        )
-                    }.getOrNull()
-                        ?: continue
-
-                val snapshotRule =
-                    ProfitRuleRecord(
-                        partnerId =
-                            partnerId,
-                        partnerName =
-                            rule.partnerName,
-                        percent = 0.0,
-                        settlementCycle =
-                            normalizeSettlementCycle(
-                                c.str(
-                                    "settlement_cycle"
-                                )
-                            ),
-                        settlementWeekday =
-                            c.int(
-                                "settlement_weekday"
-                            ).coerceIn(1, 7),
-                        settlementMonthDay =
-                            c.int(
-                                "settlement_month_day"
-                            ).coerceIn(0, 28)
-                    )
-
-                val periodEnd =
-                    profitSettlementPeriodEnd(
-                        profitDate,
-                        snapshotRule
-                    )
-
-                periods[periodEnd] =
-                    roundMoney(
-                        (
-                            periods[periodEnd]
-                                ?: 0.0
-                            ) +
-                            c.dbl(
-                                "allocated_profit"
-                            )
-                    )
-            }
-        }
-
-        val result =
-            linkedMapOf<String, Double>()
-        var carryLoss = 0.0
-
-        periods
-            .toSortedMap()
-            .forEach {
-                (periodEnd, rawAmount) ->
-                if (periodEnd > asOf) {
-                    return@forEach
-                }
-
-                val amount =
-                    roundMoney(
-                        rawAmount
-                    )
-
-                if (amount < -0.005) {
-                    carryLoss =
-                        roundMoney(
-                            carryLoss -
-                                amount
-                        )
-                } else if (amount > 0.005) {
-                    val offset =
-                        minOf(
-                            amount,
-                            carryLoss
-                        )
-                    carryLoss =
-                        roundMoney(
-                            carryLoss -
-                                offset
-                        )
-                    val due =
-                        roundMoney(
-                            amount -
-                                offset
-                        )
-
-                    if (due > 0.005) {
-                        result[
-                            periodEnd.toString()
-                        ] =
-                            due
-                    }
-                }
-            }
-
-        return result
-    }
-
-    fun getPartnerProfitCycleStatuses(
-        asOfDate: String
-    ): List<PartnerProfitCycleStatus> =
-        getPartners()
-            .map {
-                getPartnerProfitCycleStatus(
-                    it.id,
-                    asOfDate
-                )
-            }
-
     fun getProfitRules(): List<ProfitRuleRecord> = readableDatabase.rawQuery(
         """
-        SELECT
-            r.partner_id,
-            p.name,
-            r.percent,
-            COALESCE(r.settlement_cycle,'DAILY') AS settlement_cycle,
-            COALESCE(r.settlement_weekday,7) AS settlement_weekday,
-            COALESCE(r.settlement_month_day,0) AS settlement_month_day,
-            COALESCE(r.is_settlement_center,0) AS is_settlement_center
+        SELECT r.partner_id,p.name,r.percent
         FROM profit_rule r
         JOIN partner p ON p.id=r.partner_id
         WHERE r.deleted=0 AND p.deleted=0 AND p.enabled=1
-        ORDER BY CASE WHEN p.sort_order<=0 THEN p.id ELSE p.sort_order END,p.id
+        ORDER BY p.id
         """.trimIndent(), null
-    ).use { c ->
-        buildList {
-            while (c.moveToNext()) {
-                add(
-                    ProfitRuleRecord(
-                        partnerId = c.long("partner_id"),
-                        partnerName = c.str("name"),
-                        percent = c.dbl("percent"),
-                        settlementCycle =
-                            normalizeSettlementCycle(
-                                c.str("settlement_cycle")
-                            ),
-                        settlementWeekday =
-                            c.int("settlement_weekday")
-                                .coerceIn(1, 7),
-                        settlementMonthDay =
-                            c.int("settlement_month_day")
-                                .coerceIn(0, 28),
-                        isSettlementCenter =
-                            c.int("is_settlement_center") == 1
-                    )
-                )
-            }
-        }
-    }
+    ).use { c -> buildList {
+        while (c.moveToNext()) add(ProfitRuleRecord(c.long("partner_id"), c.str("name"), c.dbl("percent")))
+    } }
 
-    fun getSettlementCenterPartner(): PartnerOption? {
-        val rules = getProfitRules()
-        val centerId =
-            rules.firstOrNull {
-                it.isSettlementCenter
-            }?.partnerId
-                ?: rules.firstOrNull()?.partnerId
-                ?: getPartners().firstOrNull()?.id
-                ?: return null
-        return getPartners().firstOrNull {
-            it.id == centerId
-        }
-    }
-
-    fun saveProfitRules(
-        rules: List<Pair<PartnerOption, Double>>
-    ): Boolean {
-        val current =
-            getProfitRules()
-                .associateBy { it.partnerId }
-
-        return saveProfitRuleSettings(
-            rules.map { (partner, percent) ->
-                val old = current[partner.id]
-                ProfitRuleRecord(
-                    partnerId = partner.id,
-                    partnerName = partner.name,
-                    percent = percent,
-                    settlementCycle =
-                        old?.settlementCycle ?: "DAILY",
-                    settlementWeekday =
-                        old?.settlementWeekday ?: 7,
-                    settlementMonthDay =
-                        old?.settlementMonthDay ?: 0,
-                    isSettlementCenter =
-                        old?.isSettlementCenter ?: false
-                )
-            }
-        )
-    }
-
-    fun saveProfitRuleSettings(
-        rules: List<ProfitRuleRecord>
-    ): Boolean {
+    fun saveProfitRules(rules: List<Pair<PartnerOption, Double>>): Boolean {
         if (rules.isEmpty()) return false
-
-        val total = rules.sumOf { it.percent }
-        if (
-            kotlin.math.abs(
-                total - 100.0
-            ) >= 0.01
-        ) {
-            return false
-        }
-
-        val settlementCenterId =
-            rules.firstOrNull {
-                it.isSettlementCenter
-            }?.partnerId ?: rules.first().partnerId
-
+        val total = rules.sumOf { it.second }
+        if (kotlin.math.abs(total - 100.0) >= 0.01) return false
         val db = writableDatabase
         db.beginTransaction()
-
         try {
-            val now =
-                System.currentTimeMillis()
-
-            db.update(
-                "profit_rule",
-                ContentValues().apply {
-                    put("deleted", 1)
-                    put("sync_status", 2)
-                    put("updated_at", now)
-                },
-                "deleted=0",
-                null
-            )
-
-            rules.forEach { rule ->
-                db.insert(
-                    "profit_rule",
-                    null,
-                    baseSyncValues().apply {
-                        put(
-                            "partner_id",
-                            rule.partnerId
-                        )
-                        put(
-                            "percent",
-                            rule.percent
-                        )
-                        put(
-                            "settlement_cycle",
-                            normalizeSettlementCycle(
-                                rule.settlementCycle
-                            )
-                        )
-                        put(
-                            "settlement_weekday",
-                            rule.settlementWeekday
-                                .coerceIn(1, 7)
-                        )
-                        put(
-                            "settlement_month_day",
-                            rule.settlementMonthDay
-                                .coerceIn(0, 28)
-                        )
-                        put(
-                            "is_settlement_center",
-                            if (rule.partnerId == settlementCenterId) 1 else 0
-                        )
-                        put("deleted", 0)
-                    }
-                )
+            val now = System.currentTimeMillis()
+            db.update("profit_rule", ContentValues().apply {
+                put("deleted", 1); put("sync_status", 2); put("updated_at", now)
+            }, "deleted=0", null)
+            rules.forEach { (partner, percent) ->
+                db.insert("profit_rule", null, baseSyncValues().apply {
+                    put("partner_id", partner.id)
+                    put("percent", percent)
+                    put("deleted", 0)
+                })
             }
-
             db.setTransactionSuccessful()
             return true
-        } finally {
-            db.endTransaction()
-        }
+        } finally { db.endTransaction() }
     }
 
     fun saveProfitDistribution(date: String, allocations: List<Pair<PartnerOption, Double>>): Boolean {
         if (allocations.isEmpty()) return false
         val totalPercent = allocations.sumOf { it.second }
         if (kotlin.math.abs(totalPercent - 100.0) >= 0.01) return false
-        val profit =
-            getDailySummary(
-                date
-            ).profit
-        if (
-            kotlin.math.abs(
-                profit
-            ) <= 0.005
-        ) {
-            return false
-        }
-
-        val ruleMap =
-            getProfitRules()
-                .associateBy {
-                    it.partnerId
-                }
+        val profit = getDailySummary(date).profit
+        if (kotlin.math.abs(profit) <= 0.005) return false
 
         val db = writableDatabase
         db.beginTransaction()
@@ -9450,29 +8273,6 @@ class AppDatabase(
                     put("weight", 0)
                     put("source_profit", profit)
                     put("allocated_profit", amount)
-
-                    val rule =
-                        ruleMap[partner.id]
-                    put(
-                        "settlement_cycle",
-                        normalizeSettlementCycle(
-                            rule?.settlementCycle
-                                ?: "DAILY"
-                        )
-                    )
-                    put(
-                        "settlement_weekday",
-                        rule?.settlementWeekday
-                            ?.coerceIn(1, 7)
-                            ?: 7
-                    )
-                    put(
-                        "settlement_month_day",
-                        rule?.settlementMonthDay
-                            ?.coerceIn(0, 28)
-                            ?: 0
-                    )
-
                     put("deleted", 0)
                 })
             }
@@ -9516,44 +8316,12 @@ class AppDatabase(
         ).use { c -> profitList(c) }
     }
 
-    private fun profitList(
-        c: Cursor
-    ): List<ProfitDistributionRecord> =
-        buildList {
-            while (c.moveToNext()) {
-                add(
-                    ProfitDistributionRecord(
-                        id = c.long("id"),
-                        date = c.str("date"),
-                        partnerId =
-                            c.long("partner_id"),
-                        partnerName =
-                            c.str("partner_name"),
-                        role = c.str("role"),
-                        ratio = c.dbl("ratio"),
-                        weight = c.int("weight"),
-                        sourceProfit =
-                            c.dbl("source_profit"),
-                        allocatedProfit =
-                            c.dbl("allocated_profit"),
-                        settlementCycle =
-                            normalizeSettlementCycle(
-                                c.str(
-                                    "settlement_cycle"
-                                )
-                            ),
-                        settlementWeekday =
-                            c.int(
-                                "settlement_weekday"
-                            ).coerceIn(1, 7),
-                        settlementMonthDay =
-                            c.int(
-                                "settlement_month_day"
-                            ).coerceIn(0, 28)
-                    )
-                )
-            }
-        }
+    private fun profitList(c: Cursor): List<ProfitDistributionRecord> = buildList {
+        while (c.moveToNext()) add(ProfitDistributionRecord(
+            c.long("id"), c.str("date"), c.long("partner_id"), c.str("partner_name"), c.str("role"),
+            c.dbl("ratio"), c.int("weight"), c.dbl("source_profit"), c.dbl("allocated_profit")
+        ))
+    }
 
     fun getProfitSettlementDaily(
         start: String?,

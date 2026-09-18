@@ -5477,29 +5477,24 @@ private fun SettlementDayContent(
     var settleInput by remember {
         mutableStateOf("")
     }
-    var autoGenerateBlockedDate by
-        remember {
-            mutableStateOf<String?>(null)
-        }
 
     val summary = remember(dataVersion, date) {
         db.getDailySummary(date)
+    }
+    val purchases = remember(dataVersion, date) {
+        db.getPurchaseTotalsByPartner(date)
+    }
+    val receipts = remember(dataVersion, date) {
+        db.getReceiptsByPartner(date)
+    }
+    val expenses = remember(dataVersion, date) {
+        db.getExpenseTotalsByPartner(date)
     }
     val profitRows = remember(dataVersion, date) {
         db.getProfitDistribution(date)
     }
     val bundle = remember(dataVersion, date) {
         db.getCashSettlement(date)
-    }
-    val settlementCenter = remember(dataVersion) {
-        db.getSettlementCenterPartner()
-    }
-    val partnerOrderIndex = remember(dataVersion) {
-        db.getPartners()
-            .mapIndexed { index, partner ->
-                partner.id to index
-            }
-            .toMap()
     }
 
     LaunchedEffect(
@@ -5538,114 +5533,18 @@ private fun SettlementDayContent(
         }
     }
 
+    val profitSettlementRows =
+        remember(dataVersion, date) {
+            db.getProfitSettlementDaily(date, date)
+        }
+    val pendingProfitRows =
+        profitSettlementRows.filter {
+            it.pendingProfit > 0.005
+        }
     val history =
         remember(dataVersion) {
             db.getRecentCashSettlements(20)
         }
-
-    LaunchedEffect(
-        dataVersion,
-        date,
-        summary.revenue,
-        profitRows.size,
-        bundle?.settlement?.id,
-        settlementCenter?.id
-    ) {
-        val profitReady =
-            kotlin.math.abs(
-                summary.profit
-            ) <= 0.005 ||
-                profitRows.isNotEmpty()
-
-        val oldUnsettledDirectPlan =
-            bundle != null &&
-                settlementCenter != null &&
-                bundle.transfers.any {
-                    it.fromPartnerId != settlementCenter.id &&
-                        it.toPartnerId != settlementCenter.id
-                } &&
-                bundle.transfers.none {
-                    it.settledAmount > 0.005
-                }
-
-        val staleUnsettledPlan =
-            if (
-                bundle != null &&
-                bundle.transfers.none {
-                    it.settledAmount > 0.005
-                }
-            ) {
-                val purchaseMap =
-                    db.getPurchaseTotalsByPartner(date)
-                        .associateBy { it.partnerId }
-                val receiptMap =
-                    db.getReceiptsByPartner(date)
-                        .associateBy { it.partnerId }
-                val expenseMap =
-                    db.getExpenseTotalsByPartner(date)
-                        .associateBy { it.partnerId }
-                val profitMap =
-                    profitRows.associateBy { it.partnerId }
-                val storedMap =
-                    bundle.partners.associateBy { it.partnerId }
-                val ids =
-                    linkedSetOf<Long>().apply {
-                        addAll(db.getPartners().map { it.id })
-                        addAll(purchaseMap.keys)
-                        addAll(receiptMap.keys)
-                        addAll(expenseMap.keys)
-                        addAll(profitMap.keys)
-                    }
-
-                storedMap.keys.any { it !in ids } ||
-                    ids.any { id ->
-                        val stored = storedMap[id]
-                        val purchase = purchaseMap[id]?.amount ?: 0.0
-                        val receipt = receiptMap[id]?.amount ?: 0.0
-                        val expense = expenseMap[id]?.amount ?: 0.0
-                        val profit = profitMap[id]?.allocatedProfit ?: 0.0
-                        val keep = purchase + expense + profit
-                        val balance = keep - receipt
-                        stored == null ||
-                            kotlin.math.abs(stored.purchasePaid - purchase) > 0.005 ||
-                            kotlin.math.abs(stored.revenueReceived - receipt) > 0.005 ||
-                            kotlin.math.abs(stored.expensePaid - expense) > 0.005 ||
-                            kotlin.math.abs(stored.profitShare - profit) > 0.005 ||
-                            kotlin.math.abs(stored.shouldKeep - keep) > 0.005 ||
-                            kotlin.math.abs(stored.balance - balance) > 0.005
-                    }
-            } else {
-                false
-            }
-
-        if (
-            summary.revenue > 0.005 &&
-            profitReady &&
-            (
-                bundle == null ||
-                    oldUnsettledDirectPlan ||
-                    staleUnsettledPlan
-                ) &&
-            autoGenerateBlockedDate !=
-                date
-        ) {
-            val result =
-                db.generateCashSettlement(
-                    date
-                )
-            if (result.success) {
-                message = ""
-                onChanged()
-            } else if (
-                !result.message.contains(
-                    "当天还没有营业额"
-                )
-            ) {
-                message =
-                    result.message
-            }
-        }
-    }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -5656,7 +5555,10 @@ private fun SettlementDayContent(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         item {
-            PageHeader("当日结算")
+            PageHeader(
+                "当日结算",
+                "利润是否已发放按“日期 + 合伙人”分别确认；资金轧差方案独立保留"
+            )
         }
 
         item {
@@ -5667,10 +5569,6 @@ private fun SettlementDayContent(
                 chineseDisplay = true,
                 showWeekday = true
             ) {
-                if (date != it) {
-                    autoGenerateBlockedDate =
-                        null
-                }
                 date = it
                 message = ""
             }
@@ -5703,123 +5601,196 @@ private fun SettlementDayContent(
 
         item {
             Text(
-                "当日利润分配",
-                style =
-                    MaterialTheme
-                        .typography
-                        .titleMedium,
-                fontWeight =
-                    FontWeight.Bold
+                "利润 / 亏损分担状态",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
             )
         }
 
-        item {
-            Card(
-                modifier =
-                    Modifier.fillMaxWidth(),
-                colors =
-                    CardDefaults.cardColors(
-                        containerColor =
-                            Color(
-                                0xFFF8FAFC
-                            )
+        if (profitSettlementRows.isEmpty()) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFFF8FAFC)
                     )
-            ) {
+                ) {
+                    Text(
+                        when {
+                            summary.profit > 0.005 ->
+                                "当天利润分配正在生成或尚未保存。"
+                            summary.profit < -0.005 ->
+                                "当天为亏损，请先保存亏损分担比例；保存后仍可正常生成当日资金轧差方案。"
+                            else ->
+                                "当天利润为0，无需利润分配；如有垫付和收款仍可核对资金。"
+                        },
+                        modifier = Modifier.padding(12.dp),
+                        color = Color.Gray
+                    )
+                }
+            }
+        }
+
+        items(
+            profitSettlementRows,
+            key = {
+                "profit_status_${it.date}_${it.partnerId}"
+            }
+        ) { row ->
+            Card(Modifier.fillMaxWidth()) {
                 Column(
                     Modifier.padding(
                         horizontal = 12.dp,
                         vertical = 10.dp
-                    ),
-                    verticalArrangement =
-                        Arrangement.spacedBy(
-                            7.dp
-                        )
+                    )
                 ) {
-                    if (profitRows.isEmpty()) {
-                        Text(
-                            if (kotlin.math.abs(summary.profit) <= 0.005) {
-                                "当日利润 ¥0"
-                            } else {
-                                "暂无利润分配"
-                            },
-                            color = Color.Gray
-                        )
-                    } else {
-                        profitRows
-                            .sortedBy {
-                                partnerOrderIndex[it.partnerId]
-                                    ?: Int.MAX_VALUE
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                row.partnerName,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                if (row.earnedProfit < -0.005) {
+                                    "应承担亏损 ${money(-row.earnedProfit)}"
+                                } else {
+                                    "应得利润 ${money(row.earnedProfit)}"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray
+                            )
+                        }
+
+                        when {
+                            row.pendingProfit > 0.005 -> {
+                                Text(
+                                    "待结算 ${money(row.pendingProfit)}",
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
-                            .forEach {
-                                row ->
-                                Row(
-                                    Modifier.fillMaxWidth(),
-                                    verticalAlignment =
-                                        Alignment.CenterVertically
+
+                            row.earnedProfit < -0.005 -> {
+                                Text(
+                                    "已计入当日轧差",
+                                    color = BrandGreen,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            row.pendingProfit < -0.005 -> {
+                                Text(
+                                    "结算差额 ${money(-row.pendingProfit)}",
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            else -> {
+                                Text(
+                                    "已结算",
+                                    color = BrandGreen,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    if (row.settledProfit > 0.005) {
+                        Text(
+                            buildString {
+                                append(
+                                    "累计已结算 ${money(row.settledProfit)}"
+                                )
+                                if (
+                                    row.lastSettlementDate.isNotBlank()
                                 ) {
-                                    Text(
-                                        row.partnerName,
-                                        modifier =
-                                            Modifier.weight(
-                                                1f
-                                            ),
-                                        fontWeight =
-                                            FontWeight.SemiBold
-                                    )
-                                    Text(
-                                        (
-                                            if (
-                                                row.allocatedProfit >
-                                                0.005
-                                            ) {
-                                                "+"
-                                            } else {
-                                                ""
-                                            }
-                                            ) +
-                                            money(
-                                                row.allocatedProfit
-                                            ),
-                                        fontWeight =
-                                            FontWeight.Bold,
-                                        color =
-                                            when {
-                                                row.allocatedProfit >
-                                                    0.005 ->
-                                                    BrandGreen
-
-                                                row.allocatedProfit <
-                                                    -0.005 ->
-                                                    MaterialTheme
-                                                        .colorScheme
-                                                        .error
-
-                                                else ->
-                                                    Color.Gray
-                                            }
+                                    append(
+                                        " · 最近 ${row.lastSettlementDate}"
                                     )
                                 }
-                            }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+                    }
 
+                    if (row.pendingProfit > 0.005) {
+                        OutlinedButton(
+                            onClick = {
+                                val result =
+                                    db.createProfitSettlementBatch(
+                                        start = date,
+                                        end = date,
+                                        partnerIds =
+                                            setOf(row.partnerId),
+                                        note =
+                                            "单人单日利润结算"
+                                    )
+                                message = result.message
+                                if (result.success) {
+                                    onChanged()
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp)
+                        ) {
+                            Text(
+                                "确认 ${row.partnerName} 利润已结算"
+                            )
+                        }
                     }
                 }
             }
         }
 
-        if (
-            message.isNotBlank() &&
-            (
-                message.contains("失败") ||
-                    message.contains("不能") ||
-                    message.contains("请先") ||
-                    message.contains("还有") ||
-                    message.contains("没有")
-                )
-        ) {
+        if (pendingProfitRows.isNotEmpty()) {
+            item {
+                Button(
+                    onClick = {
+                        val result =
+                            db.createProfitSettlementBatch(
+                                start = date,
+                                end = date,
+                                partnerIds =
+                                    pendingProfitRows
+                                        .map { it.partnerId }
+                                        .toSet(),
+                                note = "当日全部利润结算"
+                            )
+                        message = result.message
+                        if (result.success) onChanged()
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        "全部确认利润已结算 · " +
+                            money(
+                                pendingProfitRows.sumOf {
+                                    it.pendingProfit
+                                }
+                            )
+                    )
+                }
+            }
+        }
+
+        if (message.isNotBlank()) {
             item {
                 Text(
                     message,
-                    color = MaterialTheme.colorScheme.error,
+                    color =
+                        if (
+                            message.contains("已确认") ||
+                            message.contains("已生成") ||
+                            message.contains("成功")
+                        ) {
+                            BrandGreen
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        },
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -5827,24 +5798,83 @@ private fun SettlementDayContent(
 
         item {
             HorizontalDivider()
+
+            Text(
+                "资金轧差方案",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                "这里计算当天采购垫付、费用、收款和利润/亏损形成的资金差额；当天未结清的金额会继续进入“资金余额”。",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray
+            )
         }
 
-        if (bundle != null) {
-            val b = bundle
-            val orderedPartnerRows =
-                b.partners.sortedBy {
-                    partnerOrderIndex[it.partnerId]
-                        ?: Int.MAX_VALUE
+        item {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFFF8FAFC)
+                )
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(
+                        "结算前核对",
+                        fontWeight = FontWeight.Bold
+                    )
+                    SummaryRow(
+                        "进货垫付合计",
+                        money(purchases.sumOf { it.amount })
+                    )
+                    SummaryRow(
+                        "实际收款合计",
+                        money(receipts.sumOf { it.amount })
+                    )
+                    SummaryRow(
+                        "费用垫付合计",
+                        money(expenses.sumOf { it.amount })
+                    )
+                    SummaryRow(
+                        "已保存利润/亏损分担",
+                        money(
+                            profitRows.sumOf {
+                                it.allocatedProfit
+                            }
+                        )
+                    )
                 }
+            }
+        }
 
+        item {
+            Button(
+                onClick = {
+                    val result =
+                        db.generateCashSettlement(date)
+                    message = result.message
+                    if (result.success) onChanged()
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    if (bundle == null) {
+                        "生成当日资金轧差方案"
+                    } else {
+                        "重新生成资金轧差方案"
+                    }
+                )
+            }
+        }
+
+        bundle?.let { b ->
             item {
                 Row(
-                    Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         "每人最终余额",
-                        style = MaterialTheme.typography.titleMedium,
+                        style =
+                            MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.weight(1f)
                     )
@@ -5852,10 +5882,10 @@ private fun SettlementDayContent(
                         onClick = {},
                         label = {
                             Text(
-                                if (b.settlement.status == 1) {
-                                    "资金已确认"
-                                } else {
-                                    "待确认"
+                                when (b.settlement.status) {
+                                    1 -> "已结清"
+                                    2 -> "部分结算"
+                                    else -> "未结算"
                                 }
                             )
                         }
@@ -5864,66 +5894,124 @@ private fun SettlementDayContent(
             }
 
             items(
-                orderedPartnerRows,
-                key = { "cash_partner_${it.id}" }
+                b.partners,
+                key = { "cp${it.id}" }
             ) { p ->
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = Color(0xFFF8FAFC)
-                    )
-                ) {
+                val relatedTransfers =
+                    if (p.balance >= 0) {
+                        b.transfers.filter {
+                            it.toPartnerId == p.partnerId
+                        }
+                    } else {
+                        b.transfers.filter {
+                            it.fromPartnerId == p.partnerId
+                        }
+                    }
+                val settledAmount =
+                    relatedTransfers.sumOf {
+                        it.settledAmount
+                    }
+                val totalNeed =
+                    kotlin.math.abs(p.balance)
+                val remainingAmount =
+                    (totalNeed - settledAmount)
+                        .coerceAtLeast(0.0)
+
+                Card(Modifier.fillMaxWidth()) {
                     Column(
-                        Modifier.padding(
-                            horizontal = 12.dp,
-                            vertical = 11.dp
-                        ),
-                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                        Modifier.padding(11.dp),
+                        verticalArrangement =
+                            Arrangement.spacedBy(4.dp)
                     ) {
-                        Text(
-                            p.partnerName,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Row {
+                            Text(
+                                p.partnerName,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                when {
+                                    p.balance > 0.005 ->
+                                        "应收 ${money(p.balance)}"
+
+                                    p.balance < -0.005 ->
+                                        "应补 ${money(-p.balance)}"
+
+                                    else ->
+                                        "已平"
+                                },
+                                fontWeight = FontWeight.Bold,
+                                color =
+                                    if (p.balance > 0.005) {
+                                        BrandGreen
+                                    } else if (
+                                        p.balance < -0.005
+                                    ) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        Color.Gray
+                                    }
+                            )
+                        }
 
                         Text(
-                            "进货 ${money(p.purchasePaid)} + " +
-                                "费用 ${money(p.expensePaid)} + " +
-                                "利润 ${money(p.profitShare)} − " +
-                                "已收 ${money(p.revenueReceived)}",
-                            style = MaterialTheme.typography.bodyMedium,
+                            "采购垫付 +${money(p.purchasePaid)} · " +
+                                "费用 +${money(p.expensePaid)} · " +
+                                if (p.profitShare < -0.005) {
+                                    "亏损 -${money(-p.profitShare)} · 已收 -${money(p.revenueReceived)}"
+                                } else {
+                                    "利润 +${money(p.profitShare)} · 已收 -${money(p.revenueReceived)}"
+                                },
+                            style =
+                                MaterialTheme.typography.bodySmall,
                             color = Color.Gray
                         )
 
-                        Text(
-                            "最终应留 ${money(p.shouldKeep)}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                        if (totalNeed > 0.005) {
+                            Text(
+                                when {
+                                    settledAmount <= 0.005 ->
+                                        "当日资金：未结算 · 结转 ${money(totalNeed)}"
+
+                                    remainingAmount <= 0.005 ->
+                                        "当日资金：已结清 ${money(settledAmount)}"
+
+                                    else ->
+                                        "当日资金：已结 ${money(settledAmount)} · 结转 ${money(remainingAmount)}"
+                                },
+                                style =
+                                    MaterialTheme.typography.bodySmall,
+                                color =
+                                    if (remainingAmount <= 0.005) {
+                                        BrandGreen
+                                    } else {
+                                        Color.DarkGray
+                                    },
+                                fontWeight =
+                                    FontWeight.SemiBold
+                            )
+
+                            Text(
+                                if (p.purchasePaid > 0.005) {
+                                    "采购 / 当日资金请在下方转账方案逐笔确认，可分别保留不同合伙人的结算周期。"
+                                } else {
+                                    "当日资金请在下方转账方案逐笔确认。"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.Gray
+                            )
+                        }
                     }
                 }
             }
 
             item {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "最少转账方案",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f)
-                    )
-                    settlementCenter?.let { center ->
-                        Text(
-                            "资金中心：${center.name}",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            color = BrandGreen
-                        )
-                    }
-                }
+                Text(
+                    "最少转账方案",
+                    style =
+                        MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
 
                 if (b.transfers.isEmpty()) {
                     Text(
@@ -5935,82 +6023,100 @@ private fun SettlementDayContent(
 
             items(
                 b.transfers,
-                key = { "cash_transfer_${it.id}" }
+                key = { "ct${it.id}" }
             ) { t ->
                 Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = SoftGreen
-                    ),
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor = SoftGreen
+                        ),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
-                        Modifier.padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        Modifier.padding(12.dp),
+                        verticalAlignment =
+                            Alignment.CenterVertically
                     ) {
                         Text(
-                            "${t.fromPartnerName}  →  ${t.toPartnerName}",
+                            "${t.fromPartnerName}  →  " +
+                                t.toPartnerName,
                             modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Bold
                         )
-                        Text(
-                            money(t.amount),
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = BrandGreen
-                        )
+                        Column(
+                            horizontalAlignment = Alignment.End
+                        ) {
+                            Text(
+                                money(t.amount),
+                                fontWeight = FontWeight.Bold,
+                                color = BrandGreen
+                            )
+                            if (t.settledAmount > 0.005) {
+                                Text(
+                                    if (t.pendingAmount <= 0.005) {
+                                        "已结清"
+                                    } else {
+                                        "已结 ${money(t.settledAmount)} · 剩 ${money(t.pendingAmount)}"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.Gray
+                                )
+                            } else {
+                                Text(
+                                    "未结算",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.Gray
+                                )
+                            }
+                            TextButton(
+                                onClick = {
+                                    settleTransfer = t
+                                    settleInput =
+                                        if (t.settledAmount > 0.005) {
+                                            cleanNumber(t.settledAmount)
+                                        } else {
+                                            ""
+                                        }
+                                },
+                                contentPadding = PaddingValues(
+                                    horizontal = 6.dp,
+                                    vertical = 0.dp
+                                )
+                            ) {
+                                Text("处理")
+                            }
+                        }
                     }
                 }
             }
 
             item {
-                if (b.settlement.status == 0 && b.transfers.isNotEmpty()) {
+                if (b.settlement.status != 1) {
                     Button(
                         onClick = {
-                            if (db.confirmCashSettlement(b.settlement.id)) {
-                                message = "资金轧差方案已确认执行"
+                            if (
+                                db.confirmCashSettlement(
+                                    b.settlement.id
+                                )
+                            ) {
+                                message =
+                                    "资金轧差方案已确认执行"
                                 onChanged()
                             }
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("确认资金轧差方案已执行")
+                        Text("全部确认当日资金已结清")
                     }
                 }
 
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    TextButton(
-                        onClick = {
-                            autoGenerateBlockedDate = null
-                            val result = db.generateCashSettlement(date)
-                            message = if (result.success) "" else result.message
-                            if (result.success) onChanged()
-                        }
-                    ) {
-                        Text("重新计算")
-                    }
-                    TextButton(
-                        onClick = { deleteId = b.settlement.id }
-                    ) {
-                        Text("删除本次记录")
-                    }
-                }
-            }
-        } else {
-            item {
-                Button(
+                TextButton(
                     onClick = {
-                        autoGenerateBlockedDate = null
-                        val result = db.generateCashSettlement(date)
-                        message = if (result.success) "" else result.message
-                        if (result.success) onChanged()
+                        deleteId = b.settlement.id
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("生成当日资金轧差方案")
+                    Text("删除本次资金轧差记录")
                 }
             }
         }
@@ -6081,6 +6187,12 @@ private fun SettlementDayContent(
                     verticalArrangement =
                         Arrangement.spacedBy(10.dp)
                 ) {
+                    Text(
+                        "这笔转账单独记录结算状态，不会自动把其他合伙人的转账一起标记为已结算。",
+                        style =
+                            MaterialTheme.typography.bodySmall
+                    )
+
                     NumberField(
                         "累计已结算金额",
                         settleInput,
@@ -6202,8 +6314,6 @@ private fun SettlementDayContent(
             { deleteId = null }
         ) {
             db.deleteCashSettlement(id)
-            autoGenerateBlockedDate =
-                date
             deleteId = null
             message = "资金轧差记录已删除"
             onChanged()
@@ -6251,10 +6361,6 @@ private fun SettlementBatchContent(
     val partners =
         remember(dataVersion) {
             db.getPartners()
-        }
-    val settlementCenter =
-        remember(dataVersion) {
-            db.getSettlementCenterPartner()
         }
     val cumulativeBalances =
         remember(dataVersion, date) {
@@ -6559,8 +6665,7 @@ private fun SettlementBatchContent(
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                partner.name +
-                                    if (partner.id == settlementCenter?.id) " · 资金中心" else "",
+                                partner.name,
                                 fontWeight = FontWeight.Bold,
                                 modifier = Modifier.weight(1f)
                             )
@@ -6613,40 +6718,38 @@ private fun SettlementBatchContent(
                                 }
                             }
 
-                            if (partner.id != settlementCenter?.id) {
-                                if (day.status == 0 || day.status == 2) {
-                                    if (day.settlementId <= 0L) {
-                                        OutlinedButton(
-                                            onClick = { generateDatePlan(date) },
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Text("生成资金轧差方案")
-                                        }
-                                    } else {
-                                        Button(
-                                            onClick = {
-                                                settleDate(partner.id, date)
-                                            },
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Text(
-                                                if (day.status == 2) {
-                                                    "确认结算剩余 ${money(kotlin.math.abs(day.remainingBalance))}"
-                                                } else {
-                                                    "确认结算 ${money(kotlin.math.abs(day.remainingBalance))}"
-                                                }
-                                            )
-                                        }
-                                    }
-                                } else if (day.status == 1) {
+                            if (day.status == 0 || day.status == 2) {
+                                if (day.settlementId <= 0L) {
                                     OutlinedButton(
+                                        onClick = { generateDatePlan(date) },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("生成资金轧差方案")
+                                    }
+                                } else {
+                                    Button(
                                         onClick = {
-                                            unsettleDate(partner.id, date)
+                                            settleDate(partner.id, date)
                                         },
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        Text("改为未结算")
+                                        Text(
+                                            if (day.status == 2) {
+                                                "确认结算剩余 ${money(kotlin.math.abs(day.remainingBalance))}"
+                                            } else {
+                                                "确认结算 ${money(kotlin.math.abs(day.remainingBalance))}"
+                                            }
+                                        )
                                     }
+                                }
+                            } else if (day.status == 1) {
+                                OutlinedButton(
+                                    onClick = {
+                                        unsettleDate(partner.id, date)
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("改为未结算")
                                 }
                             }
                         }
@@ -6881,62 +6984,56 @@ private fun SettlementBatchContent(
                                             "-${money(row.revenueReceived)}"
                                         )
                                         SummaryRow(
-                                            "到期利润",
-                                            "+${money(row.profitShare)}"
+                                            if (row.profitShare >= 0) "利润分配" else "亏损分担",
+                                            if (row.profitShare >= 0) {
+                                                "+${money(row.profitShare)}"
+                                            } else {
+                                                "-${money(-row.profitShare)}"
+                                            }
                                         )
                                         HorizontalDivider()
                                         SummaryRow(
-                                            "当日资金变化",
-                                            balanceText(
-                                                row.dailyChange
-                                            )
-                                        )
-                                        SummaryRow(
-                                            "含历史结转后的方案余额",
-                                            balanceText(
-                                                row.dayBalance
-                                            ),
+                                            "当日最终净额",
+                                            balanceText(row.dayBalance),
                                             bold = true
                                         )
                                     }
                                 }
                             }
 
-                            if (partner.id != settlementCenter?.id) {
-                                when (row.status) {
-                                    0, 2 ->
-                                        if (row.settlementId <= 0L) {
-                                            OutlinedButton(
-                                                onClick = {
-                                                    generateDatePlan(row.date)
-                                                },
-                                                modifier = Modifier.fillMaxWidth()
-                                            ) {
-                                                Text("生成资金轧差方案")
-                                            }
-                                        } else {
-                                            Button(
-                                                onClick = {
-                                                    settleDate(partner.id, row.date)
-                                                },
-                                                modifier = Modifier.fillMaxWidth()
-                                            ) {
-                                                Text(
-                                                    "确认结算剩余 ${money(kotlin.math.abs(row.remainingBalance))}"
-                                                )
-                                            }
-                                        }
-
-                                    1 ->
+                            when (row.status) {
+                                0, 2 ->
+                                    if (row.settlementId <= 0L) {
                                         OutlinedButton(
                                             onClick = {
-                                                unsettleDate(partner.id, row.date)
+                                                generateDatePlan(row.date)
                                             },
                                             modifier = Modifier.fillMaxWidth()
                                         ) {
-                                            Text("改为未结算")
+                                            Text("生成资金轧差方案")
                                         }
-                                }
+                                    } else {
+                                        Button(
+                                            onClick = {
+                                                settleDate(partner.id, row.date)
+                                            },
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Text(
+                                                "确认结算剩余 ${money(kotlin.math.abs(row.remainingBalance))}"
+                                            )
+                                        }
+                                    }
+
+                                1 ->
+                                    OutlinedButton(
+                                        onClick = {
+                                            unsettleDate(partner.id, row.date)
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("改为未结算")
+                                    }
                             }
                         }
                     }
@@ -7008,31 +7105,27 @@ private fun SettlementStatsContent(
     dataVersion: Int,
     onChanged: () -> Unit
 ) {
-    var filter by
-        remember {
-            mutableStateOf(
-                HistoryTimeFilter.THIS_MONTH
-            )
-        }
-    val today =
-        LocalDate.now()
-    var customStart by
-        remember {
-            mutableStateOf(
-                today.withDayOfMonth(1)
-                    .toString()
-            )
-        }
-    var customEnd by
-        remember {
-            mutableStateOf(
-                today.toString()
-            )
-        }
+    var filter by remember {
+        mutableStateOf(HistoryTimeFilter.THIS_MONTH)
+    }
+    val today = LocalDate.now()
+    var customStart by remember {
+        mutableStateOf(
+            today.withDayOfMonth(1).toString()
+        )
+    }
+    var customEnd by remember {
+        mutableStateOf(today.toString())
+    }
+    var undoBatch by remember {
+        mutableStateOf<ProfitSettlementBatchRecord?>(null)
+    }
+    var message by remember {
+        mutableStateOf("")
+    }
 
     val invalidCustom =
-        filter ==
-            HistoryTimeFilter.CUSTOM &&
+        filter == HistoryTimeFilter.CUSTOM &&
             customStart > customEnd
     val range =
         resolveTimeRange(
@@ -7042,71 +7135,59 @@ private fun SettlementStatsContent(
             today
         )
     val queryStart =
-        if (invalidCustom) {
-            "9999-12-31"
-        } else {
-            range.first
-        }
+        if (invalidCustom) "9999-12-31" else range.first
     val queryEnd =
-        if (invalidCustom) {
-            "0000-01-01"
-        } else {
-            range.second
-        }
+        if (invalidCustom) "0000-01-01" else range.second
 
-    val bundles =
-        remember(
-            dataVersion,
-            queryStart,
-            queryEnd
-        ) {
-            db.getCashSettlementsBetween(
+    val partnerStats =
+        remember(dataVersion, queryStart, queryEnd) {
+            db.getPartnerProfitSettlementSummary(
                 queryStart,
                 queryEnd
             )
         }
-
-    val transfers =
-        remember(bundles) {
-            bundles.flatMap {
-                it.transfers
-            }
+    val dailyRows =
+        remember(dataVersion, queryStart, queryEnd) {
+            db.getProfitSettlementDaily(
+                queryStart,
+                queryEnd
+            )
+        }
+    val batches =
+        remember(dataVersion, queryStart, queryEnd) {
+            db.getProfitSettlementBatchesForProfitPeriod(
+                queryStart,
+                queryEnd,
+                80
+            )
         }
 
-    val totalPlanned =
-        transfers.sumOf {
-            it.amount
-        }
+    val totalEarned =
+        partnerStats.sumOf { it.earnedProfit }
     val totalSettled =
-        transfers.sumOf {
-            it.settledAmount
-        }
+        partnerStats.sumOf { it.settledProfit }
     val totalPending =
-        transfers.sumOf {
-            it.pendingAmount
-        }
-    val settledTransferCount =
-        transfers.count {
-            it.settledAmount >
-                0.005
-        }
+        partnerStats.sumOf { it.pendingProfit }
+
+    val dailyGroups =
+        dailyRows
+            .groupBy { it.date }
+            .toList()
+            .sortedByDescending { it.first }
 
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding =
-            PaddingValues(
-                horizontal = 14.dp,
-                vertical = 4.dp
-            ),
+        contentPadding = PaddingValues(
+            horizontal = 14.dp,
+            vertical = 4.dp
+        ),
         verticalArrangement =
-            Arrangement.spacedBy(
-                8.dp
-            )
+            Arrangement.spacedBy(8.dp)
     ) {
         item {
             PageHeader(
-                "结算记录",
-                "这里只记录资金轧差方案及已经确认的真实转账；当日利润分配本身不代表已经付款"
+                "利润结算统计",
+                "统计每位合伙人每天应得、已结算和待结算利润"
             )
         }
 
@@ -7115,16 +7196,17 @@ private fun SettlementStatsContent(
                 filter = filter,
                 onFilterChange = {
                     filter = it
+                    message = ""
                 },
-                customStart =
-                    customStart,
+                customStart = customStart,
                 onCustomStart = {
                     customStart = it
+                    message = ""
                 },
-                customEnd =
-                    customEnd,
+                customEnd = customEnd,
                 onCustomEnd = {
                     customEnd = it
+                    message = ""
                 }
             )
         }
@@ -7133,10 +7215,7 @@ private fun SettlementStatsContent(
             item {
                 Text(
                     "开始日期不能晚于结束日期",
-                    color =
-                        MaterialTheme
-                            .colorScheme
-                            .error
+                    color = MaterialTheme.colorScheme.error
                 )
             }
         }
@@ -7144,266 +7223,300 @@ private fun SettlementStatsContent(
         item {
             Row(
                 horizontalArrangement =
-                    Arrangement.spacedBy(
-                        8.dp
-                    )
+                    Arrangement.spacedBy(8.dp)
             ) {
                 MiniSummaryCard(
-                    "方案金额",
-                    money(
-                        totalPlanned
-                    ),
-                    Modifier.weight(
-                        1f
-                    ),
-                    SoftPurple
+                    "应得利润",
+                    money(totalEarned),
+                    Modifier.weight(1f),
+                    SoftOrange
                 )
                 MiniSummaryCard(
-                    "实际已转",
-                    money(
-                        totalSettled
-                    ),
-                    Modifier.weight(
-                        1f
-                    ),
+                    "已结算",
+                    money(totalSettled),
+                    Modifier.weight(1f),
                     SoftGreen
                 )
                 MiniSummaryCard(
-                    "仍待转",
-                    money(
-                        totalPending
-                    ),
-                    Modifier.weight(
-                        1f
-                    ),
-                    SoftOrange
+                    "待结算",
+                    money(totalPending),
+                    Modifier.weight(1f),
+                    SoftPurple
                 )
             }
         }
 
         item {
             Text(
-                "已确认转账 $settledTransferCount 笔",
+                "合伙人统计",
                 style =
-                    MaterialTheme
-                        .typography
-                        .bodySmall,
-                color = Color.Gray
+                    MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
             )
         }
 
-        if (bundles.isEmpty()) {
+        if (partnerStats.isEmpty()) {
             item {
-                Card(
-                    Modifier.fillMaxWidth()
-                ) {
+                Text(
+                    "当前时间范围暂无利润分配记录。",
+                    color = Color.Gray
+                )
+            }
+        }
+
+        items(
+            partnerStats,
+            key = { "settlement_stat_${it.partnerId}" }
+        ) { stat ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
                     Text(
-                        "当前时间范围暂无资金轧差记录。",
-                        modifier =
-                            Modifier.padding(
-                                14.dp
-                            ),
-                        color = Color.Gray
+                        stat.partnerName,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                    SummaryRow(
+                        "应得利润",
+                        money(stat.earnedProfit)
+                    )
+                    SummaryRow(
+                        "已结算利润",
+                        money(stat.settledProfit)
+                    )
+                    SummaryRow(
+                        if (stat.pendingProfit >= 0) {
+                            "待结算利润"
+                        } else {
+                            "净亏损分担"
+                        },
+                        money(
+                            kotlin.math.abs(
+                                stat.pendingProfit
+                            )
+                        )
                     )
                 }
             }
         }
 
-        items(
-            bundles,
-            key = {
-                "cash_record_${it.settlement.id}"
-            }
-        ) {
-            bundle ->
-            val daySettled =
-                bundle.transfers
-                    .sumOf {
-                        it.settledAmount
-                    }
-            val dayPending =
-                bundle.transfers
-                    .sumOf {
-                        it.pendingAmount
-                    }
-            val dayPlanned =
-                bundle.transfers
-                    .sumOf {
-                        it.amount
-                    }
-
+        item {
             Card(
-                Modifier.fillMaxWidth()
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFFEAF8F0)
+                )
             ) {
-                Column(
-                    Modifier.padding(
-                        12.dp
-                    ),
-                    verticalArrangement =
-                        Arrangement.spacedBy(
-                            6.dp
-                        )
-                ) {
-                    Row(
-                        verticalAlignment =
-                            Alignment.CenterVertically
-                    ) {
-                        Column(
-                            Modifier.weight(
-                                1f
-                            )
-                        ) {
+                Column(Modifier.padding(14.dp)) {
+                    Text(
+                        "期间合计结算利润",
+                        color = Color.Gray,
+                        style =
+                            MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        money(totalSettled),
+                        color = BrandGreen,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 28.sp
+                    )
+                    Text(
+                        "期间应得 ${money(totalEarned)} · " +
+                            if (totalPending >= 0) {
+                                "待结算 ${money(totalPending)}"
+                            } else {
+                                "净亏损 ${money(-totalPending)}"
+                            },
+                        style =
+                            MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+
+        item {
+            HorizontalDivider()
+            Text(
+                "每天每人利润明细",
+                style =
+                    MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        dailyGroups.forEach { entry ->
+            val day = entry.first
+            val rows = entry.second
+
+            item(
+                key = "settlement_day_detail_$day"
+            ) {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row {
                             Text(
-                                bundle.settlement
-                                    .date,
-                                fontWeight =
-                                    FontWeight.Bold
+                                day,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
                             )
                             Text(
-                                "方案 ${money(dayPlanned)} · 已转 ${money(daySettled)}",
+                                "当日应得 " +
+                                    money(
+                                        rows.sumOf {
+                                            it.earnedProfit
+                                        }
+                                    ),
                                 style =
-                                    MaterialTheme
-                                        .typography
-                                        .bodySmall,
+                                    MaterialTheme.typography.bodySmall,
                                 color = Color.Gray
                             )
                         }
 
-                        Text(
-                            when {
-                                bundle.transfers
-                                    .isEmpty() ->
-                                    "无需转账"
-
-                                dayPending <=
-                                    0.005 ->
-                                    "已完成"
-
-                                daySettled >
-                                    0.005 ->
-                                    "部分完成"
-
-                                else ->
-                                    "未执行"
-                            },
-                            fontWeight =
-                                FontWeight.Bold,
-                            color =
-                                when {
-                                    bundle.transfers
-                                        .isEmpty() ||
-                                        dayPending <=
-                                        0.005 ->
-                                        BrandGreen
-
-                                    daySettled >
-                                        0.005 ->
-                                        Color(
-                                            0xFFB7791F
-                                        )
-
-                                    else ->
-                                        Color.Gray
-                                }
-                        )
-                    }
-
-                    if (
-                        bundle.transfers
-                            .isEmpty()
-                    ) {
-                        Text(
-                            "当天没有需要执行的合伙人转账。",
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodySmall,
-                            color = Color.Gray
-                        )
-                    } else {
-                        bundle.transfers
-                            .forEach {
-                                transfer ->
-                                HorizontalDivider()
-                                Row(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .padding(
-                                            vertical =
-                                                2.dp
-                                        ),
-                                    verticalAlignment =
-                                        Alignment.CenterVertically
+                        rows.forEach { row ->
+                            Row(
+                                Modifier.padding(
+                                    top = 6.dp
+                                ),
+                                verticalAlignment =
+                                    Alignment.CenterVertically
+                            ) {
+                                Column(
+                                    Modifier.weight(1f)
                                 ) {
-                                    Column(
-                                        Modifier.weight(
-                                            1f
-                                        )
-                                    ) {
-                                        Text(
-                                            "${transfer.fromPartnerName} → ${transfer.toPartnerName}",
-                                            fontWeight =
-                                                FontWeight.SemiBold
-                                        )
-                                        Text(
-                                            when {
-                                                transfer.settledAmount <=
-                                                    0.005 ->
-                                                    "未确认实际转账"
-
-                                                transfer.pendingAmount <=
-                                                    0.005 ->
-                                                    "已确认全部转账"
-
-                                                else ->
-                                                    "已确认 ${money(transfer.settledAmount)} · 剩余 ${money(transfer.pendingAmount)}"
-                                            },
-                                            style =
-                                                MaterialTheme
-                                                    .typography
-                                                    .labelSmall,
-                                            color = Color.Gray
-                                        )
-                                    }
-
                                     Text(
-                                        money(
-                                            transfer.amount
-                                        ),
+                                        row.partnerName,
                                         fontWeight =
-                                            FontWeight.Bold,
-                                        color =
-                                            if (
-                                                transfer.pendingAmount <=
-                                                0.005
-                                            ) {
-                                                BrandGreen
-                                            } else {
-                                                Color.DarkGray
-                                            }
+                                            FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        "应得 ${money(row.earnedProfit)} · " +
+                                            "已结算 ${money(row.settledProfit)}",
+                                        style =
+                                            MaterialTheme.typography.bodySmall,
+                                        color = Color.Gray
                                     )
                                 }
-                            }
-                    }
 
-                    if (
-                        dayPending >
-                        0.005
-                    ) {
-                        Text(
-                            "剩余待转 ${money(dayPending)}",
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodySmall,
-                            color =
-                                MaterialTheme
-                                    .colorScheme
-                                    .error
-                        )
+                                Text(
+                                    when {
+                                        row.pendingProfit > 0.005 ->
+                                            "待 ${money(row.pendingProfit)}"
+
+                                        row.pendingProfit < -0.005 ->
+                                            "亏损 ${money(-row.pendingProfit)}"
+
+                                        else ->
+                                            "已结算"
+                                    },
+                                    color =
+                                        if (
+                                            kotlin.math.abs(
+                                                row.pendingProfit
+                                            ) <= 0.005
+                                        ) {
+                                            BrandGreen
+                                        } else {
+                                            MaterialTheme.colorScheme.error
+                                        },
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
                 }
             }
+        }
+
+        if (batches.isNotEmpty()) {
+            item {
+                HorizontalDivider()
+                Text(
+                    "结算批次",
+                    style =
+                        MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "误确认时可撤销整个批次，利润会重新变成待结算。",
+                    style =
+                        MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+            }
+
+            items(
+                batches,
+                key = { "profit_batch_${it.id}" }
+            ) { batch ->
+                Card(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier.padding(12.dp),
+                        verticalAlignment =
+                            Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "结算于 ${batch.settlementDate}",
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                "利润期间 " +
+                                    "${batch.periodStart} ～ " +
+                                    batch.periodEnd,
+                                style =
+                                    MaterialTheme.typography.bodySmall,
+                                color = Color.Gray
+                            )
+                            Text(
+                                money(batch.totalAmount),
+                                color = BrandGreen,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        TextButton(
+                            onClick = {
+                                undoBatch = batch
+                            }
+                        ) {
+                            Text("撤销")
+                        }
+                    }
+                }
+            }
+        }
+
+        if (message.isNotBlank()) {
+            item {
+                Text(
+                    message,
+                    color = BrandGreen,
+                    style =
+                        MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+
+    undoBatch?.let { batch ->
+        ConfirmActionDialog(
+            title = "撤销利润结算",
+            text =
+                "撤销 ${batch.settlementDate} 的结算批次？" +
+                    "该批次 ${money(batch.totalAmount)} " +
+                    "会重新计入待结算利润。",
+            confirmText = "确认撤销",
+            onDismiss = {
+                undoBatch = null
+            }
+        ) {
+            if (
+                db.deleteProfitSettlementBatch(
+                    batch.id
+                )
+            ) {
+                message = "利润结算批次已撤销"
+                onChanged()
+            }
+            undoBatch = null
         }
     }
 }
@@ -8042,7 +8155,6 @@ private fun MoreScreen(
                         systemRole,
                         BookPermissions.PROFIT_EDIT
                     ),
-                    systemRole == "SUPERADMIN",
                     onChanged
                 )
             }
@@ -15583,200 +15695,33 @@ private fun BackupContent(
 }
 
 @Composable
-private fun PartnerContent(
-    db: AppDatabase,
-    dataVersion: Int,
-    onChanged: () -> Unit
-) {
-    val partners =
-        remember(dataVersion) {
-            db.getPartners()
-        }
-    val settlementCenter =
-        remember(dataVersion) {
-            db.getSettlementCenterPartner()
-        }
-    var orderedPartners by
-        remember(dataVersion) {
-            mutableStateOf(partners)
-        }
+private fun PartnerContent(db: AppDatabase, dataVersion: Int, onChanged: () -> Unit) {
+    val partners = remember(dataVersion) { db.getPartners() }
     var addDialog by remember { mutableStateOf(false) }
     var edit by remember { mutableStateOf<PartnerOption?>(null) }
     var delete by remember { mutableStateOf<PartnerOption?>(null) }
-
-    fun movePartner(
-        partnerId: Long,
-        direction: Int
-    ) {
-        val from =
-            orderedPartners.indexOfFirst {
-                it.id == partnerId
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item { Text("当前 ${partners.size} 位合伙人，人数不设上限。删除只代表今后不再参与新记录；历史采购、营业、利润和结算仍保留原 ID 与当时姓名，并可继续编辑。", color = Color.Gray) }
+        items(partners, key = { it.id }) { p ->
+            RecordCard {
+                Text(p.name, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                TextButton(onClick = { edit = p }) { Text("改名") }
+                TextButton(onClick = { delete = p }) { Text("删除") }
             }
-        if (from < 0) return
-        val to = from + direction
-        if (to !in orderedPartners.indices) return
-
-        val reordered =
-            orderedPartners.toMutableList().apply {
-                val item = removeAt(from)
-                add(to, item)
-            }
-
-        if (
-            db.reorderPartners(
-                reordered.map { it.id }
-            )
-        ) {
-            orderedPartners = reordered
-            onChanged()
         }
+        item { Button(onClick = { addDialog = true }, modifier = Modifier.fillMaxWidth()) { Text("＋ 添加合伙人") } }
     }
-
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(
-            horizontal = 12.dp,
-            vertical = 8.dp
-        ),
-        verticalArrangement = Arrangement.spacedBy(5.dp)
-    ) {
-        items(
-            orderedPartners,
-            key = { it.id }
-        ) { p ->
-            val index =
-                orderedPartners.indexOfFirst {
-                    it.id == p.id
-                }
-
-            Card(Modifier.fillMaxWidth()) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(
-                            horizontal = 8.dp,
-                            vertical = 5.dp
-                        ),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    TextButton(
-                        onClick = { movePartner(p.id, -1) },
-                        enabled = index > 0,
-                        modifier = Modifier.width(30.dp),
-                        contentPadding = PaddingValues(0.dp)
-                    ) {
-                        Text(
-                            "↑",
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    TextButton(
-                        onClick = { movePartner(p.id, 1) },
-                        enabled =
-                            index >= 0 &&
-                                index < orderedPartners.lastIndex,
-                        modifier = Modifier.width(30.dp),
-                        contentPadding = PaddingValues(0.dp)
-                    ) {
-                        Text(
-                            "↓",
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    Column(
-                        Modifier
-                            .weight(1f)
-                            .padding(horizontal = 6.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                p.name,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            if (p.id == settlementCenter?.id) {
-                                Spacer(Modifier.width(6.dp))
-                                Text(
-                                    "资金中心",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = BrandGreen
-                                )
-                            }
-                        }
-                    }
-
-                    TextButton(
-                        onClick = { edit = p },
-                        contentPadding = PaddingValues(
-                            horizontal = 6.dp,
-                            vertical = 0.dp
-                        )
-                    ) {
-                        Text("编辑")
-                    }
-
-                    TextButton(
-                        onClick = { delete = p },
-                        contentPadding = PaddingValues(
-                            horizontal = 6.dp,
-                            vertical = 0.dp
-                        )
-                    ) {
-                        Text("删除")
-                    }
-                }
-            }
-        }
-
-        item {
-            Button(
-                onClick = { addDialog = true },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("＋ 添加合伙人")
-            }
-        }
+    if (addDialog) PartnerNameDialog("添加合伙人", "", { addDialog = false }) { name ->
+        db.addPartner(name); addDialog = false; onChanged()
     }
-
-    if (addDialog) {
-        PartnerNameDialog(
-            "添加合伙人",
-            "",
-            { addDialog = false }
-        ) { name ->
-            db.addPartner(name)
-            addDialog = false
-            onChanged()
-        }
-    }
-
     edit?.let { p ->
-        PartnerNameDialog(
-            "修改合伙人名称",
-            p.name,
-            { edit = null }
-        ) { name ->
-            db.updatePartnerName(p.id, name)
-            edit = null
-            onChanged()
+        PartnerNameDialog("修改合伙人名称", p.name, { edit = null }) { name ->
+            db.updatePartnerName(p.id, name); edit = null; onChanged()
         }
     }
-
-    delete?.let { p ->
-        ConfirmDelete(
-            "删除合伙人“${p.name}”？历史记录不会删除。",
-            { delete = null }
-        ) {
-            db.deletePartner(p.id)
-            delete = null
-            onChanged()
-        }
-    }
+    delete?.let { p -> ConfirmDelete("删除合伙人“${p.name}”？删除后不再出现在新记录选择列表中；已有采购、营业、利润分配和结算历史继续保留，并可编辑原历史记录。", { delete = null }) {
+        db.deletePartner(p.id); delete = null; onChanged()
+    } }
 }
 
 @Composable
@@ -16486,186 +16431,39 @@ private fun ProfitContent(
     db: AppDatabase,
     dataVersion: Int,
     canEdit: Boolean,
-    canSetSettlementCenter: Boolean,
     onChanged: () -> Unit
 ) {
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
     val partners = remember(dataVersion) { db.getPartners() }
     val savedRules = remember(dataVersion) { db.getProfitRules() }
     val summary = remember(dataVersion, date) { db.getDailySummary(date) }
-    val percentages =
-        remember {
-            mutableStateMapOf<Long, String>()
-        }
-    val settlementCycles =
-        remember {
-            mutableStateMapOf<Long, String>()
-        }
-    val settlementWeekdays =
-        remember {
-            mutableStateMapOf<Long, Int>()
-        }
-    var settlementCenterPartnerId by
-        remember { mutableStateOf<Long?>(null) }
-    var settlementCenterMenu by
-        remember { mutableStateOf(false) }
-    var cycleMenuPartnerId by
-        remember {
-            mutableStateOf<Long?>(null)
-        }
-    var weekdayMenuPartnerId by
-        remember {
-            mutableStateOf<Long?>(null)
-        }
+    val percentages = remember { mutableStateMapOf<Long, String>() }
     var message by remember { mutableStateOf("") }
     var deleteDate by remember { mutableStateOf<String?>(null) }
     val saved = remember(dataVersion, date) { db.getProfitDistribution(date) }
     val history = remember(dataVersion) { db.getRecentProfitDistributions(200).groupBy { it.date }.toSortedMap(reverseOrder()) }
 
-    LaunchedEffect(
-        dataVersion,
-        partners.map { it.id }
-    ) {
-        val savedRuleMap =
-            savedRules.associateBy {
-                it.partnerId
-            }
-        val partnerIds =
-            partners.map {
-                it.id
-            }.toSet()
-
-        val savedCenterId =
-            savedRules.firstOrNull {
-                it.isSettlementCenter
-            }?.partnerId
-        settlementCenterPartnerId =
-            when {
-                savedCenterId != null && savedCenterId in partnerIds ->
-                    savedCenterId
-                settlementCenterPartnerId != null &&
-                    settlementCenterPartnerId in partnerIds ->
-                    settlementCenterPartnerId
-                else -> partners.firstOrNull()?.id
-            }
-
-        percentages.keys.retainAll(
-            partnerIds
-        )
-        settlementCycles.keys.retainAll(
-            partnerIds
-        )
-        settlementWeekdays.keys.retainAll(
-            partnerIds
-        )
-
-        if (savedRuleMap.isNotEmpty()) {
-            partners.forEach {
-                p ->
-                val rule =
-                    savedRuleMap[p.id]
-                percentages[p.id] =
-                    cleanPercent(
-                        rule?.percent
-                            ?: 0.0
-                    )
-                settlementCycles[p.id] =
-                    rule?.settlementCycle
-                        ?: "DAILY"
-                settlementWeekdays[p.id] =
-                    rule?.settlementWeekday
-                        ?: 7
-            }
+    LaunchedEffect(dataVersion, partners.map { it.id }) {
+        val ruleMap = savedRules.associate { it.partnerId to it.percent }
+        percentages.keys.retainAll(partners.map { it.id }.toSet())
+        if (ruleMap.isNotEmpty()) {
+            partners.forEach { p -> percentages[p.id] = cleanPercent(ruleMap[p.id] ?: 0.0) }
         } else if (partners.size == 4) {
-            val defaults =
-                listOf(
-                    33.0,
-                    13.4,
-                    26.8,
-                    26.8
-                )
-            partners.forEachIndexed {
-                index,
-                p ->
-                percentages[p.id] =
-                    cleanPercent(
-                        defaults[index]
-                    )
-                settlementCycles[p.id] =
-                    "DAILY"
-                settlementWeekdays[p.id] =
-                    7
-            }
+            val defaults = listOf(33.0, 13.4, 26.8, 26.8)
+            partners.forEachIndexed { index, p -> percentages[p.id] = cleanPercent(defaults[index]) }
         } else if (partners.isNotEmpty()) {
-            val equal =
-                100.0 /
-                    partners.size
+            val equal = 100.0 / partners.size
             var used = 0.0
-            partners.forEachIndexed {
-                index,
-                p ->
-                val value =
-                    if (
-                        index ==
-                        partners.lastIndex
-                    ) {
-                        100.0 -
-                            used
-                    } else {
-                        roundPercent(
-                            equal
-                        )
-                    }
-                percentages[p.id] =
-                    cleanPercent(
-                        value
-                    )
-                settlementCycles[p.id] =
-                    "DAILY"
-                settlementWeekdays[p.id] =
-                    7
+            partners.forEachIndexed { index, p ->
+                val value = if (index == partners.lastIndex) 100.0 - used else roundPercent(equal)
+                percentages[p.id] = cleanPercent(value)
                 used += value
             }
         }
     }
 
-    val totalPercent =
-        partners.sumOf {
-            percentages[it.id]
-                ?.toDoubleOrNull()
-                ?: 0.0
-        }
-    val allocations =
-        partners.map {
-            p ->
-            p to
-                (
-                    percentages[p.id]
-                        ?.toDoubleOrNull()
-                        ?: 0.0
-                    )
-        }
-    val ruleSettings =
-        partners.map {
-            p ->
-            ProfitRuleRecord(
-                partnerId = p.id,
-                partnerName = p.name,
-                percent =
-                    percentages[p.id]
-                        ?.toDoubleOrNull()
-                        ?: 0.0,
-                settlementCycle =
-                    settlementCycles[p.id]
-                        ?: "DAILY",
-                settlementWeekday =
-                    settlementWeekdays[p.id]
-                        ?: 7,
-                settlementMonthDay = 0,
-                isSettlementCenter =
-                    p.id == settlementCenterPartnerId
-            )
-        }
+    val totalPercent = partners.sumOf { percentages[it.id]?.toDoubleOrNull() ?: 0.0 }
+    val allocations = partners.map { p -> p to (percentages[p.id]?.toDoubleOrNull() ?: 0.0) }
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item { DateField("分配日期", date) { date = it } }
@@ -16679,275 +16477,35 @@ private fun ProfitContent(
         }
         item {
             Text("分配百分比", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text("当前合计：${String.format(Locale.CHINA, "%.2f", totalPercent)}%", color = if (kotlin.math.abs(totalPercent - 100.0) < 0.01) BrandGreen else MaterialTheme.colorScheme.error)
+            Text("当前合计：${String.format(Locale.CHINA, "%.2f", totalPercent)}%（必须等于100%）", color = if (kotlin.math.abs(totalPercent - 100.0) < 0.01) BrandGreen else MaterialTheme.colorScheme.error)
         }
-        item {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(
-                    "资金中心",
-                    modifier = Modifier.width(72.dp),
-                    fontWeight = FontWeight.SemiBold
-                )
-                Box(Modifier.weight(1f)) {
-                    OutlinedButton(
-                        onClick = {
-                            if (canSetSettlementCenter) settlementCenterMenu = true
-                        },
-                        enabled = canSetSettlementCenter,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            partners.firstOrNull {
-                                it.id == settlementCenterPartnerId
-                            }?.name ?: "未设置",
-                            modifier = Modifier.weight(1f)
-                        )
-                        if (canSetSettlementCenter) Text("▼")
-                    }
-                    DropdownMenu(
-                        expanded = settlementCenterMenu,
-                        onDismissRequest = { settlementCenterMenu = false }
-                    ) {
-                        partners.forEach { partner ->
-                            DropdownMenuItem(
-                                text = { Text(partner.name) },
-                                onClick = {
-                                    settlementCenterPartnerId = partner.id
-                                    settlementCenterMenu = false
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        items(
-            partners,
-            key = {
-                "rule${it.id}"
-            }
-        ) {
-            p ->
-            Card(
-                modifier =
-                    Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    Modifier.padding(
-                        horizontal = 12.dp,
-                        vertical = 10.dp
-                    ),
-                    verticalArrangement =
-                        Arrangement.spacedBy(
-                            8.dp
-                        )
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment =
-                            Alignment.CenterVertically,
-                        horizontalArrangement =
-                            Arrangement.spacedBy(
-                                8.dp
-                            )
-                    ) {
-                        Text(
-                            p.name,
-                            Modifier.weight(1f),
-                            fontWeight =
-                                FontWeight.SemiBold
-                        )
-                        OutlinedTextField(
-                            value =
-                                percentages[p.id]
-                                    ?: "",
-                            onValueChange = {
-                                v ->
-                                if (
-                                    canEdit &&
-                                    v.matches(
-                                        Regex(
-                                            "^\\d*(\\.\\d{0,2})?$"
-                                        )
-                                    )
-                                ) {
-                                    percentages[p.id] =
-                                        v
-                                }
-                            },
-                            enabled = canEdit,
-                            modifier =
-                                Modifier
-                                    .width(110.dp)
-                                    .height(50.dp),
-                            suffix = {
-                                Text("%")
-                            },
-                            singleLine = true,
-                            keyboardOptions =
-                                KeyboardOptions(
-                                    keyboardType =
-                                        KeyboardType.Decimal
-                                ),
-                            textStyle =
-                                MaterialTheme
-                                    .typography
-                                    .bodyMedium
-                        )
-                    }
-
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment =
-                            Alignment.CenterVertically,
-                        horizontalArrangement =
-                            Arrangement.spacedBy(
-                                8.dp
-                            )
-                    ) {
-                        Text(
-                            "结算周期",
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodyMedium,
-                            modifier =
-                                Modifier.width(72.dp)
-                        )
-
-                        Box(
-                            Modifier.weight(1f)
-                        ) {
-                            OutlinedButton(
-                                onClick = {
-                                    if (canEdit) {
-                                        cycleMenuPartnerId =
-                                            p.id
-                                    }
-                                },
-                                enabled = canEdit,
-                                modifier =
-                                    Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    settlementCycleLabel(
-                                        settlementCycles[p.id]
-                                            ?: "DAILY"
-                                    ),
-                                    modifier =
-                                        Modifier.weight(1f)
-                                )
-                                Text("▼")
-                            }
-
-                            DropdownMenu(
-                                expanded =
-                                    cycleMenuPartnerId ==
-                                        p.id,
-                                onDismissRequest = {
-                                    cycleMenuPartnerId =
-                                        null
-                                }
-                            ) {
-                                listOf(
-                                    "DAILY" to
-                                        "日结",
-                                    "WEEKLY" to
-                                        "周结",
-                                    "MONTHLY" to
-                                        "月结"
-                                ).forEach {
-                                    (value, label) ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(label)
-                                        },
-                                        onClick = {
-                                            settlementCycles[p.id] =
-                                                value
-                                            cycleMenuPartnerId =
-                                                null
-                                        }
-                                    )
-                                }
-                            }
-                        }
-
+        items(partners, key = { "rule${it.id}" }) { p ->
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(p.name, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                OutlinedTextField(
+                    value = percentages[p.id] ?: "",
+                    onValueChange = {
+                        v ->
                         if (
-                            settlementCycles[p.id] ==
-                            "WEEKLY"
+                            canEdit &&
+                            v.matches(
+                                Regex(
+                                    "^\\d*(\\.\\d{0,2})?$"
+                                )
+                            )
                         ) {
-                            Box(
-                                Modifier.weight(1f)
-                            ) {
-                                OutlinedButton(
-                                    onClick = {
-                                        if (canEdit) {
-                                            weekdayMenuPartnerId =
-                                                p.id
-                                        }
-                                    },
-                                    enabled = canEdit,
-                                    modifier =
-                                        Modifier.fillMaxWidth()
-                                ) {
-                                    Text(
-                                        settlementWeekdayLabel(
-                                            settlementWeekdays[
-                                                p.id
-                                            ] ?: 7
-                                        ),
-                                        modifier =
-                                            Modifier.weight(
-                                                1f
-                                            )
-                                    )
-                                    Text("▼")
-                                }
-
-                                DropdownMenu(
-                                    expanded =
-                                        weekdayMenuPartnerId ==
-                                            p.id,
-                                    onDismissRequest = {
-                                        weekdayMenuPartnerId =
-                                            null
-                                    }
-                                ) {
-                                    (1..7).forEach {
-                                        weekday ->
-                                        DropdownMenuItem(
-                                            text = {
-                                                Text(
-                                                    settlementWeekdayLabel(
-                                                        weekday
-                                                    )
-                                                )
-                                            },
-                                            onClick = {
-                                                settlementWeekdays[
-                                                    p.id
-                                                ] =
-                                                    weekday
-                                                weekdayMenuPartnerId =
-                                                    null
-                                            }
-                                        )
-                                    }
-                                }
-                            }
+                            percentages[p.id] = v
                         }
-                    }
-
-
-                }
+                    },
+                    enabled = canEdit,
+                    modifier = Modifier.width(110.dp).height(50.dp),
+                    suffix = { Text("%") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    textStyle = MaterialTheme.typography.bodyMedium
+                )
             }
         }
-
         if (canEdit) {
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -16955,21 +16513,11 @@ private fun ProfitContent(
                         if (partners.isEmpty()) message = "请先添加合伙人"
                         else if (kotlin.math.abs(totalPercent - 100.0) >= 0.01) message = "百分比合计必须等于100%"
                         else {
-                            val ok =
-                                db.saveProfitRuleSettings(
-                                    ruleSettings
-                                )
-                            message =
-                                if (ok) {
-                                    "利润规则已保存"
-                                } else {
-                                    "利润规则保存失败"
-                                }
-                            if (ok) {
-                                onChanged()
-                            }
+                            db.saveProfitRules(allocations)
+                            message = "利润分配百分比规则已保存"
+                            onChanged()
                         }
-                    }, modifier = Modifier.weight(1f)) { Text("保存利润规则") }
+                    }, modifier = Modifier.weight(1f)) { Text("保存百分比规则") }
                     Button(onClick = {
                         if (kotlin.math.abs(summary.profit) <= 0.005) message = "当天利润为0，无需生成分配"
                         else if (partners.isEmpty()) message = "请先添加合伙人"
@@ -17014,23 +16562,7 @@ private fun ProfitContent(
                     Column(Modifier.weight(1f)) {
                         Text("当前日期已保存", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text("利润基数：${money(saved.first().sourceProfit)}", style = MaterialTheme.typography.bodySmall)
-                        saved.forEach { r ->
-                            Text(
-                                "${r.partnerName} · ${cleanPercent(r.ratio * 100)}%：${money(r.allocatedProfit)} · " +
-                                    when (r.settlementCycle) {
-                                        "WEEKLY" ->
-                                            "周结(${settlementWeekdayLabel(r.settlementWeekday)})"
-                                        "MONTHLY" ->
-                                            "月结(月末)"
-                                        else ->
-                                            "日结"
-                                    },
-                                style =
-                                    MaterialTheme
-                                        .typography
-                                        .bodySmall
-                            )
-                        }
+                        saved.forEach { r -> Text("${r.partnerName} · ${cleanPercent(r.ratio * 100)}%：${money(r.allocatedProfit)}", style = MaterialTheme.typography.bodySmall) }
                     }
                     if (canEdit) {
                         TextButton(
@@ -17075,28 +16607,6 @@ private fun ProfitContent(
         }
     }
 }
-
-private fun settlementCycleLabel(
-    value: String
-): String =
-    when (value) {
-        "WEEKLY" -> "周结"
-        "MONTHLY" -> "月结"
-        else -> "日结"
-    }
-
-private fun settlementWeekdayLabel(
-    weekday: Int
-): String =
-    when (weekday.coerceIn(1, 7)) {
-        1 -> "星期一"
-        2 -> "星期二"
-        3 -> "星期三"
-        4 -> "星期四"
-        5 -> "星期五"
-        6 -> "星期六"
-        else -> "星期日"
-    }
 
 private fun roleLabel(role: String): String = when (role) {
     "CUSTOM_PERCENT" -> "自定义比例"
