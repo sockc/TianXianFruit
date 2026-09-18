@@ -7686,12 +7686,11 @@ class AppDatabase(
                         profitMap[id]?.allocatedProfit ?: 0.0
                     )
 
-                // FIX10: 当日资金轧差只看当天。
-                // 不带到期利润、历史未结或累计资金余额；
-                // 按用户当前业务规则：采购垫付 + 当日利润 - 当日营业收款。
+                // FIX11: 当日资金轧差恢复 V1.4.7.1 的清晰口径。
+                // 只看当天，不带历史；最终应留 = 进货 + 费用 + 当日利润。
                 val shouldKeepToday =
                     roundMoney(
-                        purchase + profit
+                        purchase + expense + profit
                     )
                 val balance =
                     roundMoney(
