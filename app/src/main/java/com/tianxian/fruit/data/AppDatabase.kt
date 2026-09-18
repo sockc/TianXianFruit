@@ -9,6 +9,7 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
+import java.util.Locale
 import java.util.UUID
 import kotlin.math.round
 
@@ -247,6 +248,27 @@ data class PartnerFundBalanceSummary(
     val settlementSent: Double,
     val settlementReceived: Double,
     val currentBalance: Double
+)
+
+
+data class FundPeriodSummary(
+    val startDate: String,
+    val endDate: String,
+    val businessDayCount: Int,
+    val purchaseAmount: Double,
+    val revenueAmount: Double,
+    val profitAmount: Double
+)
+
+data class PartnerFundPeriodSummary(
+    val partnerId: Long,
+    val partnerName: String,
+    val purchasePaid: Double,
+    val expensePaid: Double,
+    val revenueReceived: Double,
+    val profitShare: Double,
+    val settlementSent: Double,
+    val settlementReceived: Double
 )
 
 data class PartnerDailyFundBalanceRecord(
@@ -7544,8 +7566,15 @@ class AppDatabase(
         val receiptMap = getReceiptsByPartner(date).associateBy { it.partnerId }
         val expenseMap = getExpenseTotalsByPartner(date).associateBy { it.partnerId }
         val profitMap = profitRows.associateBy { it.partnerId }
+        val settlementCenter =
+            getSettlementCenter()
+                ?: return CashSettlementResult(
+                    false,
+                    "请先到“更多 → 利润分配”设置资金中心"
+                )
 
         val partnerIds = linkedSetOf<Long>().apply {
+            add(settlementCenter.id)
             addAll(purchaseMap.keys.filter { it > 0 })
             addAll(receiptMap.keys.filter { it > 0 })
             addAll(expenseMap.keys.filter { it > 0 })
@@ -7562,7 +7591,11 @@ class AppDatabase(
                 ?: purchaseMap[id]?.partnerName
                 ?: receiptMap[id]?.partnerName
                 ?: expenseMap[id]?.partnerName
-                ?: "合伙人$id"
+                ?: if (id == settlementCenter.id) {
+                    settlementCenter.name
+                } else {
+                    "合伙人$id"
+                }
             val purchase = purchaseMap[id]?.amount ?: 0.0
             val expense = expenseMap[id]?.amount ?: 0.0
             val receipt = receiptMap[id]?.amount ?: 0.0
@@ -7576,24 +7609,42 @@ class AppDatabase(
             return CashSettlementResult(false, "当前账目还有 ${roundMoney(balanceTotal)} 元无法轧平，请核对进货、收款、费用和利润分配")
         }
 
-        data class MutableBalance(val id: Long, val name: String, var amount: Double)
-        val payers = rows.filter { it.balance < -0.005 }
-            .map { MutableBalance(it.id, it.name, roundMoney(-it.balance)) }.toMutableList()
-        val receivers = rows.filter { it.balance > 0.005 }
-            .map { MutableBalance(it.id, it.name, roundMoney(it.balance)) }.toMutableList()
+        data class TransferTmp(
+            val fromId: Long,
+            val fromName: String,
+            val toId: Long,
+            val toName: String,
+            val amount: Double
+        )
 
-        data class TransferTmp(val fromId: Long, val fromName: String, val toId: Long, val toName: String, val amount: Double)
-        val transfers = mutableListOf<TransferTmp>()
-        var i = 0
-        var j = 0
-        while (i < payers.size && j < receivers.size) {
-            val amount = roundMoney(minOf(payers[i].amount, receivers[j].amount))
-            if (amount > 0.0) transfers += TransferTmp(payers[i].id, payers[i].name, receivers[j].id, receivers[j].name, amount)
-            payers[i].amount = roundMoney(payers[i].amount - amount)
-            receivers[j].amount = roundMoney(receivers[j].amount - amount)
-            if (payers[i].amount <= 0.005) i++
-            if (receivers[j].amount <= 0.005) j++
-        }
+        // 统一采用“资金中心 ↔ 合伙人”的星型结算。
+        // 非资金中心之间永远不直接生成 B → C / C → B。
+        val transfers =
+            rows
+                .filter {
+                    it.id != settlementCenter.id &&
+                        kotlin.math.abs(it.balance) > 0.005
+                }
+                .map { row ->
+                    if (row.balance > 0.005) {
+                        TransferTmp(
+                            settlementCenter.id,
+                            settlementCenter.name,
+                            row.id,
+                            row.name,
+                            roundMoney(row.balance)
+                        )
+                    } else {
+                        TransferTmp(
+                            row.id,
+                            row.name,
+                            settlementCenter.id,
+                            settlementCenter.name,
+                            roundMoney(-row.balance)
+                        )
+                    }
+                }
+
 
         val db = writableDatabase
         db.beginTransaction()
@@ -8010,6 +8061,174 @@ class AppDatabase(
         }.sortedBy { it.partnerId }
     }
 
+    fun getFundPeriodSummary(
+        startDate: String?,
+        endDate: String
+    ): FundPeriodSummary {
+        val whereStart =
+            if (startDate != null) "AND date>=?" else ""
+        val args =
+            if (startDate != null) {
+                arrayOf(startDate, endDate)
+            } else {
+                arrayOf(endDate)
+            }
+        val dates =
+            readableDatabase.rawQuery(
+                """
+                SELECT DISTINCT date
+                FROM store_daily_record
+                WHERE deleted=0
+                  $whereStart
+                  AND date<=?
+                ORDER BY date
+                """.trimIndent(),
+                args
+            ).use { c ->
+                buildList {
+                    while (c.moveToNext()) add(c.str("date"))
+                }
+            }
+
+        val summaries = dates.map { getDailySummary(it) }
+        return FundPeriodSummary(
+            startDate =
+                startDate ?: dates.firstOrNull().orEmpty(),
+            endDate = endDate,
+            businessDayCount = dates.size,
+            purchaseAmount =
+                roundMoney(summaries.sumOf { it.purchaseCost }),
+            revenueAmount =
+                roundMoney(summaries.sumOf { it.revenue }),
+            profitAmount =
+                roundMoney(summaries.sumOf { it.profit })
+        )
+    }
+
+    fun getPartnerFundPeriodSummaries(
+        startDate: String?,
+        endDate: String
+    ): List<PartnerFundPeriodSummary> {
+        data class Acc(
+            var name: String = "",
+            var purchase: Double = 0.0,
+            var expense: Double = 0.0,
+            var receipt: Double = 0.0,
+            var profit: Double = 0.0,
+            var sent: Double = 0.0,
+            var received: Double = 0.0
+        )
+
+        val whereStart =
+            if (startDate != null) "AND date>=?" else ""
+        val dateArgs =
+            if (startDate != null) {
+                arrayOf(startDate, endDate)
+            } else {
+                arrayOf(endDate)
+            }
+        val dates =
+            readableDatabase.rawQuery(
+                """
+                SELECT DISTINCT date
+                FROM store_daily_record
+                WHERE deleted=0
+                  $whereStart
+                  AND date<=?
+                ORDER BY date
+                """.trimIndent(),
+                dateArgs
+            ).use { c ->
+                buildList {
+                    while (c.moveToNext()) add(c.str("date"))
+                }
+            }
+
+        val map = linkedMapOf<Long, Acc>()
+        fun acc(id: Long, name: String): Acc {
+            val row = map.getOrPut(id) { Acc(name = name) }
+            if (name.isNotBlank()) row.name = name
+            return row
+        }
+
+        dates.forEach { date ->
+            getPurchaseTotalsByPartner(date)
+                .filter { it.partnerId > 0 }
+                .forEach {
+                    acc(it.partnerId, it.partnerName).purchase += it.amount
+                }
+            getExpenseTotalsByPartner(date)
+                .filter { it.partnerId > 0 }
+                .forEach {
+                    acc(it.partnerId, it.partnerName).expense += it.amount
+                }
+            getReceiptsByPartner(date)
+                .filter { it.partnerId > 0 }
+                .forEach {
+                    acc(it.partnerId, it.partnerName).receipt += it.amount
+                }
+            getProfitDistribution(date)
+                .filter { it.partnerId > 0 }
+                .forEach {
+                    acc(it.partnerId, it.partnerName).profit += it.allocatedProfit
+                }
+        }
+
+        val transferWhereStart =
+            if (startDate != null) "AND date>=?" else ""
+        val transferArgs =
+            if (startDate != null) {
+                arrayOf(startDate, endDate)
+            } else {
+                arrayOf(endDate)
+            }
+        readableDatabase.rawQuery(
+            """
+            SELECT
+                from_partner_id,
+                from_partner_name,
+                to_partner_id,
+                to_partner_name,
+                COALESCE(settled_amount,0) AS settled_amount
+            FROM settlement_transfer
+            WHERE deleted=0
+              AND settled_amount>0.005
+              $transferWhereStart
+              AND date<=?
+            """.trimIndent(),
+            transferArgs
+        ).use { c ->
+            while (c.moveToNext()) {
+                val amount = c.dbl("settled_amount")
+                acc(
+                    c.long("from_partner_id"),
+                    c.str("from_partner_name")
+                ).sent += amount
+                acc(
+                    c.long("to_partner_id"),
+                    c.str("to_partner_name")
+                ).received += amount
+            }
+        }
+
+        getPartners().forEach {
+            acc(it.id, it.name)
+        }
+
+        return map.map { (id, a) ->
+            PartnerFundPeriodSummary(
+                partnerId = id,
+                partnerName = a.name.ifBlank { "合伙人$id" },
+                purchasePaid = roundMoney(a.purchase),
+                expensePaid = roundMoney(a.expense),
+                revenueReceived = roundMoney(a.receipt),
+                profitShare = roundMoney(a.profit),
+                settlementSent = roundMoney(a.sent),
+                settlementReceived = roundMoney(a.received)
+            )
+        }.sortedBy { it.partnerId }
+    }
+
     private fun readSettlementTransfer(c: Cursor): SettlementTransferRecord =
         SettlementTransferRecord(
             c.long("id"),
@@ -8193,102 +8412,59 @@ class AppDatabase(
         partnerId: Long,
         endDate: String = LocalDate.now().toString()
     ): FundBalanceSettlementResult {
-        val balances =
+        val center =
+            getSettlementCenter()
+                ?: return FundBalanceSettlementResult(
+                    false,
+                    "请先到利润分配设置资金中心"
+                )
+        if (partnerId == center.id) {
+            return FundBalanceSettlementResult(
+                false,
+                "${center.name} 是资金中心，不需要单独执行“结清截至今日”"
+            )
+        }
+
+        val target =
             getPartnerFundBalances(endDate)
-                .filter { kotlin.math.abs(it.currentBalance) > 0.005 }
-        val target = balances.firstOrNull { it.partnerId == partnerId }
-            ?: return FundBalanceSettlementResult(
+                .firstOrNull {
+                    it.partnerId == partnerId &&
+                        kotlin.math.abs(it.currentBalance) > 0.005
+                }
+                ?: return FundBalanceSettlementResult(
+                    true,
+                    "截至 $endDate 已经结清，无需再次处理"
+                )
+
+        val window =
+            getPartnerOutstandingWindow(partnerId, endDate)
+                ?: return FundBalanceSettlementResult(
+                    false,
+                    "没有找到该合伙人的资金记录"
+                )
+
+        val amount = roundMoney(kotlin.math.abs(target.currentBalance))
+        if (amount <= 0.005) {
+            return FundBalanceSettlementResult(
                 true,
                 "截至 $endDate 已经结清，无需再次处理"
             )
+        }
 
-        val window = getPartnerOutstandingWindow(partnerId, endDate)
-            ?: return FundBalanceSettlementResult(false, "没有找到该合伙人的资金记录")
-
-        data class MutableFund(
-            val id: Long,
-            val name: String,
-            var amount: Double
-        )
-        data class Transfer(
-            val fromId: Long,
-            val fromName: String,
-            val toId: Long,
-            val toName: String,
-            val amount: Double
-        )
-
-        val transfers = mutableListOf<Transfer>()
-        var remaining = roundMoney(kotlin.math.abs(target.currentBalance))
-
+        val fromId: Long
+        val fromName: String
+        val toId: Long
+        val toName: String
         if (target.currentBalance > 0.005) {
-            val payers =
-                balances
-                    .filter {
-                        it.partnerId != partnerId &&
-                            it.currentBalance < -0.005
-                    }
-                    .sortedBy { it.currentBalance }
-                    .map {
-                        MutableFund(
-                            it.partnerId,
-                            it.partnerName,
-                            roundMoney(-it.currentBalance)
-                        )
-                    }
-            payers.forEach { payer ->
-                if (remaining <= 0.005) return@forEach
-                val amount = roundMoney(minOf(remaining, payer.amount))
-                if (amount > 0.005) {
-                    transfers += Transfer(
-                        payer.id,
-                        payer.name,
-                        target.partnerId,
-                        target.partnerName,
-                        amount
-                    )
-                    remaining = roundMoney(remaining - amount)
-                }
-            }
+            fromId = center.id
+            fromName = center.name
+            toId = target.partnerId
+            toName = target.partnerName
         } else {
-            val receivers =
-                balances
-                    .filter {
-                        it.partnerId != partnerId &&
-                            it.currentBalance > 0.005
-                    }
-                    .sortedByDescending { it.currentBalance }
-                    .map {
-                        MutableFund(
-                            it.partnerId,
-                            it.partnerName,
-                            roundMoney(it.currentBalance)
-                        )
-                    }
-            receivers.forEach { receiver ->
-                if (remaining <= 0.005) return@forEach
-                val amount = roundMoney(minOf(remaining, receiver.amount))
-                if (amount > 0.005) {
-                    transfers += Transfer(
-                        target.partnerId,
-                        target.partnerName,
-                        receiver.id,
-                        receiver.name,
-                        amount
-                    )
-                    remaining = roundMoney(remaining - amount)
-                }
-            }
-        }
-
-        if (remaining > 0.01) {
-            return FundBalanceSettlementResult(
-                false,
-                "其他合伙人的相反余额不足，仍有 ${roundMoney(remaining)} 元无法结清；请先核对账目"
-            )
-        }
-        if (transfers.isEmpty()) {
-            return FundBalanceSettlementResult(false, "当前没有可执行的结算转账")
+            fromId = target.partnerId
+            fromName = target.partnerName
+            toId = center.id
+            toName = center.name
         }
 
         val db = writableDatabase
@@ -8296,42 +8472,46 @@ class AppDatabase(
         val batchKey = UUID.randomUUID().toString()
         db.beginTransaction()
         return try {
-            transfers.forEach { t ->
-                val inserted =
-                    db.insert(
-                        "settlement_transfer",
-                        null,
-                        baseSyncValues().apply {
-                            put("settlement_id", 0)
-                            put("date", endDate)
-                            put("from_partner_id", t.fromId)
-                            put("from_partner_name", t.fromName)
-                            put("to_partner_id", t.toId)
-                            put("to_partner_name", t.toName)
-                            put("amount", t.amount)
-                            put("settled_amount", t.amount)
-                            put("settlement_kind", "CUTOFF")
-                            put("batch_key", batchKey)
-                            put("range_start_date", window.rangeStartDate.ifBlank { endDate })
-                            put("range_end_date", endDate)
-                            put("business_day_count", window.businessDayCount)
-                            put("confirmed_at", now)
-                            put("focus_partner_id", target.partnerId)
-                            put("focus_partner_name", target.partnerName)
-                            put("deleted", 0)
-                        }
-                    )
-                if (inserted <= 0) {
-                    throw IllegalStateException("写入结清记录失败")
-                }
+            val inserted =
+                db.insert(
+                    "settlement_transfer",
+                    null,
+                    baseSyncValues().apply {
+                        put("settlement_id", 0)
+                        put("date", endDate)
+                        put("from_partner_id", fromId)
+                        put("from_partner_name", fromName)
+                        put("to_partner_id", toId)
+                        put("to_partner_name", toName)
+                        put("amount", amount)
+                        put("settled_amount", amount)
+                        put("settlement_kind", "CUTOFF")
+                        put("batch_key", batchKey)
+                        put(
+                            "range_start_date",
+                            window.rangeStartDate.ifBlank { endDate }
+                        )
+                        put("range_end_date", endDate)
+                        put(
+                            "business_day_count",
+                            window.businessDayCount
+                        )
+                        put("confirmed_at", now)
+                        put("focus_partner_id", target.partnerId)
+                        put("focus_partner_name", target.partnerName)
+                        put("deleted", 0)
+                    }
+                )
+            if (inserted <= 0) {
+                throw IllegalStateException("写入结清记录失败")
             }
+
             db.setTransactionSuccessful()
-            val total = roundMoney(transfers.sumOf { it.amount })
             FundBalanceSettlementResult(
                 true,
-                "${target.partnerName} 已结清截至 $endDate 的累计未结 ${roundMoney(total)} 元，共 ${transfers.size} 笔转账",
-                total,
-                transfers.size
+                "${target.partnerName} 已结清截至 $endDate 的累计未结 ${moneyForMessage(amount)} 元：$fromName → $toName",
+                amount,
+                1
             )
         } catch (e: Exception) {
             FundBalanceSettlementResult(
@@ -8342,6 +8522,9 @@ class AppDatabase(
             db.endTransaction()
         }
     }
+
+    private fun moneyForMessage(value: Double): String =
+        String.format(Locale.CHINA, "%.2f", roundMoney(value))
 
     fun getFundSettlementHistory(
         startDate: String? = null,
@@ -8388,7 +8571,12 @@ class AppDatabase(
             }
         }
 
-        val clauses = mutableListOf("deleted=0", "settlement_id=0", "settled_amount>0.005")
+        val clauses =
+            mutableListOf(
+                "deleted=0",
+                "settlement_id=0",
+                "(settled_amount>0.005 OR (settlement_kind='CUTOFF' AND confirmed_at>0))"
+            )
         val args = mutableListOf<String>()
         if (startDate != null) {
             clauses += "date>=?"
@@ -8428,7 +8616,15 @@ class AppDatabase(
                         focusPartnerName = first.focusPartnerName,
                         totalAmount = total,
                         settledAmount = settled,
-                        status = if (settled + 0.005 >= total) 1 else 2,
+                        status =
+                            when {
+                                first.settlementKind == "CUTOFF" &&
+                                    settled <= 0.005 &&
+                                    rows.any { it.confirmedAt > 0L } -> 3
+                                settled + 0.005 >= total -> 1
+                                settled > 0.005 -> 2
+                                else -> 0
+                            },
                         confirmedAt = rows.maxOfOrNull { it.confirmedAt } ?: 0L,
                         transfers = rows
                     )
@@ -8440,6 +8636,39 @@ class AppDatabase(
                     .thenByDescending { it.confirmedAt }
             )
             .take(limit)
+    }
+
+    fun undoCutoffSettlement(batchKey: String): Boolean {
+        if (batchKey.isBlank()) return false
+        val exists =
+            readableDatabase.rawQuery(
+                """
+                SELECT COUNT(*) AS c
+                FROM settlement_transfer
+                WHERE deleted=0
+                  AND settlement_id=0
+                  AND settlement_kind='CUTOFF'
+                  AND batch_key=?
+                  AND confirmed_at>0
+                """.trimIndent(),
+                arrayOf(batchKey)
+            ).use { c ->
+                c.moveToFirst() && c.int("c") > 0
+            }
+        if (!exists) return false
+
+        val now = System.currentTimeMillis()
+        return writableDatabase.update(
+            "settlement_transfer",
+            ContentValues().apply {
+                put("settled_amount", 0)
+                // confirmed_at 保留原确认时间，用于在结算记录中显示“已撤销”
+                put("sync_status", 2)
+                put("updated_at", now)
+            },
+            "deleted=0 AND settlement_id=0 AND settlement_kind='CUTOFF' AND batch_key=?",
+            arrayOf(batchKey)
+        ) > 0
     }
 
     fun getPartnerDailyFundBalances(
@@ -8796,6 +9025,95 @@ class AppDatabase(
         }
     }
 
+    fun getSettlementCenter(): PartnerOption? {
+        val explicit =
+            readableDatabase.rawQuery(
+                """
+                SELECT p.id,p.name
+                FROM profit_rule r
+                JOIN partner p ON p.id=r.partner_id
+                WHERE r.deleted=0
+                  AND p.deleted=0
+                  AND p.enabled=1
+                  AND COALESCE(r.is_settlement_center,0)=1
+                ORDER BY r.id DESC
+                LIMIT 1
+                """.trimIndent(),
+                null
+            ).use { c ->
+                if (c.moveToFirst()) {
+                    PartnerOption(
+                        c.long("id"),
+                        c.str("name")
+                    )
+                } else {
+                    null
+                }
+            }
+        if (explicit != null) return explicit
+
+        val fallbackRule =
+            readableDatabase.rawQuery(
+                """
+                SELECT p.id,p.name
+                FROM profit_rule r
+                JOIN partner p ON p.id=r.partner_id
+                WHERE r.deleted=0
+                  AND p.deleted=0
+                  AND p.enabled=1
+                ORDER BY r.id
+                LIMIT 1
+                """.trimIndent(),
+                null
+            ).use { c ->
+                if (c.moveToFirst()) {
+                    PartnerOption(
+                        c.long("id"),
+                        c.str("name")
+                    )
+                } else {
+                    null
+                }
+            }
+        return fallbackRule ?: getPartners().firstOrNull()
+    }
+
+    fun setSettlementCenter(partnerId: Long): Boolean {
+        val partner =
+            getPartnerById(partnerId)
+                ?: return false
+        val db = writableDatabase
+        db.beginTransaction()
+        return try {
+            val now = System.currentTimeMillis()
+            db.update(
+                "profit_rule",
+                ContentValues().apply {
+                    put("is_settlement_center", 0)
+                    put("sync_status", 2)
+                    put("updated_at", now)
+                },
+                "deleted=0",
+                null
+            )
+            val changed =
+                db.update(
+                    "profit_rule",
+                    ContentValues().apply {
+                        put("is_settlement_center", 1)
+                        put("sync_status", 2)
+                        put("updated_at", now)
+                    },
+                    "partner_id=? AND deleted=0",
+                    arrayOf(partner.id.toString())
+                ) > 0
+            db.setTransactionSuccessful()
+            changed
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     fun getProfitRules(): List<ProfitRuleRecord> = readableDatabase.rawQuery(
         """
         SELECT r.partner_id,p.name,r.percent
@@ -8808,10 +9126,23 @@ class AppDatabase(
         while (c.moveToNext()) add(ProfitRuleRecord(c.long("partner_id"), c.str("name"), c.dbl("percent")))
     } }
 
-    fun saveProfitRules(rules: List<Pair<PartnerOption, Double>>): Boolean {
+    fun saveProfitRules(
+        rules: List<Pair<PartnerOption, Double>>,
+        settlementCenterId: Long? = null
+    ): Boolean {
         if (rules.isEmpty()) return false
         val total = rules.sumOf { it.second }
         if (kotlin.math.abs(total - 100.0) >= 0.01) return false
+
+        val validIds = rules.map { it.first.id }.toSet()
+        val chosenCenterId =
+            settlementCenterId
+                ?.takeIf { it in validIds }
+                ?: getSettlementCenter()
+                    ?.id
+                    ?.takeIf { it in validIds }
+                ?: rules.first().first.id
+
         val db = writableDatabase
         db.beginTransaction()
         try {
@@ -8823,6 +9154,10 @@ class AppDatabase(
                 db.insert("profit_rule", null, baseSyncValues().apply {
                     put("partner_id", partner.id)
                     put("percent", percent)
+                    put(
+                        "is_settlement_center",
+                        if (partner.id == chosenCenterId) 1 else 0
+                    )
                     put("deleted", 0)
                 })
             }

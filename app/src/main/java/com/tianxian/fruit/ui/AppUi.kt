@@ -5496,6 +5496,37 @@ private fun SettlementDayContent(
     val bundle = remember(dataVersion, date) {
         db.getCashSettlement(date)
     }
+    val settlementCenter = remember(dataVersion) {
+        db.getSettlementCenter()
+    }
+
+    LaunchedEffect(
+        dataVersion,
+        date,
+        bundle?.settlement?.id,
+        settlementCenter?.id
+    ) {
+        val currentBundle = bundle
+        val center = settlementCenter
+        if (
+            currentBundle != null &&
+            center != null &&
+            currentBundle.transfers.isNotEmpty() &&
+            currentBundle.transfers.none {
+                it.settledAmount > 0.005
+            } &&
+            currentBundle.transfers.any {
+                it.fromPartnerId != center.id &&
+                    it.toPartnerId != center.id
+            }
+        ) {
+            val regenerated =
+                db.generateCashSettlement(date)
+            if (regenerated.success) {
+                onChanged()
+            }
+        }
+    }
 
     LaunchedEffect(
         dataVersion,
@@ -6006,12 +6037,26 @@ private fun SettlementDayContent(
             }
 
             item {
-                Text(
-                    "最少转账方案",
-                    style =
-                        MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "最少转账方案",
+                        style =
+                            MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    settlementCenter?.let { center ->
+                        Text(
+                            "资金中心 · ${center.name}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = BrandGreen,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
 
                 if (b.transfers.isEmpty()) {
                     Text(
@@ -6377,6 +6422,44 @@ private fun SettlementBatchContent(
                     )
             }
         }
+    val periodSummary =
+        remember(
+            dataVersion,
+            rangeStart,
+            rangeEnd,
+            invalidCustom
+        ) {
+            if (invalidCustom) {
+                null
+            } else {
+                db.getFundPeriodSummary(
+                    rangeStart,
+                    rangeEnd
+                )
+            }
+        }
+    val partnerPeriodStats =
+        remember(
+            dataVersion,
+            rangeStart,
+            rangeEnd,
+            invalidCustom
+        ) {
+            if (invalidCustom) {
+                emptyMap()
+            } else {
+                db.getPartnerFundPeriodSummaries(
+                    rangeStart,
+                    rangeEnd
+                ).associateBy {
+                    it.partnerId
+                }
+            }
+        }
+    val settlementCenter =
+        remember(dataVersion) {
+            db.getSettlementCenter()
+        }
 
     LaunchedEffect(partners) {
         if (
@@ -6564,6 +6647,51 @@ private fun SettlementBatchContent(
         }
 
         if (selectedPartnerId == null) {
+            periodSummary?.let { period ->
+                item {
+                    Text(
+                        "统计期间 ${period.startDate.ifBlank { "最早记录" }} ～ ${period.endDate} · ${period.businessDayCount}个营业日",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.DarkGray
+                    )
+                }
+                item {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        MiniSummaryCard(
+                            "采购金额",
+                            money(period.purchaseAmount),
+                            Modifier.weight(1f),
+                            SoftPurple
+                        )
+                        MiniSummaryCard(
+                            "营业额",
+                            money(period.revenueAmount),
+                            Modifier.weight(1f),
+                            SoftGreen
+                        )
+                        MiniSummaryCard(
+                            "利润",
+                            money(period.profitAmount),
+                            Modifier.weight(1f),
+                            SoftOrange
+                        )
+                    }
+                }
+            }
+
+            settlementCenter?.let { center ->
+                item {
+                    Text(
+                        "资金中心：${center.name}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = BrandGreen,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+
             val pendingPeople =
                 partners.count { partner ->
                     kotlin.math.abs(
@@ -6649,6 +6777,22 @@ private fun SettlementBatchContent(
                             )
                         }
 
+                        val period =
+                            partnerPeriodStats[partner.id]
+                        if (period != null) {
+                            Text(
+                                "个人采购 ${money(period.purchasePaid)} · " +
+                                    "个人收款 ${money(period.revenueReceived)} · " +
+                                    if (period.profitShare < -0.005) {
+                                        "个人亏损 -${money(-period.profitShare)}"
+                                    } else {
+                                        "个人利润 ${money(period.profitShare)}"
+                                    },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.DarkGray
+                            )
+                        }
+
                         if (
                             window != null &&
                             kotlin.math.abs(balance) > 0.005
@@ -6720,6 +6864,45 @@ private fun SettlementBatchContent(
                                 }
                             )
 
+                            if (partner.id == settlementCenter?.id) {
+                                Text(
+                                    "资金中心",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = BrandGreen,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+
+                            partnerPeriodStats[partner.id]?.let { period ->
+                                SummaryRow(
+                                    "期间个人采购",
+                                    money(period.purchasePaid)
+                                )
+                                SummaryRow(
+                                    "期间营业收款",
+                                    money(period.revenueReceived)
+                                )
+                                SummaryRow(
+                                    if (period.profitShare < -0.005) {
+                                        "期间个人亏损"
+                                    } else {
+                                        "期间个人利润"
+                                    },
+                                    if (period.profitShare < -0.005) {
+                                        "-${money(-period.profitShare)}"
+                                    } else {
+                                        money(period.profitShare)
+                                    }
+                                )
+                                val executed =
+                                    period.settlementSent +
+                                        period.settlementReceived
+                                SummaryRow(
+                                    "期间已执行转账",
+                                    money(executed)
+                                )
+                            }
+
                             if (
                                 window != null &&
                                 kotlin.math.abs(balance) > 0.005
@@ -6746,7 +6929,10 @@ private fun SettlementBatchContent(
                                 )
                             }
 
-                            if (kotlin.math.abs(balance) > 0.005) {
+                            if (
+                                kotlin.math.abs(balance) > 0.005 &&
+                                partner.id != settlementCenter?.id
+                            ) {
                                 Button(
                                     onClick = {
                                         settleThroughPartnerId = partner.id
@@ -6761,7 +6947,13 @@ private fun SettlementBatchContent(
                                     enabled = false,
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Text("截至今日已结清")
+                                    Text(
+                                        if (partner.id == settlementCenter?.id) {
+                                            "资金中心无需单独结清"
+                                        } else {
+                                            "截至今日已结清"
+                                        }
+                                    )
                                 }
                             }
                         }
@@ -6988,6 +7180,9 @@ private fun SettlementStatsContent(
     var customEnd by remember {
         mutableStateOf(today.toString())
     }
+    var undoCutoffKey by remember {
+        mutableStateOf<String?>(null)
+    }
 
     val invalidCustom =
         filter == HistoryTimeFilter.CUSTOM &&
@@ -7018,6 +7213,8 @@ private fun SettlementStatsContent(
         records.count { it.status == 1 }
     val partial =
         records.count { it.status == 2 }
+    val revoked =
+        records.count { it.status == 3 }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -7095,6 +7292,16 @@ private fun SettlementStatsContent(
             }
         }
 
+        if (revoked > 0) {
+            item {
+                Text(
+                    "其中 ${revoked} 次“结清截至今日”已撤销",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
+            }
+        }
+
         if (records.isEmpty()) {
             item {
                 Text(
@@ -7140,17 +7347,19 @@ private fun SettlementStatsContent(
                         }
 
                         Text(
-                            if (record.status == 1) {
-                                "已结清"
-                            } else {
-                                "部分结算"
+                            when (record.status) {
+                                1 -> "已结清"
+                                2 -> "部分结算"
+                                3 -> "已撤销"
+                                else -> "未结算"
                             },
                             fontWeight = FontWeight.Bold,
                             color =
-                                if (record.status == 1) {
-                                    BrandGreen
-                                } else {
-                                    Color(0xFF8A6D00)
+                                when (record.status) {
+                                    1 -> BrandGreen
+                                    2 -> Color(0xFF8A6D00)
+                                    3 -> Color.Gray
+                                    else -> MaterialTheme.colorScheme.error
                                 }
                         )
                     }
@@ -7183,11 +7392,21 @@ private fun SettlementStatsContent(
                                 horizontalAlignment = Alignment.End
                             ) {
                                 Text(
-                                    money(transfer.settledAmount),
+                                    if (record.status == 3) {
+                                        "原结算 ${money(transfer.amount)}"
+                                    } else {
+                                        money(transfer.settledAmount)
+                                    },
                                     fontWeight = FontWeight.Bold,
-                                    color = BrandGreen
+                                    color =
+                                        if (record.status == 3) {
+                                            Color.Gray
+                                        } else {
+                                            BrandGreen
+                                        }
                                 )
                                 if (
+                                    record.status != 3 &&
                                     transfer.settledAmount + 0.005 <
                                     transfer.amount
                                 ) {
@@ -7203,18 +7422,62 @@ private fun SettlementStatsContent(
 
                     HorizontalDivider()
                     SummaryRow(
-                        "本次实际结算",
-                        money(record.settledAmount),
+                        if (record.status == 3) {
+                            "原结算金额"
+                        } else {
+                            "本次实际结算"
+                        },
+                        if (record.status == 3) {
+                            money(record.totalAmount)
+                        } else {
+                            money(record.settledAmount)
+                        },
                         bold = true
                     )
                     if (record.confirmedAt > 0L) {
                         Text(
-                            "确认时间 ${settlementTimeText(record.confirmedAt)}",
+                            if (record.status == 3) {
+                                "原确认时间 ${settlementTimeText(record.confirmedAt)}"
+                            } else {
+                                "确认时间 ${settlementTimeText(record.confirmedAt)}"
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = Color.Gray
                         )
                     }
+
+                    if (
+                        record.kind == "CUTOFF" &&
+                        record.status != 3
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                undoCutoffKey = record.recordKey
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("撤销本次结清")
+                        }
+                    }
                 }
+            }
+        }
+    }
+
+    undoCutoffKey?.let { batchKey ->
+        ConfirmActionDialog(
+            title = "撤销本次结清",
+            text =
+                "撤销后，这次“结清截至今日”的实际转账会重新计入资金余额，原营业、采购和利润记录不会改变。",
+            confirmText = "确认撤销",
+            onDismiss = {
+                undoCutoffKey = null
+            }
+        ) {
+            val ok = db.undoCutoffSettlement(batchKey)
+            undoCutoffKey = null
+            if (ok) {
+                onChanged()
             }
         }
     }
@@ -16135,14 +16398,31 @@ private fun ProfitContent(
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
     val partners = remember(dataVersion) { db.getPartners() }
     val savedRules = remember(dataVersion) { db.getProfitRules() }
+    val savedCenter = remember(dataVersion) { db.getSettlementCenter() }
     val summary = remember(dataVersion, date) { db.getDailySummary(date) }
     val percentages = remember { mutableStateMapOf<Long, String>() }
+    var settlementCenterId by remember {
+        mutableStateOf<Long?>(null)
+    }
     var message by remember { mutableStateOf("") }
     var deleteDate by remember { mutableStateOf<String?>(null) }
     val saved = remember(dataVersion, date) { db.getProfitDistribution(date) }
     val history = remember(dataVersion) { db.getRecentProfitDistributions(200).groupBy { it.date }.toSortedMap(reverseOrder()) }
 
     LaunchedEffect(dataVersion, partners.map { it.id }) {
+        if (
+            settlementCenterId == null ||
+            partners.none { it.id == settlementCenterId }
+        ) {
+            settlementCenterId =
+                savedCenter
+                    ?.id
+                    ?.takeIf { centerId ->
+                        partners.any { it.id == centerId }
+                    }
+                    ?: partners.firstOrNull()?.id
+        }
+
         val ruleMap = savedRules.associate { it.partnerId to it.percent }
         percentages.keys.retainAll(partners.map { it.id }.toSet())
         if (ruleMap.isNotEmpty()) {
@@ -16205,6 +16485,54 @@ private fun ProfitContent(
                 )
             }
         }
+        item {
+            Text(
+                "资金中心",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                partners.forEach { partner ->
+                    if (settlementCenterId == partner.id) {
+                        Button(
+                            onClick = {
+                                if (canEdit) {
+                                    settlementCenterId = partner.id
+                                }
+                            },
+                            enabled = canEdit,
+                            contentPadding =
+                                PaddingValues(horizontal = 14.dp)
+                        ) {
+                            Text(partner.name)
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = {
+                                if (canEdit) {
+                                    settlementCenterId = partner.id
+                                }
+                            },
+                            enabled = canEdit,
+                            contentPadding =
+                                PaddingValues(horizontal = 14.dp)
+                        ) {
+                            Text(partner.name)
+                        }
+                    }
+                }
+            }
+            Text(
+                "所有实际资金转账统一经过资金中心，非资金中心合伙人之间不直接转账。",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray
+            )
+        }
         if (canEdit) {
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -16212,8 +16540,12 @@ private fun ProfitContent(
                         if (partners.isEmpty()) message = "请先添加合伙人"
                         else if (kotlin.math.abs(totalPercent - 100.0) >= 0.01) message = "百分比合计必须等于100%"
                         else {
-                            db.saveProfitRules(allocations)
-                            message = "利润分配百分比规则已保存"
+                            db.saveProfitRules(
+                                allocations,
+                                settlementCenterId
+                            )
+                            message =
+                                "利润分配规则和资金中心已保存"
                             onChanged()
                         }
                     }, modifier = Modifier.weight(1f)) { Text("保存百分比规则") }
