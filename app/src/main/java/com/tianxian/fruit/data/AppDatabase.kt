@@ -8014,9 +8014,87 @@ class AppDatabase(
         return getCashSettlement(date)?.takeIf { it.settlement.id == id }
     }
 
+    /**
+     * V1.4.7.16: CUTOFF-style transfers must never affect current fund balances when
+     * neither side is the current settlement center. This also covers a row
+     * that an older migration may already have mislabeled CUTOFF_CENTER.
+     *
+     * This is intentionally a runtime rule rather than a one-time migration:
+     * another device/cloud sync may restore an old CUTOFF/CUTOFF_CENTER row after DB22 has
+     * already been created. The SQL predicate below therefore remains the
+     * final guard even if a legacy row has not yet been reclassified.
+     */
+    private fun effectiveFundTransferPredicate(): String {
+        val centerId = getSettlementCenter()?.id ?: 0L
+        return if (centerId > 0L) {
+            """
+            settlement_kind!='CUTOFF_LEGACY_INVALID'
+            AND NOT (
+                settlement_kind IN ('CUTOFF','CUTOFF_CENTER')
+                AND from_partner_id<>$centerId
+                AND to_partner_id<>$centerId
+            )
+            """.trimIndent()
+        } else {
+            "settlement_kind!='CUTOFF_LEGACY_INVALID'"
+        }
+    }
+
+    /**
+     * Self-heal old cloud rows as well. Runtime balance correctness does not
+     * depend on this update; effectiveFundTransferPredicate() already blocks
+     * them. This merely makes settlement history explicitly show them as
+     * "旧版结算 · 已失效" and syncs that classification back to the cloud.
+     */
+    private fun normalizeLegacyCutoffTransfersForCurrentCenter() {
+        val centerId = getSettlementCenter()?.id ?: return
+        if (centerId <= 0L) return
+
+        val now = System.currentTimeMillis()
+        val db = writableDatabase
+
+        // Old CUTOFF rows that already follow the current center become the
+        // canonical center form. Existing correct CUTOFF_CENTER rows are not
+        // touched, so ordinary balance reads do not create sync churn.
+        db.execSQL(
+            """
+            UPDATE settlement_transfer
+            SET settlement_kind='CUTOFF_CENTER',
+                sync_status=2,
+                updated_at=?
+            WHERE deleted=0
+              AND settlement_id=0
+              AND settlement_kind='CUTOFF'
+              AND (from_partner_id=? OR to_partner_id=?)
+              AND (confirmed_at>0 OR settled_amount>0.005)
+            """.trimIndent(),
+            arrayOf<Any?>(now, centerId, centerId)
+        )
+
+        // Any CUTOFF-style row that bypasses the currently configured center
+        // is legacy for the active accounting model and must not affect money.
+        db.execSQL(
+            """
+            UPDATE settlement_transfer
+            SET settlement_kind='CUTOFF_LEGACY_INVALID',
+                sync_status=2,
+                updated_at=?
+            WHERE deleted=0
+              AND settlement_id=0
+              AND settlement_kind IN ('CUTOFF','CUTOFF_CENTER')
+              AND from_partner_id<>?
+              AND to_partner_id<>?
+              AND (confirmed_at>0 OR settled_amount>0.005)
+            """.trimIndent(),
+            arrayOf<Any?>(now, centerId, centerId)
+        )
+    }
+
     fun getPartnerFundBalances(
         endDate: String? = null
     ): List<PartnerFundBalanceSummary> {
+        normalizeLegacyCutoffTransfersForCurrentCenter()
+        val transferPredicate = effectiveFundTransferPredicate()
         data class Acc(
             var name: String = "",
             var purchase: Double = 0.0,
@@ -8103,7 +8181,7 @@ class AppDatabase(
             FROM settlement_transfer
             WHERE deleted=0
               AND settled_amount>0.005
-              AND settlement_kind!='CUTOFF_LEGACY_INVALID'
+              AND $transferPredicate
               $transferWhere
             """.trimIndent(),
             transferArgs
@@ -8155,6 +8233,8 @@ class AppDatabase(
         startDate: String?,
         endDate: String
     ): FundPeriodSummary {
+        normalizeLegacyCutoffTransfersForCurrentCenter()
+        val transferPredicate = effectiveFundTransferPredicate()
         val whereStart =
             if (startDate != null) "AND date>=?" else ""
         val args =
@@ -8196,7 +8276,7 @@ class AppDatabase(
                 FROM settlement_transfer
                 WHERE deleted=0
                   AND settled_amount>0.005
-                  AND settlement_kind!='CUTOFF_LEGACY_INVALID'
+                  AND $transferPredicate
                   $settlementWhereStart
                   AND date<=?
                 """.trimIndent(),
@@ -8224,6 +8304,8 @@ class AppDatabase(
         startDate: String?,
         endDate: String
     ): List<PartnerFundPeriodSummary> {
+        normalizeLegacyCutoffTransfersForCurrentCenter()
+        val transferPredicate = effectiveFundTransferPredicate()
         data class Acc(
             var name: String = "",
             var purchase: Double = 0.0,
@@ -8308,7 +8390,7 @@ class AppDatabase(
             FROM settlement_transfer
             WHERE deleted=0
               AND settled_amount>0.005
-              AND settlement_kind!='CUTOFF_LEGACY_INVALID'
+              AND $transferPredicate
               $transferWhereStart
               AND date<=?
             """.trimIndent(),
@@ -8369,13 +8451,14 @@ class AppDatabase(
     private fun getSettlementTransfersForPartnerOnDate(
         partnerId: Long,
         date: String
-    ): List<SettlementTransferRecord> =
-        readableDatabase.rawQuery(
+    ): List<SettlementTransferRecord> {
+        val transferPredicate = effectiveFundTransferPredicate()
+        return readableDatabase.rawQuery(
             """
             SELECT *
             FROM settlement_transfer
             WHERE deleted=0
-              AND settlement_kind!='CUTOFF_LEGACY_INVALID'
+              AND $transferPredicate
               AND date=?
               AND (from_partner_id=? OR to_partner_id=?)
             ORDER BY id
@@ -8388,6 +8471,7 @@ class AppDatabase(
                 }
             }
         }
+    }
 
     private fun countBusinessDays(
         startDate: String,
@@ -8414,6 +8498,8 @@ class AppDatabase(
         partnerId: Long,
         endDate: String = LocalDate.now().toString()
     ): PartnerOutstandingWindow? {
+        normalizeLegacyCutoffTransfersForCurrentCenter()
+        val transferPredicate = effectiveFundTransferPredicate()
         val summary =
             getPartnerFundBalances(endDate)
                 .firstOrNull { it.partnerId == partnerId }
@@ -8434,7 +8520,7 @@ class AppDatabase(
                     UNION
                     SELECT date FROM settlement_transfer
                     WHERE deleted=0
-                      AND settlement_kind!='CUTOFF_LEGACY_INVALID'
+                      AND $transferPredicate
                       AND settled_amount>0.005
                       AND date<=?
                 )
@@ -8651,6 +8737,7 @@ class AppDatabase(
         endDate: String? = null,
         limit: Int = 120
     ): List<FundSettlementHistoryRecord> {
+        normalizeLegacyCutoffTransfersForCurrentCenter()
         val records = mutableListOf<FundSettlementHistoryRecord>()
 
         getCashSettlementsBetween(startDate, endDate).forEach { bundle ->
@@ -8927,10 +9014,12 @@ class AppDatabase(
         startDate: String? = null,
         endDate: String? = null
     ): List<SettlementTransferRecord> {
+        normalizeLegacyCutoffTransfersForCurrentCenter()
+        val transferPredicate = effectiveFundTransferPredicate()
         val clauses = mutableListOf(
             "deleted=0",
             "settled_amount>0.005",
-            "settlement_kind!='CUTOFF_LEGACY_INVALID'",
+            transferPredicate,
             "(from_partner_id=? OR to_partner_id=?)"
         )
         val args = mutableListOf(
