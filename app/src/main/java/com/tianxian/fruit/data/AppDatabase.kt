@@ -8015,14 +8015,18 @@ class AppDatabase(
     }
 
     /**
-     * V1.4.7.16: CUTOFF-style transfers must never affect current fund balances when
-     * neither side is the current settlement center. This also covers a row
-     * that an older migration may already have mislabeled CUTOFF_CENTER.
+     * V1.4.7.17: every standalone historical transfer (settlement_id=0) must
+     * involve the currently configured settlement center before it may affect
+     * fund balances.
      *
-     * This is intentionally a runtime rule rather than a one-time migration:
-     * another device/cloud sync may restore an old CUTOFF/CUTOFF_CENTER row after DB22 has
-     * already been created. The SQL predicate below therefore remains the
-     * final guard even if a legacy row has not yet been reclassified.
+     * Older builds did not always persist "结清截至今日" as CUTOFF. During
+     * schema upgrades some of those rows were converted from DAILY to LEGACY.
+     * Filtering only CUTOFF/CUTOFF_CENTER therefore missed exactly the old
+     * B<->C rows we need to retire. The structural rule is more reliable:
+     * settlement_id=0 + neither side is the current center = legacy invalid.
+     *
+     * Keep this as a runtime guard because cloud sync can restore an old row
+     * after the DB migration has already finished.
      */
     private fun effectiveFundTransferPredicate(): String {
         val centerId = getSettlementCenter()?.id ?: 0L
@@ -8030,7 +8034,7 @@ class AppDatabase(
             """
             settlement_kind!='CUTOFF_LEGACY_INVALID'
             AND NOT (
-                settlement_kind IN ('CUTOFF','CUTOFF_CENTER')
+                settlement_id=0
                 AND from_partner_id<>$centerId
                 AND to_partner_id<>$centerId
             )
@@ -8042,9 +8046,9 @@ class AppDatabase(
 
     /**
      * Self-heal old cloud rows as well. Runtime balance correctness does not
-     * depend on this update; effectiveFundTransferPredicate() already blocks
-     * them. This merely makes settlement history explicitly show them as
-     * "旧版结算 · 已失效" and syncs that classification back to the cloud.
+     * depend on this update; effectiveFundTransferPredicate() blocks every
+     * standalone non-center transfer even when its old kind is LEGACY/DAILY.
+     * This update only makes the history classification explicit and syncable.
      */
     private fun normalizeLegacyCutoffTransfersForCurrentCenter() {
         val centerId = getSettlementCenter()?.id ?: return
@@ -8053,9 +8057,9 @@ class AppDatabase(
         val now = System.currentTimeMillis()
         val db = writableDatabase
 
-        // Old CUTOFF rows that already follow the current center become the
-        // canonical center form. Existing correct CUTOFF_CENTER rows are not
-        // touched, so ordinary balance reads do not create sync churn.
+        // Standalone transfers that already follow the active center can be
+        // normalized to the canonical CUTOFF_CENTER label. Do not rewrite
+        // DAILY rows tied to a real daily settlement (settlement_id>0).
         db.execSQL(
             """
             UPDATE settlement_transfer
@@ -8064,15 +8068,17 @@ class AppDatabase(
                 updated_at=?
             WHERE deleted=0
               AND settlement_id=0
-              AND settlement_kind='CUTOFF'
+              AND settlement_kind IN ('CUTOFF','LEGACY','DAILY')
               AND (from_partner_id=? OR to_partner_id=?)
               AND (confirmed_at>0 OR settled_amount>0.005)
             """.trimIndent(),
             arrayOf<Any?>(now, centerId, centerId)
         )
 
-        // Any CUTOFF-style row that bypasses the currently configured center
-        // is legacy for the active accounting model and must not affect money.
+        // Any settled standalone transfer that bypasses the active center is
+        // an old accounting-model record. This deliberately includes LEGACY
+        // and DAILY labels because old migrations used those labels for some
+        // "结清截至今日" rows.
         db.execSQL(
             """
             UPDATE settlement_transfer
@@ -8081,7 +8087,7 @@ class AppDatabase(
                 updated_at=?
             WHERE deleted=0
               AND settlement_id=0
-              AND settlement_kind IN ('CUTOFF','CUTOFF_CENTER')
+              AND settlement_kind!='CUTOFF_LEGACY_INVALID'
               AND from_partner_id<>?
               AND to_partner_id<>?
               AND (confirmed_at>0 OR settled_amount>0.005)
