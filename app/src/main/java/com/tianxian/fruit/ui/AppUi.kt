@@ -232,6 +232,16 @@ private data class PurchaseHistoryEditDraft(
 )
 
 
+/**
+ * 云端自动同步完成后的轻量 UI 刷新信号。
+ *
+ * 放在 AppUi.kt 这个既有源文件中，避免网页上传补丁时遗漏新增 Kotlin 文件。
+ * 这里只递增 Compose 状态，不会主动发起新的云同步。
+ */
+object SyncUiRefreshBus {
+    val version = mutableIntStateOf(0)
+}
+
 @Composable
 fun TianXianApp(
     db: AppDatabase,
@@ -257,6 +267,19 @@ fun TianXianApp(
     }
     var dataVersion by remember {
         mutableIntStateOf(0)
+    }
+
+    val syncRefreshVersion =
+        SyncUiRefreshBus.version.intValue
+
+    LaunchedEffect(
+        syncRefreshVersion
+    ) {
+        if (syncRefreshVersion > 0) {
+            // 自动同步完成后只刷新当前 Compose 数据缓存；
+            // 不调用 notifyDataChanged()，避免再次调度云同步。
+            dataVersion++
+        }
     }
 
     var authVersion by remember {
@@ -285,34 +308,6 @@ fun TianXianApp(
             )
         }
         return
-    }
-
-    val autoSyncUiHandler =
-        remember {
-            Handler(
-                Looper.getMainLooper()
-            )
-        }
-
-    DisposableEffect(
-        cloudSyncManager
-    ) {
-        cloudSyncManager
-            .setAutoSyncListener {
-                autoSyncUiHandler
-                    .post {
-                        // 只刷新本地查询缓存，不再次触发自动同步，
-                        // 避免“同步完成 -> 再同步”的循环。
-                        dataVersion++
-                    }
-            }
-
-        onDispose {
-            cloudSyncManager
-                .setAutoSyncListener(
-                    null
-                )
-        }
     }
 
     LaunchedEffect(

@@ -4,12 +4,12 @@ import android.graphics.Color
 import android.os.Bundle
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.core.view.WindowCompat
 import com.tianxian.fruit.data.AppDatabase
 import com.tianxian.fruit.sync.CloudSyncManager
 import com.tianxian.fruit.sync.LedgerBook
 import com.tianxian.fruit.sync.LedgerManager
+import com.tianxian.fruit.ui.SyncUiRefreshBus
 import com.tianxian.fruit.ui.TianXianApp
 
 class MainActivity : FragmentActivity() {
@@ -20,9 +20,6 @@ class MainActivity : FragmentActivity() {
         CloudSyncManager
     private lateinit var currentBook:
         LedgerBook
-
-    private val syncUiVersion =
-        mutableIntStateOf(0)
 
     override fun onCreate(
         savedInstanceState: Bundle?
@@ -61,7 +58,7 @@ class MainActivity : FragmentActivity() {
         cloudSyncManager
             .setAutoSyncListener {
                 runOnUiThread {
-                    syncUiVersion.intValue++
+                    SyncUiRefreshBus.version.intValue++
                 }
             }
 
@@ -90,8 +87,6 @@ class MainActivity : FragmentActivity() {
                     cloudSyncManager,
                 currentBook =
                     currentBook,
-                syncRefreshVersion =
-                    syncUiVersion.intValue,
                 onSwitchBook = {
                     bookId ->
                     if (
