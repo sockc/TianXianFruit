@@ -9656,19 +9656,88 @@ class AppDatabase(
         }
     }
 
-    fun getProfitDistribution(date: String): List<ProfitDistributionRecord> = readableDatabase.rawQuery(
-        "SELECT * FROM profit_distribution WHERE date=? AND deleted=0 ORDER BY allocated_profit DESC,id", arrayOf(date)
-    ).use { c -> profitList(c) }
+    /**
+     * V1.4.7.22 legacy-sync guard.
+     *
+     * Before numeric-id sync conflicts were fully fixed, two devices could leave
+     * multiple active profit_distribution rows for the same business key
+     * (date + partner_id) but with different sync_id/local id values. Business
+     * semantics allow only one active distribution row per partner per day.
+     *
+     * We do not destructively delete cloud rows here. Reads select the newest
+     * active logical row by row_version, then updated_at, then local id. This
+     * prevents duplicate Compose keys and, more importantly, prevents legacy
+     * duplicates from double-counting profit in settlement calculations.
+     */
+    private fun latestProfitDistributionPredicate(alias: String = "pd"): String =
+        """
+        NOT EXISTS (
+            SELECT 1
+            FROM profit_distribution newer
+            WHERE newer.deleted=0
+              AND newer.date=$alias.date
+              AND newer.partner_id=$alias.partner_id
+              AND (
+                    newer.row_version>$alias.row_version
+                 OR (newer.row_version=$alias.row_version AND newer.updated_at>$alias.updated_at)
+                 OR (newer.row_version=$alias.row_version AND newer.updated_at=$alias.updated_at AND newer.id>$alias.id)
+              )
+        )
+        """.trimIndent()
 
-    fun getRecentProfitDistributions(limit: Int = 80): List<ProfitDistributionRecord> = readableDatabase.rawQuery(
-        "SELECT * FROM profit_distribution WHERE deleted=0 ORDER BY date DESC,id LIMIT ?", arrayOf(limit.toString())
-    ).use { c -> profitList(c) }
+    fun getProfitDistribution(date: String): List<ProfitDistributionRecord> {
+        val latest = latestProfitDistributionPredicate("pd")
+        return readableDatabase.rawQuery(
+            """
+            SELECT pd.*
+            FROM profit_distribution pd
+            WHERE pd.date=?
+              AND pd.deleted=0
+              AND $latest
+            ORDER BY pd.allocated_profit DESC,pd.id
+            """.trimIndent(),
+            arrayOf(date)
+        ).use { c -> profitList(c) }
+    }
+
+    fun getRecentProfitDistributions(limit: Int = 80): List<ProfitDistributionRecord> {
+        val latest = latestProfitDistributionPredicate("pd")
+        return readableDatabase.rawQuery(
+            """
+            SELECT pd.*
+            FROM profit_distribution pd
+            WHERE pd.deleted=0
+              AND $latest
+            ORDER BY pd.date DESC,pd.id
+            LIMIT ?
+            """.trimIndent(),
+            arrayOf(limit.toString())
+        ).use { c -> profitList(c) }
+    }
 
     fun getProfitDistributionsBetween(start: String?, end: String?): List<ProfitDistributionRecord> {
-        val where = if (start != null && end != null) "AND date>=? AND date<=?" else ""
-        val args = if (start != null && end != null) arrayOf(start, end) else emptyArray()
+        val where =
+            if (start != null && end != null) {
+                "AND pd.date>=? AND pd.date<=?"
+            } else {
+                ""
+            }
+        val args =
+            if (start != null && end != null) {
+                arrayOf(start, end)
+            } else {
+                emptyArray()
+            }
+        val latest = latestProfitDistributionPredicate("pd")
         return readableDatabase.rawQuery(
-            "SELECT * FROM profit_distribution WHERE deleted=0 $where ORDER BY date DESC,id",
+            """
+            SELECT pd.*
+            FROM profit_distribution pd
+            WHERE pd.deleted=0
+              $where
+              AND $latest
+            ORDER BY pd.date DESC,pd.id
+            """.trimIndent(),
             args
         ).use { c -> profitList(c) }
     }
@@ -9714,6 +9783,7 @@ class AppDatabase(
                 ),'') AS last_settlement_date
             FROM profit_distribution pd
             WHERE pd.deleted=0 $rangeWhere
+              AND ${latestProfitDistributionPredicate("pd")}
             GROUP BY pd.date,pd.partner_id
             ORDER BY pd.date DESC,pd.partner_id
             """.trimIndent(),

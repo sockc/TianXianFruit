@@ -5842,7 +5842,12 @@ private fun SettlementDayContent(
         } else {
             items(
                 profitRows,
-                key = { "profit_distribution_${it.date}_${it.partnerId}" }
+                // V1.4.7.22: old multi-device data can contain more than one
+                // active cloud row for the same date + partner. Using that
+                // logical pair as a Compose key crashes LazyColumn with
+                // "Key ... was already used". The local SQLite id is unique
+                // even when legacy logical duplicates exist.
+                key = { "profit_distribution_${it.id}" }
             ) { row ->
                 Card(Modifier.fillMaxWidth()) {
                     Row(
