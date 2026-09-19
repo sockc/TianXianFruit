@@ -4,6 +4,7 @@ import android.graphics.Color
 import android.os.Bundle
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.core.view.WindowCompat
 import com.tianxian.fruit.data.AppDatabase
 import com.tianxian.fruit.sync.CloudSyncManager
@@ -19,6 +20,9 @@ class MainActivity : FragmentActivity() {
         CloudSyncManager
     private lateinit var currentBook:
         LedgerBook
+
+    private val syncUiVersion =
+        mutableIntStateOf(0)
 
     override fun onCreate(
         savedInstanceState: Bundle?
@@ -54,6 +58,13 @@ class MainActivity : FragmentActivity() {
                 ledgerManager
             )
 
+        cloudSyncManager
+            .setAutoSyncListener {
+                runOnUiThread {
+                    syncUiVersion.intValue++
+                }
+            }
+
         db =
             AppDatabase(
                 context =
@@ -79,6 +90,8 @@ class MainActivity : FragmentActivity() {
                     cloudSyncManager,
                 currentBook =
                     currentBook,
+                syncRefreshVersion =
+                    syncUiVersion.intValue,
                 onSwitchBook = {
                     bookId ->
                     if (
@@ -114,6 +127,10 @@ class MainActivity : FragmentActivity() {
         if (
             ::cloudSyncManager.isInitialized
         ) {
+            cloudSyncManager
+                .setAutoSyncListener(
+                    null
+                )
             cloudSyncManager.shutdown()
         }
 
