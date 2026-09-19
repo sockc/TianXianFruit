@@ -232,16 +232,6 @@ private data class PurchaseHistoryEditDraft(
 )
 
 
-/**
- * 云端自动同步完成后的轻量 UI 刷新信号。
- *
- * 放在 AppUi.kt 这个既有源文件中，避免网页上传补丁时遗漏新增 Kotlin 文件。
- * 这里只递增 Compose 状态，不会主动发起新的云同步。
- */
-object SyncUiRefreshBus {
-    val version = mutableIntStateOf(0)
-}
-
 @Composable
 fun TianXianApp(
     db: AppDatabase,
