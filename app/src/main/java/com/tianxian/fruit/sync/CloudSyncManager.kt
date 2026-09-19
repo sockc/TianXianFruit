@@ -136,6 +136,18 @@ class CloudSyncManager(
     @Volatile
     private var closed = false
 
+    @Volatile
+    private var autoSyncListener:
+        ((CloudSyncResult) -> Unit)? =
+        null
+
+    fun setAutoSyncListener(
+        listener:
+            ((CloudSyncResult) -> Unit)?
+    ) {
+        autoSyncListener = listener
+    }
+
     fun defaultBaseUrl(): String =
         prefs.getString(
             KEY_BASE_URL,
@@ -1161,11 +1173,15 @@ class CloudSyncManager(
                             seedDefaults = false
                         )
 
+                    var completedResult:
+                        CloudSyncResult? = null
+
                     try {
-                        syncCurrentBook(
-                            db = localDb,
-                            book = liveBook
-                        )
+                        completedResult =
+                            syncCurrentBook(
+                                db = localDb,
+                                book = liveBook
+                            )
                     } catch (
                         error: Throwable
                     ) {
@@ -1179,6 +1195,16 @@ class CloudSyncManager(
                     } finally {
                         localDb.close()
                     }
+
+                    completedResult
+                        ?.let { result ->
+                            runCatching {
+                                autoSyncListener
+                                    ?.invoke(
+                                        result
+                                    )
+                            }
+                        }
                 }
             } finally {
                 autoRunning.set(false)
