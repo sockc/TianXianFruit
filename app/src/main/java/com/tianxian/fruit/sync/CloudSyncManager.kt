@@ -138,12 +138,12 @@ class CloudSyncManager(
 
     @Volatile
     private var autoSyncListener:
-        ((CloudSyncResult) -> Unit)? =
+        (() -> Unit)? =
         null
 
     fun setAutoSyncListener(
         listener:
-            ((CloudSyncResult) -> Unit)?
+            (() -> Unit)?
     ) {
         autoSyncListener = listener
     }
@@ -1173,15 +1173,15 @@ class CloudSyncManager(
                             seedDefaults = false
                         )
 
-                    var completedResult:
-                        CloudSyncResult? = null
+                    var syncSucceeded =
+                        false
 
                     try {
-                        completedResult =
-                            syncCurrentBook(
-                                db = localDb,
-                                book = liveBook
-                            )
+                        syncCurrentBook(
+                            db = localDb,
+                            book = liveBook
+                        )
+                        syncSucceeded = true
                     } catch (
                         error: Throwable
                     ) {
@@ -1196,15 +1196,12 @@ class CloudSyncManager(
                         localDb.close()
                     }
 
-                    completedResult
-                        ?.let { result ->
-                            runCatching {
-                                autoSyncListener
-                                    ?.invoke(
-                                        result
-                                    )
-                            }
+                    if (syncSucceeded) {
+                        runCatching {
+                            autoSyncListener
+                                ?.invoke()
                         }
+                    }
                 }
             } finally {
                 autoRunning.set(false)
@@ -2445,7 +2442,7 @@ class CloudSyncManager(
             "https://sync.830888.xyz"
 
         private const val APP_VERSION =
-            "1.4.7.16"
+            "1.4.7.19"
 
         private const val KEY_PURCHASE_ACTIVITY_BACKFILL_PREFIX =
             "purchase_activity_backfill_v1_4_"

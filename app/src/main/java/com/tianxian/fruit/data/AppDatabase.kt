@@ -2804,6 +2804,15 @@ class AppDatabase(
                 operation != "DELETE" ||
                 payload.length() > 0
             ) {
+                // profit_distribution.id is a device-local SQLite primary key.
+                // Cloud identity is sync_id. Legacy/multi-device data can contain
+                // the same numeric id from different devices, so never import
+                // the remote numeric id for a newly downloaded distribution row.
+                // No other business table references profit_distribution.id.
+                if (tableName == "profit_distribution") {
+                    values.remove("id")
+                }
+
                 val inserted =
                     db.insertWithOnConflict(
                         tableName,
