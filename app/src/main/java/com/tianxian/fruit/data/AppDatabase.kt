@@ -257,7 +257,8 @@ data class FundPeriodSummary(
     val businessDayCount: Int,
     val purchaseAmount: Double,
     val revenueAmount: Double,
-    val profitAmount: Double
+    val profitAmount: Double,
+    val settlementAmount: Double
 )
 
 data class PartnerFundPeriodSummary(
@@ -575,6 +576,9 @@ class AppDatabase(
         createV21FundSettlementExtension(
             db
         )
+        createV22SettlementCenterCleanup(
+            db
+        )
         createV8SyncFoundation(
             db,
             initialData = false
@@ -667,6 +671,91 @@ class AppDatabase(
                 db
             )
         }
+        if (oldVersion < 22) {
+            createV22SettlementCenterCleanup(
+                db
+            )
+        }
+    }
+
+    private fun createV22SettlementCenterCleanup(
+        db: SQLiteDatabase
+    ) {
+        // V1.4.7.15: classify old "结清截至今日" records once.
+        // Records that already went through the configured settlement center stay valid;
+        // old B<->C / C<->B cutoff records are retained for history but excluded from balances.
+        var centerId =
+            db.rawQuery(
+                """
+                SELECT r.partner_id
+                FROM profit_rule r
+                JOIN partner p ON p.id=r.partner_id
+                WHERE r.deleted=0
+                  AND p.deleted=0
+                  AND p.enabled=1
+                  AND COALESCE(r.is_settlement_center,0)=1
+                ORDER BY r.id DESC
+                LIMIT 1
+                """.trimIndent(),
+                null
+            ).use { c ->
+                if (c.moveToFirst()) c.long("partner_id") else 0L
+            }
+
+        if (centerId <= 0L) {
+            centerId =
+                db.rawQuery(
+                    """
+                    SELECT r.partner_id
+                    FROM profit_rule r
+                    JOIN partner p ON p.id=r.partner_id
+                    WHERE r.deleted=0
+                      AND p.deleted=0
+                      AND p.enabled=1
+                    ORDER BY r.id
+                    LIMIT 1
+                    """.trimIndent(),
+                    null
+                ).use { c ->
+                    if (c.moveToFirst()) c.long("partner_id") else 0L
+                }
+        }
+        if (centerId <= 0L) {
+            centerId =
+                db.rawQuery(
+                    """
+                    SELECT id
+                    FROM partner
+                    WHERE deleted=0 AND enabled=1
+                    ORDER BY id
+                    LIMIT 1
+                    """.trimIndent(),
+                    null
+                ).use { c ->
+                    if (c.moveToFirst()) c.long("id") else 0L
+                }
+        }
+
+        if (centerId <= 0L) return
+
+        val now = System.currentTimeMillis()
+        db.execSQL(
+            """
+            UPDATE settlement_transfer
+            SET settlement_kind=CASE
+                    WHEN from_partner_id=? OR to_partner_id=?
+                        THEN 'CUTOFF_CENTER'
+                    ELSE 'CUTOFF_LEGACY_INVALID'
+                END,
+                sync_status=2,
+                updated_at=?
+            WHERE deleted=0
+              AND settlement_id=0
+              AND settlement_kind='CUTOFF'
+              AND confirmed_at>0
+            """.trimIndent(),
+            arrayOf<Any?>(centerId, centerId, now)
+        )
     }
 
     private fun createV21FundSettlementExtension(
@@ -757,7 +846,7 @@ class AppDatabase(
         )
     }
 
-    // DB18-DB21 preserve compatibility while this branch evolves from the V1.4.7.6 baseline.
+    // DB18-DB22 preserve compatibility while this branch evolves from the V1.4.7.6 baseline.
     // ROLLBACK1 preserves only their schema so an existing DB20 database can be
     // opened without downgrade/delete. No FIX7-FIX11 settlement behavior is enabled.
     private fun createV20CompatibilitySchema(
@@ -8014,6 +8103,7 @@ class AppDatabase(
             FROM settlement_transfer
             WHERE deleted=0
               AND settled_amount>0.005
+              AND settlement_kind!='CUTOFF_LEGACY_INVALID'
               $transferWhere
             """.trimIndent(),
             transferArgs
@@ -8091,6 +8181,30 @@ class AppDatabase(
             }
 
         val summaries = dates.map { getDailySummary(it) }
+        val settlementWhereStart =
+            if (startDate != null) "AND date>=?" else ""
+        val settlementArgs =
+            if (startDate != null) {
+                arrayOf(startDate, endDate)
+            } else {
+                arrayOf(endDate)
+            }
+        val settlementAmount =
+            readableDatabase.rawQuery(
+                """
+                SELECT COALESCE(SUM(settled_amount),0) AS amount
+                FROM settlement_transfer
+                WHERE deleted=0
+                  AND settled_amount>0.005
+                  AND settlement_kind!='CUTOFF_LEGACY_INVALID'
+                  $settlementWhereStart
+                  AND date<=?
+                """.trimIndent(),
+                settlementArgs
+            ).use { c ->
+                if (c.moveToFirst()) roundMoney(c.dbl("amount")) else 0.0
+            }
+
         return FundPeriodSummary(
             startDate =
                 startDate ?: dates.firstOrNull().orEmpty(),
@@ -8101,7 +8215,8 @@ class AppDatabase(
             revenueAmount =
                 roundMoney(summaries.sumOf { it.revenue }),
             profitAmount =
-                roundMoney(summaries.sumOf { it.profit })
+                roundMoney(summaries.sumOf { it.profit }),
+            settlementAmount = settlementAmount
         )
     }
 
@@ -8193,6 +8308,7 @@ class AppDatabase(
             FROM settlement_transfer
             WHERE deleted=0
               AND settled_amount>0.005
+              AND settlement_kind!='CUTOFF_LEGACY_INVALID'
               $transferWhereStart
               AND date<=?
             """.trimIndent(),
@@ -8259,6 +8375,7 @@ class AppDatabase(
             SELECT *
             FROM settlement_transfer
             WHERE deleted=0
+              AND settlement_kind!='CUTOFF_LEGACY_INVALID'
               AND date=?
               AND (from_partner_id=? OR to_partner_id=?)
             ORDER BY id
@@ -8316,7 +8433,10 @@ class AppDatabase(
                     WHERE deleted=0 AND date<=?
                     UNION
                     SELECT date FROM settlement_transfer
-                    WHERE deleted=0 AND settled_amount>0.005 AND date<=?
+                    WHERE deleted=0
+                      AND settlement_kind!='CUTOFF_LEGACY_INVALID'
+                      AND settled_amount>0.005
+                      AND date<=?
                 )
                 ORDER BY date
                 """.trimIndent(),
@@ -8485,7 +8605,7 @@ class AppDatabase(
                         put("to_partner_name", toName)
                         put("amount", amount)
                         put("settled_amount", amount)
-                        put("settlement_kind", "CUTOFF")
+                        put("settlement_kind", "CUTOFF_CENTER")
                         put("batch_key", batchKey)
                         put(
                             "range_start_date",
@@ -8575,7 +8695,7 @@ class AppDatabase(
             mutableListOf(
                 "deleted=0",
                 "settlement_id=0",
-                "(settled_amount>0.005 OR (settlement_kind='CUTOFF' AND confirmed_at>0))"
+                "(settled_amount>0.005 OR (settlement_kind IN ('CUTOFF','CUTOFF_CENTER','CUTOFF_LEGACY_INVALID') AND confirmed_at>0))"
             )
         val args = mutableListOf<String>()
         if (startDate != null) {
@@ -8618,7 +8738,9 @@ class AppDatabase(
                         settledAmount = settled,
                         status =
                             when {
-                                first.settlementKind == "CUTOFF" &&
+                                first.settlementKind == "CUTOFF_LEGACY_INVALID" -> 4
+                                first.settlementKind in
+                                    setOf("CUTOFF", "CUTOFF_CENTER") &&
                                     settled <= 0.005 &&
                                     rows.any { it.confirmedAt > 0L } -> 3
                                 settled + 0.005 >= total -> 1
@@ -8647,7 +8769,7 @@ class AppDatabase(
                 FROM settlement_transfer
                 WHERE deleted=0
                   AND settlement_id=0
-                  AND settlement_kind='CUTOFF'
+                  AND settlement_kind IN ('CUTOFF','CUTOFF_CENTER')
                   AND batch_key=?
                   AND confirmed_at>0
                 """.trimIndent(),
@@ -8666,7 +8788,7 @@ class AppDatabase(
                 put("sync_status", 2)
                 put("updated_at", now)
             },
-            "deleted=0 AND settlement_id=0 AND settlement_kind='CUTOFF' AND batch_key=?",
+            "deleted=0 AND settlement_id=0 AND settlement_kind IN ('CUTOFF','CUTOFF_CENTER') AND batch_key=?",
             arrayOf(batchKey)
         ) > 0
     }
@@ -8699,8 +8821,6 @@ class AppDatabase(
                     SELECT date FROM store_daily_record WHERE deleted=0
                     UNION
                     SELECT date FROM profit_distribution WHERE deleted=0
-                    UNION
-                    SELECT date FROM settlement_transfer WHERE deleted=0
                 )
                 $where
                 ORDER BY date DESC
@@ -8798,6 +8918,40 @@ class AppDatabase(
                     settlementId = bundle?.settlement?.id ?: 0L,
                     transfers = relatedTransfers
                 )
+            }
+        }
+    }
+
+    fun getPartnerSettlementEvents(
+        partnerId: Long,
+        startDate: String? = null,
+        endDate: String? = null
+    ): List<SettlementTransferRecord> {
+        val clauses = mutableListOf(
+            "deleted=0",
+            "settled_amount>0.005",
+            "settlement_kind!='CUTOFF_LEGACY_INVALID'",
+            "(from_partner_id=? OR to_partner_id=?)"
+        )
+        val args = mutableListOf(
+            partnerId.toString(),
+            partnerId.toString()
+        )
+        if (startDate != null) {
+            clauses += "date>=?"
+            args += startDate
+        }
+        if (endDate != null) {
+            clauses += "date<=?"
+            args += endDate
+        }
+
+        return readableDatabase.rawQuery(
+            "SELECT * FROM settlement_transfer WHERE ${clauses.joinToString(" AND ")} ORDER BY date DESC, confirmed_at DESC, id DESC",
+            args.toTypedArray()
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) add(readSettlementTransfer(c))
             }
         }
     }
@@ -9883,7 +10037,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 21
+        const val DB_VERSION = 22
     }
 }
 
