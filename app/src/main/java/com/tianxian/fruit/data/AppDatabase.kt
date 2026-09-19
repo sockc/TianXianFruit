@@ -1057,6 +1057,7 @@ class AppDatabase(
         ) {
             ensureSyncContext(db)
             ensureBookMeta(db)
+            ensureSyncRemoteIdMap(db)
         }
     }
 
@@ -1765,6 +1766,122 @@ class AppDatabase(
         }
 
         createSyncTriggers(db)
+    }
+
+    /**
+     * Local-only map for legacy cloud rows whose numeric SQLite primary keys
+     * collide across devices. Cloud identity is sync_id; this map only keeps
+     * parent/child numeric references valid on the current device.
+     */
+    private fun ensureSyncRemoteIdMap(
+        db: SQLiteDatabase
+    ) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS sync_remote_id_map(
+                parent_table TEXT NOT NULL,
+                remote_id INTEGER NOT NULL,
+                record_date TEXT NOT NULL DEFAULT '',
+                modified_by TEXT NOT NULL DEFAULT '',
+                parent_sync_id TEXT NOT NULL DEFAULT '',
+                local_id INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(parent_table,remote_id,record_date,modified_by)
+            )
+            """.trimIndent()
+        )
+
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_sync_remote_id_map_lookup " +
+                "ON sync_remote_id_map(parent_table,remote_id,record_date)"
+        )
+    }
+
+    private fun rememberRemoteLocalId(
+        db: SQLiteDatabase,
+        parentTable: String,
+        remoteId: Long,
+        recordDate: String,
+        modifiedBy: String,
+        parentSyncId: String,
+        localId: Long
+    ) {
+        if (remoteId <= 0L || localId <= 0L) return
+
+        ensureSyncRemoteIdMap(db)
+
+        db.insertWithOnConflict(
+            "sync_remote_id_map",
+            null,
+            ContentValues().apply {
+                put("parent_table", parentTable)
+                put("remote_id", remoteId)
+                put("record_date", recordDate)
+                put("modified_by", modifiedBy)
+                put("parent_sync_id", parentSyncId)
+                put("local_id", localId)
+                put("updated_at", System.currentTimeMillis())
+            },
+            SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    private fun resolveRemoteCashSettlementId(
+        db: SQLiteDatabase,
+        remoteId: Long,
+        recordDate: String,
+        modifiedBy: String
+    ): Long? {
+        if (remoteId <= 0L) return null
+
+        ensureSyncRemoteIdMap(db)
+
+        fun mapped(extraWhere: String, args: Array<String>): Long? =
+            db.rawQuery(
+                "SELECT local_id FROM sync_remote_id_map " +
+                    "WHERE parent_table='daily_cash_settlement' " +
+                    "AND remote_id=? AND record_date=? $extraWhere " +
+                    "ORDER BY updated_at DESC LIMIT 1",
+                args
+            ).use { c ->
+                if (c.moveToFirst()) c.getLong(0) else null
+            }
+
+        if (modifiedBy.isNotBlank()) {
+            mapped(
+                "AND modified_by=?",
+                arrayOf(remoteId.toString(), recordDate, modifiedBy)
+            )?.let { return it }
+        }
+
+        mapped(
+            "",
+            arrayOf(remoteId.toString(), recordDate)
+        )?.let { return it }
+
+        // No collision/mapping case: the remote numeric id may already be the
+        // correct local parent id.
+        db.rawQuery(
+            "SELECT id FROM daily_cash_settlement WHERE id=? LIMIT 1",
+            arrayOf(remoteId.toString())
+        ).use { c ->
+            if (c.moveToFirst()) return c.getLong(0)
+        }
+
+        // Legacy fallback for old cloud payloads. Business logic keeps one
+        // active daily cash settlement per date, so date is the safest local
+        // parent recovery key when no map exists yet.
+        if (recordDate.isNotBlank()) {
+            db.rawQuery(
+                "SELECT id FROM daily_cash_settlement WHERE date=? " +
+                    "ORDER BY deleted ASC,updated_at DESC,id DESC LIMIT 1",
+                arrayOf(recordDate)
+            ).use { c ->
+                if (c.moveToFirst()) return c.getLong(0)
+            }
+        }
+
+        return null
     }
 
     private fun ensureSyncContext(
@@ -2789,6 +2906,36 @@ class AppDatabase(
                     }
                 }
 
+            val remoteNumericId =
+                values.getAsLong("id") ?: 0L
+            val recordDate =
+                values.getAsString("date") ?: ""
+
+            // daily_cash_settlement is a parent table whose local numeric id is
+            // referenced by settlement_partner / settlement_transfer. The cloud
+            // identity is sync_id, so the parent itself must use a local id when
+            // a legacy numeric id collides. Child payloads are remapped back to
+            // that local parent id before being written.
+            if (
+                tableName == "settlement_partner" ||
+                tableName == "settlement_transfer"
+            ) {
+                val remoteSettlementId =
+                    values.getAsLong("settlement_id") ?: 0L
+
+                resolveRemoteCashSettlementId(
+                    db = db,
+                    remoteId = remoteSettlementId,
+                    recordDate = recordDate,
+                    modifiedBy = modifiedBy
+                )?.let { localSettlementId ->
+                    values.put(
+                        "settlement_id",
+                        localSettlementId
+                    )
+                }
+            }
+
             if (existingId != null) {
                 values.remove("id")
 
@@ -2800,16 +2947,32 @@ class AppDatabase(
                         existingId.toString()
                     )
                 )
+
+                if (tableName == "daily_cash_settlement") {
+                    rememberRemoteLocalId(
+                        db = db,
+                        parentTable = tableName,
+                        remoteId = remoteNumericId,
+                        recordDate = recordDate,
+                        modifiedBy = modifiedBy,
+                        parentSyncId = syncId,
+                        localId = existingId
+                    )
+                }
             } else if (
                 operation != "DELETE" ||
                 payload.length() > 0
             ) {
-                // profit_distribution.id is a device-local SQLite primary key.
-                // Cloud identity is sync_id. Legacy/multi-device data can contain
-                // the same numeric id from different devices, so never import
-                // the remote numeric id for a newly downloaded distribution row.
-                // No other business table references profit_distribution.id.
-                if (tableName == "profit_distribution") {
+                // These ids are device-local SQLite primary keys. Cloud identity
+                // is sync_id, so importing legacy numeric ids can collide across
+                // devices. For settlement child rows, settlement_id is remapped
+                // above so their parent/child relationship remains intact.
+                if (
+                    tableName == "profit_distribution" ||
+                    tableName == "daily_cash_settlement" ||
+                    tableName == "settlement_partner" ||
+                    tableName == "settlement_transfer"
+                ) {
                     values.remove("id")
                 }
 
@@ -2825,6 +2988,18 @@ class AppDatabase(
                 if (inserted < 0) {
                     throw IllegalStateException(
                         "云端记录写入失败：$tableName / $syncId"
+                    )
+                }
+
+                if (tableName == "daily_cash_settlement") {
+                    rememberRemoteLocalId(
+                        db = db,
+                        parentTable = tableName,
+                        remoteId = remoteNumericId,
+                        recordDate = recordDate,
+                        modifiedBy = modifiedBy,
+                        parentSyncId = syncId,
+                        localId = inserted
                     )
                 }
             }
