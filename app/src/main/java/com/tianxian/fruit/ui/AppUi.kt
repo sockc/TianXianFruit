@@ -2548,6 +2548,136 @@ private fun PurchaseScreen(
         }
     }
 
+
+    fun completeCollaborationDrafts() {
+        val filledRows = meaningfulRows()
+        if (filledRows.isEmpty()) {
+            message = "请至少填写一种采购水果"
+            return
+        }
+
+        val latestPlanItems = db.getPurchasePlan(date)?.items.orEmpty()
+        val pendingRows =
+            filledRows.filterNot { row ->
+                val matched =
+                    row.planItemId
+                        ?.let { id -> latestPlanItems.firstOrNull { it.id == id } }
+                        ?: row.fruitId?.let { fruitId ->
+                            latestPlanItems.firstOrNull { it.fruitId == fruitId && it.status == 1 }
+                        }
+                matched?.status == 1
+            }
+
+        if (pendingRows.isEmpty()) {
+            message = "当前商品都已完成采购"
+            return
+        }
+
+        val invalidData =
+            pendingRows.firstOrNull {
+                it.fruitId == null ||
+                    (it.quantity.toDoubleOrNull() ?: 0.0) <= 0 ||
+                    (it.totalCost.toDoubleOrNull() ?: 0.0) <= 0
+            }
+        if (invalidData != null) {
+            message = "有商品没有选水果，或数量/总价没有填写正确"
+            return
+        }
+
+        val missingBuyer =
+            pendingRows.firstOrNull { row ->
+                row.buyerId == null || partners.none { it.id == row.buyerId }
+            }
+        if (missingBuyer != null) {
+            val name =
+                missingBuyer.fruitNameSnapshot.ifBlank {
+                    missingBuyer.fruitId
+                        ?.let { id -> fruits.firstOrNull { it.id == id }?.name }
+                        .orEmpty()
+                }
+            message = if (name.isBlank()) "完成采购前请选择采购人" else "$name 还没有选择采购人"
+            return
+        }
+
+        val targets =
+            pendingRows.mapNotNull { row ->
+                val fruit =
+                    fruits.firstOrNull { it.id == row.fruitId }
+                        ?: row.fruitId?.let { id ->
+                            row.fruitNameSnapshot.takeIf { it.isNotBlank() }?.let { name ->
+                                FruitOption(id, name, row.unit)
+                            }
+                        }
+                val buyer = row.buyerId?.let { id -> partners.firstOrNull { it.id == id } }
+                if (fruit == null || buyer == null) null else Triple(row, fruit, buyer)
+            }
+
+        if (targets.size != pendingRows.size) {
+            message = "有商品或采购人已失效，请重新选择后再完成采购"
+            return
+        }
+
+        // 先把当前输入完整保存为采购计划，再逐项转为正式采购。
+        // 所有输入已经在上面完成预校验，避免常见的“完成一半才发现缺采购人”。
+        val prepared = mutableListOf<Pair<Long, Triple<PurchaseDraftRow, FruitOption, PartnerOption>>>()
+        for (target in targets) {
+            val row = target.first
+            val fruit = target.second
+            val buyer = target.third
+            val itemId =
+                db.upsertPurchaseDraftToCollaboration(
+                    date = date,
+                    itemId = row.planItemId,
+                    fruit = fruit,
+                    quantity = row.quantity.toDouble(),
+                    unit = row.unit,
+                    estimatedAmount = row.totalCost.toDouble(),
+                    buyer = buyer
+                )
+            if (itemId <= 0L) {
+                message = "${fruit.name} 保存采购数据失败，请重试"
+                return
+            }
+            prepared += itemId to target
+        }
+
+        db.updatePurchasePlanNote(date, remark)
+
+        var completedCount = 0
+        var failedMessage = ""
+        for ((itemId, target) in prepared) {
+            val row = target.first
+            val buyer = target.third
+            val result =
+                db.completeCollaborationPlanItem(
+                    itemId = itemId,
+                    buyer = buyer,
+                    actualQuantity = row.quantity.toDouble(),
+                    actualAmount = row.totalCost.toDouble(),
+                    recorderUsername = "",
+                    recorderDisplayName = ""
+                )
+            if (!result.success) {
+                failedMessage = result.message
+                break
+            }
+            completedCount++
+        }
+
+        loadRowsFromCollaborationPlan()
+        onChanged()
+
+        message =
+            when {
+                completedCount == prepared.size ->
+                    "已完成采购 ${completedCount} 项，已计入当天进货"
+                completedCount > 0 ->
+                    "已完成 $completedCount 项；其余未完成：${failedMessage.ifBlank { "请刷新后重试" }}"
+                else ->
+                    failedMessage.ifBlank { "完成采购失败，请刷新后重试" }
+            }
+    }
+
     LaunchedEffect(date, editingOrderId) {
         if (editingOrderId == null) loadRowsFromCollaborationPlan()
     }
@@ -2648,7 +2778,7 @@ private fun PurchaseScreen(
 
             when {
                 completed -> {
-                    // 已完成项目统一放到“保存采购”下方，避免和待采购混在一起。
+                    // 已完成项目统一放到操作按钮下方，避免和待采购混在一起。
                 }
 
                 savedPending && !editingSavedPending -> {
@@ -2668,7 +2798,7 @@ private fun PurchaseScreen(
 
                 else -> {
                     // FIX2：采购录入不再随输入自动写入协作采购。
-                    // 只有点击“保存采购”/“保存修改”时才持久化，避免输入数量时误保存。
+                    // 只有点击“计划采购”/“保存计划”/“完成采购”时才持久化，避免输入数量时误保存。
                     PurchaseDraftRowEditor(
                         row = row,
                         fruits = fruits,
@@ -2768,12 +2898,40 @@ private fun PurchaseScreen(
                 Modifier.fillMaxWidth()
             )
 
-            Button(
-                onClick = {
-                    focusManager.clearFocus()
-                    if (editingOrderId == null) {
-                        saveCollaborationDrafts()
-                    } else {
+            if (editingOrderId == null) {
+                val hasSavedPending =
+                    meaningfulRows().any { row ->
+                        row.planItemId != null && collaborationItemFor(row)?.status == 0
+                    }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 7.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            saveCollaborationDrafts()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(if (hasSavedPending) "保存计划" else "计划采购")
+                    }
+
+                    Button(
+                        onClick = {
+                            focusManager.clearFocus()
+                            completeCollaborationDrafts()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("完成采购")
+                    }
+                }
+            } else {
+                Button(
+                    onClick = {
+                        focusManager.clearFocus()
                         val filledRows = meaningfulRows()
                         when {
                             editBuyer == null -> message = "请选择采购人"
@@ -2809,11 +2967,11 @@ private fun PurchaseScreen(
                                 }
                             }
                         }
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().padding(top = 7.dp)
-            ) {
-                Text(if (editingOrderId == null) "保存采购" else "保存修改")
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(top = 7.dp)
+                ) {
+                    Text("保存修改")
+                }
             }
         }
 
