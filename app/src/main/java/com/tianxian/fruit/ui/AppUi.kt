@@ -238,7 +238,6 @@ fun TianXianApp(
     ledgerManager: LedgerManager,
     cloudSyncManager: CloudSyncManager,
     currentBook: LedgerBook,
-    syncRefreshVersion: Int = 0,
     onSwitchBook: (String) -> Unit
 ) {
     var page by remember {
@@ -260,11 +259,14 @@ fun TianXianApp(
         mutableIntStateOf(0)
     }
 
+    val syncRefreshVersion =
+        SyncUiRefreshBus.version.intValue
+
     LaunchedEffect(
         syncRefreshVersion
     ) {
         if (syncRefreshVersion > 0) {
-            // 只让当前 Compose 页面重新读取本地数据库；
+            // 自动同步完成后只刷新当前 Compose 数据缓存；
             // 不调用 notifyDataChanged()，避免再次调度云同步。
             dataVersion++
         }
