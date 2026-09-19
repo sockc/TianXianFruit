@@ -238,6 +238,7 @@ fun TianXianApp(
     ledgerManager: LedgerManager,
     cloudSyncManager: CloudSyncManager,
     currentBook: LedgerBook,
+    syncRefreshVersion: Int = 0,
     onSwitchBook: (String) -> Unit
 ) {
     var page by remember {
@@ -257,6 +258,16 @@ fun TianXianApp(
     }
     var dataVersion by remember {
         mutableIntStateOf(0)
+    }
+
+    LaunchedEffect(
+        syncRefreshVersion
+    ) {
+        if (syncRefreshVersion > 0) {
+            // 只让当前 Compose 页面重新读取本地数据库；
+            // 不调用 notifyDataChanged()，避免再次调度云同步。
+            dataVersion++
+        }
     }
 
     var authVersion by remember {
@@ -285,34 +296,6 @@ fun TianXianApp(
             )
         }
         return
-    }
-
-    val autoSyncUiHandler =
-        remember {
-            Handler(
-                Looper.getMainLooper()
-            )
-        }
-
-    DisposableEffect(
-        cloudSyncManager
-    ) {
-        cloudSyncManager
-            .setAutoSyncListener {
-                autoSyncUiHandler
-                    .post {
-                        // 只刷新本地查询缓存，不再次触发自动同步，
-                        // 避免“同步完成 -> 再同步”的循环。
-                        dataVersion++
-                    }
-            }
-
-        onDispose {
-            cloudSyncManager
-                .setAutoSyncListener(
-                    null
-                )
-        }
     }
 
     LaunchedEffect(
