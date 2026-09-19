@@ -138,12 +138,12 @@ class CloudSyncManager(
 
     @Volatile
     private var autoSyncListener:
-        ((CloudSyncResult) -> Unit)? =
+        (() -> Unit)? =
         null
 
     fun setAutoSyncListener(
         listener:
-            ((CloudSyncResult) -> Unit)?
+            (() -> Unit)?
     ) {
         autoSyncListener = listener
     }
@@ -1173,15 +1173,15 @@ class CloudSyncManager(
                             seedDefaults = false
                         )
 
-                    var completedResult:
-                        CloudSyncResult? = null
+                    var syncSucceeded =
+                        false
 
                     try {
-                        completedResult =
-                            syncCurrentBook(
-                                db = localDb,
-                                book = liveBook
-                            )
+                        syncCurrentBook(
+                            db = localDb,
+                            book = liveBook
+                        )
+                        syncSucceeded = true
                     } catch (
                         error: Throwable
                     ) {
@@ -1196,15 +1196,12 @@ class CloudSyncManager(
                         localDb.close()
                     }
 
-                    completedResult
-                        ?.let { result ->
-                            runCatching {
-                                autoSyncListener
-                                    ?.invoke(
-                                        result
-                                    )
-                            }
+                    if (syncSucceeded) {
+                        runCatching {
+                            autoSyncListener
+                                ?.invoke()
                         }
+                    }
                 }
             } finally {
                 autoRunning.set(false)
