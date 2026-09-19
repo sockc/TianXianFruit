@@ -287,6 +287,47 @@ fun TianXianApp(
         return
     }
 
+    val autoSyncUiHandler =
+        remember {
+            Handler(
+                Looper.getMainLooper()
+            )
+        }
+
+    DisposableEffect(
+        cloudSyncManager
+    ) {
+        cloudSyncManager
+            .setAutoSyncListener {
+                autoSyncUiHandler
+                    .post {
+                        // 只刷新本地查询缓存，不再次触发自动同步，
+                        // 避免“同步完成 -> 再同步”的循环。
+                        dataVersion++
+                    }
+            }
+
+        onDispose {
+            cloudSyncManager
+                .setAutoSyncListener(
+                    null
+                )
+        }
+    }
+
+    LaunchedEffect(
+        authSession.username,
+        currentBook.id
+    ) {
+        // MainActivity.onResume 会负责启动/回前台同步；
+        // 这里再调度一次可覆盖“登录完成时 Activity 已处于 RESUMED”
+        // 的场景，CloudSyncManager 会自动合并重复请求。
+        cloudSyncManager
+            .scheduleAutoSync(
+                currentBook
+            )
+    }
+
     val context =
         LocalContext.current
 
