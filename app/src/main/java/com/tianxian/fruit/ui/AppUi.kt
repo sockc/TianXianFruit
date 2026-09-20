@@ -38,6 +38,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -250,6 +253,9 @@ fun TianXianApp(
         mutableStateOf(
             AppPage.HOME
         )
+    }
+    var workDate by remember(currentBook.id) {
+        mutableStateOf(LocalDate.now().toString())
     }
     var moreTarget by remember {
         mutableStateOf(
@@ -683,6 +689,8 @@ fun TianXianApp(
                         InventoryScreen(
                             db = db,
                             dataVersion = dataVersion,
+                            workDate = workDate,
+                            onWorkDateChange = { workDate = it },
                             onChanged = { notifyDataChanged() }
                         )
                     AppPage.PURCHASE ->
@@ -690,6 +698,8 @@ fun TianXianApp(
                             db = db,
                             dataVersion =
                                 dataVersion,
+                            workDate = workDate,
+                            onWorkDateChange = { workDate = it },
                             onChanged = {
                                 notifyDataChanged()
                             },
@@ -721,6 +731,8 @@ fun TianXianApp(
                         SessionScreen(
                             db = db,
                             dataVersion = dataVersion,
+                            workDate = workDate,
+                            onWorkDateChange = { workDate = it },
                             onChanged = { notifyDataChanged() },
                             protectHistoricalAction =
                                 protectHistoricalAction,
@@ -737,6 +749,8 @@ fun TianXianApp(
                         SettlementScreen(
                             db = db,
                             dataVersion = dataVersion,
+                            workDate = workDate,
+                            onWorkDateChange = { workDate = it },
                             protectHistoricalAction = protectHistoricalAction,
                             onChanged = { notifyDataChanged() }
                         )
@@ -1921,9 +1935,11 @@ private fun chineseWeekday(date: LocalDate): String = when (date.dayOfWeek.value
 private fun InventoryScreen(
     db: AppDatabase,
     dataVersion: Int,
+    workDate: String,
+    onWorkDateChange: (String) -> Unit,
     onChanged: () -> Unit
 ) {
-    var date by remember { mutableStateOf(LocalDate.now().toString()) }
+    val date = workDate
     var message by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
     val remainingInputs = remember { mutableStateMapOf<String, String>() }
@@ -1967,7 +1983,7 @@ private fun InventoryScreen(
                 modifier = Modifier.fillMaxWidth(),
                 chineseDisplay = true,
                 showWeekday = true,
-                onDate = { date = it }
+                onDate = onWorkDateChange
             )
         }
 
@@ -2566,13 +2582,15 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
 private fun PurchaseScreen(
     db: AppDatabase,
     dataVersion: Int,
+    workDate: String,
+    onWorkDateChange: (String) -> Unit,
     onChanged: () -> Unit,
     protectHistoricalAction:
         (String, String, () -> Unit) -> Unit,
     onOpenHistory: () -> Unit
 ) {
     val focusManager = LocalFocusManager.current
-    var date by remember { mutableStateOf(LocalDate.now().toString()) }
+    val date = workDate
     val fruits = remember(dataVersion) { db.getFruits() }
     val partners = remember(dataVersion) { db.getPartners() }
 
@@ -2601,6 +2619,9 @@ private fun PurchaseScreen(
                 fruitId = product?.id,
                 fruitNameSnapshot = product?.name.orEmpty(),
                 unit = product?.defaultUnit ?: "件",
+                quantity = "1",
+                unitPrice = "0",
+                totalCost = "0",
                 buyerId = defaultBuyerId(),
                 buyerNameSnapshot = defaultBuyerName()
             )
@@ -2651,6 +2672,9 @@ private fun PurchaseScreen(
             fruitId = product?.id,
             fruitNameSnapshot = product?.name.orEmpty(),
             unit = product?.defaultUnit ?: "件",
+            quantity = "1",
+            unitPrice = "0",
+            totalCost = "0",
             buyerId = defaultBuyerId(),
             buyerNameSnapshot = defaultBuyerName()
         )
@@ -2678,9 +2702,9 @@ private fun PurchaseScreen(
 
     fun isDefaultEmptyRow(row: PurchaseDraftRow): Boolean =
         row.fruitId == defaultProduct()?.id &&
-            row.quantity.isBlank() &&
-            row.unitPrice.isBlank() &&
-            row.totalCost.isBlank()
+            (row.quantity.isBlank() || row.quantity == "1") &&
+            (row.unitPrice.isBlank() || row.unitPrice == "0") &&
+            (row.totalCost.isBlank() || row.totalCost == "0")
 
     fun meaningfulRows(): List<PurchaseDraftRow> =
         rows.filterNot { it.isBlank || isDefaultEmptyRow(it) }
@@ -2709,8 +2733,8 @@ private fun PurchaseScreen(
                     unit = item.unit,
                     quantity = cleanNumber(quantityValue),
                     unitPrice =
-                        if (quantityValue > 0 && totalValue > 0) cleanNumber(totalValue / quantityValue) else "",
-                    totalCost = if (totalValue > 0) cleanNumber(totalValue) else "",
+                        if (quantityValue > 0 && totalValue >= 0) cleanNumber(totalValue / quantityValue) else "0",
+                    totalCost = if (totalValue >= 0) cleanNumber(totalValue) else "0",
                     buyerId = item.buyerId.takeIf { it > 0L },
                     buyerNameSnapshot = item.buyerName,
                     priceSource = PurchasePriceSource.TOTAL
@@ -2733,7 +2757,7 @@ private fun PurchaseScreen(
 
     fun loadHistoryOrderForEdit(detail: PurchaseOrderDetail) {
         editingOrderId = detail.order.id
-        date = detail.order.date
+        onWorkDateChange(detail.order.date)
         editBuyerId = detail.order.buyerId
         historicalBuyerName = detail.order.buyerName
         remark = detail.order.remark
@@ -3031,7 +3055,6 @@ private fun PurchaseScreen(
                                 editBuyerId = null
                                 historicalBuyerName = ""
                                 remark = ""
-                                date = LocalDate.now().toString()
                                 resetRowsToOneBlank()
                                 message = "已取消编辑"
                             }
@@ -3049,7 +3072,7 @@ private fun PurchaseScreen(
                     modifier = Modifier.fillMaxWidth(),
                     chineseDisplay = true,
                     showWeekday = true
-                ) { date = it }
+                ) { onWorkDateChange(it) }
             } else {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -3062,7 +3085,7 @@ private fun PurchaseScreen(
                         modifier = Modifier.weight(1f),
                         chineseDisplay = true,
                         showWeekday = true
-                    ) { date = it }
+                    ) { onWorkDateChange(it) }
 
                     Box(Modifier.width(110.dp)) {
                         CompactSelectButton(
@@ -4706,11 +4729,13 @@ private fun PurchaseDraftRowEditor(
                     }
                 }
 
-                CompactNumberField(
-                    "数量",
-                    row.quantity,
-                    { updateQuantity(it) },
-                    Modifier.weight(0.72f)
+                PurchaseDefaultNumberField(
+                    label = "数量",
+                    value = row.quantity,
+                    defaultValue = "1",
+                    stateKey = "${row.rowId}:quantity",
+                    onValue = { updateQuantity(it) },
+                    modifier = Modifier.weight(0.72f)
                 )
 
                 Box(Modifier.width(74.dp)) {
@@ -4744,17 +4769,21 @@ private fun PurchaseDraftRowEditor(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
-                CompactNumberField(
-                    "单价",
-                    row.unitPrice,
-                    { updateUnitPrice(it) },
-                    Modifier.weight(1f)
+                PurchaseDefaultNumberField(
+                    label = "单价",
+                    value = row.unitPrice,
+                    defaultValue = "0",
+                    stateKey = "${row.rowId}:unitPrice",
+                    onValue = { updateUnitPrice(it) },
+                    modifier = Modifier.weight(1f)
                 )
-                CompactNumberField(
-                    "总价",
-                    row.totalCost,
-                    { updateTotal(it) },
-                    Modifier.weight(1f)
+                PurchaseDefaultNumberField(
+                    label = "总价",
+                    value = row.totalCost,
+                    defaultValue = "0",
+                    stateKey = "${row.rowId}:totalCost",
+                    onValue = { updateTotal(it) },
+                    modifier = Modifier.weight(1f)
                 )
 
                 if (showBuyer) {
@@ -4807,12 +4836,14 @@ private fun PurchaseDraftRowEditor(
 private fun SessionScreen(
     db: AppDatabase,
     dataVersion: Int,
+    workDate: String,
+    onWorkDateChange: (String) -> Unit,
     onChanged: () -> Unit,
     protectHistoricalAction:
         (String, String, () -> Unit) -> Unit,
     onOpenHistory: () -> Unit
 ) {
-    var date by remember { mutableStateOf(LocalDate.now().toString()) }
+    val date = workDate
     val stores = remember(dataVersion) { db.getStores() }
     val partners = remember(dataVersion) { db.getPartners() }
 
@@ -4903,7 +4934,7 @@ private fun SessionScreen(
     val sharedPurchase = remember(dataVersion, date) { db.getPurchaseTotal(date) }
 
     fun clearForm(keepDate: Boolean = true) {
-        if (!keepDate) date = LocalDate.now().toString()
+        if (!keepDate) onWorkDateChange(LocalDate.now().toString())
         editingRecordId = null
         historicalStoreName = ""
         historicalExpensePayerName = ""
@@ -4926,7 +4957,7 @@ private fun SessionScreen(
 
     fun loadRecord(r: StoreDailyRecord) {
         editingRecordId = r.id
-        date = r.date
+        onWorkDateChange(r.date)
         storeId = r.storeId
         historicalStoreName = r.storeName
         receiptRows.clear()
@@ -5119,7 +5150,7 @@ private fun SessionScreen(
                 modifier = Modifier.fillMaxWidth(),
                 chineseDisplay = true,
                 showWeekday = true
-            ) { date = it }
+            ) { onWorkDateChange(it) }
         }
 
         if (todayRecords.isNotEmpty()) {
@@ -5940,6 +5971,8 @@ private fun MoneyCollectorRow(
 private fun SettlementScreen(
     db: AppDatabase,
     dataVersion: Int,
+    workDate: String,
+    onWorkDateChange: (String) -> Unit,
     protectHistoricalAction: (String, String, () -> Unit) -> Unit,
     onChanged: () -> Unit
 ) {
@@ -5978,6 +6011,8 @@ private fun SettlementScreen(
                 SettlementDayContent(
                     db = db,
                     dataVersion = dataVersion,
+                    workDate = workDate,
+                    onWorkDateChange = onWorkDateChange,
                     protectHistoricalAction = protectHistoricalAction,
                     onChanged = onChanged
                 )
@@ -6120,11 +6155,13 @@ private fun reportLinesToPlainText(lines: List<ReportLine>): String =
 private fun SettlementDayContent(
     db: AppDatabase,
     dataVersion: Int,
+    workDate: String,
+    onWorkDateChange: (String) -> Unit,
     protectHistoricalAction: (String, String, () -> Unit) -> Unit,
     onChanged: () -> Unit
 ) {
     val context = LocalContext.current
-    var date by remember { mutableStateOf(LocalDate.now().toString()) }
+    val date = workDate
     var message by remember { mutableStateOf("") }
     var deleteId by remember { mutableStateOf<Long?>(null) }
     var settleTransfer by remember {
@@ -6248,7 +6285,7 @@ private fun SettlementDayContent(
                 chineseDisplay = true,
                 showWeekday = true
             ) {
-                date = it
+                onWorkDateChange(it)
                 message = ""
             }
         }
@@ -13068,17 +13105,41 @@ private fun HistoryContent(
     val sessions = remember(dataVersion, queryStart, queryEnd) {
         db.getDailyRecordsBetween(queryStart, queryEnd)
     }
-    val profitRows = remember(dataVersion, queryStart, queryEnd) {
-        db.getProfitDistributionsBetween(queryStart, queryEnd)
-    }
     val purchasePlans = remember(dataVersion, queryStart, queryEnd) {
         db.getPurchasePlansBetween(queryStart, queryEnd)
     }
-    val profitByDate = remember(profitRows) {
-        profitRows
-            .groupBy { it.date }
-            .toList()
-            .sortedByDescending { it.first }
+    val profitHistoryDates = remember(sessions, purchases) {
+        (
+            sessions.map { it.date } +
+                purchases.map { it.order.date }
+            )
+            .distinct()
+            .sortedDescending()
+    }
+    val profitHistoryByDate = remember(dataVersion, profitHistoryDates) {
+        profitHistoryDates.map { historyDate ->
+            Triple(
+                historyDate,
+                db.getDailySummary(historyDate),
+                db.getEffectiveProfitShares(historyDate)
+            )
+        }
+    }
+    val profitPeriodTotal = remember(profitHistoryByDate) {
+        profitHistoryByDate.sumOf { it.second.profit }
+    }
+    val profitPartnerTotals = remember(profitHistoryByDate) {
+        profitHistoryByDate
+            .flatMap { it.third }
+            .groupBy { it.partnerId to it.partnerName }
+            .map { (key, rows) ->
+                PartnerMoneySummary(
+                    partnerId = key.first,
+                    partnerName = key.second,
+                    amount = rows.sumOf { it.amount }
+                )
+            }
+            .sortedByDescending { it.amount }
     }
     val businessHistoryByDate = remember(sessions) {
         sessions
@@ -13198,7 +13259,7 @@ private fun HistoryContent(
                         "${businessHistoryByDate.size} 个营业日 · ${sessions.size} 条记录"
                     HistorySection.PURCHASE ->
                         "${purchaseHistoryByDate.size} 个采购日 · ${purchases.size} 张采购单"
-                    HistorySection.PROFIT -> "${profitByDate.size} 天利润记录"
+                    HistorySection.PROFIT -> "${profitHistoryByDate.size} 天利润记录"
                     HistorySection.PLAN -> "${purchasePlans.size} 张采购计划"
                 }
             Card(
@@ -13222,6 +13283,60 @@ private fun HistoryContent(
                         style = MaterialTheme.typography.bodySmall,
                         color = BrandGreen
                     )
+                }
+            }
+        }
+
+        if (section == HistorySection.PROFIT && profitHistoryByDate.isNotEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFFF7FBF8)
+                    )
+                ) {
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            "时间范围利润汇总",
+                            fontWeight = FontWeight.Bold
+                        )
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "总利润",
+                                modifier = Modifier.weight(1f),
+                                color = Color.Gray
+                            )
+                            Text(
+                                money(profitPeriodTotal),
+                                fontWeight = FontWeight.Bold,
+                                color =
+                                    if (profitPeriodTotal >= 0.0) BrandGreen
+                                    else MaterialTheme.colorScheme.error
+                            )
+                        }
+                        HorizontalDivider()
+                        profitPartnerTotals.forEach { row ->
+                            Row(Modifier.fillMaxWidth()) {
+                                Text(
+                                    row.partnerName,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    money(row.amount),
+                                    fontWeight = FontWeight.SemiBold,
+                                    color =
+                                        if (row.amount >= 0.0) BrandGreen
+                                        else MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -13310,22 +13425,51 @@ private fun HistoryContent(
                                 )
                                 HorizontalDivider(Modifier.padding(vertical = 7.dp))
 
-                                dayPurchases.forEachIndexed { orderIndex, detail ->
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                val buyerGroups =
+                                    dayPurchases
+                                        .groupBy { detail ->
+                                            if (detail.order.buyerId > 0L) {
+                                                "id:${detail.order.buyerId}"
+                                            } else {
+                                                "name:${detail.order.buyerName}"
+                                            }
+                                        }
+                                        .values
+                                        .toList()
+
+                                buyerGroups.forEachIndexed { groupIndex, buyerOrders ->
+                                    val buyerName =
+                                        buyerOrders.firstOrNull()?.order?.buyerName
+                                            ?.ifBlank { "未指定采购人" }
+                                            ?: "未指定采购人"
+                                    val buyerTotal =
+                                        buyerOrders.sumOf { it.order.totalCost }
+                                    val buyerItems =
+                                        buyerOrders.flatMap { it.items }
+
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
                                         Column(Modifier.weight(1f)) {
-                                            Text(detail.order.buyerName, fontWeight = FontWeight.SemiBold)
                                             Text(
-                                                "采购 ${money(detail.order.totalCost)}",
-                                                style = MaterialTheme.typography.bodySmall
+                                                buyerName,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                "${buyerItems.size} 项商品 · 采购 ${money(buyerTotal)}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = BrandGreen
                                             )
                                         }
 
-                                        if (canEdit) {
+                                        if (canEdit && buyerOrders.size == 1) {
+                                            val detail = buyerOrders.first()
                                             TextButton(
                                                 onClick = {
                                                     protectHistoricalAction(
                                                         detail.order.date,
-                                                        "删除 ${detail.order.date} · ${detail.order.buyerName} 采购单"
+                                                        "删除 ${detail.order.date} · $buyerName 采购单"
                                                     ) {
                                                         deleteOrder = detail
                                                     }
@@ -13336,15 +13480,39 @@ private fun HistoryContent(
                                         }
                                     }
 
-                                    detail.items.forEach { i ->
+                                    buyerItems.forEach { item ->
                                         Text(
-                                            "• ${i.fruitName} ${fmt(i.quantity)}${i.unit} ${money(i.totalCost)}",
+                                            "• ${item.fruitName} ${fmt(item.quantity)}${item.unit} ${money(item.totalCost)}",
                                             style = MaterialTheme.typography.bodySmall
                                         )
                                     }
 
-                                    if (orderIndex < dayPurchases.lastIndex) {
-                                        HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                                    if (canEdit && buyerOrders.size > 1) {
+                                        Row(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState()),
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            buyerOrders.forEachIndexed { orderIndex, detail ->
+                                                TextButton(
+                                                    onClick = {
+                                                        protectHistoricalAction(
+                                                            detail.order.date,
+                                                            "删除 ${detail.order.date} · $buyerName 采购单"
+                                                        ) {
+                                                            deleteOrder = detail
+                                                        }
+                                                    }
+                                                ) {
+                                                    Text("删除单${orderIndex + 1}")
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if (groupIndex < buyerGroups.lastIndex) {
+                                        HorizontalDivider(Modifier.padding(vertical = 7.dp))
                                     }
                                 }
                             }
@@ -13354,32 +13522,36 @@ private fun HistoryContent(
             }
 
             HistorySection.PROFIT -> {
-                if (profitByDate.isEmpty()) {
+                if (profitHistoryByDate.isEmpty()) {
                     item {
                         Text("当前时间范围暂无利润记录", color = Color.Gray)
                     }
                 }
 
-                profitByDate.forEach { entry ->
-                    val historyDate = entry.first
-                    val rows = entry.second
+                profitHistoryByDate.forEach { (historyDate, daySummary, shares) ->
                     item(key = "profit-$historyDate") {
                         Card(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(11.dp)) {
-                                Text(historyDate, fontWeight = FontWeight.Bold)
                                 Text(
-                                    "利润 " +
-                                        money(rows.firstOrNull()?.sourceProfit ?: 0.0) +
-                                        " · 已分配 " +
-                                        money(rows.sumOf { it.allocatedProfit }),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Color.Gray
+                                    "$historyDate ${runCatching { chineseWeekday(LocalDate.parse(historyDate)) }.getOrDefault("")}",
+                                    fontWeight = FontWeight.Bold
                                 )
-                                rows.forEach { r ->
+                                Text(
+                                    "当日利润 ${money(daySummary.profit)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color =
+                                        if (daySummary.profit >= 0.0) BrandGreen
+                                        else MaterialTheme.colorScheme.error
+                                )
+                                shares.forEach { share ->
+                                    val ratio =
+                                        if (kotlin.math.abs(daySummary.profit) > 0.005) {
+                                            share.amount / daySummary.profit * 100.0
+                                        } else {
+                                            0.0
+                                        }
                                     Text(
-                                        "• ${r.partnerName} " +
-                                            "${fmt(profitRatioPercent(r.ratio))}%  " +
-                                            money(r.allocatedProfit),
+                                        "• ${share.partnerName} ${fmt(ratio)}%  ${money(share.amount)}",
                                         style = MaterialTheme.typography.bodySmall
                                     )
                                 }
@@ -17523,6 +17695,115 @@ private fun CompactNumberField(label: String, value: String, onValue: (String) -
         accept = { it.matches(Regex("^\\d*(\\.\\d{0,2})?$")) },
         onValue = onValue
     )
+}
+
+@Composable
+private fun PurchaseDefaultNumberField(
+    label: String,
+    value: String,
+    defaultValue: String,
+    stateKey: String,
+    onValue: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var fieldValue by remember(stateKey) {
+        mutableStateOf(
+            TextFieldValue(
+                text = value,
+                selection = TextRange(value.length)
+            )
+        )
+    }
+    var defaultSelectionPending by remember(stateKey) { mutableStateOf(true) }
+    var firstEditPending by remember(stateKey) { mutableStateOf(true) }
+
+    LaunchedEffect(value) {
+        if (fieldValue.text != value) {
+            fieldValue =
+                TextFieldValue(
+                    text = value,
+                    selection = TextRange(value.length)
+                )
+        }
+    }
+
+    Column(modifier) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.Gray,
+            maxLines = 1
+        )
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(36.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .border(1.dp, Color(0xFFB8BDC5), RoundedCornerShape(8.dp))
+                .background(Color.White)
+                .padding(horizontal = 8.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            BasicTextField(
+                value = fieldValue,
+                onValueChange = { next ->
+                    val candidate =
+                        if (
+                            firstEditPending &&
+                            fieldValue.text == defaultValue &&
+                            next.text != defaultValue
+                        ) {
+                            when {
+                                next.text.length > defaultValue.length &&
+                                    next.text.startsWith(defaultValue) ->
+                                    next.text.removePrefix(defaultValue)
+
+                                next.text.length > defaultValue.length &&
+                                    next.text.endsWith(defaultValue) ->
+                                    next.text.removeSuffix(defaultValue)
+
+                                else -> next.text
+                            }
+                        } else {
+                            next.text
+                        }
+
+                    if (candidate.matches(Regex("^\\d*(\\.\\d{0,2})?$"))) {
+                        firstEditPending = false
+                        fieldValue =
+                            TextFieldValue(
+                                text = candidate,
+                                selection = TextRange(candidate.length)
+                            )
+                        onValue(candidate)
+                    }
+                },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                textStyle =
+                    MaterialTheme.typography.bodyMedium.copy(
+                        fontSize = 13.sp,
+                        color = Color(0xFF222222)
+                    ),
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { state ->
+                            if (
+                                state.isFocused &&
+                                defaultSelectionPending &&
+                                fieldValue.text == defaultValue
+                            ) {
+                                fieldValue =
+                                    fieldValue.copy(
+                                        selection = TextRange(0, fieldValue.text.length)
+                                    )
+                                defaultSelectionPending = false
+                            }
+                        }
+            )
+        }
+    }
 }
 
 @Composable
