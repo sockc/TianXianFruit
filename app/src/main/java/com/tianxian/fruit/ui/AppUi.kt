@@ -96,6 +96,7 @@ private enum class MorePage {
     HISTORY,
     PURCHASE_ACTIVITY,
     STATS,
+    PERSONAL_SUMMARY,
     BACKUP,
     PARTNERS,
     STORES,
@@ -8474,6 +8475,15 @@ private fun MoreScreen(
                                 sub =
                                     MorePage.STATS
                             }
+
+                            SettingsDivider()
+                            SettingsRow(
+                                "👤",
+                                "个人汇总"
+                            ) {
+                                sub =
+                                    MorePage.PERSONAL_SUMMARY
+                            }
                         }
 
                         if (
@@ -8912,6 +8922,21 @@ private fun MoreScreen(
             }
         }
 
+        MorePage.PERSONAL_SUMMARY -> {
+            SubPage(
+                "个人汇总",
+                {
+                    sub =
+                        MorePage.MENU
+                }
+            ) {
+                PersonalSummaryContent(
+                    db = db,
+                    dataVersion = dataVersion
+                )
+            }
+        }
+
         MorePage.BACKUP -> {
             SubPage(
                 "数据备份",
@@ -8994,6 +9019,1133 @@ private fun MoreScreen(
                     dataVersion = dataVersion
                 )
             }
+        }
+    }
+}
+
+
+private enum class PersonalTrendMetric(val label: String) {
+    RECEIPT("收款"),
+    PURCHASE("采购"),
+    PROFIT("利润")
+}
+
+private data class PersonalReceiptChannels(
+    val wechat: Double,
+    val alipay: Double,
+    val cash: Double
+)
+
+@Composable
+private fun PersonalSummaryContent(
+    db: AppDatabase,
+    dataVersion: Int
+) {
+    val today = LocalDate.now()
+    var filter by remember {
+        mutableStateOf(HistoryTimeFilter.LAST_30)
+    }
+    var customStart by remember {
+        mutableStateOf(today.minusDays(29).toString())
+    }
+    var customEnd by remember {
+        mutableStateOf(today.toString())
+    }
+    var selectedPartnerId by remember {
+        mutableStateOf<Long?>(null)
+    }
+    var trendMetric by remember {
+        mutableStateOf(PersonalTrendMetric.RECEIPT)
+    }
+
+    val invalidCustom =
+        filter == HistoryTimeFilter.CUSTOM &&
+            customStart > customEnd
+    val range =
+        resolveTimeRange(
+            filter,
+            customStart,
+            customEnd,
+            today
+        )
+    val queryStart =
+        if (invalidCustom) "9999-12-31" else range.first
+    val queryEnd =
+        if (invalidCustom) {
+            "0000-01-01"
+        } else {
+            range.second ?: today.toString()
+        }
+
+    val partnerSummaries =
+        remember(
+            dataVersion,
+            queryStart,
+            queryEnd,
+            invalidCustom
+        ) {
+            if (invalidCustom) {
+                emptyList()
+            } else {
+                db.getPartnerFundPeriodSummaries(
+                    queryStart,
+                    queryEnd
+                )
+            }
+        }
+
+    val activePartners =
+        remember(dataVersion) {
+            db.getPartners()
+        }
+    val orderedSummaries =
+        remember(
+            partnerSummaries,
+            activePartners
+        ) {
+            val byId =
+                partnerSummaries.associateBy {
+                    it.partnerId
+                }
+            val activeIds =
+                activePartners.map { it.id }.toSet()
+            buildList {
+                activePartners.forEach { p ->
+                    byId[p.id]?.let(::add)
+                }
+                partnerSummaries
+                    .filter { it.partnerId !in activeIds }
+                    .forEach(::add)
+            }
+        }
+
+    BackHandler(
+        enabled = selectedPartnerId != null
+    ) {
+        selectedPartnerId = null
+    }
+
+    val selectedSummary =
+        selectedPartnerId?.let { id ->
+            orderedSummaries.firstOrNull {
+                it.partnerId == id
+            }
+        }
+
+    if (selectedPartnerId == null) {
+        LazyColumn(
+            Modifier
+                .fillMaxSize()
+                .background(Color(0xFFF6F6F6)),
+            contentPadding =
+                PaddingValues(
+                    horizontal = 12.dp,
+                    vertical = 10.dp
+                ),
+            verticalArrangement =
+                Arrangement.spacedBy(10.dp)
+        ) {
+            item {
+                TimeFilterSelector(
+                    filter = filter,
+                    onFilterChange = {
+                        filter = it
+                    },
+                    customStart = customStart,
+                    onCustomStart = {
+                        customStart = it
+                    },
+                    customEnd = customEnd,
+                    onCustomEnd = {
+                        customEnd = it
+                    }
+                )
+            }
+
+            if (invalidCustom) {
+                item {
+                    Text(
+                        "开始日期不能晚于结束日期",
+                        color =
+                            MaterialTheme.colorScheme.error
+                    )
+                }
+            } else if (orderedSummaries.isEmpty()) {
+                item {
+                    Card(
+                        Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            "当前时间范围暂无合伙人数据",
+                            Modifier.padding(16.dp),
+                            color = Color.Gray
+                        )
+                    }
+                }
+            } else {
+                items(
+                    orderedSummaries,
+                    key = { it.partnerId }
+                ) { summary ->
+                    val sourceGap =
+                        summary.purchasePaid +
+                            summary.expensePaid +
+                            summary.profitShare -
+                            summary.revenueReceived
+                    val afterTransfer =
+                        sourceGap +
+                            summary.settlementSent -
+                            summary.settlementReceived
+
+                    Card(
+                        onClick = {
+                            selectedPartnerId =
+                                summary.partnerId
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors =
+                            CardDefaults.cardColors(
+                                containerColor = Color.White
+                            )
+                    ) {
+                        Column(
+                            Modifier.padding(14.dp),
+                            verticalArrangement =
+                                Arrangement.spacedBy(9.dp)
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment =
+                                    Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    summary.partnerName,
+                                    style =
+                                        MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    "查看明细 ›",
+                                    color = BrandGreen,
+                                    style =
+                                        MaterialTheme.typography.bodySmall
+                                )
+                            }
+
+                            Row(
+                                horizontalArrangement =
+                                    Arrangement.spacedBy(8.dp)
+                            ) {
+                                MiniSummaryCard(
+                                    "采购额",
+                                    money(summary.purchasePaid),
+                                    Modifier.weight(1f),
+                                    SoftOrange
+                                )
+                                MiniSummaryCard(
+                                    "收款",
+                                    money(summary.revenueReceived),
+                                    Modifier.weight(1f),
+                                    SoftBlue
+                                )
+                            }
+                            Row(
+                                horizontalArrangement =
+                                    Arrangement.spacedBy(8.dp)
+                            ) {
+                                MiniSummaryCard(
+                                    "个人利润",
+                                    money(summary.profitShare),
+                                    Modifier.weight(1f),
+                                    SoftGreen
+                                )
+                                MiniSummaryCard(
+                                    "个人开销",
+                                    money(summary.expensePaid),
+                                    Modifier.weight(1f),
+                                    SoftPurple
+                                )
+                            }
+
+                            HorizontalDivider(
+                                color = Color(0xFFECECEC)
+                            )
+
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement =
+                                    Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    "实际转入 ${money(summary.settlementReceived)}",
+                                    style =
+                                        MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFF2F6EB5)
+                                )
+                                Text(
+                                    "实际转出 ${money(summary.settlementSent)}",
+                                    style =
+                                        MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFFB06A18)
+                                )
+                            }
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement =
+                                    Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    "期间资金差 ${money(sourceGap)}",
+                                    style =
+                                        MaterialTheme.typography.bodySmall
+                                )
+                                Text(
+                                    "转账后净差 ${money(afterTransfer)}",
+                                    style =
+                                        MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color =
+                                        if (
+                                            kotlin.math.abs(
+                                                afterTransfer
+                                            ) <= 0.005
+                                        ) {
+                                            BrandGreen
+                                        } else {
+                                            Color(0xFF555555)
+                                        }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    val summary = selectedSummary
+    if (summary == null) {
+        LaunchedEffect(Unit) {
+            selectedPartnerId = null
+        }
+        return
+    }
+
+    val partnerId = summary.partnerId
+    val daily =
+        remember(
+            dataVersion,
+            partnerId,
+            queryStart,
+            queryEnd,
+            invalidCustom
+        ) {
+            if (invalidCustom) {
+                emptyList()
+            } else {
+                db.getPartnerDailyFundBalances(
+                    partnerId = partnerId,
+                    startDate = queryStart,
+                    endDate = queryEnd
+                )
+            }
+        }
+    val transfers =
+        remember(
+            dataVersion,
+            partnerId,
+            queryStart,
+            queryEnd,
+            invalidCustom
+        ) {
+            if (invalidCustom) {
+                emptyList()
+            } else {
+                db.getPartnerSettlementEvents(
+                    partnerId = partnerId,
+                    startDate = queryStart,
+                    endDate = queryEnd
+                )
+            }
+        }
+    val purchaseOrders =
+        remember(
+            dataVersion,
+            partnerId,
+            queryStart,
+            queryEnd,
+            invalidCustom
+        ) {
+            if (invalidCustom) {
+                emptyList()
+            } else {
+                db.getPurchaseOrdersBetween(
+                    queryStart,
+                    queryEnd
+                ).filter {
+                    it.order.buyerId == partnerId
+                }
+            }
+        }
+    val businessRecords =
+        remember(
+            dataVersion,
+            queryStart,
+            queryEnd,
+            invalidCustom
+        ) {
+            if (invalidCustom) {
+                emptyList()
+            } else {
+                db.getDailyRecordsBetween(
+                    queryStart,
+                    queryEnd
+                )
+            }
+        }
+    val receiptChannels =
+        remember(
+            businessRecords,
+            partnerId
+        ) {
+            var wechat = 0.0
+            var alipay = 0.0
+            var cash = 0.0
+            businessRecords.forEach { record ->
+                if (record.receiptSplits.isNotEmpty()) {
+                    record.receiptSplits
+                        .filter {
+                            it.partnerId == partnerId
+                        }
+                        .forEach {
+                            wechat += it.wechatIncome
+                            alipay += it.alipayIncome
+                            cash += it.cashIncome
+                        }
+                } else {
+                    if (
+                        record.wechatCollectorId ==
+                        partnerId
+                    ) {
+                        wechat += record.wechatIncome
+                    }
+                    if (
+                        record.alipayCollectorId ==
+                        partnerId
+                    ) {
+                        alipay += record.alipayIncome
+                    }
+                    if (
+                        record.cashCollectorId ==
+                        partnerId
+                    ) {
+                        cash += record.cashIncome
+                    }
+                }
+            }
+            PersonalReceiptChannels(
+                wechat,
+                alipay,
+                cash
+            )
+        }
+
+    val totalPeriodProfit =
+        orderedSummaries.sumOf {
+            it.profitShare
+        }
+    val profitRatio =
+        if (
+            kotlin.math.abs(totalPeriodProfit) >
+            0.005
+        ) {
+            summary.profitShare /
+                totalPeriodProfit *
+                100.0
+        } else {
+            0.0
+        }
+    val purchaseDays =
+        purchaseOrders
+            .map { it.order.date }
+            .distinct()
+            .size
+    val receiptDays =
+        daily.count {
+            kotlin.math.abs(
+                it.revenueReceived
+            ) > 0.005
+        }
+    val activityDays = daily.size
+    val averagePurchase =
+        if (purchaseOrders.isEmpty()) {
+            0.0
+        } else {
+            summary.purchasePaid /
+                purchaseOrders.size
+        }
+    val distinctFruitCount =
+        purchaseOrders
+            .flatMap { it.items }
+            .map { it.fruitId to it.fruitName }
+            .distinct()
+            .size
+    val highestProfit =
+        daily.maxOfOrNull {
+            it.profitShare
+        } ?: 0.0
+    val lowestProfit =
+        daily.minOfOrNull {
+            it.profitShare
+        } ?: 0.0
+    val sourceGap =
+        summary.purchasePaid +
+            summary.expensePaid +
+            summary.profitShare -
+            summary.revenueReceived
+    val afterTransfer =
+        sourceGap +
+            summary.settlementSent -
+            summary.settlementReceived
+
+    val trendValues =
+        remember(
+            daily,
+            trendMetric
+        ) {
+            daily
+                .asReversed()
+                .mapNotNull { row ->
+                    runCatching {
+                        LocalDate.parse(row.date)
+                    }.getOrNull()?.let { date ->
+                        val value =
+                            when (trendMetric) {
+                                PersonalTrendMetric.RECEIPT ->
+                                    row.revenueReceived
+                                PersonalTrendMetric.PURCHASE ->
+                                    row.purchasePaid
+                                PersonalTrendMetric.PROFIT ->
+                                    row.profitShare
+                            }
+                        date to value
+                    }
+                }
+        }
+
+    LazyColumn(
+        Modifier
+            .fillMaxSize()
+            .background(Color(0xFFF6F6F6)),
+        contentPadding =
+            PaddingValues(
+                horizontal = 12.dp,
+                vertical = 10.dp
+            ),
+        verticalArrangement =
+            Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            TextButton(
+                onClick = {
+                    selectedPartnerId = null
+                },
+                contentPadding =
+                    PaddingValues(horizontal = 0.dp)
+            ) {
+                Text("← 返回合伙人")
+            }
+            Text(
+                summary.partnerName,
+                style =
+                    MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        item {
+            TimeFilterSelector(
+                filter = filter,
+                onFilterChange = {
+                    filter = it
+                },
+                customStart = customStart,
+                onCustomStart = {
+                    customStart = it
+                },
+                customEnd = customEnd,
+                onCustomEnd = {
+                    customEnd = it
+                }
+            )
+        }
+
+        item {
+            Card(
+                Modifier.fillMaxWidth(),
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor = Color.White
+                    )
+            ) {
+                Column(
+                    Modifier.padding(12.dp),
+                    verticalArrangement =
+                        Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "核心汇总",
+                        fontWeight = FontWeight.Bold
+                    )
+                    Row(
+                        horizontalArrangement =
+                            Arrangement.spacedBy(8.dp)
+                    ) {
+                        MiniSummaryCard(
+                            "采购额",
+                            money(summary.purchasePaid),
+                            Modifier.weight(1f),
+                            SoftOrange
+                        )
+                        MiniSummaryCard(
+                            "收款",
+                            money(summary.revenueReceived),
+                            Modifier.weight(1f),
+                            SoftBlue
+                        )
+                    }
+                    Row(
+                        horizontalArrangement =
+                            Arrangement.spacedBy(8.dp)
+                    ) {
+                        MiniSummaryCard(
+                            "个人利润",
+                            money(summary.profitShare),
+                            Modifier.weight(1f),
+                            SoftGreen
+                        )
+                        MiniSummaryCard(
+                            "个人开销",
+                            money(summary.expensePaid),
+                            Modifier.weight(1f),
+                            SoftPurple
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                Modifier.fillMaxWidth(),
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor = Color.White
+                    )
+            ) {
+                Column(
+                    Modifier.padding(12.dp),
+                    verticalArrangement =
+                        Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "参与与效率",
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "参与日 $activityDays · 采购日 $purchaseDays · 收款日 $receiptDays",
+                        style =
+                            MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        "采购单 ${purchaseOrders.size} · 采购商品 $distinctFruitCount 种 · 平均单次采购 ${money(averagePurchase)}",
+                        style =
+                            MaterialTheme.typography.bodySmall,
+                        color = Color.DarkGray
+                    )
+                    val avgDays = activityDays.coerceAtLeast(1)
+                    Text(
+                        "日均采购 ${money(summary.purchasePaid / avgDays)} · 日均收款 ${money(summary.revenueReceived / avgDays)} · 日均利润 ${money(summary.profitShare / avgDays)}",
+                        style =
+                            MaterialTheme.typography.bodySmall,
+                        color = Color.DarkGray
+                    )
+                    Text(
+                        "期间利润占比 ${cleanPercent(profitRatio)}% · 最高单日利润 ${money(highestProfit)} · 最低 ${money(lowestProfit)}",
+                        style =
+                            MaterialTheme.typography.bodySmall,
+                        color = Color.DarkGray
+                    )
+                }
+            }
+        }
+
+        item {
+            Card(
+                Modifier.fillMaxWidth(),
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor = Color.White
+                    )
+            ) {
+                Column(
+                    Modifier.padding(12.dp),
+                    verticalArrangement =
+                        Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "收款构成",
+                        fontWeight = FontWeight.Bold
+                    )
+                    Row(
+                        horizontalArrangement =
+                            Arrangement.spacedBy(8.dp)
+                    ) {
+                        MiniSummaryCard(
+                            "微信",
+                            money(receiptChannels.wechat),
+                            Modifier.weight(1f),
+                            SoftGreen
+                        )
+                        MiniSummaryCard(
+                            "支付宝",
+                            money(receiptChannels.alipay),
+                            Modifier.weight(1f),
+                            SoftBlue
+                        )
+                        MiniSummaryCard(
+                            "现金",
+                            money(receiptChannels.cash),
+                            Modifier.weight(1f),
+                            SoftOrange
+                        )
+                    }
+                    val classifiedReceipt =
+                        receiptChannels.wechat +
+                            receiptChannels.alipay +
+                            receiptChannels.cash
+                    val unclassifiedReceipt =
+                        summary.revenueReceived -
+                            classifiedReceipt
+                    if (
+                        kotlin.math.abs(
+                            unclassifiedReceipt
+                        ) > 0.005
+                    ) {
+                        Text(
+                            "旧记录/未分类收款 ${money(unclassifiedReceipt)}",
+                            style =
+                                MaterialTheme.typography.labelSmall,
+                            color = Color.Gray
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                Modifier.fillMaxWidth(),
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor = Color.White
+                    )
+            ) {
+                Column(
+                    Modifier.padding(12.dp),
+                    verticalArrangement =
+                        Arrangement.spacedBy(7.dp)
+                ) {
+                    Text(
+                        "资金往来",
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "实际转入 ${money(summary.settlementReceived)} · 实际转出 ${money(summary.settlementSent)}"
+                    )
+                    Text(
+                        "期间资金差 ${money(sourceGap)} · 转账后净差 ${money(afterTransfer)}",
+                        color =
+                            if (
+                                kotlin.math.abs(afterTransfer) <=
+                                0.005
+                            ) {
+                                BrandGreen
+                            } else {
+                                Color.DarkGray
+                            }
+                    )
+                    if (transfers.isEmpty()) {
+                        Text(
+                            "当前范围没有实际资金转账记录",
+                            style =
+                                MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+                    } else {
+                        transfers.take(8).forEach { transfer ->
+                            val incoming =
+                                transfer.toPartnerId ==
+                                    partnerId
+                            Text(
+                                buildString {
+                                    append(transfer.date)
+                                    append("  ")
+                                    append(
+                                        if (incoming) {
+                                            "转入 "
+                                        } else {
+                                            "转出 "
+                                        }
+                                    )
+                                    append(
+                                        money(
+                                            transfer.settledAmount
+                                        )
+                                    )
+                                    append("  ")
+                                    append(
+                                        if (incoming) {
+                                            "来自 ${transfer.fromPartnerName}"
+                                        } else {
+                                            "给 ${transfer.toPartnerName}"
+                                        }
+                                    )
+                                },
+                                style =
+                                    MaterialTheme.typography.bodySmall,
+                                color = Color.DarkGray
+                            )
+                        }
+                        if (transfers.size > 8) {
+                            Text(
+                                "另有 ${transfers.size - 8} 条资金往来，可在下方每日明细查看。",
+                                style =
+                                    MaterialTheme.typography.labelSmall,
+                                color = Color.Gray
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                Modifier.fillMaxWidth(),
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor = Color.White
+                    )
+            ) {
+                Column(
+                    Modifier.padding(12.dp)
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment =
+                            Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "个人趋势",
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        PersonalTrendMetric.entries.forEach { metric ->
+                            FilterChip(
+                                selected =
+                                    trendMetric == metric,
+                                onClick = {
+                                    trendMetric = metric
+                                },
+                                label = {
+                                    Text(metric.label)
+                                },
+                                modifier =
+                                    Modifier.padding(start = 4.dp)
+                            )
+                        }
+                    }
+                    PersonalSummaryTrendChart(
+                        trendValues,
+                        when (trendMetric) {
+                            PersonalTrendMetric.RECEIPT ->
+                                Color(0xFF3A7BD5)
+                            PersonalTrendMetric.PURCHASE ->
+                                Color(0xFFE0A11A)
+                            PersonalTrendMetric.PROFIT ->
+                                BrandGreen
+                        }
+                    )
+                }
+            }
+        }
+
+        item {
+            Text(
+                "每日详细记录",
+                style =
+                    MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        if (daily.isEmpty()) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Text(
+                        "当前时间范围暂无个人记录",
+                        Modifier.padding(14.dp),
+                        color = Color.Gray
+                    )
+                }
+            }
+        } else {
+            items(
+                daily,
+                key = { it.date }
+            ) { row ->
+                Card(
+                    Modifier.fillMaxWidth(),
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor = Color.White
+                        )
+                ) {
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement =
+                            Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            row.date,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement =
+                                Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "采购 ${money(row.purchasePaid)}",
+                                color = Color(0xFF9A6A10)
+                            )
+                            Text(
+                                "收款 ${money(row.revenueReceived)}",
+                                color = Color(0xFF2F6EB5)
+                            )
+                        }
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement =
+                                Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "利润 ${money(row.profitShare)}",
+                                color =
+                                    if (row.profitShare < 0) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        BrandGreen
+                                    }
+                            )
+                            Text(
+                                "开销 ${money(row.expensePaid)}",
+                                color = Color(0xFF72569A)
+                            )
+                        }
+                        Text(
+                            "当日资金差 ${money(row.dayBalance)}",
+                            style =
+                                MaterialTheme.typography.bodySmall,
+                            color = Color.DarkGray
+                        )
+                        row.transfers
+                            .filter {
+                                it.settledAmount > 0.005
+                            }
+                            .forEach { transfer ->
+                                val incoming =
+                                    transfer.toPartnerId ==
+                                        partnerId
+                                Text(
+                                    if (incoming) {
+                                        "↳ 实际转入 ${money(transfer.settledAmount)} · ${transfer.fromPartnerName}"
+                                    } else {
+                                        "↳ 实际转出 ${money(transfer.settledAmount)} · ${transfer.toPartnerName}"
+                                    },
+                                    style =
+                                        MaterialTheme.typography.labelSmall,
+                                    color = Color.Gray
+                                )
+                            }
+                    }
+                }
+            }
+        }
+
+        if (purchaseOrders.isNotEmpty()) {
+            item {
+                Text(
+                    "采购商品明细",
+                    style =
+                        MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            items(
+                purchaseOrders,
+                key = { it.order.id }
+            ) { order ->
+                Card(
+                    Modifier.fillMaxWidth(),
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor = Color.White
+                        )
+                ) {
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement =
+                            Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement =
+                                Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                order.order.date,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                money(order.order.totalCost),
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF9A6A10)
+                            )
+                        }
+                        order.items.forEach { line ->
+                            Text(
+                                "${line.fruitName}  ${cleanPercent(line.quantity)}${line.unit}  ${money(line.totalCost)}",
+                                style =
+                                    MaterialTheme.typography.bodySmall,
+                                color = Color.DarkGray
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PersonalSummaryTrendChart(
+    values: List<Pair<LocalDate, Double>>,
+    color: Color
+) {
+    val minValue =
+        (values.minOfOrNull { it.second } ?: 0.0)
+            .coerceAtMost(0.0)
+    val maxValue =
+        (values.maxOfOrNull { it.second } ?: 0.0)
+            .coerceAtLeast(0.0)
+    val span =
+        (maxValue - minValue)
+            .coerceAtLeast(1.0)
+
+    Canvas(
+        Modifier
+            .fillMaxWidth()
+            .height(112.dp)
+            .padding(
+                horizontal = 5.dp,
+                vertical = 8.dp
+            )
+    ) {
+        val left = 8f
+        val right = size.width - 8f
+        val top = 8f
+        val bottom = size.height - 8f
+
+        repeat(3) { index ->
+            val y =
+                top +
+                    (bottom - top) *
+                    index /
+                    2f
+            drawLine(
+                Color(0xFFE7E9ED),
+                Offset(left, y),
+                Offset(right, y),
+                strokeWidth = 1.2f
+            )
+        }
+
+        val zeroY =
+            bottom -
+                (((0.0 - minValue) / span).toFloat() *
+                    (bottom - top))
+        drawLine(
+            Color(0xFFB8BDC5),
+            Offset(left, zeroY),
+            Offset(right, zeroY),
+            strokeWidth = 1.6f
+        )
+
+        if (values.size > 1) {
+            val points =
+                values.mapIndexed { index, item ->
+                    val x =
+                        left +
+                            (right - left) *
+                            index /
+                            (values.size - 1).toFloat()
+                    val y =
+                        bottom -
+                            (((item.second - minValue) /
+                                span).toFloat() *
+                                (bottom - top))
+                    Offset(x, y)
+                }
+            points.zipWithNext().forEach { (a, b) ->
+                drawLine(
+                    color,
+                    a,
+                    b,
+                    strokeWidth = 3.5f
+                )
+            }
+            points.forEach { p ->
+                drawCircle(
+                    Color.White,
+                    radius = 6f,
+                    center = p
+                )
+                drawCircle(
+                    color,
+                    radius = 4f,
+                    center = p
+                )
+            }
+        } else if (values.size == 1) {
+            val y =
+                bottom -
+                    (((values.first().second - minValue) /
+                        span).toFloat() *
+                        (bottom - top))
+            drawCircle(
+                color,
+                radius = 4f,
+                center = Offset(
+                    (left + right) / 2f,
+                    y
+                )
+            )
         }
     }
 }
