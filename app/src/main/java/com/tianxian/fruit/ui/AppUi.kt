@@ -107,6 +107,7 @@ private enum class HistoryTimeFilter(val label: String) {
     YESTERDAY("昨天"),
     LAST_7("近7天"),
     LAST_30("近30天"),
+    LAST_90("近90天"),
     THIS_MONTH("本月"),
     LAST_MONTH("上月"),
     CUSTOM("自定义")
@@ -1456,7 +1457,7 @@ private fun HomeScreen(
                                 )
                                 DashboardTile(
                                     "📦",
-                                    "剩余库存",
+                                    "库存",
                                     inventoryPreviewText,
                                     Color(0xFFFFF7D9),
                                     Modifier.weight(1f),
@@ -1956,26 +1957,7 @@ private fun InventoryScreen(
         verticalArrangement = Arrangement.spacedBy(9.dp)
     ) {
         item {
-            PageHeader("剩余库存", "独立库存清单 · 已同步 · 暂不参与利润、结算和报表")
-        }
-
-        item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF7D9)),
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                Column(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(3.dp)
-                ) {
-                    Text("🧪 库存试验模块", fontWeight = FontWeight.Bold, color = Color(0xFF7B5C00))
-                    Text(
-                        "自动读取当日已完成采购，排除“总价”；上一次已保存的剩余库存会继续结转。剩余库存现已独立同步，但仍不参与利润、结算、报表，也暂不回写采购表下一日库存。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF6F6250)
-                    )
-                }
-            }
+            PageHeader("库存", "独立库存清单 · 已同步")
         }
 
         item {
@@ -2164,7 +2146,7 @@ private fun InventoryScreen(
                     },
                     modifier = Modifier.fillMaxWidth().height(44.dp)
                 ) {
-                    Text("保存剩余库存")
+                    Text("保存库存")
                 }
             }
         }
@@ -2181,7 +2163,7 @@ private fun InventoryScreen(
 
         item {
             Text(
-                "说明：该模块暂不改变经营利润、资金轧差、最少转账方案、经营统计或报表。正式启用前将另行设计损耗、商品毛利和云同步规则。",
+                "说明：库存是独立清单，不参与经营利润、资金轧差、最少转账方案、经营统计或报表，也不会回写采购表下一日库存。",
                 color = Color.Gray,
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(vertical = 6.dp)
@@ -2742,11 +2724,11 @@ private fun PurchaseScreen(
 
     fun collaborationItemFor(row: PurchaseDraftRow): PurchasePlanItemRecord? {
         val items = collaborationPlan?.items.orEmpty()
+        // 只允许已有计划行通过 planItemId 关联协作采购。
+        // 新增空白行默认商品可能与已完成商品同名（例如“总价”），
+        // 如果按 fruitId 回退匹配，会被误判成“已完成”并从录入区隐藏。
         return row.planItemId
             ?.let { id -> items.firstOrNull { it.id == id } }
-            ?: row.fruitId?.let { fruitId ->
-                items.firstOrNull { it.fruitId == fruitId && it.status != 2 }
-            }
     }
 
     fun loadHistoryOrderForEdit(detail: PurchaseOrderDetail) {
@@ -3204,7 +3186,8 @@ private fun PurchaseScreen(
                 onClick = {
                     focusManager.clearFocus()
                     if (rows.lastOrNull()?.let { it.isBlank || isDefaultEmptyRow(it) } == true) {
-                        message = "下面已经有一组空白商品，直接填写即可"
+                        // 空白行已经存在时不再创建重复草稿；该行现在会正常显示。
+                        message = ""
                     } else {
                         rows.add(newBlankRow())
                         message = ""
@@ -11650,7 +11633,7 @@ private fun syncTableLabel(
         "profit_settlement_item" ->
             "利润结算明细"
         "inventory_snapshot" ->
-            "剩余库存"
+            "库存"
         else -> tableName
     }
 
@@ -13032,7 +13015,7 @@ private fun HistoryContent(
         mutableStateOf(initialSection)
     }
     var timeFilter by remember {
-        mutableStateOf(HistoryTimeFilter.ALL)
+        mutableStateOf(HistoryTimeFilter.LAST_30)
     }
     var filterMenu by remember {
         mutableStateOf(false)
@@ -13059,6 +13042,8 @@ private fun HistoryContent(
                 today.minusDays(6).toString() to today.toString()
             HistoryTimeFilter.LAST_30 ->
                 today.minusDays(29).toString() to today.toString()
+            HistoryTimeFilter.LAST_90 ->
+                today.minusDays(89).toString() to today.toString()
             HistoryTimeFilter.THIS_MONTH ->
                 today.withDayOfMonth(1).toString() to today.toString()
             HistoryTimeFilter.LAST_MONTH -> {
@@ -13092,6 +13077,18 @@ private fun HistoryContent(
     val profitByDate = remember(profitRows) {
         profitRows
             .groupBy { it.date }
+            .toList()
+            .sortedByDescending { it.first }
+    }
+    val businessHistoryByDate = remember(sessions) {
+        sessions
+            .groupBy { it.date }
+            .toList()
+            .sortedByDescending { it.first }
+    }
+    val purchaseHistoryByDate = remember(purchases) {
+        purchases
+            .groupBy { it.order.date }
             .toList()
             .sortedByDescending { it.first }
     }
@@ -13197,8 +13194,10 @@ private fun HistoryContent(
         item {
             val countText =
                 when (section) {
-                    HistorySection.BUSINESS -> "${sessions.size} 条营业记录"
-                    HistorySection.PURCHASE -> "${purchases.size} 张采购单"
+                    HistorySection.BUSINESS ->
+                        "${businessHistoryByDate.size} 个营业日 · ${sessions.size} 条记录"
+                    HistorySection.PURCHASE ->
+                        "${purchaseHistoryByDate.size} 个采购日 · ${purchases.size} 张采购单"
                     HistorySection.PROFIT -> "${profitByDate.size} 天利润记录"
                     HistorySection.PLAN -> "${purchasePlans.size} 张采购计划"
                 }
@@ -13229,39 +13228,60 @@ private fun HistoryContent(
 
         when (section) {
             HistorySection.BUSINESS -> {
-                if (sessions.isEmpty()) {
+                if (businessHistoryByDate.isEmpty()) {
                     item {
                         Text("当前时间范围暂无营业记录", color = Color.Gray)
                     }
                 }
 
-                items(sessions, key = { "s${it.id}" }) { s ->
-                    RecordCard {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                "${s.date} · ${s.storeName}",
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                "营业 ${money(s.revenue)} · " +
-                                    "利润 ${money(s.profit)} · " +
-                                    "客户 ${s.customerTotal}",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
+                businessHistoryByDate.forEach { (historyDate, daySessions) ->
+                    item(key = "business-history-$historyDate") {
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(12.dp)) {
+                                Text(
+                                    "$historyDate ${runCatching { chineseWeekday(LocalDate.parse(historyDate)) }.getOrDefault("")}",
+                                    fontWeight = FontWeight.Bold
+                                )
+                                val daySummary = db.getDailySummary(historyDate)
+                                Text(
+                                    "${daySessions.size} 个位置/记录 · 营业 ${money(daySummary.revenue)} · " +
+                                        "利润 ${money(daySummary.profit)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.Gray
+                                )
+                                HorizontalDivider(Modifier.padding(vertical = 7.dp))
 
-                        if (canEdit) {
-                            TextButton(
-                                onClick = {
-                                    protectHistoricalAction(
-                                        s.date,
-                                        "删除 ${s.date} · ${s.storeName} 营业记录"
+                                daySessions.forEachIndexed { index, s ->
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        deleteSession = s
+                                        Column(Modifier.weight(1f)) {
+                                            Text(s.storeName, fontWeight = FontWeight.SemiBold)
+                                            Text(
+                                                "营业 ${money(s.revenue)} · 利润 ${money(s.profit)} · 客户 ${s.customerTotal}",
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        }
+                                        if (canEdit) {
+                                            TextButton(
+                                                onClick = {
+                                                    protectHistoricalAction(
+                                                        s.date,
+                                                        "删除 ${s.date} · ${s.storeName} 营业记录"
+                                                    ) {
+                                                        deleteSession = s
+                                                    }
+                                                }
+                                            ) {
+                                                Text("删除")
+                                            }
+                                        }
+                                    }
+                                    if (index < daySessions.lastIndex) {
+                                        HorizontalDivider(Modifier.padding(vertical = 5.dp))
                                     }
                                 }
-                            ) {
-                                Text("删除")
                             }
                         }
                     }
@@ -13269,47 +13289,64 @@ private fun HistoryContent(
             }
 
             HistorySection.PURCHASE -> {
-                if (purchases.isEmpty()) {
+                if (purchaseHistoryByDate.isEmpty()) {
                     item {
                         Text("当前时间范围暂无采购记录", color = Color.Gray)
                     }
                 }
 
-                items(purchases, key = { "p${it.order.id}" }) { p ->
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        "${p.order.date} · ${p.order.buyerName}",
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text("采购 · ${money(p.order.totalCost)}")
-                                }
+                purchaseHistoryByDate.forEach { (historyDate, dayPurchases) ->
+                    item(key = "purchase-history-$historyDate") {
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(12.dp)) {
+                                Text(
+                                    "$historyDate ${runCatching { chineseWeekday(LocalDate.parse(historyDate)) }.getOrDefault("")}",
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    "${dayPurchases.size} 张采购单 · 合计 ${money(dayPurchases.sumOf { it.order.totalCost })}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.Gray
+                                )
+                                HorizontalDivider(Modifier.padding(vertical = 7.dp))
 
-                                if (canEdit) {
-                                    TextButton(
-                                        onClick = {
-                                            protectHistoricalAction(
-                                                p.order.date,
-                                                "删除 ${p.order.date} · ${p.order.buyerName} 采购单"
+                                dayPurchases.forEachIndexed { orderIndex, detail ->
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(detail.order.buyerName, fontWeight = FontWeight.SemiBold)
+                                            Text(
+                                                "采购 ${money(detail.order.totalCost)}",
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        }
+
+                                        if (canEdit) {
+                                            TextButton(
+                                                onClick = {
+                                                    protectHistoricalAction(
+                                                        detail.order.date,
+                                                        "删除 ${detail.order.date} · ${detail.order.buyerName} 采购单"
+                                                    ) {
+                                                        deleteOrder = detail
+                                                    }
+                                                }
                                             ) {
-                                                deleteOrder = p
+                                                Text("删除")
                                             }
                                         }
-                                    ) {
-                                        Text("删除")
+                                    }
+
+                                    detail.items.forEach { i ->
+                                        Text(
+                                            "• ${i.fruitName} ${fmt(i.quantity)}${i.unit} ${money(i.totalCost)}",
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+
+                                    if (orderIndex < dayPurchases.lastIndex) {
+                                        HorizontalDivider(Modifier.padding(vertical = 6.dp))
                                     }
                                 }
-                            }
-
-                            p.items.forEach { i ->
-                                Text(
-                                    "• ${i.fruitName} " +
-                                        "${fmt(i.quantity)}${i.unit} " +
-                                        money(i.totalCost),
-                                    style = MaterialTheme.typography.bodySmall
-                                )
                             }
                         }
                     }
@@ -13580,15 +13617,37 @@ private fun StatsContent(
             byId.values.sortedBy { it.name }
         }
 
+    val statsStores =
+        remember(dataVersion) {
+            db.getStores()
+        }
+
     val statsStoreNames =
         remember(
-            records
+            records,
+            statsStores
         ) {
-            records
-                .map { it.storeName }
-                .filter { it.isNotBlank() }
-                .distinct()
-                .sorted()
+            val namesInRange =
+                records
+                    .map { it.storeName }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+            val managedOrder =
+                statsStores
+                    .map { it.name }
+                    .filter { it in namesInRange }
+            val historicalOrDisabled =
+                namesInRange
+                    .filter { it !in managedOrder }
+                    .sorted()
+            managedOrder + historicalOrDisabled
+        }
+
+    val statsStoreOrderIndex =
+        remember(statsStores) {
+            statsStores
+                .mapIndexed { index, store -> store.name to index }
+                .toMap()
         }
 
     LaunchedEffect(
@@ -13605,8 +13664,13 @@ private fun StatsContent(
 
     LaunchedEffect(calendarStoreName) {
         // 个人采购和个人利润没有位置归属，具体位置下只看整体数据。
+        // 采购也未绑定位置，因此具体位置不能准确计算利润，直接隐藏利润指标。
         if (calendarStoreName != null) {
             calendarPartnerIds = emptySet()
+            calendarMetrics =
+                calendarMetrics
+                    .minus(BusinessCalendarMetric.PROFIT)
+                    .ifEmpty { setOf(BusinessCalendarMetric.REVENUE) }
         }
     }
 
@@ -14373,6 +14437,9 @@ private fun StatsContent(
             .map { it.date }
             .toSet()
 
+    val calendarBusinessDays =
+        calendarVisibleDates.size
+
     val dailySummaryByDate =
         remember(dataVersion, activityDates) {
             activityDates.associateWith { db.getDailySummary(it) }
@@ -14978,18 +15045,11 @@ private fun StatsContent(
 
                 items(
                     rankings
-                        .sortedByDescending {
-                            row ->
-                            if (
-                                row.days >
-                                0
-                            ) {
-                                row.revenue /
-                                    row.days
-                            } else {
-                                row.revenue
-                            }
-                        },
+                        .sortedWith(
+                            compareBy<RankingRecord> {
+                                statsStoreOrderIndex[it.storeName] ?: Int.MAX_VALUE
+                            }.thenBy { it.storeName }
+                        ),
                     key = {
                         "store_stats_${it.storeName}"
                     }
@@ -15323,7 +15383,14 @@ private fun StatsContent(
                         statsStoreNames.forEach { storeName ->
                             FilterChip(
                                 selected = calendarStoreName == storeName,
-                                onClick = { calendarStoreName = storeName },
+                                onClick = {
+                                    calendarStoreName = storeName
+                                    calendarPartnerIds = emptySet()
+                                    calendarMetrics =
+                                        calendarMetrics
+                                            .minus(BusinessCalendarMetric.PROFIT)
+                                            .ifEmpty { setOf(BusinessCalendarMetric.REVENUE) }
+                                },
                                 label = { Text(storeName) }
                             )
                         }
@@ -15337,24 +15404,29 @@ private fun StatsContent(
                             .horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        BusinessCalendarMetric.entries.forEach { metric ->
-                            FilterChip(
-                                selected = metric in calendarMetrics,
-                                onClick = {
-                                    calendarMetrics =
-                                        if (metric in calendarMetrics) {
-                                            if (calendarMetrics.size > 1) {
-                                                calendarMetrics - metric
+                        BusinessCalendarMetric.entries
+                            .filter { metric ->
+                                calendarStoreName == null ||
+                                    metric != BusinessCalendarMetric.PROFIT
+                            }
+                            .forEach { metric ->
+                                FilterChip(
+                                    selected = metric in calendarMetrics,
+                                    onClick = {
+                                        calendarMetrics =
+                                            if (metric in calendarMetrics) {
+                                                if (calendarMetrics.size > 1) {
+                                                    calendarMetrics - metric
+                                                } else {
+                                                    calendarMetrics
+                                                }
                                             } else {
-                                                calendarMetrics
+                                                calendarMetrics + metric
                                             }
-                                        } else {
-                                            calendarMetrics + metric
-                                        }
-                                },
-                                label = { Text(metric.label) }
-                            )
-                        }
+                                    },
+                                    label = { Text(metric.label) }
+                                )
+                            }
                     }
                 }
 
@@ -15395,7 +15467,7 @@ private fun StatsContent(
                         }
                     } else {
                         Text(
-                            "个人采购和个人利润没有位置归属，切换到“全部位置”后可多选合伙人数据。",
+                            "具体位置只显示营业额和采购额。采购没有位置归属，无法准确计算单个位置利润；切换到“全部位置”后可查看利润和合伙人数据。",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.Gray
                         )
@@ -15415,6 +15487,10 @@ private fun StatsContent(
                             SummaryRow(
                                 "位置",
                                 calendarStoreName ?: "全部位置"
+                            )
+                            SummaryRow(
+                                "经营日",
+                                "${calendarBusinessDays} 天"
                             )
                             SummaryRow(
                                 "显示数据",
@@ -15465,16 +15541,26 @@ private fun StatsContent(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
-                        CalendarLegendDot(Color(0xFF1976D2), "营业额")
-                        CalendarLegendDot(Color(0xFFF9A825), "采购额")
-                        CalendarLegendDot(BrandGreen, "利润")
-                        CalendarLegendDot(MaterialTheme.colorScheme.error, "负利润")
+                        if (BusinessCalendarMetric.REVENUE in calendarMetrics) {
+                            CalendarLegendDot(Color(0xFF1976D2), "营业额")
+                        }
+                        if (BusinessCalendarMetric.PURCHASE in calendarMetrics) {
+                            CalendarLegendDot(Color(0xFFF9A825), "采购额")
+                        }
+                        if (BusinessCalendarMetric.PROFIT in calendarMetrics) {
+                            CalendarLegendDot(BrandGreen, "利润")
+                            CalendarLegendDot(MaterialTheme.colorScheme.error, "负利润")
+                        }
                     }
                 }
 
                 item {
                     Text(
-                        "日历格内只显示所选指标数字：营业额蓝色、采购额黄色、正利润绿色、负利润红色。指标和合伙人都支持多选；“全部”表示整体数据。采购仍按采购日统计，不做位置分摊。",
+                        if (calendarStoreName == null) {
+                            "日历格内只显示所选指标数字：营业额蓝色、采购额黄色、正利润绿色、负利润红色。指标和合伙人都支持多选；“全部”表示整体数据。采购仍按采购日统计。"
+                        } else {
+                            "具体位置模式不显示利润：采购金额没有位置归属，无法准确计算单个位置利润。日历仅显示所选营业额/采购额。"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.Gray
                     )
@@ -17177,6 +17263,10 @@ private fun resolveTimeRange(
 
         HistoryTimeFilter.LAST_30 ->
             today.minusDays(29).toString() to
+                today.toString()
+
+        HistoryTimeFilter.LAST_90 ->
+            today.minusDays(89).toString() to
                 today.toString()
 
         HistoryTimeFilter.THIS_MONTH ->
