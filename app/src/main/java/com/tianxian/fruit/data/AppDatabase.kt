@@ -8344,11 +8344,239 @@ class AppDatabase(
         )
     }
 
+    private data class PartnerFundLedgerDay(
+        val date: String,
+        val partnerName: String,
+        val purchasePaid: Double,
+        val expensePaid: Double,
+        val revenueReceived: Double,
+        val profitShare: Double,
+        val dayRawBalance: Double,
+        val dailySettlementResidual: Double,
+        val standaloneAdjustment: Double,
+        val endBalance: Double,
+        val settledTransferAmount: Double,
+        val hadActivity: Boolean,
+        val isClearCheckpoint: Boolean
+    )
+
+    /**
+     * V1.4.7.26 资金余额统一账本算法。
+     *
+     * 当某天已经生成“当日结算”时，资金余额必须尊重当日结算自身的
+     * partner.balance 与真实 settled_amount，而不能重新把更早已结清的
+     * 原始采购/利润再次累计进来。完整结清的当日结算，其当天残余资金
+     * 强制为 0；未结/部分结算只结转真实剩余金额。
+     *
+     * settlement_id=0 的“结清截至今日”属于跨日资金调整，单独作用在
+     * 累计余额上。这里不修改“当日结算”的任何生成或确认逻辑。
+     */
+    private fun buildPartnerFundLedger(
+        partnerId: Long,
+        endDate: String
+    ): List<PartnerFundLedgerDay> {
+        normalizeLegacyCutoffTransfersForCurrentCenter()
+        val transferPredicate = effectiveFundTransferPredicate()
+
+        val dates =
+            readableDatabase.rawQuery(
+                """
+                SELECT date FROM (
+                    SELECT date FROM purchase_order
+                    WHERE deleted=0 AND date<=?
+                    UNION
+                    SELECT date FROM store_daily_record
+                    WHERE deleted=0 AND date<=?
+                    UNION
+                    SELECT date FROM profit_distribution
+                    WHERE deleted=0 AND date<=?
+                    UNION
+                    SELECT date FROM daily_cash_settlement
+                    WHERE deleted=0 AND date<=?
+                    UNION
+                    SELECT date FROM settlement_transfer
+                    WHERE deleted=0
+                      AND $transferPredicate
+                      AND settled_amount>0.005
+                      AND date<=?
+                )
+                ORDER BY date
+                """.trimIndent(),
+                arrayOf(endDate, endDate, endDate, endDate, endDate)
+            ).use { c ->
+                buildList {
+                    while (c.moveToNext()) add(c.str("date"))
+                }
+            }
+
+        var cumulative = 0.0
+        var knownName =
+            getPartners()
+                .firstOrNull { it.id == partnerId }
+                ?.name
+                .orEmpty()
+
+        return dates.map { date ->
+            val purchase =
+                getPurchaseTotalsByPartner(date)
+                    .firstOrNull { it.partnerId == partnerId }
+            val expense =
+                getExpenseTotalsByPartner(date)
+                    .firstOrNull { it.partnerId == partnerId }
+            val receipt =
+                getReceiptsByPartner(date)
+                    .firstOrNull { it.partnerId == partnerId }
+            val profit =
+                getProfitDistribution(date)
+                    .firstOrNull { it.partnerId == partnerId }
+
+            val purchaseAmount = roundMoney(purchase?.amount ?: 0.0)
+            val expenseAmount = roundMoney(expense?.amount ?: 0.0)
+            val receiptAmount = roundMoney(receipt?.amount ?: 0.0)
+            val profitAmount = roundMoney(profit?.allocatedProfit ?: 0.0)
+            val raw =
+                roundMoney(
+                    purchaseAmount +
+                        expenseAmount +
+                        profitAmount -
+                        receiptAmount
+                )
+
+            val bundle = getCashSettlement(date)
+            val settlementPartner =
+                bundle?.partners
+                    ?.firstOrNull { it.partnerId == partnerId }
+
+            val relatedTransfers =
+                getSettlementTransfersForPartnerOnDate(partnerId, date)
+                    .filter { it.settledAmount > 0.005 }
+            val dailyTransfers =
+                relatedTransfers.filter { it.settlementId > 0L }
+            val standaloneTransfers =
+                relatedTransfers.filter { it.settlementId == 0L }
+
+            val dailySent =
+                dailyTransfers
+                    .filter { it.fromPartnerId == partnerId }
+                    .sumOf { it.settledAmount }
+            val dailyReceived =
+                dailyTransfers
+                    .filter { it.toPartnerId == partnerId }
+                    .sumOf { it.settledAmount }
+
+            val dailyResidual =
+                if (settlementPartner != null) {
+                    if (bundle?.settlement?.status == 1) {
+                        // APP 中已经明确“全部结清”，当天不允许再次结转。
+                        0.0
+                    } else {
+                        roundMoney(
+                            settlementPartner.balance +
+                                dailySent -
+                                dailyReceived
+                        )
+                    }
+                } else {
+                    // 没有有效当日结算单时，按原始经营数据计算当天资金差。
+                    roundMoney(raw + dailySent - dailyReceived)
+                }
+
+            val standaloneSent =
+                standaloneTransfers
+                    .filter { it.fromPartnerId == partnerId }
+                    .sumOf { it.settledAmount }
+            val standaloneReceived =
+                standaloneTransfers
+                    .filter { it.toPartnerId == partnerId }
+                    .sumOf { it.settledAmount }
+            val standaloneAdjustment =
+                roundMoney(standaloneSent - standaloneReceived)
+
+            // 一个合伙人的“当日资金”已经通过真实转账结清时，
+            // 该日就是资金余额的核对断点。历史版本中部分日期虽然
+            // 转账已全部执行，但旧累计算法仍把更早原始数据继续带入，
+            // 造成已结清金额在后续再次出现。这里仅用于资金余额视图，
+            // 不修改当日结算本身。
+            val dailyPartnerCleared =
+                settlementPartner != null &&
+                    kotlin.math.abs(settlementPartner.balance) > 0.005 &&
+                    (
+                        bundle?.settlement?.status == 1 ||
+                            (
+                                dailyTransfers.isNotEmpty() &&
+                                    kotlin.math.abs(dailyResidual) <= 0.005
+                                )
+                        )
+
+            // “结清截至今日”本身就是明确的累计归零动作。
+            val cutoffCleared =
+                standaloneTransfers.any { transfer ->
+                    transfer.settledAmount > 0.005 &&
+                        transfer.pendingAmount <= 0.005 &&
+                        transfer.settlementKind in setOf("CUTOFF", "CUTOFF_CENTER") &&
+                        (
+                            transfer.focusPartnerId == partnerId ||
+                                (
+                                    transfer.focusPartnerId <= 0L &&
+                                        (
+                                            transfer.fromPartnerId == partnerId ||
+                                                transfer.toPartnerId == partnerId
+                                            )
+                                    )
+                            )
+                }
+
+            val clearCheckpoint = dailyPartnerCleared || cutoffCleared
+            cumulative =
+                if (clearCheckpoint) {
+                    0.0
+                } else {
+                    roundMoney(
+                        cumulative +
+                            dailyResidual +
+                            standaloneAdjustment
+                    )
+                }
+
+            val name =
+                settlementPartner?.partnerName
+                    ?: profit?.partnerName
+                    ?: purchase?.partnerName
+                    ?: receipt?.partnerName
+                    ?: expense?.partnerName
+                    ?: knownName
+            if (name.isNotBlank()) knownName = name
+
+            PartnerFundLedgerDay(
+                date = date,
+                partnerName = knownName.ifBlank { "合伙人$partnerId" },
+                purchasePaid = purchaseAmount,
+                expensePaid = expenseAmount,
+                revenueReceived = receiptAmount,
+                profitShare = profitAmount,
+                dayRawBalance = raw,
+                dailySettlementResidual = roundMoney(dailyResidual),
+                standaloneAdjustment = standaloneAdjustment,
+                endBalance = cumulative,
+                settledTransferAmount =
+                    roundMoney(
+                        relatedTransfers.sumOf { it.settledAmount }
+                    ),
+                hadActivity =
+                    kotlin.math.abs(raw) > 0.005 ||
+                        settlementPartner != null ||
+                        relatedTransfers.isNotEmpty(),
+                isClearCheckpoint = clearCheckpoint
+            )
+        }
+    }
+
     fun getPartnerFundBalances(
         endDate: String? = null
     ): List<PartnerFundBalanceSummary> {
         normalizeLegacyCutoffTransfersForCurrentCenter()
-        val transferPredicate = effectiveFundTransferPredicate()
+        val actualEnd = endDate ?: LocalDate.now().toString()
+
         data class Acc(
             var name: String = "",
             var purchase: Double = 0.0,
@@ -8359,29 +8587,20 @@ class AppDatabase(
             var received: Double = 0.0
         )
 
-        val dateWhere =
-            if (endDate != null) "AND date<=?" else ""
-        val dateArgs =
-            if (endDate != null) {
-                arrayOf(endDate, endDate, endDate)
-            } else {
-                emptyArray()
-            }
+        val partnerIds = linkedSetOf<Long>()
+        getPartners().forEach { partnerIds += it.id }
 
         val dates =
             readableDatabase.rawQuery(
                 """
-                SELECT date FROM purchase_order
-                WHERE deleted=0 $dateWhere
+                SELECT date FROM purchase_order WHERE deleted=0 AND date<=?
                 UNION
-                SELECT date FROM store_daily_record
-                WHERE deleted=0 $dateWhere
+                SELECT date FROM store_daily_record WHERE deleted=0 AND date<=?
                 UNION
-                SELECT date FROM profit_distribution
-                WHERE deleted=0 $dateWhere
+                SELECT date FROM profit_distribution WHERE deleted=0 AND date<=?
                 ORDER BY date
                 """.trimIndent(),
-                dateArgs
+                arrayOf(actualEnd, actualEnd, actualEnd)
             ).use { c ->
                 buildList {
                     while (c.moveToNext()) add(c.str("date"))
@@ -8389,10 +8608,10 @@ class AppDatabase(
             }
 
         val map = linkedMapOf<Long, Acc>()
-
         fun acc(id: Long, name: String): Acc {
             val row = map.getOrPut(id) { Acc(name = name) }
             if (name.isNotBlank()) row.name = name
+            partnerIds += id
             return row
         }
 
@@ -8419,11 +8638,7 @@ class AppDatabase(
                 }
         }
 
-        val transferWhere =
-            if (endDate != null) "AND date<=?" else ""
-        val transferArgs =
-            if (endDate != null) arrayOf(endDate) else emptyArray()
-
+        val transferPredicate = effectiveFundTransferPredicate()
         readableDatabase.rawQuery(
             """
             SELECT
@@ -8436,9 +8651,9 @@ class AppDatabase(
             WHERE deleted=0
               AND settled_amount>0.005
               AND $transferPredicate
-              $transferWhere
+              AND date<=?
             """.trimIndent(),
-            transferArgs
+            arrayOf(actualEnd)
         ).use { c ->
             while (c.moveToNext()) {
                 val amount = c.dbl("settled_amount")
@@ -8453,32 +8668,26 @@ class AppDatabase(
             }
         }
 
-        return map.map { (id, a) ->
-            val purchase = roundMoney(a.purchase)
-            val expense = roundMoney(a.expense)
-            val receipt = roundMoney(a.receipt)
-            val profit = roundMoney(a.profit)
-            val sent = roundMoney(a.sent)
-            val received = roundMoney(a.received)
-            val current =
-                roundMoney(
-                    purchase +
-                        expense +
-                        profit -
-                        receipt +
-                        sent -
-                        received
-                )
+        getPartners().forEach { acc(it.id, it.name) }
+
+        return partnerIds.map { id ->
+            val a = map.getOrPut(id) { Acc() }
+            val ledger = buildPartnerFundLedger(id, actualEnd)
+            val current = ledger.lastOrNull()?.endBalance ?: 0.0
+            val latestName = ledger.lastOrNull()?.partnerName.orEmpty()
+
             PartnerFundBalanceSummary(
                 partnerId = id,
-                partnerName = a.name.ifBlank { "合伙人$id" },
-                purchasePaid = purchase,
-                expensePaid = expense,
-                revenueReceived = receipt,
-                profitShare = profit,
-                settlementSent = sent,
-                settlementReceived = received,
-                currentBalance = current
+                partnerName = latestName.ifBlank {
+                    a.name.ifBlank { "合伙人$id" }
+                },
+                purchasePaid = roundMoney(a.purchase),
+                expensePaid = roundMoney(a.expense),
+                revenueReceived = roundMoney(a.receipt),
+                profitShare = roundMoney(a.profit),
+                settlementSent = roundMoney(a.sent),
+                settlementReceived = roundMoney(a.received),
+                currentBalance = roundMoney(current)
             )
         }.sortedBy { it.partnerId }
     }
@@ -8752,119 +8961,66 @@ class AppDatabase(
         partnerId: Long,
         endDate: String = LocalDate.now().toString()
     ): PartnerOutstandingWindow? {
-        normalizeLegacyCutoffTransfersForCurrentCenter()
-        val transferPredicate = effectiveFundTransferPredicate()
-        val summary =
-            getPartnerFundBalances(endDate)
-                .firstOrNull { it.partnerId == partnerId }
-                ?: return null
+        val ledger = buildPartnerFundLedger(partnerId, endDate)
+        val partner = getPartners().firstOrNull { it.id == partnerId }
+        if (ledger.isEmpty() && partner == null) return null
 
-        val dates =
-            readableDatabase.rawQuery(
-                """
-                SELECT date FROM (
-                    SELECT date FROM purchase_order
-                    WHERE deleted=0 AND date<=?
-                    UNION
-                    SELECT date FROM store_daily_record
-                    WHERE deleted=0 AND date<=?
-                    UNION
-                    SELECT date FROM profit_distribution
-                    WHERE deleted=0 AND date<=?
-                    UNION
-                    SELECT date FROM settlement_transfer
-                    WHERE deleted=0
-                      AND $transferPredicate
-                      AND settled_amount>0.005
-                      AND date<=?
-                )
-                ORDER BY date
-                """.trimIndent(),
-                arrayOf(endDate, endDate, endDate, endDate)
-            ).use { c ->
-                buildList {
-                    while (c.moveToNext()) add(c.str("date"))
-                }
-            }
-
-        var cumulative = 0.0
+        val current = roundMoney(ledger.lastOrNull()?.endBalance ?: 0.0)
         var lastClearedDate = ""
         var lastClearedIndex = -1
-        var totalSettled = 0.0
-        val rawActivity = linkedMapOf<String, Double>()
 
-        dates.forEachIndexed { index, date ->
-            val purchase =
-                getPurchaseTotalsByPartner(date)
-                    .firstOrNull { it.partnerId == partnerId }
-                    ?.amount ?: 0.0
-            val expense =
-                getExpenseTotalsByPartner(date)
-                    .firstOrNull { it.partnerId == partnerId }
-                    ?.amount ?: 0.0
-            val receipt =
-                getReceiptsByPartner(date)
-                    .firstOrNull { it.partnerId == partnerId }
-                    ?.amount ?: 0.0
-            val profit =
-                getProfitDistribution(date)
-                    .firstOrNull { it.partnerId == partnerId }
-                    ?.allocatedProfit ?: 0.0
-            val raw = roundMoney(purchase + expense + profit - receipt)
-            rawActivity[date] = raw
-
-            val transfers =
-                getSettlementTransfersForPartnerOnDate(partnerId, date)
-                    .filter { it.settledAmount > 0.005 }
-            val sent =
-                transfers
-                    .filter { it.fromPartnerId == partnerId }
-                    .sumOf { it.settledAmount }
-            val received =
-                transfers
-                    .filter { it.toPartnerId == partnerId }
-                    .sumOf { it.settledAmount }
-            totalSettled += transfers.sumOf { it.settledAmount }
-            cumulative = roundMoney(cumulative + raw + sent - received)
-            val partnerHadActivity =
-                kotlin.math.abs(raw) > 0.005 || transfers.isNotEmpty()
+        ledger.forEachIndexed { index, day ->
             if (
-                partnerHadActivity &&
-                kotlin.math.abs(cumulative) <= 0.005
+                day.hadActivity &&
+                (day.isClearCheckpoint || kotlin.math.abs(day.endBalance) <= 0.005)
             ) {
-                lastClearedDate = date
+                lastClearedDate = day.date
                 lastClearedIndex = index
             }
         }
 
-        val current = roundMoney(summary.currentBalance)
-        var rangeStart = ""
-        if (kotlin.math.abs(current) > 0.005) {
-            val startIndex = (lastClearedIndex + 1).coerceAtLeast(0)
-            rangeStart =
-                dates.drop(startIndex)
-                    .firstOrNull { date ->
-                        kotlin.math.abs(rawActivity[date] ?: 0.0) > 0.005
-                    }
-                    ?: dates.drop(startIndex).firstOrNull().orEmpty()
-        }
-        val businessDays =
-            if (rangeStart.isBlank()) 0
-            else countBusinessDays(rangeStart, endDate).let { count ->
-                if (count > 0) count
-                else dates.count { it >= rangeStart && it <= endDate }
+        val startIndex = (lastClearedIndex + 1).coerceAtLeast(0)
+        val openDays = ledger.drop(startIndex)
+        val rangeStart =
+            if (kotlin.math.abs(current) <= 0.005) {
+                ""
+            } else {
+                openDays.firstOrNull { day ->
+                    day.hadActivity &&
+                        (
+                            kotlin.math.abs(day.dailySettlementResidual) > 0.005 ||
+                                kotlin.math.abs(day.standaloneAdjustment) > 0.005
+                            )
+                }?.date
+                    ?: openDays.firstOrNull { it.hadActivity }?.date.orEmpty()
             }
+
+        val businessDays =
+            if (rangeStart.isBlank()) {
+                0
+            } else {
+                countBusinessDays(rangeStart, endDate).let { count ->
+                    if (count > 0) count
+                    else openDays.count { it.date >= rangeStart && it.date <= endDate }
+                }
+            }
+
+        val settledSinceCutoff =
+            openDays.sumOf { it.settledTransferAmount }
 
         return PartnerOutstandingWindow(
             partnerId = partnerId,
-            partnerName = summary.partnerName,
+            partnerName =
+                ledger.lastOrNull()?.partnerName
+                    ?: partner?.name
+                    ?: "合伙人$partnerId",
             endDate = endDate,
             currentBalance = current,
             rangeStartDate = rangeStart,
             rangeEndDate = if (rangeStart.isBlank()) "" else endDate,
             businessDayCount = businessDays,
             lastClearedDate = lastClearedDate,
-            settledTransferAmount = roundMoney(totalSettled)
+            settledTransferAmount = roundMoney(settledSinceCutoff)
         )
     }
 
@@ -9832,6 +9988,9 @@ class AppDatabase(
                 COALESCE((
                     SELECT SUM(psi.profit_amount)
                     FROM profit_settlement_item psi
+                    JOIN profit_settlement_batch psb0
+                      ON psb0.id=psi.batch_id
+                     AND psb0.deleted=0
                     WHERE psi.deleted=0
                       AND psi.profit_date=pd.date
                       AND psi.partner_id=pd.partner_id
@@ -10161,6 +10320,49 @@ class AppDatabase(
                 }
             }
         }
+
+    fun clearProfitSettlementsForPartner(partnerId: Long): Int {
+        if (partnerId <= 0L) return 0
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val now = System.currentTimeMillis()
+            val changed =
+                db.update(
+                    "profit_settlement_item",
+                    ContentValues().apply {
+                        put("deleted", 1)
+                        put("sync_status", 2)
+                        put("updated_at", now)
+                    },
+                    "partner_id=? AND deleted=0",
+                    arrayOf(partnerId.toString())
+                )
+
+            // 没有任何有效明细的空批次一并软删除，避免报表继续把空批次当成有效结算。
+            db.execSQL(
+                """
+                UPDATE profit_settlement_batch
+                SET deleted=1,
+                    sync_status=2,
+                    updated_at=?
+                WHERE deleted=0
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM profit_settlement_item psi
+                      WHERE psi.batch_id=profit_settlement_batch.id
+                        AND psi.deleted=0
+                  )
+                """.trimIndent(),
+                arrayOf<Any?>(now)
+            )
+
+            db.setTransactionSuccessful()
+            return changed
+        } finally {
+            db.endTransaction()
+        }
+    }
 
     fun deleteProfitSettlementBatch(batchId: Long): Boolean {
         val db = writableDatabase

@@ -5681,6 +5681,122 @@ private fun SettlementScreen(
     }
 }
 
+private fun buildDailySettlementShareLines(
+    date: String,
+    summary: DailySummary,
+    profitRows: List<ProfitDistributionRecord>,
+    bundle: CashSettlementBundle,
+    settlementCenter: PartnerOption?
+): List<ReportLine> {
+    val lines = mutableListOf<ReportLine>()
+    val statusText =
+        when (bundle.settlement.status) {
+            1 -> "已结清"
+            2 -> "部分结算"
+            else -> "未结算"
+        }
+
+    lines += ReportLine("天鲜果业", ReportLineStyle.TITLE)
+    lines += ReportLine("当日结算分享", ReportLineStyle.SUBTITLE)
+    lines += ReportLine("结算日期：$date  ·  状态：$statusText", ReportLineStyle.MUTED)
+    lines += ReportLine("", ReportLineStyle.SPACER)
+
+    lines += ReportLine("当日经营汇总", ReportLineStyle.SECTION)
+    lines += ReportLine("营业额：${money(summary.revenue)}", ReportLineStyle.TOTAL)
+    lines += ReportLine("采购：${money(summary.purchaseCost)}  ·  费用：${money(summary.expense)}")
+    lines += ReportLine(
+        if (summary.profit < -0.005) {
+            "当日亏损：${money(-summary.profit)}"
+        } else {
+            "当日利润：${money(summary.profit)}"
+        },
+        if (summary.profit < -0.005) ReportLineStyle.NEGATIVE else ReportLineStyle.POSITIVE
+    )
+    lines += ReportLine("客户：${summary.customers}  ·  营业位置数：${summary.storeCount}", ReportLineStyle.MUTED)
+
+    lines += ReportLine("", ReportLineStyle.SPACER)
+    lines += ReportLine(
+        if (summary.profit < -0.005) "当日亏损分担" else "当日利润分配",
+        ReportLineStyle.SECTION
+    )
+    if (profitRows.isEmpty()) {
+        lines += ReportLine("暂无已保存的利润 / 亏损分配", ReportLineStyle.WARNING)
+    } else {
+        profitRows.sortedBy { it.partnerId }.forEach { row ->
+            val amountText =
+                if (row.allocatedProfit < -0.005) {
+                    "分担 ${money(-row.allocatedProfit)}"
+                } else {
+                    "应分 ${money(row.allocatedProfit)}"
+                }
+            lines += ReportLine(
+                "${row.partnerName}  ${fmt(profitRatioPercent(row.ratio))}%  ·  $amountText",
+                if (row.allocatedProfit < -0.005) {
+                    ReportLineStyle.NEGATIVE
+                } else {
+                    ReportLineStyle.POSITIVE
+                }
+            )
+        }
+    }
+
+    lines += ReportLine("", ReportLineStyle.SPACER)
+    lines += ReportLine("资金轧差方案", ReportLineStyle.SECTION)
+    settlementCenter?.let {
+        lines += ReportLine("资金中心：${it.name}", ReportLineStyle.MUTED)
+    }
+    bundle.partners.sortedBy { it.partnerId }.forEach { partner ->
+        val balanceText =
+            when {
+                partner.balance > 0.005 -> "应收 ${money(partner.balance)}"
+                partner.balance < -0.005 -> "应补 ${money(-partner.balance)}"
+                else -> "已平"
+            }
+        lines += ReportLine(
+            "${partner.partnerName}  ·  $balanceText",
+            when {
+                partner.balance > 0.005 -> ReportLineStyle.POSITIVE
+                partner.balance < -0.005 -> ReportLineStyle.NEGATIVE
+                else -> ReportLineStyle.NORMAL
+            }
+        )
+        lines += ReportLine(
+            "采购垫付 ${money(partner.purchasePaid)}  + 费用垫付 ${money(partner.expensePaid)}  + 利润/亏损 ${money(partner.profitShare)}  - 已收 ${money(partner.revenueReceived)}"
+        )
+        lines += ReportLine("最终应留：${money(partner.shouldKeep)}", ReportLineStyle.MUTED)
+    }
+
+    lines += ReportLine("", ReportLineStyle.SPACER)
+    lines += ReportLine("最少转账方案", ReportLineStyle.SECTION)
+    if (bundle.transfers.isEmpty()) {
+        lines += ReportLine("无需转账，资金已平衡", ReportLineStyle.POSITIVE)
+    } else {
+        bundle.transfers.forEach { transfer ->
+            val state =
+                when {
+                    transfer.pendingAmount <= 0.005 -> "已结清"
+                    transfer.settledAmount > 0.005 ->
+                        "已结 ${money(transfer.settledAmount)} · 剩 ${money(transfer.pendingAmount)}"
+                    else -> "未结算"
+                }
+            lines += ReportLine(
+                "${transfer.fromPartnerName} → ${transfer.toPartnerName}  ${money(transfer.amount)}  · $state",
+                if (transfer.pendingAmount <= 0.005) {
+                    ReportLineStyle.POSITIVE
+                } else {
+                    ReportLineStyle.TOTAL
+                }
+            )
+        }
+    }
+
+    return lines
+}
+
+private fun reportLinesToPlainText(lines: List<ReportLine>): String =
+    lines.filter { it.style != ReportLineStyle.SPACER }
+        .joinToString("\n") { it.text }
+
 @Composable
 private fun SettlementDayContent(
     db: AppDatabase,
@@ -5688,6 +5804,7 @@ private fun SettlementDayContent(
     protectHistoricalAction: (String, String, () -> Unit) -> Unit,
     onChanged: () -> Unit
 ) {
+    val context = LocalContext.current
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
     var message by remember { mutableStateOf("") }
     var deleteId by remember { mutableStateOf<Long?>(null) }
@@ -5839,6 +5956,83 @@ private fun SettlementDayContent(
                     Modifier.weight(1f),
                     SoftOrange
                 )
+            }
+        }
+
+        item {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        val currentBundle = bundle
+                        if (currentBundle == null) {
+                            message = "请先生成当日资金轧差方案后再分享"
+                        } else {
+                            runCatching {
+                                val lines = buildDailySettlementShareLines(
+                                    date = date,
+                                    summary = summary,
+                                    profitRows = profitRows,
+                                    bundle = currentBundle,
+                                    settlementCenter = settlementCenter
+                                )
+                                ReportGenerator.createPng(
+                                    context = context,
+                                    baseName = "天鲜果业_当日结算_${date.replace("-", "")}",
+                                    lines = lines
+                                )
+                            }.onSuccess { report ->
+                                runCatching {
+                                    ReportGenerator.share(context, report)
+                                }.onSuccess {
+                                    message = "已打开当日结算图片分享"
+                                }.onFailure {
+                                    message = "分享失败：${it.message ?: "未知错误"}"
+                                }
+                            }.onFailure {
+                                message = "分享图片生成失败：${it.message ?: "未知错误"}"
+                            }
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                    enabled = bundle != null
+                ) {
+                    Text("分享图片")
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        val currentBundle = bundle
+                        if (currentBundle == null) {
+                            message = "请先生成当日资金轧差方案后再分享"
+                        } else {
+                            runCatching {
+                                val lines = buildDailySettlementShareLines(
+                                    date = date,
+                                    summary = summary,
+                                    profitRows = profitRows,
+                                    bundle = currentBundle,
+                                    settlementCenter = settlementCenter
+                                )
+                                ReportGenerator.shareText(
+                                    context = context,
+                                    text = reportLinesToPlainText(lines),
+                                    title = "分享当日结算"
+                                )
+                            }.onSuccess {
+                                message = "已打开当日结算文本分享"
+                            }.onFailure {
+                                message = "分享失败：${it.message ?: "未知错误"}"
+                            }
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                    enabled = bundle != null
+                ) {
+                    Text("分享文本")
+                }
             }
         }
 
@@ -8560,17 +8754,6 @@ private fun ReportContent(
             )
         }
 
-    val cashSettlements =
-        remember(
-            dataVersion,
-            queryStart,
-            queryEnd
-        ) {
-            db.getCashSettlementsBetween(
-                queryStart,
-                queryEnd
-            )
-        }
 
     val businessRecords =
         remember(
@@ -8696,6 +8879,7 @@ private fun ReportContent(
             settlementDaily,
             settlementSummary,
             businessSummaries,
+            businessRecords,
             rankings
         ) {
             buildReportLines(
@@ -8709,10 +8893,10 @@ private fun ReportContent(
                     settlementDaily,
                 settlementSummary =
                     settlementSummary,
-                cashSettlements =
-                    cashSettlements,
                 businessSummaries =
                     businessSummaries,
+                businessRecords =
+                    businessRecords,
                 rankings = rankings
             )
         }
@@ -9257,7 +9441,7 @@ private fun ReportContent(
 
         item {
             Text(
-                "说明：利润报表中的“已结算/待结算”按利润结算记录统计；详细版利润结算报表另行展示进货垫付、费用垫付、已收营业款、最终应留金额和最少转账方案。资金轧差金额不等于利润。",
+                "说明：利润分配报表只展示“怎么分”，不展示结算状态；利润结算报表只按明确的利润结算记录统计。资金轧差属于经营资金流，与利润结算分开。所有导出的 PDF / 图片右下角都会标注生成时间。",
                 color = Color.Gray,
                 style =
                     MaterialTheme.typography
@@ -9273,240 +9457,124 @@ private fun buildReportLines(
     periodLabel: String,
     selectedPartnerIds: Set<Long>,
     profitRows: List<ProfitDistributionRecord>,
-    settlementDaily:
-        List<DailyPartnerProfitSettlement>,
-    settlementSummary:
-        List<PartnerProfitSettlementSummary>,
-    cashSettlements:
-        List<CashSettlementBundle>,
-    businessSummaries:
-        List<DailySummary>,
+    settlementDaily: List<DailyPartnerProfitSettlement>,
+    settlementSummary: List<PartnerProfitSettlementSummary>,
+    businessSummaries: List<DailySummary>,
+    businessRecords: List<StoreDailyRecord>,
     rankings: List<RankingRecord>
-): List<ReportLine> {
-    return when (reportType) {
+): List<ReportLine> =
+    when (reportType) {
         ReportType.PROFIT ->
             buildProfitReportLines(
                 periodLabel = periodLabel,
                 detail = detail,
-                selectedPartnerIds =
-                    selectedPartnerIds,
-                profitRows = profitRows,
-                settlementDaily =
-                    settlementDaily
+                selectedPartnerIds = selectedPartnerIds,
+                profitRows = profitRows
             )
 
         ReportType.SETTLEMENT ->
             buildSettlementReportLines(
                 periodLabel = periodLabel,
                 detail = detail,
-                selectedPartnerIds =
-                    selectedPartnerIds,
-                settlementDaily =
-                    settlementDaily,
-                settlementSummary =
-                    settlementSummary,
-                cashSettlements =
-                    cashSettlements
+                selectedPartnerIds = selectedPartnerIds,
+                profitRows = profitRows,
+                settlementDaily = settlementDaily,
+                settlementSummary = settlementSummary
             )
 
         ReportType.BUSINESS ->
             buildBusinessReportLines(
                 periodLabel = periodLabel,
                 detail = detail,
-                summaries =
-                    businessSummaries,
+                summaries = businessSummaries,
+                businessRecords = businessRecords,
                 rankings = rankings
             )
     }
-}
 
 private fun buildProfitReportLines(
     periodLabel: String,
     detail: ReportDetail,
     selectedPartnerIds: Set<Long>,
-    profitRows: List<ProfitDistributionRecord>,
-    settlementDaily:
-        List<DailyPartnerProfitSettlement>
+    profitRows: List<ProfitDistributionRecord>
 ): List<ReportLine> {
     val rows =
         profitRows.filter {
             selectedPartnerIds.isEmpty() ||
                 it.partnerId in selectedPartnerIds
         }
+    if (rows.isEmpty()) return emptyList()
 
-    if (rows.isEmpty()) {
-        return emptyList()
-    }
-
-    val settlementMap =
-        settlementDaily.associateBy {
-            it.date to it.partnerId
-        }
+    val lines = mutableListOf<ReportLine>()
+    lines += ReportLine("天鲜果业", ReportLineStyle.TITLE)
+    lines += ReportLine("合伙人利润分配报表", ReportLineStyle.SUBTITLE)
+    lines += ReportLine("统计期间：$periodLabel", ReportLineStyle.MUTED)
+    lines += ReportLine("", ReportLineStyle.SPACER)
+    lines += ReportLine("期间分配汇总", ReportLineStyle.SECTION)
 
     val partnerGroups =
         rows.groupBy { it.partnerId }
             .toList()
             .sortedBy { it.first }
 
-    val lines = mutableListOf<ReportLine>()
-
-    lines +=
-        ReportLine(
-            "天鲜果业",
-            ReportLineStyle.TITLE
-        )
-    lines +=
-        ReportLine(
-            "合伙人利润分配报表",
-            ReportLineStyle.SUBTITLE
-        )
-    lines +=
-        ReportLine(
-            "统计期间：$periodLabel",
-            ReportLineStyle.MUTED
-        )
-    lines +=
-        ReportLine(
-            "",
-            ReportLineStyle.SPACER
-        )
-
-    lines +=
-        ReportLine(
-            "期间汇总",
-            ReportLineStyle.SECTION
-        )
-
-    var totalEarned = 0.0
-    var totalSettled = 0.0
-
-    partnerGroups.forEach {
-        (_, partnerRows) ->
-        val name =
-            partnerRows.first()
-                .partnerName
-        val earned =
-            partnerRows.sumOf {
-                it.allocatedProfit
+    partnerGroups.forEach { (_, partnerRows) ->
+        val name = partnerRows.first().partnerName
+        val amount = partnerRows.sumOf { it.allocatedProfit }
+        lines += ReportLine(
+            "$name  分配净额 ${money(amount)}",
+            when {
+                amount > 0.005 -> ReportLineStyle.POSITIVE
+                amount < -0.005 -> ReportLineStyle.NEGATIVE
+                else -> ReportLineStyle.NORMAL
             }
-        val settled =
-            partnerRows.sumOf {
-                settlementMap[
-                    it.date to
-                        it.partnerId
-                ]?.settledProfit
-                    ?: 0.0
-            }
-        val pending =
-            earned - settled
-
-        totalEarned += earned
-        totalSettled += settled
-
-        lines +=
-            ReportLine(
-                "$name  应得 ${money(earned)}  已结算 ${money(settled)}  待结算 ${money(pending)}"
-            )
+        )
     }
 
-    lines +=
-        ReportLine(
-            "期间应得利润：${money(totalEarned)}",
-            ReportLineStyle.TOTAL
-        )
-    lines +=
-        ReportLine(
-            "期间已结算利润：${money(totalSettled)}",
-            ReportLineStyle.TOTAL
-        )
-    lines +=
-        ReportLine(
-            "期间待结算利润：${money(totalEarned - totalSettled)}",
-            ReportLineStyle.TOTAL
-        )
+    val totalAllocated = rows.sumOf { it.allocatedProfit }
+    lines += ReportLine(
+        "期间分配净额合计：${money(totalAllocated)}",
+        ReportLineStyle.TOTAL
+    )
 
     if (detail == ReportDetail.DETAILED) {
-        lines +=
-            ReportLine(
-                "",
-                ReportLineStyle.SPACER
-            )
-        lines +=
-            ReportLine(
-                "每日明细",
-                ReportLineStyle.SECTION
-            )
+        lines += ReportLine("", ReportLineStyle.SPACER)
+        lines += ReportLine("每日利润分配明细", ReportLineStyle.SECTION)
 
         rows.groupBy { it.date }
             .toList()
-            .sortedByDescending {
-                it.first
-            }
-            .forEach {
-                (date, dayRows) ->
-
-                val sourceProfit =
-                    dayRows.firstOrNull()
-                        ?.sourceProfit
-                        ?: 0.0
-
-                lines +=
-                    ReportLine(
-                        "$date  当日利润 ${money(sourceProfit)}",
+            .sortedByDescending { it.first }
+            .forEach { (date, dayRows) ->
+                val sourceProfit = dayRows.firstOrNull()?.sourceProfit ?: 0.0
+                lines += ReportLine(
+                    if (sourceProfit < -0.005) {
+                        "$date  当日总亏损 ${money(-sourceProfit)}"
+                    } else {
+                        "$date  当日总利润 ${money(sourceProfit)}"
+                    },
+                    if (sourceProfit < -0.005) {
+                        ReportLineStyle.WARNING
+                    } else {
                         ReportLineStyle.SECTION
-                    )
+                    }
+                )
 
-                dayRows.sortedBy {
-                    it.partnerId
-                }.forEach {
-                    row ->
-                    val settlement =
-                        settlementMap[
-                            row.date to
-                                row.partnerId
-                        ]
-
-                    val settled =
-                        settlement
-                            ?.settledProfit
-                            ?: 0.0
-
-                    val pending =
-                        row.allocatedProfit -
-                            settled
-
-                    val status =
-                        when {
-                            pending <= 0.005 ->
-                                if (
-                                    settlement
-                                        ?.lastSettlementDate
-                                        .orEmpty()
-                                        .isNotBlank()
-                                ) {
-                                    "已结算(${settlement!!.lastSettlementDate})"
-                                } else {
-                                    "已结算"
-                                }
-
-                            settled > 0.005 ->
-                                "部分结算"
-
-                            else ->
-                                "待结算"
+                dayRows.sortedBy { it.partnerId }.forEach { row ->
+                    val amountText =
+                        if (row.allocatedProfit < -0.005) {
+                            "分担 ${money(-row.allocatedProfit)}"
+                        } else {
+                            "分配 ${money(row.allocatedProfit)}"
                         }
-
-                    lines +=
-                        ReportLine(
-                            "${row.partnerName}  ${fmt(profitRatioPercent(row.ratio))}%  ${money(row.allocatedProfit)}  $status"
-                        )
-                }
-
-                lines +=
-                    ReportLine(
-                        "",
-                        ReportLineStyle.SPACER
+                    lines += ReportLine(
+                        "${row.partnerName}  ${fmt(profitRatioPercent(row.ratio))}%  $amountText",
+                        when {
+                            row.allocatedProfit > 0.005 -> ReportLineStyle.POSITIVE
+                            row.allocatedProfit < -0.005 -> ReportLineStyle.NEGATIVE
+                            else -> ReportLineStyle.NORMAL
+                        }
                     )
+                }
+                lines += ReportLine("", ReportLineStyle.SPACER)
             }
     }
 
@@ -9517,359 +9585,123 @@ private fun buildSettlementReportLines(
     periodLabel: String,
     detail: ReportDetail,
     selectedPartnerIds: Set<Long>,
-    settlementDaily:
-        List<DailyPartnerProfitSettlement>,
-    settlementSummary:
-        List<PartnerProfitSettlementSummary>,
-    cashSettlements:
-        List<CashSettlementBundle>
+    profitRows: List<ProfitDistributionRecord>,
+    settlementDaily: List<DailyPartnerProfitSettlement>,
+    settlementSummary: List<PartnerProfitSettlementSummary>
 ): List<ReportLine> {
     val summaries =
         settlementSummary.filter {
             selectedPartnerIds.isEmpty() ||
-                it.partnerId in
-                    selectedPartnerIds
+                it.partnerId in selectedPartnerIds
         }
-
-    if (
-        summaries.isEmpty() &&
-        cashSettlements.isEmpty()
-    ) {
-        return emptyList()
-    }
-
     val daily =
         settlementDaily.filter {
             selectedPartnerIds.isEmpty() ||
-                it.partnerId in
-                    selectedPartnerIds
+                it.partnerId in selectedPartnerIds
         }
+
+    if (summaries.isEmpty() && daily.isEmpty()) {
+        return emptyList()
+    }
+
+    val profitMap =
+        profitRows.associateBy { it.date to it.partnerId }
+    val sourceProfitByDate =
+        profitRows.groupBy { it.date }
+            .mapValues { (_, rows) -> rows.firstOrNull()?.sourceProfit ?: 0.0 }
 
     val lines = mutableListOf<ReportLine>()
-
-    lines +=
-        ReportLine(
-            "天鲜果业",
-            ReportLineStyle.TITLE
-        )
-    lines +=
-        ReportLine(
-            "合伙经营结算单",
-            ReportLineStyle.SUBTITLE
-        )
-    lines +=
-        ReportLine(
-            "统计期间：$periodLabel",
-            ReportLineStyle.MUTED
-        )
-    lines +=
-        ReportLine(
-            "",
-            ReportLineStyle.SPACER
-        )
+    lines += ReportLine("天鲜果业", ReportLineStyle.TITLE)
+    lines += ReportLine("利润结算报表", ReportLineStyle.SUBTITLE)
+    lines += ReportLine("统计期间：$periodLabel", ReportLineStyle.MUTED)
+    lines += ReportLine("", ReportLineStyle.SPACER)
 
     if (summaries.isNotEmpty()) {
-        lines +=
-            ReportLine(
-                "利润结算汇总",
-                ReportLineStyle.SECTION
+        lines += ReportLine("利润结算汇总", ReportLineStyle.SECTION)
+        summaries.forEach { stat ->
+            lines += ReportLine(
+                if (stat.earnedProfit < -0.005) {
+                    "${stat.partnerName}  净亏损分担 ${money(-stat.earnedProfit)}  已结算利润 ${money(stat.settledProfit)}"
+                } else {
+                    "${stat.partnerName}  应得 ${money(stat.earnedProfit)}  已结算 ${money(stat.settledProfit)}  待结算 ${money(stat.pendingProfit)}"
+                },
+                if (stat.pendingProfit > 0.005) {
+                    ReportLineStyle.WARNING
+                } else {
+                    ReportLineStyle.NORMAL
+                }
             )
-
-        summaries.forEach {
-            stat ->
-            lines +=
-                ReportLine(
-                    if (stat.earnedProfit < -0.005) {
-                        "${stat.partnerName}  亏损分担 ${money(-stat.earnedProfit)}  已结算利润 ${money(stat.settledProfit)}"
-                    } else {
-                        "${stat.partnerName}  应得 ${money(stat.earnedProfit)}  已结算 ${money(stat.settledProfit)}  待结算 ${money(stat.pendingProfit)}"
-                    }
-                )
         }
 
-        val totalEarned =
-            summaries.sumOf {
-                it.earnedProfit
-            }
-        val totalSettled =
-            summaries.sumOf {
-                it.settledProfit
-            }
-        val totalPending =
-            summaries.sumOf {
-                it.pendingProfit
-            }
-
-        lines +=
-            ReportLine(
-                "合计应得利润：${money(totalEarned)}",
-                ReportLineStyle.TOTAL
-            )
-        lines +=
-            ReportLine(
-                "合计已结算利润：${money(totalSettled)}",
-                ReportLineStyle.TOTAL
-            )
-        lines +=
-            ReportLine(
-                "合计待结算利润：${money(totalPending)}",
-                ReportLineStyle.TOTAL
-            )
+        val totalEarned = summaries.sumOf { it.earnedProfit }
+        val totalSettled = summaries.sumOf { it.settledProfit }
+        val totalPending = summaries.sumOf { it.pendingProfit }
+        lines += ReportLine("合计应得净利润：${money(totalEarned)}", ReportLineStyle.TOTAL)
+        lines += ReportLine("合计已结算利润：${money(totalSettled)}", ReportLineStyle.TOTAL)
+        lines += ReportLine("合计待结算利润：${money(totalPending)}", ReportLineStyle.TOTAL)
     }
 
     if (detail == ReportDetail.DETAILED) {
         if (daily.isNotEmpty()) {
-            lines +=
-                ReportLine(
-                    "",
-                    ReportLineStyle.SPACER
-                )
-            lines +=
-                ReportLine(
-                    "每日利润结算明细",
-                    ReportLineStyle.SECTION
-                )
+            lines += ReportLine("", ReportLineStyle.SPACER)
+            lines += ReportLine("每日利润结算明细", ReportLineStyle.SECTION)
 
             daily.groupBy { it.date }
                 .toList()
-                .sortedByDescending {
-                    it.first
-                }
-                .forEach {
-                    (date, rows) ->
-
-                    lines +=
-                        ReportLine(
-                            date,
+                .sortedByDescending { it.first }
+                .forEach { (date, rows) ->
+                    val sourceProfit = sourceProfitByDate[date]
+                        ?: rows.sumOf { it.earnedProfit }
+                    lines += ReportLine(
+                        if (sourceProfit < -0.005) {
+                            "$date  当日总亏损 ${money(-sourceProfit)}"
+                        } else {
+                            "$date  当日总利润 ${money(sourceProfit)}"
+                        },
+                        if (sourceProfit < -0.005) {
+                            ReportLineStyle.WARNING
+                        } else {
                             ReportLineStyle.SECTION
-                        )
-
-                    rows.sortedBy {
-                        it.partnerId
-                    }.forEach {
-                        row ->
-                        val status =
-                            when {
-                                row.earnedProfit < -0.005 ->
-                                    "亏损已计入当日资金轧差"
-
-                                row.pendingProfit <=
-                                    0.005 ->
-                                    if (
-                                        row.lastSettlementDate
-                                            .isNotBlank()
-                                    ) {
-                                        "已结算于 ${row.lastSettlementDate}"
-                                    } else {
-                                        "已结算"
-                                    }
-
-                                row.settledProfit >
-                                    0.005 ->
-                                    "部分结算"
-
-                                else ->
-                                    "待结算"
-                            }
-
-                        lines +=
-                            ReportLine(
-                                if (row.earnedProfit < -0.005) {
-                                    "${row.partnerName}  亏损分担 ${money(-row.earnedProfit)}  $status"
-                                } else {
-                                    "${row.partnerName}  应得 ${money(row.earnedProfit)}  已结算 ${money(row.settledProfit)}  待结算 ${money(row.pendingProfit)}  $status"
-                                }
-                            )
-                    }
-                }
-        }
-
-        val filteredCash =
-            cashSettlements.mapNotNull {
-                bundle ->
-                val partners =
-                    bundle.partners.filter {
-                        selectedPartnerIds.isEmpty() ||
-                            it.partnerId in
-                                selectedPartnerIds
-                    }
-
-                val transfers =
-                    bundle.transfers.filter {
-                        selectedPartnerIds.isEmpty() ||
-                            it.fromPartnerId in
-                                selectedPartnerIds ||
-                            it.toPartnerId in
-                                selectedPartnerIds
-                    }
-
-                if (
-                    partners.isEmpty() &&
-                    transfers.isEmpty()
-                ) {
-                    null
-                } else {
-                    CashSettlementBundle(
-                        settlement =
-                            bundle.settlement,
-                        partners = partners,
-                        transfers = transfers
-                    )
-                }
-            }
-
-        if (filteredCash.isNotEmpty()) {
-            lines +=
-                ReportLine(
-                    "",
-                    ReportLineStyle.SPACER
-                )
-            lines +=
-                ReportLine(
-                    "资金轧差详细方案",
-                    ReportLineStyle.SECTION
-                )
-            lines +=
-                ReportLine(
-                    "说明：最终应留 = 进货垫付 + 费用垫付 + 应分利润；结算差额 = 最终应留 - 已收营业款。",
-                    ReportLineStyle.MUTED
-                )
-
-            filteredCash
-                .sortedByDescending {
-                    it.settlement.date
-                }
-                .forEach {
-                    bundle ->
-
-                    val confirmedText =
-                        when (
-                            bundle.settlement.status
-                        ) {
-                            1 -> "已结清"
-                            2 -> "部分结算"
-                            else -> "未结算"
                         }
+                    )
 
-                    val confirmedTime =
-                        if (
-                            bundle.settlement.status != 0
-                        ) {
-                            settlementTimeText(
-                                bundle.settlement.updatedAt
+                    rows.sortedBy { it.partnerId }.forEach { row ->
+                        val distribution = profitMap[row.date to row.partnerId]
+                        val ratioText = distribution?.let {
+                            "${fmt(profitRatioPercent(it.ratio))}%"
+                        } ?: "比例未记录"
+
+                        if (row.earnedProfit < -0.005) {
+                            lines += ReportLine(
+                                "${row.partnerName}  $ratioText  亏损分担 ${money(-row.earnedProfit)}  · 亏损待抵扣",
+                                ReportLineStyle.NEGATIVE
                             )
                         } else {
-                            ""
-                        }
-
-                    lines +=
-                        ReportLine(
-                            "${bundle.settlement.date}  资金轧差  $confirmedText",
-                            ReportLineStyle.SECTION
-                        )
-
-                    lines +=
-                        ReportLine(
-                            "营业额 ${money(bundle.settlement.revenue)}  ·  进货 ${money(bundle.settlement.purchaseCost)}  ·  费用 ${money(bundle.settlement.expense)}  ·  利润 ${money(bundle.settlement.profit)}"
-                        )
-
-                    if (confirmedTime.isNotBlank()) {
-                        lines +=
-                            ReportLine(
-                                "方案确认时间：$confirmedTime",
-                                ReportLineStyle.MUTED
-                            )
-                    }
-
-                    lines +=
-                        ReportLine(
-                            "每人最终余额",
-                            ReportLineStyle.SECTION
-                        )
-
-                    bundle.partners
-                        .sortedBy {
-                            it.partnerId
-                        }
-                        .forEach {
-                            partner ->
-
-                            val balanceText =
+                            val status =
                                 when {
-                                    partner.balance >
-                                        0.005 ->
-                                        "应收 ${money(partner.balance)}"
-
-                                    partner.balance <
-                                        -0.005 ->
-                                        "应转出 ${money(-partner.balance)}"
-
-                                    else ->
-                                        "已平衡"
+                                    row.pendingProfit <= 0.005 && row.settledProfit > 0.005 ->
+                                        if (row.lastSettlementDate.isNotBlank()) {
+                                            "已结算于 ${row.lastSettlementDate}"
+                                        } else {
+                                            "已结算"
+                                        }
+                                    row.settledProfit > 0.005 -> "部分结算"
+                                    else -> "待结算"
                                 }
-
-                            lines +=
-                                ReportLine(
-                                    "${partner.partnerName}  $balanceText",
-                                    ReportLineStyle.TOTAL
-                                )
-                            lines +=
-                                ReportLine(
-                                    "进货 ${money(partner.purchasePaid)} + 费用 ${money(partner.expensePaid)} + 利润 ${money(partner.profitShare)} - 已收 ${money(partner.revenueReceived)}"
-                                )
-                            lines +=
-                                ReportLine(
-                                    "最终应留 ${money(partner.shouldKeep)}",
-                                    ReportLineStyle.NORMAL
-                                )
-                        }
-
-                    val visibleTransfers =
-                        bundle.transfers.filter {
-                            it.amount >= 0.01
-                        }
-
-                    lines +=
-                        ReportLine(
-                            "最少转账方案",
-                            ReportLineStyle.SECTION
-                        )
-
-                    if (visibleTransfers.isNotEmpty()) {
-                        visibleTransfers.forEach {
-                            transfer ->
-                            lines +=
-                                ReportLine(
-                                    "${transfer.fromPartnerName} → ${transfer.toPartnerName}  ${money(transfer.amount)}",
-                                    ReportLineStyle.TOTAL
-                                )
-                        }
-
-                        val transferTotal =
-                            visibleTransfers.sumOf {
-                                it.amount
-                            }
-
-                        lines +=
-                            ReportLine(
-                                "本次资金轧差合计：${money(transferTotal)}",
-                                ReportLineStyle.TOTAL
+                            lines += ReportLine(
+                                "${row.partnerName}  $ratioText  应分 ${money(row.earnedProfit)}  已结 ${money(row.settledProfit)}  待结 ${money(row.pendingProfit)}  · $status",
+                                when {
+                                    row.pendingProfit <= 0.005 && row.settledProfit > 0.005 -> ReportLineStyle.POSITIVE
+                                    row.settledProfit > 0.005 -> ReportLineStyle.WARNING
+                                    else -> ReportLineStyle.NORMAL
+                                }
                             )
-                    } else {
-                        lines +=
-                            ReportLine(
-                                "无需转账，资金已平衡",
-                                ReportLineStyle.MUTED
-                            )
+                        }
                     }
-
-                    lines +=
-                        ReportLine(
-                            "",
-                            ReportLineStyle.SPACER
-                        )
+                    lines += ReportLine("", ReportLineStyle.SPACER)
                 }
         }
+
     }
 
     return lines
@@ -9879,144 +9711,84 @@ private fun buildBusinessReportLines(
     periodLabel: String,
     detail: ReportDetail,
     summaries: List<DailySummary>,
+    businessRecords: List<StoreDailyRecord>,
     rankings: List<RankingRecord>
 ): List<ReportLine> {
-    if (
-        summaries.isEmpty() &&
-        rankings.isEmpty()
-    ) {
-        return emptyList()
-    }
+    if (summaries.isEmpty() && rankings.isEmpty()) return emptyList()
 
-    val totalRevenue =
-        summaries.sumOf {
-            it.revenue
-        }
-    val totalProfit =
-        summaries.sumOf {
-            it.profit
-        }
-    val totalPurchase =
-        summaries.sumOf {
-            it.purchaseCost
-        }
-    val totalExpense =
-        summaries.sumOf {
-            it.expense
-        }
-    val totalCustomers =
-        summaries.sumOf {
-            it.customers
-        }
+    val totalRevenue = summaries.sumOf { it.revenue }
+    val totalProfit = summaries.sumOf { it.profit }
+    val totalPurchase = summaries.sumOf { it.purchaseCost }
+    val totalExpense = summaries.sumOf { it.expense }
+    val totalCustomers = summaries.sumOf { it.customers }
 
     val lines = mutableListOf<ReportLine>()
-
-    lines +=
-        ReportLine(
-            "天鲜果业",
-            ReportLineStyle.TITLE
-        )
-    lines +=
-        ReportLine(
-            "经营汇总报表",
-            ReportLineStyle.SUBTITLE
-        )
-    lines +=
-        ReportLine(
-            "统计期间：$periodLabel",
-            ReportLineStyle.MUTED
-        )
-    lines +=
-        ReportLine(
-            "",
-            ReportLineStyle.SPACER
-        )
-
-    lines +=
-        ReportLine(
-            "经营汇总",
-            ReportLineStyle.SECTION
-        )
-    lines +=
-        ReportLine(
-            "营业额：${money(totalRevenue)}"
-        )
-    lines +=
-        ReportLine(
-            "利润：${money(totalProfit)}"
-        )
-    lines +=
-        ReportLine(
-            "进货金额：${money(totalPurchase)}"
-        )
-    lines +=
-        ReportLine(
-            "业务费用：${money(totalExpense)}"
-        )
-    lines +=
-        ReportLine(
-            "客户数：$totalCustomers 人"
-        )
+    lines += ReportLine("天鲜果业", ReportLineStyle.TITLE)
+    lines += ReportLine("经营汇总报表", ReportLineStyle.SUBTITLE)
+    lines += ReportLine("统计期间：$periodLabel", ReportLineStyle.MUTED)
+    lines += ReportLine("", ReportLineStyle.SPACER)
+    lines += ReportLine("经营汇总", ReportLineStyle.SECTION)
+    lines += ReportLine("营业额：${money(totalRevenue)}", ReportLineStyle.TOTAL)
+    lines += ReportLine(
+        "利润：${money(totalProfit)}",
+        if (totalProfit < -0.005) ReportLineStyle.NEGATIVE else ReportLineStyle.POSITIVE
+    )
+    lines += ReportLine("进货金额：${money(totalPurchase)}")
+    lines += ReportLine("业务费用：${money(totalExpense)}")
+    lines += ReportLine("客户数：$totalCustomers 人")
 
     if (summaries.isNotEmpty()) {
-        lines +=
-            ReportLine(
-                "经营天数：${summaries.size} 天"
-            )
-        lines +=
-            ReportLine(
-                "日均营业额：${money(totalRevenue / summaries.size)}"
-            )
-        lines +=
-            ReportLine(
-                "日均利润：${money(totalProfit / summaries.size)}"
-            )
+        lines += ReportLine("经营天数：${summaries.size} 天")
+        lines += ReportLine("日均营业额：${money(totalRevenue / summaries.size)}")
+        lines += ReportLine("日均利润：${money(totalProfit / summaries.size)}")
     }
 
     if (rankings.isNotEmpty()) {
-        lines +=
-            ReportLine(
-                "",
-                ReportLineStyle.SPACER
+        lines += ReportLine("", ReportLineStyle.SPACER)
+        lines += ReportLine("摊位排行", ReportLineStyle.SECTION)
+        rankings.sortedByDescending { it.revenue }.forEachIndexed { index, row ->
+            lines += ReportLine(
+                "${index + 1}. ${row.storeName}  营业额 ${money(row.revenue)}  利润 ${money(row.profit)}  客户 ${row.customers}"
             )
-        lines +=
-            ReportLine(
-                "摊位排行",
-                ReportLineStyle.SECTION
-            )
-
-        rankings.sortedByDescending {
-            it.revenue
-        }.forEachIndexed {
-            index,
-            row ->
-            lines +=
-                ReportLine(
-                    "${index + 1}. ${row.storeName}  营业额 ${money(row.revenue)}  利润 ${money(row.profit)}  客户 ${row.customers}"
-                )
         }
     }
 
     if (detail == ReportDetail.DETAILED) {
-        lines +=
-            ReportLine(
-                "",
-                ReportLineStyle.SPACER
-            )
-        lines +=
-            ReportLine(
-                "每日经营明细",
+        lines += ReportLine("", ReportLineStyle.SPACER)
+        lines += ReportLine("每日经营明细", ReportLineStyle.SECTION)
+
+        val recordsByDate = businessRecords.groupBy { it.date }
+        summaries.sortedByDescending { it.date }.forEach { row ->
+            val dayRecords = recordsByDate[row.date].orEmpty()
+            val locations =
+                dayRecords.map { it.storeName.ifBlank { "未命名位置" } }
+                    .distinct()
+            val locationText =
+                if (locations.isEmpty()) "未记录位置"
+                else locations.joinToString("、")
+
+            lines += ReportLine(
+                "${row.date}  ·  位置：$locationText",
                 ReportLineStyle.SECTION
             )
+            lines += ReportLine(
+                "当日合计  营业额 ${money(row.revenue)}  · 利润 ${money(row.profit)}  · 进货 ${money(row.purchaseCost)}  · 费用 ${money(row.expense)}  · 客户 ${row.customers}",
+                ReportLineStyle.TOTAL
+            )
 
-        summaries.sortedByDescending {
-            it.date
-        }.forEach {
-            row ->
-            lines +=
-                ReportLine(
-                    "${row.date}  营业额 ${money(row.revenue)}  利润 ${money(row.profit)}  进货 ${money(row.purchaseCost)}  费用 ${money(row.expense)}  客户 ${row.customers}"
-                )
+            dayRecords.groupBy { it.storeId to it.storeName }
+                .toList()
+                .sortedBy { it.first.second }
+                .forEach { (_, storeRows) ->
+                    val storeName = storeRows.first().storeName.ifBlank { "未命名位置" }
+                    val revenue = storeRows.sumOf { it.revenue }
+                    val profit = storeRows.sumOf { it.profit }
+                    val customers = storeRows.sumOf { it.customerTotal }
+                    lines += ReportLine(
+                        "位置：$storeName  · 营业额 ${money(revenue)}  · 利润 ${money(profit)}  · 客户 $customers"
+                    )
+                }
+            lines += ReportLine("", ReportLineStyle.SPACER)
         }
     }
 
@@ -15796,116 +15568,112 @@ private fun BusinessCalendarCard(
 private fun BackupContent(
     db: AppDatabase
 ) {
-    val context =
-        LocalContext.current
-
-    var message by remember {
-        mutableStateOf("")
-    }
+    val context = LocalContext.current
+    var message by remember { mutableStateOf("") }
+    var pendingBackupJson by remember { mutableStateOf<String?>(null) }
 
     val exportLauncher =
         rememberLauncherForActivityResult(
-            ActivityResultContracts
-                .CreateDocument(
-                    "application/json"
-                )
-        ) {
-            uri ->
-            if (uri != null) {
-                runCatching {
-                    context
-                        .contentResolver
-                        .openOutputStream(
-                            uri
-                        )
-                        ?.bufferedWriter(
-                            Charsets.UTF_8
-                        )
-                        ?.use {
-                            writer ->
-                            writer.write(
-                                db.exportJson()
-                            )
-                        }
-                }
-                    .onSuccess {
-                        message =
-                            "备份已导出"
+            ActivityResultContracts.CreateDocument("application/json")
+        ) { uri ->
+            val json = pendingBackupJson
+            pendingBackupJson = null
+            if (uri == null || json == null) return@rememberLauncherForActivityResult
+
+            runCatching {
+                context.contentResolver.openOutputStream(uri, "w")
+                    ?.bufferedWriter(Charsets.UTF_8)
+                    ?.use { writer ->
+                        writer.write(json)
+                        writer.flush()
                     }
-                    .onFailure {
-                        error ->
-                        message =
-                            "导出失败：" +
-                                (
-                                    error.message
-                                        ?: "未知错误"
-                                    )
-                    }
+                    ?: throw IllegalStateException("无法打开保存位置")
+            }.onSuccess {
+                message = "备份已导出"
+            }.onFailure { error ->
+                message = "导出失败：${error.message ?: "未知错误"}"
             }
         }
+
+    fun backupFileName(): String =
+        "天鲜果业备份_${LocalDate.now()}_${System.currentTimeMillis()}.json"
 
     Column(
         Modifier
             .fillMaxSize()
-            .padding(
-                16.dp
-            ),
-        verticalArrangement =
-            Arrangement.spacedBy(
-                12.dp
-            )
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Card(
-            colors =
-                CardDefaults.cardColors(
-                    containerColor =
-                        Color(
-                            0xFFF5FAF7
-                        )
-                )
-        ) {
-            Text(
-                "导出当前账本的 JSON 数据备份。该功能与经营统计分开，不影响云同步。",
-                modifier =
-                    Modifier.padding(
-                        14.dp
-                    ),
-                color = Color.DarkGray
+            colors = CardDefaults.cardColors(
+                containerColor = Color(0xFFF5FAF7)
             )
+        ) {
+            Column(
+                Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    "数据备份",
+                    fontWeight = FontWeight.Bold,
+                    color = BrandGreen
+                )
+                Text(
+                    "导出当前账本的 JSON 完整数据。备份与云同步互不影响；导出失败只会提示错误，不会退出 APP。",
+                    color = Color.DarkGray,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
         }
 
         Button(
             onClick = {
-                exportLauncher.launch(
-                    "天鲜果业备份_" +
-                        LocalDate
-                            .now()
-                            .toString() +
-                        ".json"
-                )
+                runCatching {
+                    val json = db.exportJson()
+                    ReportGenerator.saveTextToDownloads(
+                        context = context,
+                        displayName = backupFileName(),
+                        content = json
+                    )
+                }.onSuccess { path ->
+                    message = "备份成功：$path"
+                }.onFailure { error ->
+                    message = "备份失败：${error.message ?: "未知错误"}"
+                }
             },
-            modifier =
-                Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Text(
-                "导出 JSON 备份"
-            )
+            Text("立即备份")
         }
 
-        if (
-            message.isNotBlank()
+        OutlinedButton(
+            onClick = {
+                runCatching {
+                    val json = db.exportJson()
+                    pendingBackupJson = json
+                    exportLauncher.launch(backupFileName())
+                }.onFailure { error ->
+                    pendingBackupJson = null
+                    message = "打开保存位置失败：${error.message ?: "未知错误"}"
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
         ) {
+            Text("另存为…")
+        }
+
+        Text(
+            "默认保存到 Download/TianXianFruit/Backup；“另存为”可自行选择位置。",
+            color = Color.Gray,
+            style = MaterialTheme.typography.bodySmall
+        )
+
+        if (message.isNotBlank()) {
             Text(
                 message,
                 color =
-                    if (
-                        message.startsWith(
-                            "导出失败"
-                        )
-                    ) {
-                        MaterialTheme
-                            .colorScheme
-                            .error
+                    if (message.contains("失败")) {
+                        MaterialTheme.colorScheme.error
                     } else {
                         BrandGreen
                     }
@@ -16674,6 +16442,13 @@ private fun ProfitContent(
     }
     var message by remember { mutableStateOf("") }
     var deleteDate by remember { mutableStateOf<String?>(null) }
+    var clearSettlementPartner by remember {
+        mutableStateOf<PartnerProfitSettlementSummary?>(null)
+    }
+    val settlementCorrectionStats = remember(dataVersion) {
+        db.getPartnerProfitSettlementSummary(null, null)
+            .filter { it.settledProfit > 0.005 }
+    }
     val saved = remember(dataVersion, date) { db.getProfitDistribution(date) }
     val history = remember(dataVersion) { db.getRecentProfitDistributions(200).groupBy { it.date }.toSortedMap(reverseOrder()) }
 
@@ -16924,8 +16699,70 @@ private fun ProfitContent(
                 }
             }
         }
+        if (canEdit && settlementCorrectionStats.isNotEmpty()) {
+            item {
+                HorizontalDivider()
+                Text(
+                    "利润结算纠错",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "这里只处理明确的利润结算记录，不会修改利润分配、当日结算或资金余额。仅在确认历史利润被误标为已结算时使用。",
+                    color = Color.Gray,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            settlementCorrectionStats.forEach { stat ->
+                item {
+                    Card(Modifier.fillMaxWidth()) {
+                        Row(
+                            Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(stat.partnerName, fontWeight = FontWeight.Bold)
+                                Text(
+                                    "已记录结算利润 ${money(stat.settledProfit)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.Gray
+                                )
+                            }
+                            TextButton(
+                                onClick = { clearSettlementPartner = stat }
+                            ) {
+                                Text("撤销历史结算")
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     if (canEdit) {
+        clearSettlementPartner?.let { stat ->
+            ConfirmActionDialog(
+                title = "撤销 ${stat.partnerName} 的历史利润结算？",
+                text = "这会把 ${stat.partnerName} 当前所有利润结算明细撤销为未结算，只用于纠正误标数据；利润分配和当日结算不会改变。",
+                confirmText = "确认撤销",
+                onDismiss = { clearSettlementPartner = null }
+            ) {
+                protectHistoricalAction(
+                    "2000-01-01",
+                    "撤销历史利润结算 ${stat.partnerName}"
+                ) {
+                    val count = db.clearProfitSettlementsForPartner(stat.partnerId)
+                    message =
+                        if (count > 0) {
+                            "已撤销 ${stat.partnerName} 的 $count 条利润结算明细"
+                        } else {
+                            "没有找到可撤销的利润结算记录"
+                        }
+                    clearSettlementPartner = null
+                    onChanged()
+                }
+            }
+        }
         deleteDate?.let { d ->
             ConfirmDelete("删除 $d 的整张利润分配历史？不会删除当天营业和总账。", { deleteDate = null }) {
             db.deleteProfitDistribution(d); deleteDate = null; onChanged()
