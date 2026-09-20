@@ -1403,22 +1403,14 @@ internal fun CollaborationCompleteDialog(
         item.id
     ) {
         mutableStateOf(
-            (
-                if (editingCompleted && item.actualAmount > 0) {
-                    item.actualAmount
-                } else {
-                    item.estimatedAmount
-                }
-            )
-                .takeIf {
-                    it > 0
-                }
-                ?.let {
-                    collaborationNumber(
-                        it
-                    )
-                }
-                .orEmpty()
+            if (editingCompleted) {
+                collaborationNumber(item.actualAmount)
+            } else {
+                item.estimatedAmount
+                    .takeIf { it > 0 }
+                    ?.let { collaborationNumber(it) }
+                    .orEmpty()
+            }
         )
     }
 
@@ -1436,14 +1428,17 @@ internal fun CollaborationCompleteDialog(
         quantity.toDoubleOrNull()
             ?: 0.0
 
-    val amountNumber =
+    val amountParsed =
         amount.toDoubleOrNull()
-            ?: 0.0
+
+    val amountNumber =
+        amountParsed ?: 0.0
 
     val unitPrice =
         if (
             quantityNumber > 0 &&
-            amountNumber > 0
+            amountParsed != null &&
+            amountNumber >= 0
         ) {
             amountNumber /
                 quantityNumber
@@ -1504,7 +1499,7 @@ internal fun CollaborationCompleteDialog(
 
                 Text(
                     if (
-                        unitPrice > 0
+                        amountParsed != null && quantityNumber > 0
                     ) {
                         "单价 ${collaborationMoney(unitPrice)}/${item.unit}"
                     } else {
@@ -1601,10 +1596,11 @@ internal fun CollaborationCompleteDialog(
                             "请选择采购人"
                     } else if (
                         quantityNumber <= 0 ||
-                        amountNumber <= 0
+                        amountParsed == null ||
+                        amountNumber < 0
                     ) {
                         error =
-                            "实际数量和总价必须大于0"
+                            "实际数量必须大于0，总价可填写0但不能留空"
                     } else {
                         val result =
                             if (editingCompleted) {

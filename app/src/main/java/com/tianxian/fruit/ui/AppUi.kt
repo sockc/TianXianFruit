@@ -77,7 +77,8 @@ enum class AppPage(val title: String, val emoji: String) {
     SESSION("营业", "📝"),
     SETTLEMENT("结算", "🧾"),
     MORE("更多", "☰"),
-    PLAN("采购", "🛒")
+    PLAN("采购", "🛒"),
+    INVENTORY("库存", "📦")
 }
 
 private enum class MorePage {
@@ -146,6 +147,12 @@ private enum class BusinessTrendMetric(val label: String) {
     REVENUE("营业额"),
     PROFIT("利润"),
     CUSTOMERS("客户")
+}
+
+private enum class BusinessCalendarMetric(val label: String) {
+    REVENUE("营业额"),
+    PURCHASE("采购额"),
+    PROFIT("利润")
 }
 
 private enum class PurchasePriceSource {
@@ -521,7 +528,8 @@ fun TianXianApp(
                                     canBusinessEdit
                                 AppPage.SETTLEMENT ->
                                     canSettlementEdit
-                                AppPage.PLAN ->
+                                AppPage.PLAN,
+                                AppPage.INVENTORY ->
                                     false
                             }
                         }
@@ -660,6 +668,9 @@ fun TianXianApp(
                             page =
                                 AppPage.MORE
                         },
+                        onInventory = {
+                            page = AppPage.INVENTORY
+                        },
                         onMore = {
                             moreTarget =
                                 MorePage.MENU
@@ -667,6 +678,12 @@ fun TianXianApp(
                                 AppPage.MORE
                         }
                     )
+                    AppPage.INVENTORY ->
+                        InventoryScreen(
+                            db = db,
+                            dataVersion = dataVersion,
+                            onChanged = { notifyDataChanged() }
+                        )
                     AppPage.PURCHASE ->
                         PurchaseScreen(
                             db = db,
@@ -858,6 +875,7 @@ private fun HomeScreen(
     onProfit: () -> Unit,
     onReport: () -> Unit,
     onFruits: () -> Unit,
+    onInventory: () -> Unit,
     onMore: () -> Unit
 ) {
     var selectedDate by remember {
@@ -962,6 +980,15 @@ private fun HomeScreen(
     val records = remember(dataVersion, selectedDateString) {
         db.getDailyRecords(selectedDateString)
     }
+    val inventoryPreview = remember(dataVersion, selectedDateString) {
+        db.getInventoryDayItems(selectedDateString)
+    }
+    val inventoryPreviewText =
+        when {
+            inventoryPreview.isEmpty() -> "暂无库存"
+            inventoryPreview.all { it.saved } -> "${inventoryPreview.size}种 · 已盘点"
+            else -> "${inventoryPreview.size}种 · 待盘点"
+        }
 
     val collaborationDate =
         LocalDate
@@ -1027,7 +1054,7 @@ private fun HomeScreen(
         if (!canViewBusiness) {
             "经营数据已按权限隐藏"
         } else if (records.isEmpty()) {
-            "当日未记录摊位"
+            "当日未记录位置"
         } else {
             records.joinToString("、") { it.storeName }.take(30)
         }
@@ -1429,10 +1456,11 @@ private fun HomeScreen(
                                 )
                                 DashboardTile(
                                     "📦",
-                                    "剩余库存价值",
-                                    money(summary.closingStockValue),
+                                    "剩余库存",
+                                    inventoryPreviewText,
                                     Color(0xFFFFF7D9),
-                                    Modifier.weight(1f)
+                                    Modifier.weight(1f),
+                                    onClick = onInventory
                                 )
                             }
     
@@ -1803,8 +1831,17 @@ private fun HomeScreen(
 }
 
 @Composable
-private fun DashboardTile(icon: String, title: String, value: String, color: Color, modifier: Modifier = Modifier) {
-    Card(modifier, colors = CardDefaults.cardColors(containerColor = color), shape = RoundedCornerShape(16.dp)) {
+private fun DashboardTile(
+    icon: String,
+    title: String,
+    value: String,
+    color: Color,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null
+) {
+    val tileModifier =
+        if (onClick != null) modifier.clickable(onClick = onClick) else modifier
+    Card(tileModifier, colors = CardDefaults.cardColors(containerColor = color), shape = RoundedCornerShape(16.dp)) {
         Row(Modifier.padding(horizontal = 12.dp, vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(icon, fontSize = 21.sp)
             Spacer(Modifier.width(9.dp))
@@ -1877,6 +1914,280 @@ private fun RevenueTrendChart(values: List<Pair<LocalDate, Double>>) {
 private fun chineseWeekday(date: LocalDate): String = when (date.dayOfWeek.value) {
     1 -> "星期一"; 2 -> "星期二"; 3 -> "星期三"; 4 -> "星期四"
     5 -> "星期五"; 6 -> "星期六"; else -> "星期日"
+}
+
+@Composable
+private fun InventoryScreen(
+    db: AppDatabase,
+    dataVersion: Int,
+    onChanged: () -> Unit
+) {
+    var date by remember { mutableStateOf(LocalDate.now().toString()) }
+    var message by remember { mutableStateOf("") }
+    var isError by remember { mutableStateOf(false) }
+    val remainingInputs = remember { mutableStateMapOf<String, String>() }
+
+    val inventoryItems = remember(dataVersion, date) {
+        db.getInventoryDayItems(date)
+    }
+
+    fun itemKey(item: InventoryDayItemRecord): String =
+        "${item.fruitId}|${item.unit}"
+
+    LaunchedEffect(dataVersion, date) {
+        val latest = db.getInventoryDayItems(date)
+        remainingInputs.clear()
+        latest.forEach { item ->
+            remainingInputs[itemKey(item)] = cleanNumber(item.remainingQuantity)
+        }
+        message = ""
+        isError = false
+    }
+
+    val purchasedKinds = inventoryItems.count { it.purchasedQuantity > 0.000001 }
+    val carriedKinds = inventoryItems.count {
+        it.openingQuantity > 0.000001 && it.purchasedQuantity <= 0.000001
+    }
+    val savedCount = inventoryItems.count { it.saved }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(9.dp)
+    ) {
+        item {
+            PageHeader("剩余库存", "测试功能 · 先记录库存，不参与利润、结算和各类报表")
+        }
+
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF7D9)),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Text("🧪 库存试验模块", fontWeight = FontWeight.Bold, color = Color(0xFF7B5C00))
+                    Text(
+                        "自动读取当日已完成采购，排除“总价”；上一次已保存的剩余库存会继续结转。当前库存数据仅保存在本账本本机数据库，暂不进入云同步。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF6F6250)
+                    )
+                }
+            }
+        }
+
+        item {
+            CompactDateNavigator(
+                label = "盘点日期",
+                date = date,
+                modifier = Modifier.fillMaxWidth(),
+                chineseDisplay = true,
+                showWeekday = true,
+                onDate = { date = it }
+            )
+        }
+
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                MiniSummaryCard(
+                    "库存商品",
+                    "${inventoryItems.size}种",
+                    Modifier.weight(1f),
+                    SoftGreen
+                )
+                MiniSummaryCard(
+                    "今日采购",
+                    "${purchasedKinds}种",
+                    Modifier.weight(1f),
+                    SoftBlue
+                )
+                MiniSummaryCard(
+                    "仅结转",
+                    "${carriedKinds}种",
+                    Modifier.weight(1f),
+                    SoftOrange
+                )
+            }
+            if (inventoryItems.isNotEmpty()) {
+                Text(
+                    if (savedCount == inventoryItems.size) {
+                        "本日已盘点 ${savedCount}/${inventoryItems.size} 项"
+                    } else {
+                        "本日尚未完整盘点 · 已保存 ${savedCount}/${inventoryItems.size} 项"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (savedCount == inventoryItems.size) BrandGreen else Color.Gray,
+                    modifier = Modifier.padding(top = 5.dp)
+                )
+            }
+        }
+
+        if (inventoryItems.isEmpty()) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F8FA)),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("📦", fontSize = 30.sp)
+                        Spacer(Modifier.height(5.dp))
+                        Text("当天没有可盘点商品", fontWeight = FontWeight.Bold)
+                        Text(
+                            "完成采购后会自动出现；历史剩余库存也会自动结转。",
+                            color = Color.Gray,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
+        } else {
+            items(
+                inventoryItems,
+                key = { "${it.fruitId}|${it.unit}" }
+            ) { item ->
+                val key = itemKey(item)
+                val input = remainingInputs[key].orEmpty()
+                val remaining = input.toDoubleOrNull()
+                val available = item.openingQuantity + item.purchasedQuantity
+                val delta = if (remaining != null) available - remaining else null
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.White)
+                ) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(7.dp)
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(item.fruitName, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                                Text(
+                                    if (item.purchasedQuantity > 0.000001) "今日有采购" else "历史库存结转",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (item.purchasedQuantity > 0.000001) BrandGreen else Color.Gray
+                                )
+                            }
+                            if (item.saved) {
+                                Text(
+                                    "已保存",
+                                    color = BrandGreen,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            CompactReadOnlyField(
+                                "结转库存",
+                                "${fmt(item.openingQuantity)}${item.unit}",
+                                Modifier.weight(1f)
+                            )
+                            CompactReadOnlyField(
+                                "今日采购",
+                                "${fmt(item.purchasedQuantity)}${item.unit}",
+                                Modifier.weight(1f)
+                            )
+                            CompactReadOnlyField(
+                                "可用合计",
+                                "${fmt(available)}${item.unit}",
+                                Modifier.weight(1f)
+                            )
+                        }
+
+                        CompactNumberField(
+                            "剩余库存（${item.unit}）",
+                            input,
+                            { remainingInputs[key] = it },
+                            Modifier.fillMaxWidth()
+                        )
+
+                        if (delta != null) {
+                            val text =
+                                if (delta >= -0.000001) {
+                                    "本日减少 ${fmt(delta.coerceAtLeast(0.0))}${item.unit}"
+                                } else {
+                                    "盘点比可用库存多 ${fmt(-delta)}${item.unit}，请核对采购或结转记录"
+                                }
+                            Text(
+                                text,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (delta >= -0.000001) Color.Gray else MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
+            }
+
+            item {
+                Button(
+                    onClick = {
+                        val invalid = inventoryItems.firstOrNull { item ->
+                            val value = remainingInputs[itemKey(item)]?.toDoubleOrNull()
+                            value == null || value < 0
+                        }
+                        if (invalid != null) {
+                            message = "${invalid.fruitName} 的剩余库存必须填写0或正数"
+                            isError = true
+                        } else {
+                            val saved =
+                                db.saveInventoryDay(
+                                    date = date,
+                                    items = inventoryItems.map { item ->
+                                        InventorySaveInput(
+                                            fruitId = item.fruitId,
+                                            fruitName = item.fruitName,
+                                            unit = item.unit,
+                                            remainingQuantity = remainingInputs[itemKey(item)]!!.toDouble()
+                                        )
+                                    }
+                                )
+                            if (saved) {
+                                message = "库存盘点已保存"
+                                isError = false
+                                onChanged()
+                            } else {
+                                message = "库存保存失败，请检查数据后重试"
+                                isError = true
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(44.dp)
+                ) {
+                    Text("保存剩余库存")
+                }
+            }
+        }
+
+        if (message.isNotBlank()) {
+            item {
+                Text(
+                    message,
+                    color = if (isError) MaterialTheme.colorScheme.error else BrandGreen,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+
+        item {
+            Text(
+                "说明：该模块暂不改变经营利润、资金轧差、最少转账方案、经营统计或报表。正式启用前将另行设计损耗、商品毛利和云同步规则。",
+                color = Color.Gray,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(vertical = 6.dp)
+            )
+        }
+    }
 }
 
 @Composable
@@ -2406,7 +2717,7 @@ private fun PurchaseScreen(
             val quantityValue =
                 if (item.status == 1 && item.actualQuantity > 0) item.actualQuantity else item.quantity
             val totalValue =
-                if (item.status == 1 && item.actualAmount > 0) item.actualAmount else item.estimatedAmount
+                if (item.status == 1) item.actualAmount else item.estimatedAmount
             val row =
                 PurchaseDraftRow(
                     rowId = nextRowId++,
@@ -2525,7 +2836,7 @@ private fun PurchaseScreen(
             pendingRows.any {
                 it.fruitId == null ||
                     (it.quantity.toDoubleOrNull() ?: 0.0) <= 0 ||
-                    (it.totalCost.toDoubleOrNull() ?: 0.0) <= 0
+                    (it.totalCost.toDoubleOrNull() ?: -1.0) < 0
             }
         ) {
             message = "有商品没有选择商品，或数量/总价没有填写正确"
@@ -2607,7 +2918,7 @@ private fun PurchaseScreen(
             pendingRows.firstOrNull {
                 it.fruitId == null ||
                     (it.quantity.toDoubleOrNull() ?: 0.0) <= 0 ||
-                    (it.totalCost.toDoubleOrNull() ?: 0.0) <= 0
+                    (it.totalCost.toDoubleOrNull() ?: -1.0) < 0
             }
         if (invalidData != null) {
             message = "有商品没有选择商品，或数量/总价没有填写正确"
@@ -2970,7 +3281,7 @@ private fun PurchaseScreen(
                             filledRows.any {
                                 it.fruitId == null ||
                                     (it.quantity.toDoubleOrNull() ?: 0.0) <= 0 ||
-                                    (it.totalCost.toDoubleOrNull() ?: 0.0) <= 0
+                                    (it.totalCost.toDoubleOrNull() ?: -1.0) < 0
                             } -> message = "有商品没有选择商品，或数量/总价没有填写正确"
                             else -> {
                                 val lines =
@@ -3367,7 +3678,7 @@ private fun PurchaseScreen(
     planActionItem?.let { item ->
         val completed = item.status == 1
         val quantity = if (completed && item.actualQuantity > 0) item.actualQuantity else item.quantity
-        val amount = if (completed && item.actualAmount > 0) item.actualAmount else item.estimatedAmount
+        val amount = if (completed) item.actualAmount else item.estimatedAmount
 
         AlertDialog(
             onDismissRequest = { planActionItem = null },
@@ -4167,8 +4478,8 @@ private fun PurchasePlanStatusCard(
     val quantity =
         if (completed && item.actualQuantity > 0) item.actualQuantity else item.quantity
     val amount =
-        if (completed && item.actualAmount > 0) item.actualAmount else item.estimatedAmount
-    val unitPrice = if (quantity > 0 && amount > 0) amount / quantity else 0.0
+        if (completed) item.actualAmount else item.estimatedAmount
+    val unitPrice = if (quantity > 0 && amount >= 0) amount / quantity else 0.0
     val buyer = item.buyerName.ifBlank { "未指定采购人" }
 
     Card(
@@ -4212,7 +4523,7 @@ private fun PurchasePlanStatusCard(
 
             Text(
                 "数量 ${fmt(quantity)}${item.unit}   " +
-                    (if (unitPrice > 0) "单价 ${money(unitPrice)}/${item.unit}   " else "") +
+                    (if (completed || unitPrice > 0) "单价 ${money(unitPrice)}/${item.unit}   " else "") +
                     "总价 ${money(amount)}   $buyer",
                 style = MaterialTheme.typography.bodySmall,
                 color = if (completed) Color(0xFF35624A) else Color.DarkGray
@@ -4253,7 +4564,7 @@ private fun PurchaseDraftRowEditor(
         val quantityValue =
             completedItem.actualQuantity.takeIf { it > 0 } ?: row.quantity.toDoubleOrNull() ?: 0.0
         val totalValue =
-            completedItem.actualAmount.takeIf { it > 0 } ?: row.totalCost.toDoubleOrNull() ?: 0.0
+            completedItem.actualAmount
         val unitPriceValue = if (quantityValue > 0 && totalValue > 0) totalValue / quantityValue else 0.0
         val completedBuyer = completedItem.buyerName.ifBlank { buyerDisplay }
 
@@ -4307,7 +4618,7 @@ private fun PurchaseDraftRowEditor(
                     row.copy(
                         quantity = value,
                         totalCost =
-                            if (quantity > 0 && unitPrice > 0) fmt(quantity * unitPrice)
+                            if (quantity > 0 && value.isNotBlank() && unitPrice >= 0) fmt(quantity * unitPrice)
                             else row.totalCost
                     )
                 }
@@ -4317,7 +4628,7 @@ private fun PurchaseDraftRowEditor(
                     row.copy(
                         quantity = value,
                         unitPrice =
-                            if (quantity > 0 && total > 0) fmt(total / quantity)
+                            if (quantity > 0 && value.isNotBlank() && total >= 0) fmt(total / quantity)
                             else row.unitPrice
                     )
                 }
@@ -4332,7 +4643,7 @@ private fun PurchaseDraftRowEditor(
             row.copy(
                 unitPrice = value,
                 totalCost =
-                    if (quantity > 0 && unitPrice > 0) {
+                    if (quantity > 0 && value.isNotBlank() && unitPrice >= 0) {
                         fmt(quantity * unitPrice)
                     } else if (value.isBlank()) {
                         ""
@@ -4351,7 +4662,7 @@ private fun PurchaseDraftRowEditor(
             row.copy(
                 totalCost = value,
                 unitPrice =
-                    if (quantity > 0 && total > 0) {
+                    if (quantity > 0 && value.isNotBlank() && total >= 0) {
                         fmt(total / quantity)
                     } else if (value.isBlank()) {
                         ""
@@ -4625,8 +4936,8 @@ private fun SessionScreen(
             )
         )
         expensePayerId = partners.firstOrNull()?.id
-        val s = storeId?.let { db.getStoreById(it) }
-        openingStock = if (s != null) cleanNumber(db.getPreviousClosingStock(s.id, date)) else ""
+        openingStock = ""
+        closingStock = ""
     }
 
     fun loadRecord(r: StoreDailyRecord) {
@@ -4765,12 +5076,12 @@ private fun SessionScreen(
         }
     }
 
-    // For a NEW entry only, change opening stock when the chosen store/date changes.
-    // In edit mode we never overwrite values loaded from history.
+    // V1.4.7.29: the legacy monetary opening/closing inventory fields are no longer
+    // part of new business-entry workflow. Historical values stay untouched when editing.
     LaunchedEffect(date, storeId) {
         if (editingRecordId == null) {
-            val s = storeId?.let { db.getStoreById(it) }
-            openingStock = if (s != null) cleanNumber(db.getPreviousClosingStock(s.id, date)) else ""
+            openingStock = ""
+            closingStock = ""
         }
     }
 
@@ -5093,11 +5404,6 @@ private fun SessionScreen(
             }
 
             Spacer(Modifier.height(5.dp))
-
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                CompactNumberField("开摊库存", openingStock, { openingStock = it }, Modifier.weight(1f))
-                CompactNumberField("收摊库存", closingStock, { closingStock = it }, Modifier.weight(1f))
-            }
         }
 
         item {
@@ -13108,6 +13414,14 @@ private fun StatsContent(
         mutableStateOf<String?>(null)
     }
 
+    var calendarMetric by remember {
+        mutableStateOf(BusinessCalendarMetric.REVENUE)
+    }
+
+    var calendarPartnerId by remember {
+        mutableStateOf<Long?>(null)
+    }
+
     val today =
         LocalDate.now()
 
@@ -13177,6 +13491,56 @@ private fun StatsContent(
             )
         }
 
+    val profitDistributions =
+        remember(
+            dataVersion,
+            queryStart,
+            queryEnd
+        ) {
+            db.getProfitDistributionsBetween(
+                queryStart,
+                queryEnd
+            )
+        }
+
+    val statsPartners =
+        remember(
+            dataVersion,
+            purchases,
+            profitDistributions,
+            records
+        ) {
+            val byId = linkedMapOf<Long, PartnerOption>()
+            db.getPartners().forEach { byId[it.id] = it }
+            purchases.forEach { detail ->
+                if (detail.order.buyerId > 0L && detail.order.buyerName.isNotBlank()) {
+                    byId.putIfAbsent(
+                        detail.order.buyerId,
+                        PartnerOption(detail.order.buyerId, detail.order.buyerName)
+                    )
+                }
+            }
+            profitDistributions.forEach { row ->
+                if (row.partnerId > 0L && row.partnerName.isNotBlank()) {
+                    byId.putIfAbsent(
+                        row.partnerId,
+                        PartnerOption(row.partnerId, row.partnerName)
+                    )
+                }
+            }
+            records.forEach { record ->
+                record.receiptSplits.forEach { split ->
+                    if (split.partnerId > 0L && split.partnerName.isNotBlank()) {
+                        byId.putIfAbsent(
+                            split.partnerId,
+                            PartnerOption(split.partnerId, split.partnerName)
+                        )
+                    }
+                }
+            }
+            byId.values.sortedBy { it.name }
+        }
+
     val statsStoreNames =
         remember(
             records
@@ -13200,6 +13564,23 @@ private fun StatsContent(
         }
     }
 
+    LaunchedEffect(calendarStoreName) {
+        // 利润分配和个人采购都没有位置归属。为避免把整日数据误认为某位置数据，
+        // 合伙人维度只允许在“全部位置”查看。
+        if (calendarStoreName != null) {
+            calendarPartnerId = null
+        }
+    }
+
+    LaunchedEffect(statsPartners, calendarPartnerId) {
+        if (
+            calendarPartnerId != null &&
+            statsPartners.none { it.id == calendarPartnerId }
+        ) {
+            calendarPartnerId = null
+        }
+    }
+
     val recordsByDate =
         remember(
             records
@@ -13207,17 +13588,14 @@ private fun StatsContent(
             records.groupBy { it.date }
         }
 
-    val purchaseByDate =
-        remember(
-            purchases
-        ) {
-            purchases
-                .groupBy { it.order.date }
-                .mapValues { entry ->
-                    entry.value.sumOf {
-                        it.order.totalCost
-                    }
-                }
+    val purchaseDetailsByDate =
+        remember(purchases) {
+            purchases.groupBy { it.order.date }
+        }
+
+    val profitDistributionByDate =
+        remember(profitDistributions) {
+            profitDistributions.groupBy { it.date }
         }
 
     val activityDates =
@@ -13955,23 +14333,100 @@ private fun StatsContent(
             } ?: records
         }
 
-    val calendarRevenue =
-        calendarVisibleRecords.sumOf {
-            it.revenue
+    val calendarPartner =
+        statsPartners.firstOrNull {
+            it.id == calendarPartnerId
         }
 
-    val calendarOperatingDays =
+    val calendarVisibleDates =
         calendarVisibleRecords
             .map { it.date }
-            .distinct()
-            .size
+            .toSet()
 
-    val calendarAverageDailyRevenue =
-        if (calendarOperatingDays > 0) {
-            calendarRevenue /
-                calendarOperatingDays
+    val calendarMetricTotal =
+        when (calendarMetric) {
+            BusinessCalendarMetric.REVENUE ->
+                if (calendarPartnerId == null) {
+                    calendarVisibleRecords.sumOf { it.revenue }
+                } else {
+                    calendarVisibleRecords.sumOf {
+                        it.receiptAmountForPartner(calendarPartnerId!!)
+                    }
+                }
+
+            BusinessCalendarMetric.PURCHASE ->
+                purchases
+                    .asSequence()
+                    .filter { detail ->
+                        calendarPartnerId == null ||
+                            detail.order.buyerId == calendarPartnerId
+                    }
+                    .filter { detail ->
+                        calendarStoreName == null ||
+                            detail.order.date in calendarVisibleDates
+                    }
+                    .sumOf { it.order.totalCost }
+
+            BusinessCalendarMetric.PROFIT ->
+                if (calendarPartnerId == null) {
+                    calendarVisibleRecords.sumOf { it.profit }
+                } else {
+                    profitDistributions
+                        .filter { it.partnerId == calendarPartnerId }
+                        .sumOf { it.allocatedProfit }
+                }
+        }
+
+    val calendarMetricDays =
+        when (calendarMetric) {
+            BusinessCalendarMetric.REVENUE ->
+                if (calendarPartnerId == null) {
+                    calendarVisibleRecords.map { it.date }.distinct().size
+                } else {
+                    calendarVisibleRecords
+                        .filter { kotlin.math.abs(it.receiptAmountForPartner(calendarPartnerId!!)) > 0.005 }
+                        .map { it.date }
+                        .distinct()
+                        .size
+                }
+
+            BusinessCalendarMetric.PURCHASE ->
+                purchases
+                    .filter { detail ->
+                        (calendarPartnerId == null || detail.order.buyerId == calendarPartnerId) &&
+                            (calendarStoreName == null || detail.order.date in calendarVisibleDates)
+                    }
+                    .map { it.order.date }
+                    .distinct()
+                    .size
+
+            BusinessCalendarMetric.PROFIT ->
+                if (calendarPartnerId == null) {
+                    calendarVisibleRecords.map { it.date }.distinct().size
+                } else {
+                    profitDistributions
+                        .filter { it.partnerId == calendarPartnerId }
+                        .map { it.date }
+                        .distinct()
+                        .size
+                }
+        }
+
+    val calendarMetricAverage =
+        if (calendarMetricDays > 0) {
+            calendarMetricTotal / calendarMetricDays
         } else {
             0.0
+        }
+
+    val calendarMetricLabel =
+        if (
+            calendarMetric == BusinessCalendarMetric.REVENUE &&
+            calendarPartnerId != null
+        ) {
+            "收款额"
+        } else {
+            calendarMetric.label
         }
 
     LazyColumn(
@@ -14816,6 +15271,60 @@ private fun StatsContent(
                 }
 
                 item {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        BusinessCalendarMetric.entries.forEach { metric ->
+                            FilterChip(
+                                selected = calendarMetric == metric,
+                                onClick = { calendarMetric = metric },
+                                label = { Text(metric.label) }
+                            )
+                        }
+                    }
+                }
+
+                item {
+                    if (calendarStoreName == null) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                "合伙人数据",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Color.Gray
+                            )
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                FilterChip(
+                                    selected = calendarPartnerId == null,
+                                    onClick = { calendarPartnerId = null },
+                                    label = { Text("全部合伙人") }
+                                )
+                                statsPartners.forEach { partner ->
+                                    FilterChip(
+                                        selected = calendarPartnerId == partner.id,
+                                        onClick = { calendarPartnerId = partner.id },
+                                        label = { Text(partner.name) }
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        Text(
+                            "合伙人利润和采购没有位置归属，切换到“全部位置”后可查看合伙人数据。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+                    }
+                }
+
+                item {
                     Card(
                         colors = CardDefaults.cardColors(
                             containerColor = Color(0xFFF5FAF7)
@@ -14826,20 +15335,28 @@ private fun StatsContent(
                             verticalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
                             SummaryRow(
-                                "当前位置",
+                                "位置",
                                 calendarStoreName ?: "全部位置"
                             )
                             SummaryRow(
-                                "营业额",
-                                money(calendarRevenue)
+                                "显示数据",
+                                calendarMetricLabel
                             )
                             SummaryRow(
-                                "经营日数",
-                                "$calendarOperatingDays 天"
+                                "合伙人",
+                                calendarPartner?.name ?: "全部合伙人"
                             )
                             SummaryRow(
-                                "平均每日营业额",
-                                money(calendarAverageDailyRevenue)
+                                "本期合计",
+                                money(calendarMetricTotal)
+                            )
+                            SummaryRow(
+                                "数据天数",
+                                "$calendarMetricDays 天"
+                            )
+                            SummaryRow(
+                                "日均",
+                                money(calendarMetricAverage)
                             )
                         }
                     }
@@ -14849,14 +15366,30 @@ private fun StatsContent(
                     BusinessCalendarCard(
                         month = calendarMonth,
                         recordsByDate = recordsByDate,
-                        purchaseByDate = purchaseByDate,
-                        selectedStoreName = calendarStoreName
+                        purchaseDetailsByDate = purchaseDetailsByDate,
+                        profitDistributionByDate = profitDistributionByDate,
+                        selectedStoreName = calendarStoreName,
+                        metric = calendarMetric,
+                        selectedPartnerId = calendarPartnerId,
+                        selectedPartnerName = calendarPartner?.name
                     )
                 }
 
                 item {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        CalendarLegendDot(Color(0xFF1976D2), "营业额")
+                        CalendarLegendDot(Color(0xFFF9A825), "采购额")
+                        CalendarLegendDot(BrandGreen, "利润")
+                        CalendarLegendDot(MaterialTheme.colorScheme.error, "负利润")
+                    }
+                }
+
+                item {
                     Text(
-                        "日历以当前筛选结束日期所在月份显示；选择“全部位置”时，同一经营日会汇总全部位置营业额并显示经营位置。采购金额按采购日显示，为当日总采购，不按位置分摊。",
+                        "日历格内只显示数字：营业额为蓝色、采购额为黄色、正利润为绿色、负利润为红色。采购金额仍按采购日统计，不按位置分摊；合伙人营业额显示其归属收款额。",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.Gray
                     )
@@ -14994,17 +15527,67 @@ private fun BusinessTrendRow(
     }
 }
 
+private fun StoreDailyRecord.receiptAmountForPartner(partnerId: Long): Double {
+    if (partnerId <= 0L) return 0.0
+
+    if (receiptSplits.isNotEmpty()) {
+        return receiptSplits
+            .filter { it.partnerId == partnerId }
+            .sumOf { it.amount }
+    }
+
+    var total = 0.0
+    if (wechatCollectorId == partnerId) total += wechatIncome
+    if (alipayCollectorId == partnerId) total += alipayIncome
+    if (cashCollectorId == partnerId) total += cashIncome
+    return total
+}
+
+@Composable
+private fun CalendarLegendDot(
+    color: Color,
+    label: String
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Box(
+            Modifier
+                .size(7.dp)
+                .clip(RoundedCornerShape(50))
+                .background(color)
+        )
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.Gray
+        )
+    }
+}
+
 @Composable
 private fun BusinessCalendarCard(
     month: LocalDate,
     recordsByDate: Map<String, List<StoreDailyRecord>>,
-    purchaseByDate: Map<String, Double>,
-    selectedStoreName: String? = null
+    purchaseDetailsByDate: Map<String, List<PurchaseOrderDetail>>,
+    profitDistributionByDate: Map<String, List<ProfitDistributionRecord>>,
+    selectedStoreName: String? = null,
+    metric: BusinessCalendarMetric = BusinessCalendarMetric.REVENUE,
+    selectedPartnerId: Long? = null,
+    selectedPartnerName: String? = null
 ) {
     val first = month.withDayOfMonth(1)
     val daysInMonth = first.lengthOfMonth()
     val leading = first.dayOfWeek.value - 1
     val totalCells = (leading + daysInMonth + 6) / 7 * 7
+
+    val metricTitle =
+        if (metric == BusinessCalendarMetric.REVENUE && selectedPartnerId != null) {
+            "收款额"
+        } else {
+            metric.label
+        }
 
     Card(Modifier.fillMaxWidth()) {
         Column(
@@ -15013,9 +15596,16 @@ private fun BusinessCalendarCard(
         ) {
             Text(
                 first.format(DateTimeFormatter.ofPattern("yyyy年M月")) +
-                    " · " + (selectedStoreName ?: "全部位置"),
+                    " · " + metricTitle,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                (selectedStoreName ?: "全部位置") +
+                    " · " + (selectedPartnerName ?: "全部合伙人"),
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray
             )
 
             Row(Modifier.fillMaxWidth()) {
@@ -15041,7 +15631,7 @@ private fun BusinessCalendarCard(
                             Spacer(
                                 Modifier
                                     .weight(1f)
-                                    .height(82.dp)
+                                    .height(58.dp)
                             )
                         } else {
                             val date = first.withDayOfMonth(day).toString()
@@ -15050,46 +15640,75 @@ private fun BusinessCalendarCard(
                                 if (selectedStoreName == null) {
                                     allRecords
                                 } else {
-                                    allRecords.filter {
-                                        it.storeName == selectedStoreName
+                                    allRecords.filter { it.storeName == selectedStoreName }
+                                }
+
+                            val datePurchases =
+                                purchaseDetailsByDate[date]
+                                    .orEmpty()
+                                    .filter { detail ->
+                                        selectedPartnerId == null ||
+                                            detail.order.buyerId == selectedPartnerId
+                                    }
+
+                            val dateProfitRows =
+                                profitDistributionByDate[date]
+                                    .orEmpty()
+                                    .filter { row ->
+                                        selectedPartnerId == null ||
+                                            row.partnerId == selectedPartnerId
+                                    }
+
+                            val hasSelectedStoreBusiness =
+                                selectedStoreName == null || visibleRecords.isNotEmpty()
+
+                            val value: Double
+                            val hasData: Boolean
+
+                            when (metric) {
+                                BusinessCalendarMetric.REVENUE -> {
+                                    value =
+                                        if (selectedPartnerId == null) {
+                                            visibleRecords.sumOf { it.revenue }
+                                        } else {
+                                            visibleRecords.sumOf {
+                                                it.receiptAmountForPartner(selectedPartnerId)
+                                            }
+                                        }
+                                    hasData =
+                                        if (selectedPartnerId == null) {
+                                            visibleRecords.isNotEmpty()
+                                        } else {
+                                            kotlin.math.abs(value) > 0.005
+                                        }
+                                }
+
+                                BusinessCalendarMetric.PURCHASE -> {
+                                    value = datePurchases.sumOf { it.order.totalCost }
+                                    hasData = datePurchases.isNotEmpty() && hasSelectedStoreBusiness
+                                }
+
+                                BusinessCalendarMetric.PROFIT -> {
+                                    if (selectedPartnerId == null) {
+                                        value = visibleRecords.sumOf { it.profit }
+                                        hasData = visibleRecords.isNotEmpty()
+                                    } else {
+                                        value = dateProfitRows.sumOf { it.allocatedProfit }
+                                        hasData = dateProfitRows.isNotEmpty()
                                     }
                                 }
+                            }
 
-                            val hasBusiness = visibleRecords.isNotEmpty()
-                            val revenue = visibleRecords.sumOf { it.revenue }
-                            val purchase = purchaseByDate[date] ?: 0.0
-                            val showPurchase =
-                                if (selectedStoreName == null) {
-                                    kotlin.math.abs(purchase) > 0.005
-                                } else {
-                                    hasBusiness && kotlin.math.abs(purchase) > 0.005
-                                }
-
-                            val storeNames =
-                                visibleRecords
-                                    .map { it.storeName }
-                                    .filter { it.isNotBlank() }
-                                    .distinct()
-
-                            val storeText =
-                                when {
-                                    storeNames.isEmpty() -> ""
-                                    storeNames.size <= 2 ->
-                                        storeNames.joinToString("·")
-                                    else ->
-                                        storeNames.take(2).joinToString("·") +
-                                            "+${storeNames.size - 2}"
-                                }
-
-                            val hasAnyData =
-                                hasBusiness ||
-                                    (selectedStoreName == null && showPurchase)
-
-                            val background =
-                                when {
-                                    hasBusiness -> Color(0xFFEAF8F0)
-                                    showPurchase -> Color(0xFFFFF4E6)
-                                    else -> Color.Transparent
+                            val valueColor =
+                                when (metric) {
+                                    BusinessCalendarMetric.REVENUE -> Color(0xFF1976D2)
+                                    BusinessCalendarMetric.PURCHASE -> Color(0xFFF9A825)
+                                    BusinessCalendarMetric.PROFIT ->
+                                        if (value < -0.005) {
+                                            MaterialTheme.colorScheme.error
+                                        } else {
+                                            BrandGreen
+                                        }
                                 }
 
                             Column(
@@ -15097,52 +15716,29 @@ private fun BusinessCalendarCard(
                                     .weight(1f)
                                     .padding(1.dp)
                                     .clip(RoundedCornerShape(7.dp))
-                                    .background(background)
+                                    .background(
+                                        if (hasData) Color(0xFFF8FAFC) else Color.Transparent
+                                    )
                                     .padding(
                                         horizontal = 2.dp,
                                         vertical = 4.dp
                                     )
-                                    .height(74.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
+                                    .height(50.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(3.dp)
                             ) {
                                 Text(
                                     day.toString(),
                                     style = MaterialTheme.typography.bodySmall,
                                     fontWeight =
-                                        if (hasAnyData) {
-                                            FontWeight.SemiBold
-                                        } else {
-                                            FontWeight.Normal
-                                        }
+                                        if (hasData) FontWeight.SemiBold else FontWeight.Normal
                                 )
 
                                 Text(
-                                    if (hasBusiness) {
-                                        "营${fmt(revenue)}"
-                                    } else {
-                                        ""
-                                    },
+                                    if (hasData) fmt(value) else "",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = BrandGreen,
-                                    maxLines = 1
-                                )
-
-                                Text(
-                                    storeText,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color.DarkGray,
-                                    maxLines = 1,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                                )
-
-                                Text(
-                                    if (showPurchase) {
-                                        "采${fmt(purchase)}"
-                                    } else {
-                                        ""
-                                    },
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFFC46A00),
+                                    color = valueColor,
+                                    fontWeight = FontWeight.SemiBold,
                                     maxLines = 1
                                 )
                             }

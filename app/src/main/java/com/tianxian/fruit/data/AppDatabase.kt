@@ -47,6 +47,25 @@ data class PurchaseItemRecord(
     val unitPrice: Double
 )
 
+// V1.4.7.29 inventory trial module. This data is intentionally kept out of
+// profit/settlement/report calculations until the workflow is formally enabled.
+data class InventoryDayItemRecord(
+    val fruitId: Long,
+    val fruitName: String,
+    val unit: String,
+    val openingQuantity: Double,
+    val purchasedQuantity: Double,
+    val remainingQuantity: Double,
+    val saved: Boolean
+)
+
+data class InventorySaveInput(
+    val fruitId: Long,
+    val fruitName: String,
+    val unit: String,
+    val remainingQuantity: Double
+)
+
 data class PurchaseOrderDetail(
     val order: PurchaseOrderRecord,
     val items: List<PurchaseItemRecord>,
@@ -579,6 +598,9 @@ class AppDatabase(
         createV22SettlementCenterCleanup(
             db
         )
+        createV23InventoryTrial(
+            db
+        )
         createV8SyncFoundation(
             db,
             initialData = false
@@ -676,6 +698,35 @@ class AppDatabase(
                 db
             )
         }
+        if (oldVersion < 23) {
+            createV23InventoryTrial(
+                db
+            )
+        }
+    }
+
+    private fun createV23InventoryTrial(
+        db: SQLiteDatabase
+    ) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS inventory_snapshot(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                fruit_id INTEGER NOT NULL,
+                fruit_name TEXT NOT NULL,
+                unit TEXT NOT NULL DEFAULT '件',
+                remaining_quantity REAL NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(date,fruit_id,unit)
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_inventory_snapshot_date " +
+                "ON inventory_snapshot(date)"
+        )
     }
 
     private fun createV22SettlementCenterCleanup(
@@ -5096,11 +5147,11 @@ class AppDatabase(
     ): CollaborationCompleteResult {
         if (
             actualQuantity <= 0 ||
-            actualAmount <= 0
+            actualAmount < 0
         ) {
             return CollaborationCompleteResult(
                 false,
-                "实际数量和金额必须大于0"
+                "实际数量必须大于0，金额不能小于0"
             )
         }
 
@@ -5771,10 +5822,10 @@ class AppDatabase(
         recorderUsername: String = "",
         recorderDisplayName: String = ""
     ): CollaborationCompleteResult {
-        if (actualQuantity <= 0 || actualAmount <= 0) {
+        if (actualQuantity <= 0 || actualAmount < 0) {
             return CollaborationCompleteResult(
                 false,
-                "实际数量和金额必须大于0"
+                "实际数量必须大于0，金额不能小于0"
             )
         }
 
@@ -7006,6 +7057,200 @@ class AppDatabase(
             c.dbl("quantity"), c.dbl("total_cost"), c.dbl("unit_price")
         ))
     } }
+
+    fun getInventoryDayItems(date: String): List<InventoryDayItemRecord> {
+        data class InventoryKey(
+            val fruitId: Long,
+            val unit: String
+        )
+
+        data class InventorySource(
+            val fruitId: Long,
+            val fruitName: String,
+            val unit: String,
+            val quantity: Double
+        )
+
+        val purchased =
+            readableDatabase.rawQuery(
+                """
+                SELECT
+                    pi.fruit_id,
+                    MAX(pi.fruit_name) AS fruit_name,
+                    pi.unit,
+                    COALESCE(SUM(pi.quantity),0) AS quantity
+                FROM purchase_item pi
+                JOIN purchase_order po ON po.id=pi.order_id
+                WHERE po.date=?
+                  AND po.deleted=0
+                  AND pi.deleted=0
+                  AND TRIM(pi.fruit_name)<>'总价'
+                GROUP BY pi.fruit_id,pi.unit
+                ORDER BY MIN(pi.id)
+                """.trimIndent(),
+                arrayOf(date)
+            ).use { c ->
+                buildList {
+                    while (c.moveToNext()) {
+                        add(
+                            InventorySource(
+                                fruitId = c.long("fruit_id"),
+                                fruitName = c.str("fruit_name"),
+                                unit = c.str("unit"),
+                                quantity = c.dbl("quantity")
+                            )
+                        )
+                    }
+                }
+            }
+
+        val previous = linkedMapOf<InventoryKey, InventorySource>()
+        readableDatabase.rawQuery(
+            """
+            SELECT fruit_id,fruit_name,unit,remaining_quantity
+            FROM inventory_snapshot
+            WHERE date<?
+            ORDER BY date DESC,id DESC
+            """.trimIndent(),
+            arrayOf(date)
+        ).use { c ->
+            while (c.moveToNext()) {
+                val key = InventoryKey(c.long("fruit_id"), c.str("unit"))
+                if (!previous.containsKey(key)) {
+                    previous[key] =
+                        InventorySource(
+                            fruitId = c.long("fruit_id"),
+                            fruitName = c.str("fruit_name"),
+                            unit = c.str("unit"),
+                            quantity = c.dbl("remaining_quantity")
+                        )
+                }
+            }
+        }
+
+        val current = linkedMapOf<InventoryKey, InventorySource>()
+        readableDatabase.rawQuery(
+            """
+            SELECT fruit_id,fruit_name,unit,remaining_quantity
+            FROM inventory_snapshot
+            WHERE date=?
+            ORDER BY id
+            """.trimIndent(),
+            arrayOf(date)
+        ).use { c ->
+            while (c.moveToNext()) {
+                val key = InventoryKey(c.long("fruit_id"), c.str("unit"))
+                current[key] =
+                    InventorySource(
+                        fruitId = c.long("fruit_id"),
+                        fruitName = c.str("fruit_name"),
+                        unit = c.str("unit"),
+                        quantity = c.dbl("remaining_quantity")
+                    )
+            }
+        }
+
+        val purchasedMap =
+            purchased.associateBy { InventoryKey(it.fruitId, it.unit) }
+        val keys = linkedSetOf<InventoryKey>()
+        purchased.forEach { keys += InventoryKey(it.fruitId, it.unit) }
+        previous.forEach { (key, value) ->
+            if (value.quantity > 0.000001) keys += key
+        }
+        current.keys.forEach { keys += it }
+
+        return keys.mapNotNull { key ->
+            val purchase = purchasedMap[key]
+            val prior = previous[key]
+            val saved = current[key]
+            val fruitName =
+                purchase?.fruitName
+                    ?: saved?.fruitName
+                    ?: prior?.fruitName
+                    ?: return@mapNotNull null
+            if (fruitName.trim() == "总价") return@mapNotNull null
+
+            val opening = (prior?.quantity ?: 0.0).coerceAtLeast(0.0)
+            val purchasedQuantity = (purchase?.quantity ?: 0.0).coerceAtLeast(0.0)
+            val remaining =
+                saved?.quantity?.coerceAtLeast(0.0)
+                    ?: (opening + purchasedQuantity)
+
+            InventoryDayItemRecord(
+                fruitId = key.fruitId,
+                fruitName = fruitName,
+                unit = key.unit,
+                openingQuantity = opening,
+                purchasedQuantity = purchasedQuantity,
+                remainingQuantity = remaining,
+                saved = saved != null
+            )
+        }.sortedWith(
+            compareByDescending<InventoryDayItemRecord> { it.purchasedQuantity > 0.000001 }
+                .thenBy { it.fruitName }
+                .thenBy { it.unit }
+        )
+    }
+
+    fun saveInventoryDay(
+        date: String,
+        items: List<InventorySaveInput>
+    ): Boolean {
+        if (runCatching { LocalDate.parse(date) }.isFailure) return false
+        if (
+            items.any {
+                it.fruitId <= 0L ||
+                    it.fruitName.isBlank() ||
+                    it.fruitName.trim() == "总价" ||
+                    it.unit.isBlank() ||
+                    !it.remainingQuantity.isFinite() ||
+                    it.remainingQuantity < 0
+            }
+        ) {
+            return false
+        }
+
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        db.beginTransaction()
+        try {
+            items.forEach { item ->
+                val cleanName = item.fruitName.trim()
+                val cleanUnit = item.unit.trim().ifBlank { "件" }
+                val values =
+                    ContentValues().apply {
+                        put("fruit_name", cleanName)
+                        put("remaining_quantity", item.remainingQuantity)
+                        put("updated_at", now)
+                    }
+                val changed =
+                    db.update(
+                        "inventory_snapshot",
+                        values,
+                        "date=? AND fruit_id=? AND unit=?",
+                        arrayOf(date, item.fruitId.toString(), cleanUnit)
+                    )
+                if (changed <= 0) {
+                    val inserted =
+                        db.insert(
+                            "inventory_snapshot",
+                            null,
+                            ContentValues(values).apply {
+                                put("date", date)
+                                put("fruit_id", item.fruitId)
+                                put("unit", cleanUnit)
+                                put("created_at", now)
+                            }
+                        )
+                    if (inserted <= 0) return false
+                }
+            }
+            db.setTransactionSuccessful()
+            return true
+        } finally {
+            db.endTransaction()
+        }
+    }
 
     fun getPurchaseTotal(date: String): Double = readableDatabase.rawQuery(
         "SELECT COALESCE(SUM(total_cost),0) AS total FROM purchase_order WHERE date=? AND deleted=0", arrayOf(date)
@@ -10411,7 +10656,7 @@ class AppDatabase(
             getSyncFoundationStatus()
                 .pendingChanges
         )
-        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item").forEach { table ->
+        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot").forEach { table ->
             root.put(table, tableAsJson(table))
         }
         return root.toString(2)
@@ -10652,7 +10897,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 22
+        const val DB_VERSION = 23
     }
 }
 
