@@ -35,7 +35,8 @@ enum class ReportLineStyle {
 
 data class ReportLine(
     val text: String,
-    val style: ReportLineStyle = ReportLineStyle.NORMAL
+    val style: ReportLineStyle = ReportLineStyle.NORMAL,
+    val rightText: String = ""
 )
 
 data class GeneratedReport(
@@ -50,9 +51,11 @@ object ReportGenerator {
     private const val PDF_HEIGHT = 842
     private const val PDF_MARGIN = 42f
     private const val PDF_FOOTER_RESERVED = 34f
+    private const val PDF_HEADER_BOTTOM = 78f
     private const val PNG_WIDTH = 1080
     private const val PNG_MARGIN = 64f
     private const val PNG_FOOTER_RESERVED = 100
+    private const val PNG_HEADER_BOTTOM = 158f
     private const val MAX_PNG_HEIGHT = 18000
 
     private val BRAND_GREEN = Color.rgb(19, 168, 104)
@@ -81,8 +84,8 @@ object ReportGenerator {
             var pageNumber = 1
             var page = startPdfPage(document, pageNumber)
             var canvas = page.canvas
-            drawPdfPageDecoration(canvas)
-            var y = PDF_MARGIN
+            drawPdfBrandHeader(canvas)
+            var y = PDF_HEADER_BOTTOM
 
             fun finishCurrentPage() {
                 drawPdfFooter(canvas, pageNumber, generatedAt)
@@ -95,9 +98,19 @@ object ReportGenerator {
                     return@forEach
                 }
 
+                if (line.style == ReportLineStyle.TITLE && line.text == "天鲜果业") {
+                    return@forEach
+                }
+
                 val paint = pdfPaint(line.style)
                 val maxWidth = PDF_WIDTH - PDF_MARGIN * 2
-                val wrapped = wrapText(line.text, paint, maxWidth)
+                val rightWidth =
+                    if (line.rightText.isBlank()) 0f else paint.measureText(line.rightText)
+                val columnGap = if (rightWidth > 0f) 16f else 0f
+                val leftWidth =
+                    (maxWidth - rightWidth - columnGap)
+                        .coerceAtLeast(maxWidth * 0.48f)
+                val wrapped = wrapText(line.text, paint, leftWidth)
                 val lineHeight = pdfLineHeight(line.style)
                 val blockHeight = wrapped.size * lineHeight
                 val needed = blockHeight + 7f
@@ -107,8 +120,8 @@ object ReportGenerator {
                     pageNumber += 1
                     page = startPdfPage(document, pageNumber)
                     canvas = page.canvas
-                    drawPdfPageDecoration(canvas)
-                    y = PDF_MARGIN
+                    drawPdfBrandHeader(canvas)
+                    y = PDF_HEADER_BOTTOM
                 }
 
                 drawPdfBlockBackground(
@@ -119,8 +132,17 @@ object ReportGenerator {
                     lineHeight = lineHeight
                 )
 
-                wrapped.forEach { text ->
+                val rightPaint = Paint(paint).apply { textAlign = Paint.Align.RIGHT }
+                wrapped.forEachIndexed { index, text ->
                     canvas.drawText(text, PDF_MARGIN, y, paint)
+                    if (index == 0 && line.rightText.isNotBlank()) {
+                        canvas.drawText(
+                            line.rightText,
+                            PDF_WIDTH - PDF_MARGIN,
+                            y,
+                            rightPaint
+                        )
+                    }
                     y += lineHeight
                 }
 
@@ -166,18 +188,28 @@ object ReportGenerator {
         )
         val canvas = Canvas(bitmap)
         canvas.drawColor(Color.WHITE)
-        drawPngPageDecoration(canvas)
+        drawPngBrandHeader(canvas)
 
-        var y = PNG_MARGIN + 8f
+        var y = PNG_HEADER_BOTTOM
         lines.forEach { line ->
             if (line.style == ReportLineStyle.SPACER) {
                 y += 24f
                 return@forEach
             }
 
+            if (line.style == ReportLineStyle.TITLE && line.text == "天鲜果业") {
+                return@forEach
+            }
+
             val paint = pngPaint(line.style)
             val maxWidth = PNG_WIDTH - PNG_MARGIN * 2
-            val wrapped = wrapText(line.text, paint, maxWidth)
+            val rightWidth =
+                if (line.rightText.isBlank()) 0f else paint.measureText(line.rightText)
+            val columnGap = if (rightWidth > 0f) 34f else 0f
+            val leftWidth =
+                (maxWidth - rightWidth - columnGap)
+                    .coerceAtLeast(maxWidth * 0.48f)
+            val wrapped = wrapText(line.text, paint, leftWidth)
             val lineHeight = pngLineHeight(line.style)
             val blockHeight = wrapped.size * lineHeight
 
@@ -189,8 +221,17 @@ object ReportGenerator {
                 lineHeight = lineHeight
             )
 
-            wrapped.forEach { text ->
+            val rightPaint = Paint(paint).apply { textAlign = Paint.Align.RIGHT }
+            wrapped.forEachIndexed { index, text ->
                 canvas.drawText(text, PNG_MARGIN, y, paint)
+                if (index == 0 && line.rightText.isNotBlank()) {
+                    canvas.drawText(
+                        line.rightText,
+                        PNG_WIDTH - PNG_MARGIN,
+                        y,
+                        rightPaint
+                    )
+                }
                 y += lineHeight
             }
 
@@ -394,20 +435,42 @@ object ReportGenerator {
             PdfDocument.PageInfo.Builder(PDF_WIDTH, PDF_HEIGHT, pageNumber).create()
         )
 
-    private fun drawPdfPageDecoration(canvas: Canvas) {
-        val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = BRAND_GREEN
-            strokeWidth = 4f
+    private fun drawPdfBrandHeader(canvas: Canvas) {
+        val background = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = BRAND_GREEN }
+        canvas.drawRoundRect(
+            PDF_MARGIN,
+            16f,
+            PDF_WIDTH - PDF_MARGIN,
+            61f,
+            10f,
+            10f,
+            background
+        )
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = 22f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
         }
-        canvas.drawLine(PDF_MARGIN, 22f, PDF_WIDTH - PDF_MARGIN, 22f, linePaint)
+        canvas.drawText("天鲜果业", PDF_MARGIN + 18f, 46f, textPaint)
     }
 
-    private fun drawPngPageDecoration(canvas: Canvas) {
-        val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = BRAND_GREEN
-            strokeWidth = 8f
+    private fun drawPngBrandHeader(canvas: Canvas) {
+        val background = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = BRAND_GREEN }
+        canvas.drawRoundRect(
+            PNG_MARGIN,
+            24f,
+            PNG_WIDTH - PNG_MARGIN,
+            132f,
+            26f,
+            26f,
+            background
+        )
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = 54f
+            typeface = Typeface.create("sans-serif", Typeface.BOLD)
         }
-        canvas.drawLine(PNG_MARGIN, 34f, PNG_WIDTH - PNG_MARGIN, 34f, linePaint)
+        canvas.drawText("天鲜果业", PNG_MARGIN + 34f, 94f, textPaint)
     }
 
     private fun drawPdfBlockBackground(
@@ -630,17 +693,23 @@ object ReportGenerator {
         }
 
     private fun measurePng(lines: List<ReportLine>): Int {
-        var height = PNG_MARGIN.toInt() + 16
+        var height = PNG_HEADER_BOTTOM.toInt() + 16
         lines.forEach { line ->
+            if (line.style == ReportLineStyle.TITLE && line.text == "天鲜果业") {
+                return@forEach
+            }
             if (line.style == ReportLineStyle.SPACER) {
                 height += 24
             } else {
                 val paint = pngPaint(line.style)
-                val wrapped = wrapText(
-                    line.text,
-                    paint,
-                    PNG_WIDTH - PNG_MARGIN * 2
-                )
+                val maxWidth = PNG_WIDTH - PNG_MARGIN * 2
+                val rightWidth =
+                    if (line.rightText.isBlank()) 0f else paint.measureText(line.rightText)
+                val columnGap = if (rightWidth > 0f) 34f else 0f
+                val leftWidth =
+                    (maxWidth - rightWidth - columnGap)
+                        .coerceAtLeast(maxWidth * 0.48f)
+                val wrapped = wrapText(line.text, paint, leftWidth)
                 height += ceil(
                     wrapped.size * pngLineHeight(line.style) + 16
                 ).toInt()

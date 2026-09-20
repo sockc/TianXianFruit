@@ -125,8 +125,7 @@ private enum class SettlementView(val label: String) {
 }
 
 private enum class ReportType(val label: String) {
-    PROFIT("利润分配报表"),
-    SETTLEMENT("利润结算报表"),
+    SETTLEMENT("资金结算报表"),
     BUSINESS("经营汇总报表")
 }
 
@@ -8651,7 +8650,7 @@ private fun ReportContent(
     val context = androidx.compose.ui.platform.LocalContext.current
 
     var reportType by remember {
-        mutableStateOf(ReportType.PROFIT)
+        mutableStateOf(ReportType.SETTLEMENT)
     }
     var reportTypeMenu by remember {
         mutableStateOf(false)
@@ -8730,29 +8729,18 @@ private fun ReportContent(
             )
         }
 
-    val settlementDaily =
+    val cashSettlements =
         remember(
             dataVersion,
             queryStart,
             queryEnd
         ) {
-            db.getProfitSettlementDaily(
+            db.getCashSettlementsBetween(
                 queryStart,
                 queryEnd
             )
         }
 
-    val settlementSummary =
-        remember(
-            dataVersion,
-            queryStart,
-            queryEnd
-        ) {
-            db.getPartnerProfitSettlementSummary(
-                queryStart,
-                queryEnd
-            )
-        }
 
 
     val businessRecords =
@@ -8816,68 +8804,14 @@ private fun ReportContent(
             )
         }
 
-    val availablePartners =
-        remember(
-            profitRows,
-            settlementDaily
-        ) {
-            val map =
-                linkedMapOf<Long, String>()
-
-            profitRows.forEach {
-                map[it.partnerId] =
-                    it.partnerName
-            }
-
-            settlementDaily.forEach {
-                map[it.partnerId] =
-                    it.partnerName
-            }
-
-            map.map {
-                PartnerOption(
-                    id = it.key,
-                    name = it.value
-                )
-            }
-        }
-
-    val selectedPartners =
-        remember {
-            mutableStateMapOf<Long, Boolean>()
-        }
-
-    LaunchedEffect(
-        availablePartners.map { it.id }
-    ) {
-        availablePartners.forEach {
-            if (!selectedPartners.containsKey(it.id)) {
-                selectedPartners[it.id] = true
-            }
-        }
-    }
-
-    val selectedPartnerIds =
-        selectedPartners
-            .filterValues { it }
-            .keys
-            .toSet()
-
-    val allPartnersSelected =
-        availablePartners.isNotEmpty() &&
-            availablePartners.all {
-                selectedPartners[it.id] == true
-            }
 
     val reportLines =
         remember(
             reportType,
             detail,
             periodLabel,
-            selectedPartnerIds,
             profitRows,
-            settlementDaily,
-            settlementSummary,
+            cashSettlements,
             businessSummaries,
             businessRecords,
             rankings
@@ -8886,17 +8820,10 @@ private fun ReportContent(
                 reportType = reportType,
                 detail = detail,
                 periodLabel = periodLabel,
-                selectedPartnerIds =
-                    selectedPartnerIds,
                 profitRows = profitRows,
-                settlementDaily =
-                    settlementDaily,
-                settlementSummary =
-                    settlementSummary,
-                businessSummaries =
-                    businessSummaries,
-                businessRecords =
-                    businessRecords,
+                cashSettlements = cashSettlements,
+                businessSummaries = businessSummaries,
+                businessRecords = businessRecords,
                 rankings = rankings
             )
         }
@@ -8904,11 +8831,8 @@ private fun ReportContent(
     fun reportBaseName(): String {
         val suffix =
             when (reportType) {
-                ReportType.PROFIT ->
-                    "利润分配"
-
                 ReportType.SETTLEMENT ->
-                    "利润结算"
+                    "资金结算"
 
                 ReportType.BUSINESS ->
                     "经营汇总"
@@ -8938,14 +8862,6 @@ private fun ReportContent(
             return false
         }
 
-        if (
-            reportType != ReportType.BUSINESS &&
-            availablePartners.isNotEmpty() &&
-            selectedPartnerIds.isEmpty()
-        ) {
-            message = "请至少选择一位合伙人"
-            return false
-        }
 
         if (reportLines.isEmpty()) {
             message = "当前条件没有可以生成的报表数据"
@@ -8968,7 +8884,7 @@ private fun ReportContent(
         item {
             PageHeader(
                 "生成报表",
-                "按时间和合伙人生成 PDF / 图片，可直接分享到微信等应用"
+                "按时间生成经营 / 资金报表，可直接分享到微信等应用"
             )
         }
 
@@ -9036,88 +8952,6 @@ private fun ReportContent(
             }
         }
 
-        if (
-            reportType != ReportType.BUSINESS
-        ) {
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(
-                        Modifier.padding(12.dp),
-                        verticalArrangement =
-                            Arrangement.spacedBy(4.dp)
-                    ) {
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment =
-                                Alignment.CenterVertically
-                        ) {
-                            Text(
-                                "合伙人",
-                                fontWeight =
-                                    FontWeight.Bold,
-                                modifier =
-                                    Modifier.weight(1f)
-                            )
-
-                            Checkbox(
-                                checked =
-                                    allPartnersSelected,
-                                onCheckedChange = {
-                                    checked ->
-                                    availablePartners
-                                        .forEach {
-                                            selectedPartners[
-                                                it.id
-                                            ] =
-                                                checked
-                                        }
-                                }
-                            )
-
-                            Text("全部")
-                        }
-
-                        if (
-                            availablePartners.isEmpty()
-                        ) {
-                            Text(
-                                "当前时间范围暂无合伙人利润记录",
-                                color = Color.Gray,
-                                style =
-                                    MaterialTheme
-                                        .typography
-                                        .bodySmall
-                            )
-                        }
-
-                        availablePartners.forEach {
-                            partner ->
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                verticalAlignment =
-                                    Alignment.CenterVertically
-                            ) {
-                                Checkbox(
-                                    checked =
-                                        selectedPartners[
-                                            partner.id
-                                        ] == true,
-                                    onCheckedChange = {
-                                        checked ->
-                                        selectedPartners[
-                                            partner.id
-                                        ] =
-                                            checked
-                                    }
-                                )
-                                Text(partner.name)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         item {
             Box(Modifier.fillMaxWidth()) {
                 CompactSelectButton(
@@ -9180,34 +9014,6 @@ private fun ReportContent(
                                 .bodySmall
                     )
 
-                    if (
-                        reportType !=
-                        ReportType.BUSINESS
-                    ) {
-                        val names =
-                            availablePartners
-                                .filter {
-                                    it.id in
-                                        selectedPartnerIds
-                                }
-                                .joinToString("、") {
-                                    it.name
-                                }
-
-                        Text(
-                            "合伙人：" +
-                                if (names.isBlank()) {
-                                    "暂无"
-                                } else {
-                                    names
-                                },
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodySmall
-                        )
-                    }
-
                     Text(
                         "格式：${detail.label}",
                         style =
@@ -9223,28 +9029,33 @@ private fun ReportContent(
                                 ReportLineStyle.SPACER
                         }
                         .take(8)
-                        .forEach {
-                            line ->
-                            Text(
-                                line.text,
-                                style =
-                                    MaterialTheme
-                                        .typography
-                                        .bodySmall,
-                                fontWeight =
-                                    if (
-                                        line.style ==
-                                        ReportLineStyle
-                                            .SECTION ||
-                                        line.style ==
-                                        ReportLineStyle
-                                            .TOTAL
-                                    ) {
-                                        FontWeight.Bold
-                                    } else {
-                                        FontWeight.Normal
-                                    }
-                            )
+                        .forEach { line ->
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    line.text,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight =
+                                        if (
+                                            line.style == ReportLineStyle.SECTION ||
+                                            line.style == ReportLineStyle.TOTAL
+                                        ) {
+                                            FontWeight.Bold
+                                        } else {
+                                            FontWeight.Normal
+                                        },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (line.rightText.isNotBlank()) {
+                                    Text(
+                                        line.rightText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
                         }
 
                     if (
@@ -9441,7 +9252,7 @@ private fun ReportContent(
 
         item {
             Text(
-                "说明：利润分配报表只展示“怎么分”，不展示结算状态；利润结算报表只按明确的利润结算记录统计。资金轧差属于经营资金流，与利润结算分开。所有导出的 PDF / 图片右下角都会标注生成时间。",
+                "说明：经营汇总报表用于看位置经营表现；资金结算报表按经营日汇总位置营业额、当日采购、利润分配、资金轧差方案和最少转账方案。报表不展示“待结/已结”状态。所有导出的 PDF / 图片右下角都会标注生成时间。",
                 color = Color.Gray,
                 style =
                     MaterialTheme.typography
@@ -9455,31 +9266,21 @@ private fun buildReportLines(
     reportType: ReportType,
     detail: ReportDetail,
     periodLabel: String,
-    selectedPartnerIds: Set<Long>,
     profitRows: List<ProfitDistributionRecord>,
-    settlementDaily: List<DailyPartnerProfitSettlement>,
-    settlementSummary: List<PartnerProfitSettlementSummary>,
+    cashSettlements: List<CashSettlementBundle>,
     businessSummaries: List<DailySummary>,
     businessRecords: List<StoreDailyRecord>,
     rankings: List<RankingRecord>
 ): List<ReportLine> =
     when (reportType) {
-        ReportType.PROFIT ->
-            buildProfitReportLines(
-                periodLabel = periodLabel,
-                detail = detail,
-                selectedPartnerIds = selectedPartnerIds,
-                profitRows = profitRows
-            )
-
         ReportType.SETTLEMENT ->
-            buildSettlementReportLines(
+            buildFundSettlementReportLines(
                 periodLabel = periodLabel,
                 detail = detail,
-                selectedPartnerIds = selectedPartnerIds,
                 profitRows = profitRows,
-                settlementDaily = settlementDaily,
-                settlementSummary = settlementSummary
+                cashSettlements = cashSettlements,
+                businessSummaries = businessSummaries,
+                businessRecords = businessRecords
             )
 
         ReportType.BUSINESS ->
@@ -9492,216 +9293,159 @@ private fun buildReportLines(
             )
     }
 
-private fun buildProfitReportLines(
+private fun buildFundSettlementReportLines(
     periodLabel: String,
     detail: ReportDetail,
-    selectedPartnerIds: Set<Long>,
-    profitRows: List<ProfitDistributionRecord>
+    profitRows: List<ProfitDistributionRecord>,
+    cashSettlements: List<CashSettlementBundle>,
+    businessSummaries: List<DailySummary>,
+    businessRecords: List<StoreDailyRecord>
 ): List<ReportLine> {
-    val rows =
-        profitRows.filter {
-            selectedPartnerIds.isEmpty() ||
-                it.partnerId in selectedPartnerIds
-        }
-    if (rows.isEmpty()) return emptyList()
+    val operatingDates =
+        businessRecords.map { it.date }
+            .distinct()
+            .sortedDescending()
+
+    if (operatingDates.isEmpty()) return emptyList()
+
+    val summaryByDate = businessSummaries.associateBy { it.date }
+    val recordsByDate = businessRecords.groupBy { it.date }
+    val profitsByDate = profitRows.groupBy { it.date }
+    val settlementByDate = cashSettlements.associateBy { it.settlement.date }
+
+    val periodRevenue = operatingDates.sumOf { summaryByDate[it]?.revenue ?: 0.0 }
+    val periodPurchase = businessSummaries.sumOf { it.purchaseCost }
+    val periodProfit = operatingDates.sumOf { summaryByDate[it]?.profit ?: 0.0 }
 
     val lines = mutableListOf<ReportLine>()
     lines += ReportLine("天鲜果业", ReportLineStyle.TITLE)
-    lines += ReportLine("合伙人利润分配报表", ReportLineStyle.SUBTITLE)
+    lines += ReportLine("资金结算报表", ReportLineStyle.SUBTITLE)
     lines += ReportLine("统计期间：$periodLabel", ReportLineStyle.MUTED)
     lines += ReportLine("", ReportLineStyle.SPACER)
-    lines += ReportLine("期间分配汇总", ReportLineStyle.SECTION)
 
-    val partnerGroups =
-        rows.groupBy { it.partnerId }
-            .toList()
-            .sortedBy { it.first }
-
-    partnerGroups.forEach { (_, partnerRows) ->
-        val name = partnerRows.first().partnerName
-        val amount = partnerRows.sumOf { it.allocatedProfit }
-        lines += ReportLine(
-            "$name  分配净额 ${money(amount)}",
-            when {
-                amount > 0.005 -> ReportLineStyle.POSITIVE
-                amount < -0.005 -> ReportLineStyle.NEGATIVE
-                else -> ReportLineStyle.NORMAL
-            }
-        )
-    }
-
-    val totalAllocated = rows.sumOf { it.allocatedProfit }
+    lines += ReportLine("期间资金经营汇总", ReportLineStyle.SECTION)
+    lines += ReportLine("经营日数", ReportLineStyle.NORMAL, "${operatingDates.size} 天")
+    lines += ReportLine("期间营业额", ReportLineStyle.TOTAL, money(periodRevenue))
+    lines += ReportLine("期间采购金额", ReportLineStyle.NORMAL, money(periodPurchase))
     lines += ReportLine(
-        "期间分配净额合计：${money(totalAllocated)}",
-        ReportLineStyle.TOTAL
+        if (periodProfit < -0.005) "期间总亏损" else "期间总利润",
+        if (periodProfit < -0.005) ReportLineStyle.NEGATIVE else ReportLineStyle.POSITIVE,
+        money(kotlin.math.abs(periodProfit))
     )
 
     if (detail == ReportDetail.DETAILED) {
         lines += ReportLine("", ReportLineStyle.SPACER)
-        lines += ReportLine("每日利润分配明细", ReportLineStyle.SECTION)
+        lines += ReportLine("每日资金结算明细", ReportLineStyle.SECTION)
 
-        rows.groupBy { it.date }
-            .toList()
-            .sortedByDescending { it.first }
-            .forEach { (date, dayRows) ->
-                val sourceProfit = dayRows.firstOrNull()?.sourceProfit ?: 0.0
-                lines += ReportLine(
-                    if (sourceProfit < -0.005) {
-                        "$date  当日总亏损 ${money(-sourceProfit)}"
-                    } else {
-                        "$date  当日总利润 ${money(sourceProfit)}"
-                    },
-                    if (sourceProfit < -0.005) {
-                        ReportLineStyle.WARNING
-                    } else {
-                        ReportLineStyle.SECTION
-                    }
-                )
+        operatingDates.forEach { date ->
+            val summary = summaryByDate[date] ?: return@forEach
+            val weekday = runCatching { chineseWeekday(LocalDate.parse(date)) }.getOrDefault("")
+            val dayRecords = recordsByDate[date].orEmpty()
+            val dayProfitRows = profitsByDate[date].orEmpty().sortedBy { it.partnerId }
+            val bundle = settlementByDate[date]
 
-                dayRows.sortedBy { it.partnerId }.forEach { row ->
-                    val amountText =
-                        if (row.allocatedProfit < -0.005) {
-                            "分担 ${money(-row.allocatedProfit)}"
-                        } else {
-                            "分配 ${money(row.allocatedProfit)}"
-                        }
-                    lines += ReportLine(
-                        "${row.partnerName}  ${fmt(profitRatioPercent(row.ratio))}%  $amountText",
-                        when {
-                            row.allocatedProfit > 0.005 -> ReportLineStyle.POSITIVE
-                            row.allocatedProfit < -0.005 -> ReportLineStyle.NEGATIVE
-                            else -> ReportLineStyle.NORMAL
-                        }
-                    )
-                }
-                lines += ReportLine("", ReportLineStyle.SPACER)
-            }
-    }
-
-    return lines
-}
-
-private fun buildSettlementReportLines(
-    periodLabel: String,
-    detail: ReportDetail,
-    selectedPartnerIds: Set<Long>,
-    profitRows: List<ProfitDistributionRecord>,
-    settlementDaily: List<DailyPartnerProfitSettlement>,
-    settlementSummary: List<PartnerProfitSettlementSummary>
-): List<ReportLine> {
-    val summaries =
-        settlementSummary.filter {
-            selectedPartnerIds.isEmpty() ||
-                it.partnerId in selectedPartnerIds
-        }
-    val daily =
-        settlementDaily.filter {
-            selectedPartnerIds.isEmpty() ||
-                it.partnerId in selectedPartnerIds
-        }
-
-    if (summaries.isEmpty() && daily.isEmpty()) {
-        return emptyList()
-    }
-
-    val profitMap =
-        profitRows.associateBy { it.date to it.partnerId }
-    val sourceProfitByDate =
-        profitRows.groupBy { it.date }
-            .mapValues { (_, rows) -> rows.firstOrNull()?.sourceProfit ?: 0.0 }
-
-    val lines = mutableListOf<ReportLine>()
-    lines += ReportLine("天鲜果业", ReportLineStyle.TITLE)
-    lines += ReportLine("利润结算报表", ReportLineStyle.SUBTITLE)
-    lines += ReportLine("统计期间：$periodLabel", ReportLineStyle.MUTED)
-    lines += ReportLine("", ReportLineStyle.SPACER)
-
-    if (summaries.isNotEmpty()) {
-        lines += ReportLine("利润结算汇总", ReportLineStyle.SECTION)
-        summaries.forEach { stat ->
             lines += ReportLine(
-                if (stat.earnedProfit < -0.005) {
-                    "${stat.partnerName}  净亏损分担 ${money(-stat.earnedProfit)}  已结算利润 ${money(stat.settledProfit)}"
-                } else {
-                    "${stat.partnerName}  应得 ${money(stat.earnedProfit)}  已结算 ${money(stat.settledProfit)}  待结算 ${money(stat.pendingProfit)}"
-                },
-                if (stat.pendingProfit > 0.005) {
-                    ReportLineStyle.WARNING
-                } else {
-                    ReportLineStyle.NORMAL
-                }
+                listOf(date, weekday).filter { it.isNotBlank() }.joinToString("  "),
+                ReportLineStyle.SECTION
             )
-        }
 
-        val totalEarned = summaries.sumOf { it.earnedProfit }
-        val totalSettled = summaries.sumOf { it.settledProfit }
-        val totalPending = summaries.sumOf { it.pendingProfit }
-        lines += ReportLine("合计应得净利润：${money(totalEarned)}", ReportLineStyle.TOTAL)
-        lines += ReportLine("合计已结算利润：${money(totalSettled)}", ReportLineStyle.TOTAL)
-        lines += ReportLine("合计待结算利润：${money(totalPending)}", ReportLineStyle.TOTAL)
-    }
+            val locationGroups =
+                dayRecords.groupBy { it.storeId to it.storeName }
+                    .toList()
+                    .sortedBy { it.first.second }
 
-    if (detail == ReportDetail.DETAILED) {
-        if (daily.isNotEmpty()) {
-            lines += ReportLine("", ReportLineStyle.SPACER)
-            lines += ReportLine("每日利润结算明细", ReportLineStyle.SECTION)
-
-            daily.groupBy { it.date }
-                .toList()
-                .sortedByDescending { it.first }
-                .forEach { (date, rows) ->
-                    val sourceProfit = sourceProfitByDate[date]
-                        ?: rows.sumOf { it.earnedProfit }
+            if (locationGroups.isEmpty()) {
+                lines += ReportLine("经营位置", ReportLineStyle.MUTED, "未记录")
+            } else {
+                locationGroups.forEach { (_, rows) ->
+                    val storeName = rows.first().storeName.ifBlank { "未命名位置" }
                     lines += ReportLine(
-                        if (sourceProfit < -0.005) {
-                            "$date  当日总亏损 ${money(-sourceProfit)}"
-                        } else {
-                            "$date  当日总利润 ${money(sourceProfit)}"
-                        },
-                        if (sourceProfit < -0.005) {
-                            ReportLineStyle.WARNING
-                        } else {
-                            ReportLineStyle.SECTION
-                        }
+                        "位置 · $storeName",
+                        ReportLineStyle.NORMAL,
+                        "营业额 ${money(rows.sumOf { it.revenue })}"
                     )
-
-                    rows.sortedBy { it.partnerId }.forEach { row ->
-                        val distribution = profitMap[row.date to row.partnerId]
-                        val ratioText = distribution?.let {
-                            "${fmt(profitRatioPercent(it.ratio))}%"
-                        } ?: "比例未记录"
-
-                        if (row.earnedProfit < -0.005) {
-                            lines += ReportLine(
-                                "${row.partnerName}  $ratioText  亏损分担 ${money(-row.earnedProfit)}  · 亏损待抵扣",
-                                ReportLineStyle.NEGATIVE
-                            )
-                        } else {
-                            val status =
-                                when {
-                                    row.pendingProfit <= 0.005 && row.settledProfit > 0.005 ->
-                                        if (row.lastSettlementDate.isNotBlank()) {
-                                            "已结算于 ${row.lastSettlementDate}"
-                                        } else {
-                                            "已结算"
-                                        }
-                                    row.settledProfit > 0.005 -> "部分结算"
-                                    else -> "待结算"
-                                }
-                            lines += ReportLine(
-                                "${row.partnerName}  $ratioText  应分 ${money(row.earnedProfit)}  已结 ${money(row.settledProfit)}  待结 ${money(row.pendingProfit)}  · $status",
-                                when {
-                                    row.pendingProfit <= 0.005 && row.settledProfit > 0.005 -> ReportLineStyle.POSITIVE
-                                    row.settledProfit > 0.005 -> ReportLineStyle.WARNING
-                                    else -> ReportLineStyle.NORMAL
-                                }
-                            )
-                        }
-                    }
-                    lines += ReportLine("", ReportLineStyle.SPACER)
                 }
-        }
+            }
 
+            lines += ReportLine("当日采购金额", ReportLineStyle.TOTAL, money(summary.purchaseCost))
+            lines += ReportLine(
+                if (summary.profit < -0.005) "当日总亏损" else "当日总利润",
+                if (summary.profit < -0.005) ReportLineStyle.NEGATIVE else ReportLineStyle.POSITIVE,
+                money(kotlin.math.abs(summary.profit))
+            )
+
+            lines += ReportLine("利润分配", ReportLineStyle.SECTION)
+            if (dayProfitRows.isEmpty()) {
+                lines += ReportLine("当日未保存利润 / 亏损分配", ReportLineStyle.MUTED)
+            } else {
+                dayProfitRows.forEach { row ->
+                    val ratio = "${fmt(profitRatioPercent(row.ratio))}%"
+                    val label =
+                        if (row.allocatedProfit < -0.005) {
+                            "${row.partnerName} · $ratio · 亏损分担"
+                        } else {
+                            "${row.partnerName} · $ratio · 利润分配"
+                        }
+                    lines += ReportLine(
+                        label,
+                        if (row.allocatedProfit < -0.005) {
+                            ReportLineStyle.NEGATIVE
+                        } else {
+                            ReportLineStyle.POSITIVE
+                        },
+                        money(kotlin.math.abs(row.allocatedProfit))
+                    )
+                }
+            }
+
+            lines += ReportLine("资金轧差方案", ReportLineStyle.SECTION)
+            if (bundle == null) {
+                lines += ReportLine("当日尚未生成资金轧差方案", ReportLineStyle.MUTED)
+            } else if (bundle.partners.isEmpty()) {
+                lines += ReportLine("当日无需资金轧差", ReportLineStyle.MUTED)
+            } else {
+                bundle.partners.sortedBy { it.partnerId }.forEach { partner ->
+                    when {
+                        partner.balance > 0.005 ->
+                            lines += ReportLine(
+                                "${partner.partnerName} · 应收",
+                                ReportLineStyle.POSITIVE,
+                                money(partner.balance)
+                            )
+                        partner.balance < -0.005 ->
+                            lines += ReportLine(
+                                "${partner.partnerName} · 应补",
+                                ReportLineStyle.NEGATIVE,
+                                money(-partner.balance)
+                            )
+                        else ->
+                            lines += ReportLine(
+                                "${partner.partnerName} · 资金已平",
+                                ReportLineStyle.MUTED,
+                                money(0.0)
+                            )
+                    }
+                }
+            }
+
+            lines += ReportLine("最少转账方案", ReportLineStyle.SECTION)
+            when {
+                bundle == null ->
+                    lines += ReportLine("当日尚未生成最少转账方案", ReportLineStyle.MUTED)
+                bundle.transfers.isEmpty() ->
+                    lines += ReportLine("无需转账，资金已平衡", ReportLineStyle.POSITIVE)
+                else ->
+                    bundle.transfers.forEach { transfer ->
+                        lines += ReportLine(
+                            "${transfer.fromPartnerName} → ${transfer.toPartnerName}",
+                            ReportLineStyle.NORMAL,
+                            money(transfer.amount)
+                        )
+                    }
+            }
+
+            lines += ReportLine("", ReportLineStyle.SPACER)
+        }
     }
 
     return lines
@@ -9721,6 +9465,7 @@ private fun buildBusinessReportLines(
     val totalPurchase = summaries.sumOf { it.purchaseCost }
     val totalExpense = summaries.sumOf { it.expense }
     val totalCustomers = summaries.sumOf { it.customers }
+    val operatingDayCount = businessRecords.map { it.date }.distinct().size
 
     val lines = mutableListOf<ReportLine>()
     lines += ReportLine("天鲜果业", ReportLineStyle.TITLE)
@@ -9728,27 +9473,35 @@ private fun buildBusinessReportLines(
     lines += ReportLine("统计期间：$periodLabel", ReportLineStyle.MUTED)
     lines += ReportLine("", ReportLineStyle.SPACER)
     lines += ReportLine("经营汇总", ReportLineStyle.SECTION)
-    lines += ReportLine("营业额：${money(totalRevenue)}", ReportLineStyle.TOTAL)
+    lines += ReportLine("营业额", ReportLineStyle.TOTAL, money(totalRevenue))
     lines += ReportLine(
-        "利润：${money(totalProfit)}",
-        if (totalProfit < -0.005) ReportLineStyle.NEGATIVE else ReportLineStyle.POSITIVE
+        if (totalProfit < -0.005) "亏损" else "利润",
+        if (totalProfit < -0.005) ReportLineStyle.NEGATIVE else ReportLineStyle.POSITIVE,
+        money(kotlin.math.abs(totalProfit))
     )
-    lines += ReportLine("进货金额：${money(totalPurchase)}")
-    lines += ReportLine("业务费用：${money(totalExpense)}")
-    lines += ReportLine("客户数：$totalCustomers 人")
+    lines += ReportLine("采购金额", ReportLineStyle.NORMAL, money(totalPurchase))
+    lines += ReportLine("业务费用", ReportLineStyle.NORMAL, money(totalExpense))
+    lines += ReportLine("客户数", ReportLineStyle.NORMAL, "$totalCustomers 人")
 
-    if (summaries.isNotEmpty()) {
-        lines += ReportLine("经营天数：${summaries.size} 天")
-        lines += ReportLine("日均营业额：${money(totalRevenue / summaries.size)}")
-        lines += ReportLine("日均利润：${money(totalProfit / summaries.size)}")
+    if (operatingDayCount > 0) {
+        lines += ReportLine("经营日数", ReportLineStyle.NORMAL, "$operatingDayCount 天")
+        lines += ReportLine("日均营业额", ReportLineStyle.NORMAL, money(totalRevenue / operatingDayCount))
+        lines += ReportLine("日均利润", ReportLineStyle.NORMAL, money(totalProfit / operatingDayCount))
     }
 
     if (rankings.isNotEmpty()) {
         lines += ReportLine("", ReportLineStyle.SPACER)
-        lines += ReportLine("摊位排行", ReportLineStyle.SECTION)
+        lines += ReportLine("位置排行", ReportLineStyle.SECTION)
         rankings.sortedByDescending { it.revenue }.forEachIndexed { index, row ->
+            val avgRevenue = if (row.days > 0) row.revenue / row.days else 0.0
             lines += ReportLine(
-                "${index + 1}. ${row.storeName}  营业额 ${money(row.revenue)}  利润 ${money(row.profit)}  客户 ${row.customers}"
+                "${index + 1}. ${row.storeName} · 经营 ${row.days} 日",
+                ReportLineStyle.NORMAL,
+                "营业额 ${money(row.revenue)}"
+            )
+            lines += ReportLine(
+                "日均营业额 ${money(avgRevenue)} · 利润 ${money(row.profit)} · 客户 ${row.customers}",
+                ReportLineStyle.MUTED
             )
         }
     }
@@ -9758,3165 +9511,49 @@ private fun buildBusinessReportLines(
         lines += ReportLine("每日经营明细", ReportLineStyle.SECTION)
 
         val recordsByDate = businessRecords.groupBy { it.date }
-        summaries.sortedByDescending { it.date }.forEach { row ->
-            val dayRecords = recordsByDate[row.date].orEmpty()
-            val locations =
-                dayRecords.map { it.storeName.ifBlank { "未命名位置" } }
-                    .distinct()
-            val locationText =
-                if (locations.isEmpty()) "未记录位置"
-                else locations.joinToString("、")
+        summaries.filter { it.date in recordsByDate.keys }
+            .sortedByDescending { it.date }
+            .forEach { row ->
+                val dayRecords = recordsByDate[row.date].orEmpty()
+                val weekday = runCatching { chineseWeekday(LocalDate.parse(row.date)) }.getOrDefault("")
 
-            lines += ReportLine(
-                "${row.date}  ·  位置：$locationText",
-                ReportLineStyle.SECTION
-            )
-            lines += ReportLine(
-                "当日合计  营业额 ${money(row.revenue)}  · 利润 ${money(row.profit)}  · 进货 ${money(row.purchaseCost)}  · 费用 ${money(row.expense)}  · 客户 ${row.customers}",
-                ReportLineStyle.TOTAL
-            )
+                lines += ReportLine(
+                    listOf(row.date, weekday).filter { it.isNotBlank() }.joinToString("  "),
+                    ReportLineStyle.SECTION
+                )
+                lines += ReportLine("当日营业额", ReportLineStyle.TOTAL, money(row.revenue))
+                lines += ReportLine(
+                    if (row.profit < -0.005) "当日亏损" else "当日利润",
+                    if (row.profit < -0.005) ReportLineStyle.NEGATIVE else ReportLineStyle.POSITIVE,
+                    money(kotlin.math.abs(row.profit))
+                )
+                lines += ReportLine("当日采购", ReportLineStyle.NORMAL, money(row.purchaseCost))
+                lines += ReportLine("当日费用", ReportLineStyle.NORMAL, money(row.expense))
+                lines += ReportLine("当日客户", ReportLineStyle.NORMAL, "${row.customers} 人")
 
-            dayRecords.groupBy { it.storeId to it.storeName }
-                .toList()
-                .sortedBy { it.first.second }
-                .forEach { (_, storeRows) ->
-                    val storeName = storeRows.first().storeName.ifBlank { "未命名位置" }
-                    val revenue = storeRows.sumOf { it.revenue }
-                    val profit = storeRows.sumOf { it.profit }
-                    val customers = storeRows.sumOf { it.customerTotal }
-                    lines += ReportLine(
-                        "位置：$storeName  · 营业额 ${money(revenue)}  · 利润 ${money(profit)}  · 客户 $customers"
-                    )
-                }
-            lines += ReportLine("", ReportLineStyle.SPACER)
-        }
+                dayRecords.groupBy { it.storeId to it.storeName }
+                    .toList()
+                    .sortedBy { it.first.second }
+                    .forEach { (_, storeRows) ->
+                        val storeName = storeRows.first().storeName.ifBlank { "未命名位置" }
+                        val revenue = storeRows.sumOf { it.revenue }
+                        val profit = storeRows.sumOf { it.profit }
+                        val customers = storeRows.sumOf { it.customerTotal }
+                        lines += ReportLine(
+                            "位置 · $storeName",
+                            ReportLineStyle.NORMAL,
+                            "营业额 ${money(revenue)}"
+                        )
+                        lines += ReportLine(
+                            "利润 ${money(profit)} · 客户 $customers",
+                            ReportLineStyle.MUTED
+                        )
+                    }
+                lines += ReportLine("", ReportLineStyle.SPACER)
+            }
     }
 
     return lines
-}
-
-
-@Composable
-private fun LedgerManagementContent(
-    db: AppDatabase,
-    ledgerManager: LedgerManager,
-    cloudSyncManager: CloudSyncManager,
-    currentBook: LedgerBook,
-    onSwitchBook: (String) -> Unit,
-    onChanged: () -> Unit
-) {
-    var refresh by remember {
-        mutableIntStateOf(0)
-    }
-    var cloudRefresh by remember {
-        mutableIntStateOf(0)
-    }
-
-    val books =
-        remember(refresh) {
-            ledgerManager.books()
-        }
-
-    val status =
-        remember(refresh) {
-            db.getSyncFoundationStatus()
-        }
-
-    val cloudSession =
-        remember(cloudRefresh) {
-            cloudSyncManager.session()
-        }
-
-    val cloudLocalStatus =
-        remember(
-            refresh,
-            cloudRefresh
-        ) {
-            db.getCloudSyncLocalStatus()
-        }
-
-    val liveCurrentBook =
-        remember(
-            refresh,
-            cloudRefresh
-        ) {
-            ledgerManager
-                .getBook(
-                    currentBook.id
-                )
-                ?: currentBook
-        }
-
-    val conflicts =
-        remember(
-            refresh,
-            cloudRefresh
-        ) {
-            db.getSyncConflicts()
-        }
-
-    var showSyncDetails by remember {
-        mutableStateOf(false)
-    }
-    var showConflictDialog by remember {
-        mutableStateOf(false)
-    }
-    var showAuditDialog by remember {
-        mutableStateOf(false)
-    }
-    var auditRows by remember {
-        mutableStateOf<
-            List<CloudAuditInfo>
-        >(
-            emptyList()
-        )
-    }
-
-    var cloudBooks by remember {
-        mutableStateOf<
-            List<CloudBookInfo>
-        >(
-            emptyList()
-        )
-    }
-    var cloudBooksLoaded by remember {
-        mutableStateOf(false)
-    }
-
-    var cloudBusy by remember {
-        mutableStateOf(false)
-    }
-    var cloudMessage by remember {
-        mutableStateOf("")
-    }
-    var message by remember {
-        mutableStateOf("")
-    }
-
-    var serverUrl by remember {
-        mutableStateOf(
-            cloudSyncManager
-                .defaultBaseUrl()
-        )
-    }
-    var cloudUsername by remember {
-        mutableStateOf(
-            cloudSession
-                ?.username
-                .orEmpty()
-        )
-    }
-    var cloudPassword by remember {
-        mutableStateOf("")
-    }
-
-    var addDialog by remember {
-        mutableStateOf(false)
-    }
-    var renameBook by remember {
-        mutableStateOf<LedgerBook?>(null)
-    }
-    var deleteBook by remember {
-        mutableStateOf<LedgerBook?>(null)
-    }
-    var renameCloudBook by remember { mutableStateOf<CloudBookInfo?>(null) }
-    var deleteCloudBook by remember { mutableStateOf<CloudBookInfo?>(null) }
-    var transferCloudBook by remember { mutableStateOf<CloudBookInfo?>(null) }
-    var trashBooks by remember { mutableStateOf<List<CloudBookInfo>>(emptyList()) }
-    var showTrash by remember { mutableStateOf(false) }
-    fun runCloudTask(
-        busyText: String,
-        block: () -> String,
-        onSuccess: () -> Unit = {}
-    ) {
-        if (cloudBusy) return
-
-        cloudBusy = true
-        cloudMessage = busyText
-
-        Thread {
-            val result =
-                runCatching {
-                    block()
-                }
-
-            Handler(
-                Looper.getMainLooper()
-            ).post {
-                cloudBusy = false
-
-                result.fold(
-                    onSuccess = {
-                        text ->
-                        cloudMessage = text
-                        onSuccess()
-                    },
-                    onFailure = {
-                        error ->
-                        cloudMessage =
-                            when (error) {
-                                is CloudApiException ->
-                                    "云端错误 ${error.statusCode}：${error.message}"
-
-                                else ->
-                                    "操作失败：${error.message ?: error.javaClass.simpleName}"
-                            }
-                    }
-                )
-
-                cloudPassword = ""
-                cloudRefresh++
-                refresh++
-                onChanged()
-            }
-        }.start()
-    }
-
-    fun refreshCloudBooks() {
-        var loaded:
-            List<CloudBookInfo> =
-            emptyList()
-
-        runCloudTask(
-            "正在刷新云端账本…",
-            {
-                loaded =
-                    cloudSyncManager
-                        .listCloudBooks()
-
-                "已找到 ${loaded.size} 个可访问的云端账本"
-            },
-            {
-                cloudBooks =
-                    loaded
-                cloudBooksLoaded =
-                    true
-            }
-        )
-    }
-
-    fun loadAudit() {
-        var loaded:
-            List<CloudAuditInfo> =
-            emptyList()
-
-        runCloudTask(
-            busyText =
-                "正在读取修改记录…",
-            block = {
-                loaded =
-                    cloudSyncManager
-                        .listAudit(
-                            liveCurrentBook.id,
-                            100
-                        )
-
-                "已读取 ${loaded.size} 条修改记录"
-            },
-            onSuccess = {
-                auditRows = loaded
-                showAuditDialog =
-                    true
-            }
-        )
-    }
-
-
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        contentPadding =
-            PaddingValues(16.dp),
-        verticalArrangement =
-            Arrangement.spacedBy(10.dp)
-    ) {
-        item {
-            Card(
-                colors =
-                    CardDefaults.cardColors(
-                        containerColor =
-                            Color(0xFFF2FAF5)
-                    )
-            ) {
-                Column(
-                    Modifier.padding(14.dp),
-                    verticalArrangement =
-                        Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(
-                        "当前账本",
-                        color = Color.Gray,
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall
-                    )
-
-                    Text(
-                        ledgerManager.displayName(
-                            liveCurrentBook
-                        ),
-                        style =
-                            MaterialTheme
-                                .typography
-                                .titleLarge,
-                        fontWeight =
-                            FontWeight.Bold
-                    )
-
-                    Text(
-                        "权限：" +
-                            ledgerManager
-                                .permissionLabel(
-                                    liveCurrentBook
-                                        .permission
-                                ),
-                        color =
-                            if (
-                                liveCurrentBook
-                                    .permission ==
-                                    "VIEWER"
-                            ) {
-                                Color(
-                                    0xFFC37B00
-                                )
-                            } else {
-                                Color.Unspecified
-                            }
-                    )
-
-                    Text(
-                        "设备：" +
-                            ledgerManager
-                                .deviceName,
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall
-                    )
-
-                    val syncStatusText =
-                        when {
-                            liveCurrentBook
-                                .permission ==
-                                "REVOKED" ->
-                                "已失去云端权限"
-
-                            conflicts
-                                .isNotEmpty() ->
-                                "需要处理 ${conflicts.size} 条冲突"
-
-                            cloudLocalStatus
-                                .lastError
-                                .isNotBlank() ->
-                                "同步异常"
-
-                            status.pendingChanges >
-                                0 ->
-                                "待同步 ${status.pendingChanges} 条"
-
-                            liveCurrentBook
-                                .cloudEnabled ->
-                                "已同步"
-
-                            else ->
-                                "仅本机"
-                        }
-
-                    Text(
-                        "同步状态：$syncStatusText",
-                        color =
-                            when {
-                                conflicts
-                                    .isNotEmpty() ->
-                                    MaterialTheme
-                                        .colorScheme
-                                        .error
-
-                                liveCurrentBook
-                                    .permission ==
-                                    "REVOKED" ->
-                                    MaterialTheme
-                                        .colorScheme
-                                        .error
-
-                                liveCurrentBook
-                                    .cloudEnabled &&
-                                    status
-                                        .pendingChanges ==
-                                        0 ->
-                                    BrandGreen
-
-                                else ->
-                                    Color.Gray
-                            },
-                        fontWeight =
-                            FontWeight.SemiBold
-                    )
-
-                    Text(
-                        "自动同步：已开启（启动、回到前台、保存数据后）",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall,
-                        color = Color.Gray
-                    )
-
-                    if (
-                        cloudLocalStatus
-                            .lastSyncAt > 0L
-                    ) {
-                        Text(
-                            "最近同步：" +
-                                formatDateTime(
-                                    cloudLocalStatus
-                                        .lastSyncAt
-                                ),
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodySmall,
-                            color = Color.Gray
-                        )
-                    }
-
-                    if (
-                        conflicts
-                            .isNotEmpty()
-                    ) {
-                        Button(
-                            onClick = {
-                                showConflictDialog =
-                                    true
-                            },
-                            modifier =
-                                Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                "处理同步冲突（${conflicts.size}）"
-                            )
-                        }
-                    }
-
-                    if (
-                        cloudSession != null &&
-                        liveCurrentBook
-                            .cloudEnabled
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                loadAudit()
-                            },
-                            enabled =
-                                !cloudBusy,
-                            modifier =
-                                Modifier.fillMaxWidth()
-                        ) {
-                            Text("查看修改记录")
-                        }
-                    }
-
-                    TextButton(
-                        onClick = {
-                            showSyncDetails =
-                                !showSyncDetails
-                        },
-                        modifier =
-                            Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            if (
-                                showSyncDetails
-                            ) {
-                                "收起同步详情"
-                            } else {
-                                "同步详情"
-                            }
-                        )
-                    }
-
-                    if (showSyncDetails) {
-                        Text(
-                            "设备ID：" +
-                                status.deviceId
-                                    .take(8) +
-                                "…",
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodySmall,
-                            color = Color.Gray
-                        )
-
-                        Text(
-                            "待上传变更：" +
-                                "${status.pendingChanges} 条",
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodySmall,
-                            color = Color.Gray
-                        )
-
-                        Text(
-                            "同步序号：" +
-                                cloudLocalStatus
-                                    .serverCursor,
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodySmall,
-                            color = Color.Gray
-                        )
-
-                        if (
-                            cloudLocalStatus
-                                .lastError
-                                .isNotBlank()
-                        ) {
-                            Text(
-                                "最近错误：" +
-                                    cloudLocalStatus
-                                        .lastError,
-                                style =
-                                    MaterialTheme
-                                        .typography
-                                        .bodySmall,
-                                color =
-                                    MaterialTheme
-                                        .colorScheme
-                                        .error
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            Card(
-                colors =
-                    CardDefaults.cardColors(
-                        containerColor =
-                            Color(0xFFF4F7FF)
-                    )
-            ) {
-                Column(
-                    Modifier.padding(14.dp),
-                    verticalArrangement =
-                        Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        "云端账号",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .titleMedium,
-                        fontWeight =
-                            FontWeight.Bold
-                    )
-
-                    if (cloudSession == null) {
-                        OutlinedTextField(
-                            value = serverUrl,
-                            onValueChange = {
-                                serverUrl = it
-                            },
-                            label = {
-                                Text("服务器地址")
-                            },
-                            singleLine = true,
-                            modifier =
-                                Modifier.fillMaxWidth()
-                        )
-
-                        OutlinedTextField(
-                            value =
-                                cloudUsername,
-                            onValueChange = {
-                                cloudUsername = it
-                            },
-                            label = {
-                                Text("用户名")
-                            },
-                            singleLine = true,
-                            modifier =
-                                Modifier.fillMaxWidth()
-                        )
-
-                        OutlinedTextField(
-                            value =
-                                cloudPassword,
-                            onValueChange = {
-                                cloudPassword = it
-                            },
-                            label = {
-                                Text("密码")
-                            },
-                            singleLine = true,
-                            visualTransformation =
-                                PasswordVisualTransformation(),
-                            modifier =
-                                Modifier.fillMaxWidth()
-                        )
-
-                        Button(
-                            onClick = {
-                                if (
-                                    cloudUsername
-                                        .trim()
-                                        .isBlank() ||
-                                    cloudPassword
-                                        .isBlank()
-                                ) {
-                                    cloudMessage =
-                                        "请输入用户名和密码"
-                                } else {
-                                    var loaded:
-                                        List<CloudBookInfo> =
-                                        emptyList()
-
-                                    runCloudTask(
-                                        "正在登录云端…",
-                                        {
-                                            val session =
-                                                cloudSyncManager
-                                                    .login(
-                                                        baseUrl =
-                                                            serverUrl,
-                                                        username =
-                                                            cloudUsername,
-                                                        password =
-                                                            cloudPassword
-                                                    )
-
-                                            loaded =
-                                                cloudSyncManager
-                                                    .listCloudBooks()
-
-                                            "登录成功：${session.displayName}"
-                                        },
-                                        {
-                                            cloudBooks =
-                                                loaded
-                                            cloudBooksLoaded =
-                                                true
-                                        }
-                                    )
-                                }
-                            },
-                            enabled =
-                                !cloudBusy,
-                            modifier =
-                                Modifier.fillMaxWidth()
-                        ) {
-                            if (cloudBusy) {
-                                CircularProgressIndicator(
-                                    modifier =
-                                        Modifier.size(
-                                            18.dp
-                                        ),
-                                    strokeWidth = 2.dp
-                                )
-                                Spacer(
-                                    Modifier.width(
-                                        8.dp
-                                    )
-                                )
-                            }
-                            Text("登录云端")
-                        }
-                    } else {
-                        Text(
-                            "${cloudSession.displayName}（${cloudSession.username}）" +
-                                if (cloudSession.systemRole == "SUPERADMIN") " · 超级管理员" else "",
-                            fontWeight = FontWeight.SemiBold
-                        )
-
-                        Text(
-                            cloudSession.baseUrl,
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodySmall,
-                            color = Color.Gray
-                        )
-
-                        Button(
-                            onClick = {
-                                runCloudTask(
-                                    busyText =
-                                        "正在同步“${currentBook.name}”…",
-                                    block = {
-                                        cloudSyncManager
-                                            .syncCurrentBook(
-                                                db = db,
-                                                book =
-                                                    ledgerManager
-                                                        .getBook(
-                                                            currentBook.id
-                                                        )
-                                                        ?: currentBook
-                                            )
-                                            .message
-                                    }
-                                )
-                            },
-                            enabled =
-                                !cloudBusy &&
-                                liveCurrentBook
-                                    .permission !=
-                                    "REVOKED",
-                            modifier =
-                                Modifier.fillMaxWidth()
-                        ) {
-                            if (cloudBusy) {
-                                CircularProgressIndicator(
-                                    modifier =
-                                        Modifier.size(
-                                            18.dp
-                                        ),
-                                    strokeWidth = 2.dp
-                                )
-                                Spacer(
-                                    Modifier.width(
-                                        8.dp
-                                    )
-                                )
-                            }
-
-                            Text(
-                                when (
-                                    liveCurrentBook
-                                        .permission
-                                ) {
-                                    "REVOKED" ->
-                                        "已失去云端权限"
-
-                                    "VIEWER" ->
-                                        "立即刷新只读账本"
-
-                                    else ->
-                                        "立即同步当前账本"
-                                }
-                            )
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                refreshCloudBooks()
-                            },
-                            enabled =
-                                !cloudBusy,
-                            modifier =
-                                Modifier.fillMaxWidth()
-                        ) {
-                            Text("刷新云端账本列表")
-                        }
-
-                    }
-
-                    if (
-                        cloudMessage
-                            .isNotBlank()
-                    ) {
-                        Text(
-                            cloudMessage,
-                            color =
-                                if (
-                                    cloudMessage
-                                        .contains(
-                                            "失败"
-                                        ) ||
-                                    cloudMessage
-                                        .contains(
-                                            "错误"
-                                        ) ||
-                                    cloudMessage
-                                        .contains(
-                                            "冲突"
-                                        )
-                                ) {
-                                    MaterialTheme
-                                        .colorScheme
-                                        .error
-                                } else {
-                                    BrandGreen
-                                },
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodySmall
-                        )
-                    }
-                }
-            }
-        }
-
-        if (cloudSession != null) {
-            item {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment =
-                        Alignment.CenterVertically
-                ) {
-                    Text(
-                        "云端共享账本",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .titleMedium,
-                        fontWeight =
-                            FontWeight.Bold,
-                        modifier =
-                            Modifier.weight(1f)
-                    )
-
-                    if (!cloudBooksLoaded) {
-                        Text(
-                            "点击上方刷新",
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodySmall,
-                            color = Color.Gray
-                        )
-                    }
-                }
-            }
-
-            items(
-                cloudBooks,
-                key = {
-                    "cloud_book_${it.id}"
-                }
-            ) {
-                info ->
-                val localBook =
-                    books.firstOrNull {
-                        it.id == info.id
-                    }
-
-                Card(
-                    Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        Modifier.padding(
-                            12.dp
-                        ),
-                        verticalArrangement =
-                            Arrangement.spacedBy(
-                                6.dp
-                            )
-                    ) {
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment =
-                                Alignment.CenterVertically
-                        ) {
-                            Column(
-                                Modifier.weight(1f)
-                            ) {
-                                Text(
-                                    if (
-                                        info.ownerUsername
-                                            .isNotBlank()
-                                    ) {
-                                        if (
-                                            info.name ==
-                                            "我的账本"
-                                        ) {
-                                            "${info.ownerUsername}的账本"
-                                        } else {
-                                            "${info.name}（${info.ownerUsername}）"
-                                        }
-                                    } else {
-                                        info.name
-                                    },
-                                    fontWeight =
-                                        FontWeight.Bold
-                                )
-
-                                Text(
-                                    ledgerManager
-                                        .permissionLabel(
-                                            info.role
-                                        ) +
-                                        if (
-                                            localBook !=
-                                            null
-                                        ) {
-                                            " · 本机已有"
-                                        } else {
-                                            " · 云端"
-                                        },
-                                    style =
-                                        MaterialTheme
-                                            .typography
-                                            .bodySmall,
-                                    color =
-                                        if (
-                                            info.role ==
-                                            "VIEWER"
-                                        ) {
-                                            Color(
-                                                0xFFC37B00
-                                            )
-                                        } else {
-                                            BrandGreen
-                                        }
-                                )
-
-                                Text(
-                                    "数据 ${info.recordCount} · 成员 ${info.memberCount}" +
-                                        if (info.createdAt.isNotBlank()) " · " + info.createdAt.replace("T", " ").take(10) else "",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color.Gray
-                                )
-                            }
-
-                            if (
-                                localBook ==
-                                null
-                            ) {
-                                TextButton(
-                                    onClick = {
-                                        runCloudTask(
-                                            busyText =
-                                                "正在下载“${info.name}”…",
-                                            block = {
-                                                cloudSyncManager
-                                                    .downloadCloudBook(
-                                                        info
-                                                    )
-                                                    .message
-                                            }
-                                        )
-                                    },
-                                    enabled =
-                                        !cloudBusy
-                                ) {
-                                    Text("下载")
-                                }
-                            } else if (
-                                localBook.id !=
-                                currentBook.id
-                            ) {
-                                TextButton(
-                                    onClick = {
-                                        onSwitchBook(
-                                            localBook.id
-                                        )
-                                    }
-                                ) {
-                                    Text("切换")
-                                }
-                            } else {
-                                Text(
-                                    "当前",
-                                    color =
-                                        BrandGreen,
-                                    fontWeight =
-                                        FontWeight.Bold
-                                )
-                            }
-                        }
-
-                        if (info.role == "OWNER" || info.role == "SUPERADMIN") {
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                OutlinedButton(
-                                    onClick = {
-                                        cloudMessage =
-                                            "成员权限请从“更多 → 成员与权限”管理"
-                                    },
-                                    enabled = !cloudBusy,
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("成员") }
-                                OutlinedButton(
-                                    onClick = { renameCloudBook = info },
-                                    enabled = !cloudBusy,
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("改名") }
-                                OutlinedButton(
-                                    onClick = { deleteCloudBook = info },
-                                    enabled = !cloudBusy,
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("删除云端") }
-                            }
-                            TextButton(
-                                onClick = { transferCloudBook = info },
-                                enabled = !cloudBusy,
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("转移账本所有权") }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (cloudSession != null) {
-            item {
-                OutlinedButton(
-                    onClick = {
-                        runCloudTask(
-                            busyText = "正在读取云端回收站…",
-                            block = {
-                                trashBooks = cloudSyncManager.listDeletedCloudBooks()
-                                "回收站 ${trashBooks.size} 个账本"
-                            },
-                            onSuccess = { showTrash = true }
-                        )
-                    },
-                    enabled = !cloudBusy,
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("🗑 云端账本回收站") }
-            }
-        }
-
-        item {
-            Text(
-                "本机账本",
-                style =
-                    MaterialTheme
-                        .typography
-                        .titleMedium,
-                fontWeight =
-                    FontWeight.Bold
-            )
-        }
-
-        items(
-            books,
-            key = {
-                "ledger_${it.id}"
-            }
-        ) {
-            book ->
-            val isCurrent =
-                book.id ==
-                    currentBook.id
-
-            Card(
-                Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    Modifier.padding(12.dp)
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment =
-                            Alignment.CenterVertically
-                    ) {
-                        Column(
-                            Modifier.weight(1f)
-                        ) {
-                            Text(
-                                ledgerManager
-                                    .displayName(
-                                        book
-                                    ),
-                                fontWeight =
-                                    FontWeight.Bold
-                            )
-
-                            Text(
-                                (
-                                    if (isCurrent) {
-                                        "当前账本 · "
-                                    } else {
-                                        ""
-                                    }
-                                ) +
-                                    ledgerManager
-                                        .permissionLabel(
-                                            book.permission
-                                        ) +
-                                    if (
-                                        book.cloudEnabled
-                                    ) {
-                                        " · 云端"
-                                    } else {
-                                        " · 本机"
-                                    },
-                                style =
-                                    MaterialTheme
-                                        .typography
-                                        .bodySmall,
-                                color =
-                                    if (isCurrent) {
-                                        BrandGreen
-                                    } else {
-                                        Color.Gray
-                                    }
-                            )
-                        }
-
-                        if (!isCurrent) {
-                            TextButton(
-                                onClick = {
-                                    onSwitchBook(
-                                        book.id
-                                    )
-                                }
-                            ) {
-                                Text("切换")
-                            }
-                        }
-                    }
-
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement =
-                            Arrangement.End
-                    ) {
-                        if (
-                            !book.cloudEnabled
-                        ) {
-                            TextButton(
-                                onClick = {
-                                    renameBook =
-                                        book
-                                }
-                            ) {
-                                Text("改名")
-                            }
-                        }
-
-                        if (
-                            cloudSession != null && !book.cloudEnabled &&
-                            book.cloudBookId.isBlank() && book.permission == "OWNER"
-                        ) {
-                            TextButton(
-                                onClick = {
-                                    runCloudTask(
-                                        busyText = "正在创建独立云端账本…",
-                                        block = {
-                                            val info = cloudSyncManager.createIndependentCloudBook(book)
-                                            cloudBooks = cloudSyncManager.listCloudBooks()
-                                            "已创建云端账本：${info.name}"
-                                        }
-                                    )
-                                },
-                                enabled = !cloudBusy
-                            ) { Text("上传为新云端账本") }
-                        }
-
-                        if (
-                            !book.isDefault &&
-                            !isCurrent
-                        ) {
-                            TextButton(
-                                onClick = {
-                                    deleteBook =
-                                        book
-                                }
-                            ) {
-                                Text(
-                                    if (
-                                        book.cloudEnabled
-                                    ) {
-                                        "删除本机副本"
-                                    } else {
-                                        "删除"
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            Button(
-                onClick = {
-                    addDialog = true
-                },
-                modifier =
-                    Modifier.fillMaxWidth()
-            ) {
-                Text("＋ 新建独立账本")
-            }
-        }
-
-        item {
-            Card(
-                colors =
-                    CardDefaults.cardColors(
-                        containerColor =
-                            Color(0xFFF8F8FA)
-                    )
-            ) {
-                Column(
-                    Modifier.padding(12.dp)
-                ) {
-                    Text(
-                        "V1.4.4 高频录入优化",
-                        fontWeight =
-                            FontWeight.Bold
-                    )
-
-                    Text(
-                        "• 营业页当天记录继续顶置，营业历史移动到保存按钮下方，并显示最近7个实际营业日。",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall
-                    )
-
-                    Text(
-                        "• 采购页显示最近7个实际采购日，按日期分组并显示当天采购合计。",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall
-                    )
-
-                    Text(
-                        "• 位置管理和商品管理改用 ↑ / ↓ 点击排序，点击后立即保存并参与云同步。",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall
-                    )
-                }
-            }
-        }
-
-        if (
-            message.isNotBlank()
-        ) {
-            item {
-                Text(
-                    message,
-                    color = BrandGreen,
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodySmall
-                )
-            }
-        }
-    }
-
-    if (addDialog) {
-        LedgerNameDialog(
-            title = "新建账本",
-            initial = "",
-            onDismiss = {
-                addDialog = false
-            }
-        ) {
-            name ->
-            val book =
-                ledgerManager
-                    .createBook(name)
-
-            addDialog = false
-
-            if (book != null) {
-                message =
-                    "已创建“${book.name}”"
-                refresh++
-                onChanged()
-            }
-        }
-    }
-
-    renameBook?.let {
-        book ->
-        LedgerNameDialog(
-            title = "修改账本名称",
-            initial = book.name,
-            onDismiss = {
-                renameBook = null
-            }
-        ) {
-            name ->
-            if (
-                ledgerManager.renameBook(
-                    book.id,
-                    name
-                )
-            ) {
-                if (
-                    book.id ==
-                    currentBook.id
-                ) {
-                    db.updateLedgerMetaName(
-                        name
-                    )
-                }
-
-                message =
-                    "账本名称已修改"
-                refresh++
-                onChanged()
-            }
-
-            renameBook = null
-        }
-    }
-
-    deleteBook?.let {
-        book ->
-        ConfirmDelete(
-            if (book.cloudEnabled) {
-                "删除本机的“${book.name}”副本？云端账本和其他设备数据不会删除，以后仍可重新下载。"
-            } else {
-                "删除账本“${book.name}”？这会删除本机该账本数据库。"
-            },
-            {
-                deleteBook = null
-            }
-        ) {
-            if (
-                ledgerManager.deleteBook(
-                    book.id
-                )
-            ) {
-                message =
-                    if (
-                        book.cloudEnabled
-                    ) {
-                        "本机副本已删除"
-                    } else {
-                        "账本已删除"
-                    }
-                refresh++
-                onChanged()
-            }
-
-            deleteBook = null
-        }
-    }
-
-    renameCloudBook?.let { info ->
-        LedgerNameDialog(
-            title = "修改云端账本名称",
-            initial = info.name,
-            onDismiss = { renameCloudBook = null }
-        ) { name ->
-            runCloudTask(
-                busyText = "正在修改云端账本名称…",
-                block = {
-                    val changed = cloudSyncManager.renameCloudBook(info.id, name)
-                    cloudBooks = cloudSyncManager.listCloudBooks()
-                    "已改名为“${changed.name}”"
-                }
-            )
-            renameCloudBook = null
-        }
-    }
-
-    transferCloudBook?.let { info ->
-        var targetUsername by remember(info.id) { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { transferCloudBook = null },
-            title = { Text("转移账本所有权") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("当前所有者：${info.ownerUsername}")
-                    OutlinedTextField(
-                        value = targetUsername,
-                        onValueChange = { targetUsername = it },
-                        label = { Text("新所有者用户名") },
-                        singleLine = true
-                    )
-                    Text("转移后原所有者保留可编辑权限。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                }
-            },
-            confirmButton = {
-                Button(onClick = {
-                    val username = targetUsername.trim()
-                    if (username.isBlank()) return@Button
-                    transferCloudBook = null
-                    runCloudTask(
-                        busyText = "正在转移所有权…",
-                        block = {
-                            cloudSyncManager.transferCloudBookOwner(info.id, username)
-                            cloudBooks = cloudSyncManager.listCloudBooks()
-                            "账本所有权已转移给 $username"
-                        }
-                    )
-                }) { Text("确认转移") }
-            },
-            dismissButton = { TextButton(onClick = { transferCloudBook = null }) { Text("取消") } }
-        )
-    }
-
-    deleteCloudBook?.let { info ->
-        ConfirmActionDialog(
-            title = "删除云端账本",
-            text = "把“${info.name}”移入云端回收站？其他设备下次同步后会失去该账本云端访问权限。本机数据库副本不会自动删除。",
-            confirmText = "移入回收站",
-            onDismiss = { deleteCloudBook = null }
-        ) {
-            runCloudTask(
-                busyText = "正在删除云端账本…",
-                block = {
-                    cloudSyncManager.deleteCloudBook(info.id)
-                    cloudBooks = cloudSyncManager.listCloudBooks()
-                    "云端账本已移入回收站"
-                }
-            )
-            deleteCloudBook = null
-        }
-    }
-
-    if (showTrash) {
-        AlertDialog(
-            onDismissRequest = { showTrash = false },
-            title = { Text("云端账本回收站") },
-            text = {
-                Column(
-                    Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    if (trashBooks.isEmpty()) Text("回收站为空", color = Color.Gray)
-                    trashBooks.forEach { info ->
-                        Card(Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text("${info.name}（${info.ownerUsername}）", fontWeight = FontWeight.Bold)
-                                Text(
-                                    "数据 ${info.recordCount} · 成员 ${info.memberCount}" +
-                                        if (info.deletedAt.isNotBlank()) " · 删除 " + info.deletedAt.replace("T", " ").take(16) else "",
-                                    style = MaterialTheme.typography.bodySmall, color = Color.Gray
-                                )
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                    TextButton(
-                                        onClick = {
-                                            runCloudTask(
-                                                busyText = "正在恢复账本…",
-                                                block = {
-                                                    cloudSyncManager.restoreCloudBook(info.id)
-                                                    trashBooks = cloudSyncManager.listDeletedCloudBooks()
-                                                    cloudBooks = cloudSyncManager.listCloudBooks()
-                                                    "账本已恢复"
-                                                }
-                                            )
-                                        }, enabled = !cloudBusy
-                                    ) { Text("恢复") }
-                                    if (cloudSession?.systemRole == "SUPERADMIN") {
-                                        TextButton(
-                                            onClick = {
-                                                runCloudTask(
-                                                    busyText = "正在永久清空云端数据…",
-                                                    block = {
-                                                        cloudSyncManager.purgeCloudBook(info.id)
-                                                        trashBooks = cloudSyncManager.listDeletedCloudBooks()
-                                                        "云端业务数据已永久清空；审计记录保留"
-                                                    }
-                                                )
-                                            }, enabled = !cloudBusy
-                                        ) { Text("永久清空", color = MaterialTheme.colorScheme.error) }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { showTrash = false }) { Text("关闭") } }
-        )
-    }
-
-    if (
-        showConflictDialog &&
-        conflicts.isNotEmpty()
-    ) {
-        SyncConflictDialog(
-            conflicts = conflicts,
-            busy = cloudBusy,
-            onDismiss = {
-                showConflictDialog =
-                    false
-            },
-            onUseCloud = {
-                conflict ->
-                runCloudTask(
-                    busyText =
-                        "正在采用云端版本…",
-                    block = {
-                        cloudSyncManager
-                            .resolveConflictUseCloud(
-                                db = db,
-                                book =
-                                    liveCurrentBook,
-                                conflict =
-                                    conflict
-                            )
-                            .message
-                    },
-                    onSuccess = {
-                        if (
-                            db.getSyncConflictCount() ==
-                            0
-                        ) {
-                            showConflictDialog =
-                                false
-                        }
-                    }
-                )
-            },
-            onUseLocal = {
-                conflict ->
-                runCloudTask(
-                    busyText =
-                        "正在保留本机版本…",
-                    block = {
-                        cloudSyncManager
-                            .resolveConflictUseLocal(
-                                db = db,
-                                book =
-                                    liveCurrentBook,
-                                conflict =
-                                    conflict
-                            )
-                            .message
-                    },
-                    onSuccess = {
-                        if (
-                            db.getSyncConflictCount() ==
-                            0
-                        ) {
-                            showConflictDialog =
-                                false
-                        }
-                    }
-                )
-            }
-        )
-    }
-
-    if (showAuditDialog) {
-        CloudAuditDialog(
-            rows = auditRows,
-            onDismiss = {
-                showAuditDialog =
-                    false
-            }
-        )
-    }
-
-}
-
-@Composable
-private fun SyncConflictDialog(
-    conflicts: List<SyncConflictRecord>,
-    busy: Boolean,
-    onDismiss: () -> Unit,
-    onUseCloud: (SyncConflictRecord) -> Unit,
-    onUseLocal: (SyncConflictRecord) -> Unit
-) {
-    if (conflicts.isEmpty()) {
-        return
-    }
-
-    val conflict =
-        conflicts.first()
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                "同步冲突 · ${syncTableLabel(conflict.tableName)}"
-            )
-        },
-        text = {
-            Column(
-                Modifier
-                    .heightIn(
-                        max = 500.dp
-                    )
-                    .verticalScroll(
-                        rememberScrollState()
-                    ),
-                verticalArrangement =
-                    Arrangement.spacedBy(
-                        8.dp
-                    )
-            ) {
-                Text(
-                    "还有 ${conflicts.size} 条冲突待处理",
-                    color =
-                        MaterialTheme
-                            .colorScheme
-                            .error,
-                    fontWeight =
-                        FontWeight.Bold
-                )
-
-                Text(
-                    "本机版本 ${conflict.localVersion} · 云端版本 ${conflict.serverVersion}",
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodySmall,
-                    color = Color.Gray
-                )
-
-                Text(
-                    conflictPayloadDiff(
-                        conflict
-                    ),
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodySmall
-                )
-
-                Text(
-                    "采用云端：放弃本机这条未同步修改。\n保留本机：以当前本机内容生成一个比云端更新的新版本。",
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodySmall,
-                    color = Color.Gray
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    onUseLocal(
-                        conflict
-                    )
-                },
-                enabled = !busy
-            ) {
-                Text("保留本机")
-            }
-        },
-        dismissButton = {
-            Row {
-                TextButton(
-                    onClick = {
-                        onUseCloud(
-                            conflict
-                        )
-                    },
-                    enabled = !busy
-                ) {
-                    Text("采用云端")
-                }
-
-                TextButton(
-                    onClick = onDismiss,
-                    enabled = !busy
-                ) {
-                    Text("稍后处理")
-                }
-            }
-        }
-    )
-}
-
-@Composable
-private fun CloudAuditDialog(
-    rows: List<CloudAuditInfo>,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text("修改记录")
-        },
-        text = {
-            Column(
-                Modifier
-                    .heightIn(
-                        max = 520.dp
-                    )
-                    .verticalScroll(
-                        rememberScrollState()
-                    ),
-                verticalArrangement =
-                    Arrangement.spacedBy(
-                        10.dp
-                    )
-            ) {
-                if (rows.isEmpty()) {
-                    Text(
-                        "暂无云端修改记录",
-                        color = Color.Gray
-                    )
-                }
-
-                rows.forEach {
-                    row ->
-                    Card(
-                        Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            Modifier.padding(
-                                10.dp
-                            ),
-                            verticalArrangement =
-                                Arrangement.spacedBy(
-                                    3.dp
-                                )
-                        ) {
-                            Text(
-                                "${auditActionLabel(row.action)} · ${syncTableLabel(row.tableName)}",
-                                fontWeight =
-                                    FontWeight.Bold
-                            )
-
-                            Text(
-                                "${row.displayName.ifBlank { row.username }} · ${row.deviceName.ifBlank { "未知设备" }}",
-                                style =
-                                    MaterialTheme
-                                        .typography
-                                        .bodySmall,
-                                color = Color.Gray
-                            )
-
-                            Text(
-                                row.createdAt
-                                    .replace(
-                                        "T",
-                                        " "
-                                    )
-                                    .take(19),
-                                style =
-                                    MaterialTheme
-                                        .typography
-                                        .bodySmall,
-                                color = Color.Gray
-                            )
-
-                            val summary =
-                                auditPayloadDiff(
-                                    row.beforePayload,
-                                    row.afterPayload
-                                )
-
-                            if (
-                                summary.isNotBlank()
-                            ) {
-                                Text(
-                                    summary,
-                                    style =
-                                        MaterialTheme
-                                            .typography
-                                            .bodySmall
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = onDismiss
-            ) {
-                Text("关闭")
-            }
-        }
-    )
-}
-
-private fun syncTableLabel(
-    tableName: String
-): String =
-    when (tableName) {
-        "fruit" -> "商品"
-        "store" -> "摊位"
-        "partner" -> "合伙人"
-        "purchase_plan" ->
-            "采购清单"
-        "purchase_plan_item" ->
-            "采购清单商品"
-        "purchase_order" ->
-            "进货单"
-        "purchase_item" ->
-            "进货商品"
-        "store_daily_record" ->
-            "营业记录"
-        "profit_rule" ->
-            "利润规则"
-        "profit_distribution" ->
-            "利润分配"
-        "daily_cash_settlement" ->
-            "资金轧差"
-        "settlement_partner" ->
-            "结算人员"
-        "settlement_transfer" ->
-            "转账方案"
-        "profit_settlement_batch" ->
-            "利润结算批次"
-        "profit_settlement_item" ->
-            "利润结算明细"
-        else -> tableName
-    }
-
-private fun auditActionLabel(
-    action: String
-): String =
-    when (action) {
-        "UPSERT" -> "新增/修改"
-        "DELETE" -> "删除"
-        else -> action
-    }
-
-private fun conflictPayloadDiff(
-    conflict: SyncConflictRecord
-): String {
-    val local =
-        runCatching {
-            JSONObject(
-                conflict.localPayload
-            )
-        }.getOrDefault(
-            JSONObject()
-        )
-
-    val cloud =
-        runCatching {
-            JSONObject(
-                conflict.serverPayload
-            )
-        }.getOrDefault(
-            JSONObject()
-        )
-
-    return payloadDiffText(
-        local,
-        cloud,
-        leftLabel = "本机",
-        rightLabel = "云端",
-        cloudDeleted =
-            conflict.serverDeleted
-    )
-}
-
-private fun auditPayloadDiff(
-    before: JSONObject?,
-    after: JSONObject?
-): String {
-    if (
-        before == null &&
-        after == null
-    ) {
-        return ""
-    }
-
-    if (before == null) {
-        return "新增：" +
-            compactPayload(
-                after
-                    ?: JSONObject()
-            )
-    }
-
-    if (after == null) {
-        return "删除：" +
-            compactPayload(
-                before
-            )
-    }
-
-    return payloadDiffText(
-        before,
-        after,
-        leftLabel = "原",
-        rightLabel = "新",
-        cloudDeleted = false
-    )
-}
-
-private fun payloadDiffText(
-    left: JSONObject,
-    right: JSONObject,
-    leftLabel: String,
-    rightLabel: String,
-    cloudDeleted: Boolean
-): String {
-    if (cloudDeleted) {
-        return "$rightLabel：记录已删除\n$leftLabel：" +
-            compactPayload(left)
-    }
-
-    val ignored =
-        setOf(
-            "id",
-            "sync_id",
-            "sync_status",
-            "row_version",
-            "modified_by",
-            "created_at",
-            "updated_at"
-        )
-
-    val keys =
-        linkedSetOf<String>()
-
-    left.keys().forEach {
-        if (it !in ignored) {
-            keys += it
-        }
-    }
-
-    right.keys().forEach {
-        if (it !in ignored) {
-            keys += it
-        }
-    }
-
-    val lines =
-        keys.mapNotNull {
-            key ->
-            val l =
-                jsonDisplayValue(
-                    left.opt(key)
-                )
-            val r =
-                jsonDisplayValue(
-                    right.opt(key)
-                )
-
-            if (l == r) {
-                null
-            } else {
-                "$key：$leftLabel $l → $rightLabel $r"
-            }
-        }.take(8)
-
-    return if (lines.isEmpty()) {
-        "$leftLabel：" +
-            compactPayload(left) +
-            "\n$rightLabel：" +
-            compactPayload(right)
-    } else {
-        lines.joinToString("\n")
-    }
-}
-
-private fun compactPayload(
-    obj: JSONObject
-): String {
-    val ignored =
-        setOf(
-            "id",
-            "sync_id",
-            "sync_status",
-            "row_version",
-            "modified_by",
-            "created_at",
-            "updated_at"
-        )
-
-    val parts =
-        mutableListOf<String>()
-
-    obj.keys().forEach {
-        key ->
-        if (
-            key !in ignored &&
-            parts.size < 6
-        ) {
-            parts +=
-                "$key=" +
-                    jsonDisplayValue(
-                        obj.opt(key)
-                    )
-        }
-    }
-
-    return if (parts.isEmpty()) {
-        "无可显示字段"
-    } else {
-        parts.joinToString("，")
-    }
-}
-
-private fun jsonDisplayValue(
-    value: Any?
-): String =
-    when {
-        value == null ||
-            value ==
-            JSONObject.NULL ->
-            "空"
-
-        else ->
-            value.toString()
-                .take(60)
-    }
-
-@Composable
-private fun AppUpdateDialog(
-    info: AppUpdateInfo,
-    onDismiss: () -> Unit,
-    onOpenRelease: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                "发现新版本 V${info.versionName}"
-            )
-        },
-        text = {
-            Column(
-                Modifier
-                    .heightIn(
-                        max = 480.dp
-                    )
-                    .verticalScroll(
-                        rememberScrollState()
-                    ),
-                verticalArrangement =
-                    Arrangement.spacedBy(
-                        10.dp
-                    )
-            ) {
-                Text(
-                    "当前版本：V${BuildConfig.VERSION_NAME}"
-                )
-                Text(
-                    "最新版本：V${info.versionName}",
-                    fontWeight =
-                        FontWeight.Bold,
-                    color = BrandGreen
-                )
-
-                if (
-                    info.publishedAt
-                        .isNotBlank()
-                ) {
-                    Text(
-                        "发布时间：" +
-                            info.publishedAt
-                                .replace(
-                                    "T",
-                                    " "
-                                )
-                                .replace(
-                                    "Z",
-                                    ""
-                                )
-                                .take(16),
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall,
-                        color = Color.Gray
-                    )
-                }
-
-                HorizontalDivider()
-
-                Text(
-                    "更新内容",
-                    fontWeight =
-                        FontWeight.Bold
-                )
-
-                Text(
-                    info.releaseNotes
-                        .ifBlank {
-                            "GitHub 已发布新版本。"
-                        },
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodyMedium
-                )
-
-                if (
-                    info.apkUrl
-                        .isNotBlank()
-                ) {
-                    Text(
-                        "Release 中已检测到 APK 安装包。",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall,
-                        color = Color.Gray
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick =
-                    onOpenRelease
-            ) {
-                Text("前往 GitHub 下载")
-            }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = onDismiss
-            ) {
-                Text("稍后")
-            }
-        }
-    )
-}
-
-private fun openWebPage(
-    context: Context,
-    url: String
-) {
-    runCatching {
-        context.startActivity(
-            Intent(
-                Intent.ACTION_VIEW,
-                Uri.parse(url)
-            ).apply {
-                addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK
-                )
-            }
-        )
-    }
-}
-
-@Composable
-private fun LedgerNameDialog(
-    title: String,
-    initial: String,
-    onDismiss: () -> Unit,
-    onSave: (String) -> Unit
-) {
-    var name by remember(initial) {
-        mutableStateOf(initial)
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(title)
-        },
-        text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = {
-                    name = it
-                },
-                label = {
-                    Text("账本名称")
-                },
-                singleLine = true
-            )
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    if (
-                        name.trim()
-                            .isNotBlank()
-                    ) {
-                        onSave(
-                            name.trim()
-                        )
-                    }
-                }
-            ) {
-                Text("保存")
-            }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = onDismiss
-            ) {
-                Text("取消")
-            }
-        }
-    )
-}
-
-@Composable
-private fun HomeHeaderSettingsContent(
-    ledgerUiSettingsManager:
-        LedgerUiSettingsManager,
-    currentBook: LedgerBook,
-    uiSettingsVersion: Int,
-    onChanged: () -> Unit
-) {
-    val context =
-        LocalContext.current
-
-    val loaded =
-        remember(
-            currentBook.id,
-            uiSettingsVersion
-        ) {
-            ledgerUiSettingsManager
-                .load(
-                    currentBook.id
-                )
-        }
-
-    var title by remember(
-        currentBook.id,
-        uiSettingsVersion
-    ) {
-        mutableStateOf(
-            loaded.title
-        )
-    }
-
-    var subtitle by remember(
-        currentBook.id,
-        uiSettingsVersion
-    ) {
-        mutableStateOf(
-            loaded.subtitle
-        )
-    }
-
-    var tagline by remember(
-        currentBook.id,
-        uiSettingsVersion
-    ) {
-        mutableStateOf(
-            loaded.tagline
-        )
-    }
-
-    var showFruitIcons by remember(
-        currentBook.id,
-        uiSettingsVersion
-    ) {
-        mutableStateOf(
-            loaded.showFruitIcons
-        )
-    }
-
-    var backgroundPath by remember(
-        currentBook.id,
-        uiSettingsVersion
-    ) {
-        mutableStateOf(
-            loaded.backgroundImagePath
-        )
-    }
-
-    var message by remember {
-        mutableStateOf("")
-    }
-
-    val imageLauncher =
-        rememberLauncherForActivityResult(
-            ActivityResultContracts
-                .GetContent()
-        ) {
-            uri ->
-            if (uri != null) {
-                ledgerUiSettingsManager
-                    .saveBackgroundImage(
-                        currentBook.id,
-                        uri
-                    )
-                    .onSuccess {
-                        path ->
-                        backgroundPath =
-                            path
-                        message =
-                            "背景图片已更换"
-                        onChanged()
-                    }
-                    .onFailure {
-                        error ->
-                        message =
-                            "图片设置失败：" +
-                                (
-                                    error.message
-                                        ?: "未知错误"
-                                    )
-                    }
-            }
-        }
-
-    val previewBitmap =
-        remember(
-            backgroundPath,
-            uiSettingsVersion
-        ) {
-            backgroundPath
-                .takeIf {
-                    it.isNotBlank()
-                }
-                ?.let {
-                    path ->
-                    runCatching {
-                        BitmapFactory
-                            .decodeFile(
-                                path
-                            )
-                            ?.asImageBitmap()
-                    }.getOrNull()
-                }
-        }
-
-    LazyColumn(
-        Modifier
-            .fillMaxSize()
-            .background(
-                Color(
-                    0xFFF6F6F6
-                )
-            ),
-        contentPadding =
-            PaddingValues(
-                16.dp
-            ),
-        verticalArrangement =
-            Arrangement.spacedBy(
-                14.dp
-            )
-    ) {
-        item {
-            Text(
-                "当前账本：${currentBook.name}",
-                color = Color.Gray,
-                style =
-                    MaterialTheme
-                        .typography
-                        .bodySmall
-            )
-        }
-
-        item {
-            Card(
-                Modifier
-                    .fillMaxWidth()
-                    .height(
-                        170.dp
-                    )
-            ) {
-                Box(
-                    Modifier.fillMaxSize()
-                ) {
-                    if (
-                        previewBitmap !=
-                        null
-                    ) {
-                        Image(
-                            bitmap =
-                                previewBitmap,
-                            contentDescription =
-                                "首页顶部预览",
-                            modifier =
-                                Modifier
-                                    .fillMaxSize(),
-                            contentScale =
-                                ContentScale.Crop
-                        )
-                        Box(
-                            Modifier
-                                .fillMaxSize()
-                                .background(
-                                    Color.Black
-                                        .copy(
-                                            alpha =
-                                                0.28f
-                                        )
-                                )
-                        )
-                    } else {
-                        Box(
-                            Modifier
-                                .fillMaxSize()
-                                .background(
-                                    Brush
-                                        .linearGradient(
-                                            listOf(
-                                                Color(
-                                                    0xFF0A6E3A
-                                                ),
-                                                Color(
-                                                    0xFF148E51
-                                                ),
-                                                Color(
-                                                    0xFF0B5E34
-                                                )
-                                            )
-                                        )
-                                )
-                        )
-                    }
-
-                    Column(
-                        Modifier
-                            .align(
-                                Alignment
-                                    .CenterStart
-                            )
-                            .padding(
-                                start = 18.dp
-                            )
-                    ) {
-                        Text(
-                            title
-                                .ifBlank {
-                                    "天鲜果业"
-                                },
-                            color =
-                                Color.White,
-                            fontSize =
-                                28.sp,
-                            fontWeight =
-                                FontWeight.Bold,
-                            maxLines = 1
-                        )
-
-                        if (
-                            subtitle
-                                .isNotBlank()
-                        ) {
-                            Spacer(
-                                Modifier.height(
-                                    5.dp
-                                )
-                            )
-                            Text(
-                                subtitle,
-                                color =
-                                    Color.White
-                                        .copy(
-                                            alpha =
-                                                0.9f
-                                        ),
-                                fontSize =
-                                    13.sp,
-                                maxLines = 2
-                            )
-                        }
-                    }
-
-                    Column(
-                        Modifier
-                            .align(
-                                Alignment
-                                    .BottomEnd
-                            )
-                            .padding(
-                                12.dp
-                            ),
-                        horizontalAlignment =
-                            Alignment.End
-                    ) {
-                        if (
-                            showFruitIcons
-                        ) {
-                            Text(
-                                "🍇🍊🍓",
-                                fontSize =
-                                    22.sp
-                            )
-                        }
-
-                        if (
-                            tagline
-                                .isNotBlank()
-                        ) {
-                            Text(
-                                tagline,
-                                color =
-                                    Color.White,
-                                fontSize =
-                                    11.sp,
-                                maxLines = 1
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            Card(
-                Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    Modifier.padding(
-                        14.dp
-                    ),
-                    verticalArrangement =
-                        Arrangement.spacedBy(
-                            12.dp
-                        )
-                ) {
-                    Text(
-                        "文字",
-                        fontWeight =
-                            FontWeight.Bold
-                    )
-
-                    OutlinedTextField(
-                        value = title,
-                        onValueChange = {
-                            value ->
-                            title =
-                                value.take(
-                                    20
-                                )
-                        },
-                        modifier =
-                            Modifier
-                                .fillMaxWidth(),
-                        label = {
-                            Text("主标题")
-                        },
-                        singleLine = true
-                    )
-
-                    OutlinedTextField(
-                        value = subtitle,
-                        onValueChange = {
-                            value ->
-                            subtitle =
-                                value.take(
-                                    50
-                                )
-                        },
-                        modifier =
-                            Modifier
-                                .fillMaxWidth(),
-                        label = {
-                            Text("副标题")
-                        },
-                        minLines = 1,
-                        maxLines = 2
-                    )
-
-                    OutlinedTextField(
-                        value = tagline,
-                        onValueChange = {
-                            value ->
-                            tagline =
-                                value.take(
-                                    35
-                                )
-                        },
-                        modifier =
-                            Modifier
-                                .fillMaxWidth(),
-                        label = {
-                            Text(
-                                "右下角文案"
-                            )
-                        },
-                        singleLine = true
-                    )
-
-                    Row(
-                        Modifier
-                            .fillMaxWidth(),
-                        verticalAlignment =
-                            Alignment
-                                .CenterVertically
-                    ) {
-                        Column(
-                            Modifier.weight(
-                                1f
-                            )
-                        ) {
-                            Text(
-                                "水果装饰"
-                            )
-                            Text(
-                                "显示 🍇🍊🍓",
-                                style =
-                                    MaterialTheme
-                                        .typography
-                                        .bodySmall,
-                                color =
-                                    Color.Gray
-                            )
-                        }
-
-                        Switch(
-                            checked =
-                                showFruitIcons,
-                            onCheckedChange = {
-                                showFruitIcons =
-                                    it
-                            }
-                        )
-                    }
-                }
-            }
-        }
-
-        item {
-            Card(
-                Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    Modifier.padding(
-                        14.dp
-                    ),
-                    verticalArrangement =
-                        Arrangement.spacedBy(
-                            10.dp
-                        )
-                ) {
-                    Text(
-                        "顶部背景",
-                        fontWeight =
-                            FontWeight.Bold
-                    )
-
-                    Text(
-                        if (
-                            backgroundPath
-                                .isBlank()
-                        ) {
-                            "当前使用默认绿色渐变背景"
-                        } else {
-                            "当前使用自定义图片"
-                        },
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall,
-                        color = Color.Gray
-                    )
-
-                    Row(
-                        Modifier
-                            .fillMaxWidth(),
-                        horizontalArrangement =
-                            Arrangement
-                                .spacedBy(
-                                    8.dp
-                                )
-                    ) {
-                        Button(
-                            onClick = {
-                                imageLauncher
-                                    .launch(
-                                        "image/*"
-                                    )
-                            },
-                            modifier =
-                                Modifier.weight(
-                                    1f
-                                )
-                        ) {
-                            Text(
-                                if (
-                                    backgroundPath
-                                        .isBlank()
-                                ) {
-                                    "选择图片"
-                                } else {
-                                    "更换图片"
-                                }
-                            )
-                        }
-
-                        OutlinedButton(
-                            onClick = {
-                                ledgerUiSettingsManager
-                                    .removeBackgroundImage(
-                                        currentBook.id
-                                    )
-                                backgroundPath =
-                                    ""
-                                message =
-                                    "已恢复默认背景"
-                                onChanged()
-                            },
-                            enabled =
-                                backgroundPath
-                                    .isNotBlank(),
-                            modifier =
-                                Modifier.weight(
-                                    1f
-                                )
-                        ) {
-                            Text("恢复背景")
-                        }
-                    }
-
-                    Text(
-                        "使用 Android 系统图片选择器，不需要开放整个相册权限。图片会压缩后保存到 APP 私有目录。",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall,
-                        color = Color.Gray
-                    )
-                }
-            }
-        }
-
-        item {
-            Button(
-                onClick = {
-                    ledgerUiSettingsManager
-                        .save(
-                            currentBook.id,
-                            LedgerHeaderSettings(
-                                title =
-                                    title
-                                        .trim()
-                                        .ifBlank {
-                                            "天鲜果业"
-                                        },
-                                subtitle =
-                                    subtitle
-                                        .trim(),
-                                tagline =
-                                    tagline
-                                        .trim(),
-                                showFruitIcons =
-                                    showFruitIcons,
-                                backgroundImagePath =
-                                    backgroundPath
-                            )
-                        )
-
-                    message =
-                        "首页顶部设置已保存"
-                    onChanged()
-                },
-                modifier =
-                    Modifier.fillMaxWidth()
-            ) {
-                Text("保存设置")
-            }
-        }
-
-        item {
-            OutlinedButton(
-                onClick = {
-                    ledgerUiSettingsManager
-                        .reset(
-                            currentBook.id
-                        )
-
-                    val defaults =
-                        ledgerUiSettingsManager
-                            .load(
-                                currentBook.id
-                            )
-
-                    title =
-                        defaults.title
-                    subtitle =
-                        defaults.subtitle
-                    tagline =
-                        defaults.tagline
-                    showFruitIcons =
-                        defaults
-                            .showFruitIcons
-                    backgroundPath =
-                        ""
-
-                    message =
-                        "已恢复默认首页顶部"
-                    onChanged()
-                },
-                modifier =
-                    Modifier.fillMaxWidth()
-            ) {
-                Text("恢复全部默认")
-            }
-        }
-
-        if (
-            message.isNotBlank()
-        ) {
-            item {
-                Text(
-                    message,
-                    color =
-                        if (
-                            message.contains(
-                                "失败"
-                            )
-                        ) {
-                            MaterialTheme
-                                .colorScheme
-                                .error
-                        } else {
-                            BrandGreen
-                        },
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodySmall
-                )
-            }
-        }
-
-        item {
-            Text(
-                "说明：这些界面设置按账本区分并保存在当前设备，不参与经营数据云同步。换手机后业务数据可以同步，但背景图片和首页文案需要在新设备重新设置。",
-                style =
-                    MaterialTheme
-                        .typography
-                        .bodySmall,
-                color = Color.Gray
-            )
-        }
-    }
-}
-
-@Composable
-private fun AboutAppContent(
-    updateChecking: Boolean,
-    updateCheckMessage: String,
-    onCheckUpdate: () -> Unit
-) {
-    val context =
-        LocalContext.current
-
-    LazyColumn(
-        Modifier
-            .fillMaxSize()
-            .background(
-                Color(
-                    0xFFF6F6F6
-                )
-            ),
-        contentPadding =
-            PaddingValues(
-                bottom = 24.dp
-            )
-    ) {
-        item {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .background(
-                        MaterialTheme
-                            .colorScheme
-                            .surface
-                    )
-                    .padding(
-                        24.dp
-                    ),
-                horizontalAlignment =
-                    Alignment.CenterHorizontally
-            ) {
-                Text(
-                    "🍇",
-                    fontSize = 48.sp
-                )
-                Spacer(
-                    Modifier.height(
-                        8.dp
-                    )
-                )
-                Text(
-                    "天鲜账本",
-                    style =
-                        MaterialTheme
-                            .typography
-                            .headlineSmall,
-                    fontWeight =
-                        FontWeight.Bold
-                )
-                Text(
-                    "V${BuildConfig.VERSION_NAME} · build ${BuildConfig.VERSION_CODE}",
-                    color = Color.Gray,
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodyMedium
-                )
-            }
-        }
-
-        item {
-            SettingsSection(
-                title = "版本"
-            ) {
-                SettingsRow(
-                    icon = "⬆",
-                    title =
-                        if (
-                            updateChecking
-                        ) {
-                            "正在检查更新…"
-                        } else {
-                            "检查更新"
-                        },
-                    subtitle =
-                        updateCheckMessage
-                            .ifBlank {
-                                "自动每 12 小时检查一次 GitHub Release"
-                            },
-                    onClick =
-                        onCheckUpdate
-                )
-
-                SettingsDivider()
-
-                SettingsRow(
-                    icon = "📝",
-                    title = "本版更新",
-                    subtitle =
-                        "更多页分组、首页顶部个性化、更新入口移入关于",
-                    onClick = {
-                    }
-                )
-            }
-        }
-
-        item {
-            SettingsSection(
-                title = "项目"
-            ) {
-                SettingsRow(
-                    icon = "🌐",
-                    title = "GitHub 项目",
-                    subtitle =
-                        "sockc/TianXianFruit",
-                    onClick = {
-                        openWebPage(
-                            context,
-                            "https://github.com/sockc/TianXianFruit"
-                        )
-                    }
-                )
-
-                SettingsDivider()
-
-                SettingsRow(
-                    icon = "📦",
-                    title = "GitHub Releases",
-                    subtitle =
-                        "查看和下载已发布版本",
-                    onClick = {
-                        openWebPage(
-                            context,
-                            AppUpdateManager
-                                .RELEASES_URL
-                        )
-                    }
-                )
-            }
-        }
-
-        item {
-            Column(
-                Modifier.padding(
-                    horizontal = 20.dp,
-                    vertical = 16.dp
-                )
-            ) {
-                Text(
-                    "天鲜账本用于水果经营中的采购、营业、利润、结算和多账本云同步。",
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodySmall,
-                    color = Color.Gray
-                )
-
-                Spacer(
-                    Modifier.height(
-                        6.dp
-                    )
-                )
-
-                Text(
-                    "当前云同步服务需要 TianXian Sync Server V1.0.7-Lucky。",
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodySmall,
-                    color = Color.Gray
-                )
-            }
-        }
-    }
-}
-
-@Composable
-internal fun SettingsSection(
-    title: String,
-    content:
-        @Composable
-        ColumnScope.() -> Unit
-) {
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(
-                top = 7.dp
-            )
-    ) {
-        Text(
-            title,
-            modifier =
-                Modifier.padding(
-                    horizontal = 17.dp,
-                    vertical = 3.dp
-                ),
-            color =
-                Color(0xFF8A8A8A),
-            style =
-                MaterialTheme
-                    .typography
-                    .labelMedium
-        )
-
-        Card(
-            modifier =
-                Modifier
-                    .fillMaxWidth()
-                    .padding(
-                        horizontal = 9.dp
-                    ),
-            shape =
-                RoundedCornerShape(11.dp),
-            colors =
-                CardDefaults.cardColors(
-                    containerColor =
-                        MaterialTheme
-                            .colorScheme
-                            .surface
-                )
-        ) {
-            Column(
-                content = content
-            )
-        }
-    }
-}
-
-@Composable
-internal fun SettingsRow(
-    icon: String,
-    title: String,
-    subtitle: String? = null,
-    trailing: String? = null,
-    titleColor: Color =
-        Color.Unspecified,
-    showArrow: Boolean = true,
-    onClick: () -> Unit
-) {
-    Surface(
-        onClick = onClick,
-        color = Color.Transparent
-    ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(
-                    horizontal = 13.dp,
-                    vertical = 8.dp
-                ),
-            verticalAlignment =
-                Alignment.CenterVertically
-        ) {
-            Text(
-                icon,
-                fontSize = 18.sp,
-                modifier =
-                    Modifier.width(29.dp)
-            )
-
-            Text(
-                title,
-                modifier =
-                    Modifier.weight(1f),
-                style =
-                    MaterialTheme
-                        .typography
-                        .bodyMedium,
-                fontWeight =
-                    FontWeight.Medium,
-                color = titleColor
-            )
-
-            if (
-                !trailing.isNullOrBlank()
-            ) {
-                Text(
-                    trailing,
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodySmall,
-                    color =
-                        Color(0xFF8A8A8A)
-                )
-                Spacer(
-                    Modifier.width(5.dp)
-                )
-            }
-
-            if (showArrow) {
-                Text(
-                    "›",
-                    color =
-                        Color(0xFF9B9B9B),
-                    fontSize = 21.sp
-                )
-            }
-        }
-    }
-}
-
-@Composable
-internal fun SettingsDivider() {
-    HorizontalDivider(
-        modifier =
-            Modifier.padding(
-                start = 42.dp
-            ),
-        color =
-            Color(0xFFE9E9E9)
-    )
-}
-
-@Composable
-private fun MenuCard(
-    title: String,
-    onClick: () -> Unit
-) {
-    Card(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp)
-    ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 18.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f)
-            )
-            Text(
-                "›",
-                color = BrandGreen,
-                fontSize = 24.sp
-            )
-        }
-    }
-}
-
-@Composable
-private fun SubPage(title: String, back: () -> Unit, content: @Composable () -> Unit) {
-    Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = back) { Text("← 返回") }
-            Text(title, fontWeight = FontWeight.Bold)
-        }
-        Box(Modifier.weight(1f)) { content() }
-    }
 }
 
 @Composable
