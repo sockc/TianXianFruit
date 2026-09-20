@@ -288,15 +288,9 @@ data class PartnerDailyFundBalanceRecord(
 ) {
     val status: Int
         get() = when {
-            // V1.4.7.24: status is based on the cumulative balance after
-            // historical carry-over has been netted, not only on dayBalance.
-            // A zero day movement can still have historical money to settle;
-            // conversely today's movement may exactly offset the carry-over
-            // and require no real transfer at all.
-            kotlin.math.abs(remainingBalance) <= 0.005 &&
-                settledAmount <= 0.005 -> 3 // 净额已平，无需转账
-            kotlin.math.abs(remainingBalance) <= 0.005 -> 1 // 已结清
+            kotlin.math.abs(dayBalance) <= 0.005 -> 3 // 无需结算
             settledAmount <= 0.005 -> 0 // 未结算
+            kotlin.math.abs(remainingBalance) <= 0.005 -> 1 // 已结清
             else -> 2 // 部分结算
         }
 }
@@ -7916,24 +7910,8 @@ class AppDatabase(
                     "请先到“更多 → 利润分配”设置资金中心"
                 )
 
-        // V1.4.7.24:
-        // “当日结算”不能只看当天的采购/收款/利润差额。
-        // 如果某位合伙人前一天仍有应补，而今天刚好产生应收，应该先互相
-        // 抵扣，只对“截至所选日期的累计净余额”生成实际转账。否则会出现
-        // 先把当天应收全额转给他，随后资金余额又要求他把历史欠款转回来的
-        // 无效往返转账。
-        //
-        // generateCashSettlement() 开头已经禁止在存在已执行 DAILY 转账时直接
-        // 重生成，因此这里读取 date 当天的累计余额不会把即将被删除的未结
-        // DAILY 方案重复计算；同一天已经真实执行的独立 CUTOFF_CENTER 转账
-        // 则会被正确计入累计余额。
-        val cumulativeMap =
-            getPartnerFundBalances(endDate = date)
-                .associateBy { it.partnerId }
-
         val partnerIds = linkedSetOf<Long>().apply {
             add(settlementCenter.id)
-            addAll(cumulativeMap.keys.filter { it > 0 })
             addAll(purchaseMap.keys.filter { it > 0 })
             addAll(receiptMap.keys.filter { it > 0 })
             addAll(expenseMap.keys.filter { it > 0 })
@@ -7950,7 +7928,6 @@ class AppDatabase(
                 ?: purchaseMap[id]?.partnerName
                 ?: receiptMap[id]?.partnerName
                 ?: expenseMap[id]?.partnerName
-                ?: cumulativeMap[id]?.partnerName
                 ?: if (id == settlementCenter.id) {
                     settlementCenter.name
                 } else {
@@ -7961,18 +7938,7 @@ class AppDatabase(
             val receipt = receiptMap[id]?.amount ?: 0.0
             val profit = profitMap[id]?.allocatedProfit ?: 0.0
             val keep = roundMoney(purchase + expense + profit)
-            val cumulativeBalance =
-                roundMoney(cumulativeMap[id]?.currentBalance ?: 0.0)
-            Row(
-                id,
-                name,
-                purchase,
-                expense,
-                receipt,
-                profit,
-                keep,
-                cumulativeBalance
-            )
+            Row(id, name, purchase, expense, receipt, profit, keep, roundMoney(keep - receipt))
         }
 
         val balanceTotal = roundMoney(rows.sumOf { it.balance })
