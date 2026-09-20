@@ -1059,6 +1059,10 @@ class AppDatabase(
             ensureBookMeta(db)
             ensureSyncRemoteIdMap(db)
         }
+
+        if (seedDefaults && !db.isReadOnly && tableExists(db, "fruit")) {
+            ensureTotalProduct(db)
+        }
     }
 
     private fun createFruitTable(db: SQLiteDatabase) {
@@ -3317,19 +3321,63 @@ class AppDatabase(
         )
     }
 
+    private fun totalProductSyncId(): String =
+        UUID.nameUUIDFromBytes(
+            "tianxian-system-total:$ledgerId".toByteArray(Charsets.UTF_8)
+        ).toString()
+
+    private fun ensureTotalProduct(db: SQLiteDatabase) {
+        val existing =
+            db.rawQuery(
+                "SELECT id,enabled FROM fruit WHERE name=? LIMIT 1",
+                arrayOf("总价")
+            ).use { c ->
+                if (c.moveToFirst()) {
+                    c.long("id") to c.int("enabled")
+                } else {
+                    null
+                }
+            }
+
+        if (existing == null) {
+            db.insertWithOnConflict(
+                "fruit",
+                null,
+                baseSyncValues().apply {
+                    put("sync_id", totalProductSyncId())
+                    put("name", "总价")
+                    put("default_unit", "件")
+                    put("enabled", 1)
+                    put("sort_order", -1L)
+                },
+                SQLiteDatabase.CONFLICT_IGNORE
+            )
+        } else if (existing.second != 1) {
+            db.update(
+                "fruit",
+                ContentValues().apply {
+                    put("enabled", 1)
+                    put("sync_status", 2)
+                    put("updated_at", System.currentTimeMillis())
+                },
+                "id=?",
+                arrayOf(existing.first.toString())
+            )
+        }
+    }
+
     private fun seedFruits(db: SQLiteDatabase) {
+        // 新账本只预置“总价”，具体商品由用户按实际经营自行添加。
+        // 这里只影响新建数据库，不迁移、不删除已有账本中的商品。
         listOf(
-            "巨峰葡萄",
-            "阳光玫瑰",
-            "蓝莓",
-            "草莓",
-            "西瓜",
-            "芒果",
-            "荔枝"
+            "总价"
         ).forEachIndexed {
             index,
             name ->
             val values = baseSyncValues().apply {
+                if (name == "总价") {
+                    put("sync_id", totalProductSyncId())
+                }
                 put("name", name)
                 put("default_unit", "件")
                 put("enabled", 1)
@@ -3535,6 +3583,13 @@ class AppDatabase(
     fun updateFruit(id: Long, name: String, defaultUnit: String): Boolean {
         val clean = name.trim()
         if (clean.isBlank()) return false
+        val currentName =
+            readableDatabase.rawQuery(
+                "SELECT name FROM fruit WHERE id=? LIMIT 1",
+                arrayOf(id.toString())
+            ).use { c -> if (c.moveToFirst()) c.str("name") else "" }
+        if (currentName == "总价" && clean != "总价") return false
+        if (currentName != "总价" && clean == "总价") return false
         return writableDatabase.update(
             "fruit",
             ContentValues().apply {
@@ -3548,8 +3603,14 @@ class AppDatabase(
         ) > 0
     }
 
-    // 商品删除采用停用，不删除历史账。
+    // 商品删除采用停用，不删除历史账。“总价”是系统默认项，不允许停用。
     fun disableFruit(id: Long): Boolean {
+        val isTotal =
+            readableDatabase.rawQuery(
+                "SELECT 1 FROM fruit WHERE id=? AND name='总价' LIMIT 1",
+                arrayOf(id.toString())
+            ).use { it.moveToFirst() }
+        if (isTotal) return false
         return writableDatabase.update(
             "fruit",
             ContentValues().apply {
@@ -4373,7 +4434,8 @@ class AppDatabase(
         quantity: Double,
         unit: String,
         estimatedAmount: Double,
-        remark: String = ""
+        remark: String = "",
+        mergePendingSameProduct: Boolean = true
     ): Long {
         if (
             quantity <= 0 ||
@@ -4545,32 +4607,30 @@ class AppDatabase(
                     itemId
                 } else {
                     val duplicateId =
-                        db.rawQuery(
-                            """
-                            SELECT ppi.id
-                            FROM purchase_plan_item ppi
-                            WHERE
-                                ppi.plan_id=?
-                                AND ppi.fruit_id=?
-                                AND ppi.unit=?
-                                AND ppi.status=0
-                                AND ppi.deleted=0
-                            LIMIT 1
-                            """.trimIndent(),
-                            arrayOf(
-                                planId.toString(),
-                                fruit.id.toString(),
-                                unit
-                            )
-                        ).use {
-                            c ->
-                            if (
-                                c.moveToFirst()
-                            ) {
-                                c.long("id")
-                            } else {
-                                null
+                        if (mergePendingSameProduct) {
+                            db.rawQuery(
+                                """
+                                SELECT ppi.id
+                                FROM purchase_plan_item ppi
+                                WHERE
+                                    ppi.plan_id=?
+                                    AND ppi.fruit_id=?
+                                    AND ppi.unit=?
+                                    AND ppi.status=0
+                                    AND ppi.deleted=0
+                                LIMIT 1
+                                """.trimIndent(),
+                                arrayOf(
+                                    planId.toString(),
+                                    fruit.id.toString(),
+                                    unit
+                                )
+                            ).use {
+                                c ->
+                                if (c.moveToFirst()) c.long("id") else null
                             }
+                        } else {
+                            null
                         }
 
                     if (
@@ -4809,7 +4869,8 @@ class AppDatabase(
         quantity: Double,
         unit: String,
         estimatedAmount: Double,
-        buyer: PartnerOption? = null
+        buyer: PartnerOption? = null,
+        mergePendingSameProduct: Boolean = true
     ): Long {
         if (quantity <= 0 || estimatedAmount < 0) {
             return -1
@@ -4834,7 +4895,7 @@ class AppDatabase(
                         null
                     }
                 }
-            } else {
+            } else if (mergePendingSameProduct) {
                 readableDatabase.rawQuery(
                     "SELECT ppi.id,ppi.remark " +
                         "FROM purchase_plan_item ppi " +
@@ -4853,6 +4914,8 @@ class AppDatabase(
                         null
                     }
                 }
+            } else {
+                null
             }
 
         val resolvedItemId =
@@ -4863,7 +4926,8 @@ class AppDatabase(
                 quantity = quantity,
                 unit = unit,
                 estimatedAmount = estimatedAmount,
-                remark = existing?.second.orEmpty()
+                remark = existing?.second.orEmpty(),
+                mergePendingSameProduct = mergePendingSameProduct
             )
 
         if (resolvedItemId <= 0) {
@@ -5121,7 +5185,7 @@ class AppDatabase(
             ) {
                 return CollaborationCompleteResult(
                     false,
-                    "该水果已经完成采购，请刷新后查看"
+                    "该商品已经完成采购，请刷新后查看"
                 )
             }
 
@@ -5784,7 +5848,7 @@ class AppDatabase(
             if (matchingCount != 1) {
                 return CollaborationCompleteResult(
                     false,
-                    "同一采购单存在多个同名水果，请到采购历史修改"
+                    "同一采购单存在多个同名商品，请到采购历史修改"
                 )
             }
 
@@ -5798,7 +5862,7 @@ class AppDatabase(
             if (activeItemCount > 1 && order.second != activeBuyer.id) {
                 return CollaborationCompleteResult(
                     false,
-                    "该采购单包含多个水果，采购人请到采购历史修改整单"
+                    "该采购单包含多个商品，采购人请到采购历史修改整单"
                 )
             }
 
@@ -5914,7 +5978,7 @@ class AppDatabase(
             } ?: return CollaborationCompleteResult(false, "协作采购记录不存在")
 
         if ((row[3] as Int) != 1) {
-            return CollaborationCompleteResult(false, "该水果还没有完成采购")
+            return CollaborationCompleteResult(false, "该商品还没有完成采购")
         }
 
         val planId = row[0] as Long
@@ -5946,7 +6010,7 @@ class AppDatabase(
                     if (matchingCount > 1) {
                         return CollaborationCompleteResult(
                             false,
-                            "同一采购单存在多个同名水果，请到采购历史处理"
+                            "同一采购单存在多个同名商品，请到采购历史处理"
                         )
                     }
 

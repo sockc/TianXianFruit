@@ -28,13 +28,18 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
+import com.tianxian.fruit.sync.CloudSyncManager
 import java.security.SecureRandom
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
@@ -59,6 +64,59 @@ internal class OperationSecurityManager(
         prefs.edit()
             .putBoolean(KEY_BIOMETRIC_ENABLED, enabled)
             .apply()
+    }
+
+    fun sameDayDeleteVerification(): Boolean =
+        prefs.getBoolean(KEY_VERIFY_TODAY_DELETE, false)
+
+    fun setSameDayDeleteVerification(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_VERIFY_TODAY_DELETE, enabled).apply()
+    }
+
+    fun historicalModifyVerification(): Boolean =
+        prefs.getBoolean(KEY_VERIFY_HISTORY_MODIFY, true)
+
+    fun setHistoricalModifyVerification(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_VERIFY_HISTORY_MODIFY, enabled).apply()
+    }
+
+    fun historicalDeleteVerification(): Boolean =
+        prefs.getBoolean(KEY_VERIFY_HISTORY_DELETE, true)
+
+    fun setHistoricalDeleteVerification(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_VERIFY_HISTORY_DELETE, enabled).apply()
+    }
+
+    fun profitDistributionVerification(): Boolean =
+        prefs.getBoolean(KEY_VERIFY_PROFIT_DISTRIBUTION, true)
+
+    fun setProfitDistributionVerification(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_VERIFY_PROFIT_DISTRIBUTION, enabled).apply()
+    }
+
+    fun shouldVerify(
+        date: String,
+        description: String
+    ): Boolean {
+        val today = LocalDate.now().toString()
+        val isDelete = description.contains("删除")
+        val isProfitDistribution = description.contains("利润分配")
+        val forcedLockedOperation =
+            description.contains("已结算") ||
+                description.contains("已采购记录") ||
+                description.contains("已完成采购") ||
+                description.contains("撤销结清")
+
+        if (forcedLockedOperation) return true
+        if (isProfitDistribution && profitDistributionVerification()) return true
+
+        val historical = date.isNotBlank() && date < today
+        return when {
+            historical && isDelete -> historicalDeleteVerification()
+            historical -> historicalModifyVerification()
+            date == today && isDelete -> sameDayDeleteVerification()
+            else -> false
+        }
     }
 
     fun setPassword(password: String): Boolean {
@@ -130,6 +188,10 @@ internal class OperationSecurityManager(
         private const val KEY_PASSWORD_SALT = "password_salt"
         private const val KEY_PASSWORD_HASH = "password_hash"
         private const val KEY_BIOMETRIC_ENABLED = "biometric_enabled"
+        private const val KEY_VERIFY_TODAY_DELETE = "verify_today_delete"
+        private const val KEY_VERIFY_HISTORY_MODIFY = "verify_history_modify"
+        private const val KEY_VERIFY_HISTORY_DELETE = "verify_history_delete"
+        private const val KEY_VERIFY_PROFIT_DISTRIBUTION = "verify_profit_distribution"
     }
 }
 
@@ -155,9 +217,12 @@ internal class HistorySecurityGate(
         description: String,
         action: () -> Unit
     ) {
-        val today = LocalDate.now().toString()
-        val historical = date.isNotBlank() && date < today
-        if (!historical || System.currentTimeMillis() < unlockedUntil) {
+        val verificationRequired =
+            manager.shouldVerify(
+                date = date,
+                description = description
+            )
+        if (!verificationRequired || System.currentTimeMillis() < unlockedUntil) {
             action()
             return
         }
@@ -258,13 +323,13 @@ internal fun HistorySecurityHost(
         if (canUseBiometric) {
             prompt.authenticate(
                 BiometricPrompt.PromptInfo.Builder()
-                    .setTitle("验证历史记录操作")
+                    .setTitle("验证敏感操作")
                     .setSubtitle(
                         gate.pending?.description
-                            ?: "修改或删除历史记录"
+                            ?: "请验证后继续"
                     )
                     .setAllowedAuthenticators(authenticators)
-                    .setNegativeButtonText("使用操作密码")
+                    .setNegativeButtonText("使用验证密码")
                     .build()
             )
         } else {
@@ -303,9 +368,9 @@ private fun HistoricalPasswordDialog(
         title = {
             Text(
                 if (firstSetup) {
-                    "先设置操作密码"
+                    "先设置验证密码"
                 } else {
-                    "输入操作密码"
+                    "输入验证密码"
                 }
             )
         },
@@ -315,10 +380,10 @@ private fun HistoricalPasswordDialog(
             ) {
                 Text(
                     if (firstSetup) {
-                        "历史记录修改和删除需要验证。请设置至少4位操作密码。"
+                        "敏感操作需要验证。请设置至少4位验证密码。"
                     } else {
                         description.ifBlank {
-                            "验证后才能修改或删除历史记录。"
+                            "验证后才能继续此操作。"
                         }
                     },
                     style = MaterialTheme.typography.bodySmall
@@ -332,7 +397,7 @@ private fun HistoricalPasswordDialog(
                     },
                     label = {
                         Text(
-                            if (firstSetup) "新操作密码" else "操作密码"
+                            if (firstSetup) "新验证密码" else "验证密码"
                         )
                     },
                     visualTransformation = PasswordVisualTransformation(),
@@ -346,7 +411,7 @@ private fun HistoricalPasswordDialog(
                             confirm = it
                             error = ""
                         },
-                        label = { Text("确认操作密码") },
+                        label = { Text("确认验证密码") },
                         visualTransformation = PasswordVisualTransformation(),
                         singleLine = true
                     )
@@ -367,7 +432,7 @@ private fun HistoricalPasswordDialog(
                     if (firstSetup) {
                         when {
                             password.length < 4 ->
-                                error = "操作密码至少4位"
+                                error = "验证密码至少4位"
                             password != confirm ->
                                 error = "两次输入的密码不一致"
                             manager.setPassword(password) ->
@@ -378,7 +443,7 @@ private fun HistoricalPasswordDialog(
                     } else if (manager.verifyPassword(password)) {
                         onVerified()
                     } else {
-                        error = "操作密码不正确"
+                        error = "验证密码不正确"
                     }
                 }
             ) {
@@ -395,13 +460,28 @@ private fun HistoricalPasswordDialog(
 
 @Composable
 internal fun SecuritySettingsContent(
-    manager: OperationSecurityManager
+    manager: OperationSecurityManager,
+    cloudSyncManager: CloudSyncManager
 ) {
     val context = LocalContext.current
     var version by remember { mutableIntStateOf(0) }
     var showPasswordDialog by remember { mutableStateOf(false) }
+    var showForgotPasswordDialog by remember { mutableStateOf(false) }
+
     var biometricEnabled by remember(version) {
         mutableStateOf(manager.biometricEnabled())
+    }
+    var verifyTodayDelete by remember(version) {
+        mutableStateOf(manager.sameDayDeleteVerification())
+    }
+    var verifyHistoryModify by remember(version) {
+        mutableStateOf(manager.historicalModifyVerification())
+    }
+    var verifyHistoryDelete by remember(version) {
+        mutableStateOf(manager.historicalDeleteVerification())
+    }
+    var verifyProfitDistribution by remember(version) {
+        mutableStateOf(manager.profitDistributionVerification())
     }
 
     val biometricAvailable = remember(context, version) {
@@ -423,62 +503,95 @@ internal fun SecuritySettingsContent(
         SettingsSection("身份验证") {
             SettingsRow(
                 icon = "🔐",
-                title = "操作密码",
-                trailing =
-                    if (manager.hasPassword()) "已设置" else "未设置"
+                title = if (manager.hasPassword()) "修改验证密码" else "设置验证密码",
+                trailing = if (manager.hasPassword()) "已设置" else "未设置"
             ) {
                 showPasswordDialog = true
             }
 
+            if (manager.hasPassword()) {
+                SettingsDivider()
+                SettingsRow(
+                    icon = "↻",
+                    title = "忘记验证密码",
+                    trailing = "使用登录密码重置"
+                ) {
+                    showForgotPasswordDialog = true
+                }
+            }
+
             SettingsDivider()
 
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 9.dp)
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text("系统生物识别")
-                    Text(
-                        if (biometricAvailable) {
-                            "历史操作优先使用系统指纹 / 面容验证"
-                        } else {
-                            "当前设备未检测到可用的系统生物识别"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = androidx.compose.ui.graphics.Color.Gray
-                    )
+            SecurityToggleRow(
+                title = "系统生物识别",
+                description =
+                    if (biometricAvailable) {
+                        "验证时优先使用系统指纹 / 面容，失败或取消后可改用验证密码"
+                    } else {
+                        "当前设备未检测到可用的系统生物识别"
+                    },
+                checked = biometricEnabled && biometricAvailable,
+                enabled = biometricAvailable,
+                onCheckedChange = {
+                    biometricEnabled = it
+                    manager.setBiometricEnabled(it)
+                    version++
                 }
-                Spacer(Modifier.width(8.dp))
-                Switch(
-                    checked = biometricEnabled && biometricAvailable,
-                    enabled = biometricAvailable,
-                    onCheckedChange = {
-                        biometricEnabled = it
-                        manager.setBiometricEnabled(it)
-                        version++
-                    }
-                )
-            }
+            )
         }
 
-        SettingsSection("历史记录保护") {
-            Column(
-                Modifier.padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Text("当天记录", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-                Text(
-                    "修改、删除不需要验证。",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Text("以往记录", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-                Text(
-                    "修改、删除强制验证；一次验证后3分钟内连续操作无需重复验证。",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
+        SettingsSection("记录验证规则") {
+            SecurityToggleRow(
+                title = "当天记录删除验证",
+                description = "开启后，删除当天采购、营业等记录也需要验证。",
+                checked = verifyTodayDelete,
+                onCheckedChange = {
+                    verifyTodayDelete = it
+                    manager.setSameDayDeleteVerification(it)
+                    version++
+                }
+            )
+            SettingsDivider()
+            SecurityToggleRow(
+                title = "历史记录修改验证",
+                description = "控制以往日期记录的修改操作。",
+                checked = verifyHistoryModify,
+                onCheckedChange = {
+                    verifyHistoryModify = it
+                    manager.setHistoricalModifyVerification(it)
+                    version++
+                }
+            )
+            SettingsDivider()
+            SecurityToggleRow(
+                title = "历史记录删除验证",
+                description = "控制以往日期记录的删除操作。",
+                checked = verifyHistoryDelete,
+                onCheckedChange = {
+                    verifyHistoryDelete = it
+                    manager.setHistoricalDeleteVerification(it)
+                    version++
+                }
+            )
+            SettingsDivider()
+            SecurityToggleRow(
+                title = "利润分配修改 / 删除验证",
+                description = "修改利润分配规则、已保存分配或删除利润分配时需要验证。",
+                checked = verifyProfitDistribution,
+                onCheckedChange = {
+                    verifyProfitDistribution = it
+                    manager.setProfitDistributionVerification(it)
+                    version++
+                }
+            )
         }
+
+        Text(
+            "已结算或已完成采购等锁定结果属于高风险数据，相关修改 / 删除始终要求验证。一次验证成功后 3 分钟内可连续进行受保护操作。",
+            style = MaterialTheme.typography.bodySmall,
+            color = androidx.compose.ui.graphics.Color.Gray,
+            modifier = Modifier.padding(horizontal = 4.dp)
+        )
     }
 
     if (showPasswordDialog) {
@@ -491,6 +604,50 @@ internal fun SecuritySettingsContent(
                 showPasswordDialog = false
                 version++
             }
+        )
+    }
+
+    if (showForgotPasswordDialog) {
+        ForgotOperationPasswordDialog(
+            manager = manager,
+            cloudSyncManager = cloudSyncManager,
+            onDismiss = {
+                showForgotPasswordDialog = false
+            },
+            onSaved = {
+                showForgotPasswordDialog = false
+                version++
+            }
+        )
+    }
+}
+
+@Composable
+private fun SecurityToggleRow(
+    title: String,
+    description: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 9.dp)
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title)
+            Text(
+                description,
+                style = MaterialTheme.typography.bodySmall,
+                color = androidx.compose.ui.graphics.Color.Gray
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        Switch(
+            checked = checked,
+            enabled = enabled,
+            onCheckedChange = onCheckedChange
         )
     }
 }
@@ -510,7 +667,7 @@ private fun ChangeOperationPasswordDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text(if (changing) "修改操作密码" else "设置操作密码")
+            Text(if (changing) "修改验证密码" else "设置验证密码")
         },
         text = {
             Column(
@@ -526,7 +683,7 @@ private fun ChangeOperationPasswordDialog(
                             oldPassword = it
                             error = ""
                         },
-                        label = { Text("当前操作密码") },
+                        label = { Text("当前验证密码") },
                         visualTransformation = PasswordVisualTransformation(),
                         singleLine = true
                     )
@@ -538,7 +695,7 @@ private fun ChangeOperationPasswordDialog(
                         newPassword = it
                         error = ""
                     },
-                    label = { Text("新操作密码") },
+                    label = { Text("新验证密码") },
                     visualTransformation = PasswordVisualTransformation(),
                     singleLine = true
                 )
@@ -568,11 +725,11 @@ private fun ChangeOperationPasswordDialog(
                 onClick = {
                     when {
                         newPassword.length < 4 ->
-                            error = "操作密码至少4位"
+                            error = "验证密码至少4位"
                         newPassword != confirmPassword ->
                             error = "两次输入的新密码不一致"
                         changing && !manager.verifyPassword(oldPassword) ->
-                            error = "当前操作密码不正确"
+                            error = "当前验证密码不正确"
                         changing && !manager.changePassword(oldPassword, newPassword) ->
                             error = "修改失败"
                         !changing && !manager.setPassword(newPassword) ->
@@ -587,6 +744,128 @@ private fun ChangeOperationPasswordDialog(
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+private fun ForgotOperationPasswordDialog(
+    manager: OperationSecurityManager,
+    cloudSyncManager: CloudSyncManager,
+    onDismiss: () -> Unit,
+    onSaved: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var loginPassword by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = {
+            if (!loading) onDismiss()
+        },
+        title = { Text("重置验证密码") },
+        text = {
+            Column(
+                Modifier
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "请输入当前登录账号的登录密码。APP 会重新向服务器验证身份，验证通过后才能重置验证密码。",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                OutlinedTextField(
+                    value = loginPassword,
+                    onValueChange = {
+                        loginPassword = it
+                        error = ""
+                    },
+                    label = { Text("登录密码") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    enabled = !loading
+                )
+                OutlinedTextField(
+                    value = newPassword,
+                    onValueChange = {
+                        newPassword = it
+                        error = ""
+                    },
+                    label = { Text("新验证密码") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    enabled = !loading
+                )
+                OutlinedTextField(
+                    value = confirmPassword,
+                    onValueChange = {
+                        confirmPassword = it
+                        error = ""
+                    },
+                    label = { Text("确认新验证密码") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    enabled = !loading
+                )
+                if (error.isNotBlank()) {
+                    Text(
+                        error,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = !loading,
+                onClick = {
+                    when {
+                        loginPassword.isBlank() ->
+                            error = "请输入登录密码"
+                        newPassword.length < 4 ->
+                            error = "验证密码至少4位"
+                        newPassword != confirmPassword ->
+                            error = "两次输入的新密码不一致"
+                        else -> {
+                            loading = true
+                            error = ""
+                            scope.launch {
+                                val verified =
+                                    withContext(Dispatchers.IO) {
+                                        runCatching {
+                                            cloudSyncManager.verifyCurrentAccountPassword(
+                                                loginPassword
+                                            )
+                                        }.getOrDefault(false)
+                                    }
+                                loading = false
+                                if (!verified) {
+                                    error = "登录密码验证失败"
+                                } else if (!manager.setPassword(newPassword)) {
+                                    error = "验证密码重置失败"
+                                } else {
+                                    onSaved()
+                                }
+                            }
+                        }
+                    }
+                }
+            ) {
+                Text(if (loading) "验证中…" else "验证并重置")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                enabled = !loading,
+                onClick = onDismiss
+            ) {
                 Text("取消")
             }
         }

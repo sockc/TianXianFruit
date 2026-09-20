@@ -317,6 +317,44 @@ class CloudSyncManager(
         return result
     }
 
+    fun verifyCurrentAccountPassword(
+        password: String
+    ): Boolean {
+        if (password.isBlank()) return false
+
+        val current = requireSession()
+        val loginJson =
+            requestJson(
+                baseUrl = current.baseUrl,
+                method = "POST",
+                path = "/api/v1/auth/login",
+                body =
+                    JSONObject().apply {
+                        put("username", current.username)
+                        put("password", password)
+                        put("device_id", serverDeviceId(current.username))
+                        put("device_name", ledgerManager.deviceName)
+                        put("platform", "android")
+                        put("app_version", APP_VERSION)
+                    },
+                token = null
+            ) as JSONObject
+
+        val token = loginJson.optString("access_token")
+        if (token.isBlank()) return false
+
+        val me =
+            requestJson(
+                baseUrl = current.baseUrl,
+                method = "GET",
+                path = "/api/v1/auth/me",
+                body = null,
+                token = token
+            ) as JSONObject
+
+        return me.optString("username") == current.username
+    }
+
     fun logout() {
         ledgerManager
             .revokeCloudBooksForAccountSwitch()
@@ -2442,7 +2480,7 @@ class CloudSyncManager(
             "https://sync.830888.xyz"
 
         private const val APP_VERSION =
-            "1.4.7.19"
+            "1.4.7.23"
 
         private const val KEY_PURCHASE_ACTIVITY_BACKFILL_PREFIX =
             "purchase_activity_backfill_v1_4_"

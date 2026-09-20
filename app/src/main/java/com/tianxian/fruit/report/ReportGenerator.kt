@@ -1,5 +1,6 @@
 package com.tianxian.fruit.report
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -9,6 +10,9 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import androidx.core.content.FileProvider
 import java.io.File
 import java.io.FileOutputStream
@@ -344,6 +348,86 @@ object ReportGenerator {
             ?: throw IllegalStateException(
                 "无法打开保存位置"
             )
+    }
+
+    fun saveToDevice(
+        context: Context,
+        report: GeneratedReport
+    ): String {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = context.contentResolver
+            val isImage = report.mimeType == "image/png"
+            val collection =
+                if (isImage) {
+                    MediaStore.Images.Media.getContentUri(
+                        MediaStore.VOLUME_EXTERNAL_PRIMARY
+                    )
+                } else {
+                    MediaStore.Downloads.getContentUri(
+                        MediaStore.VOLUME_EXTERNAL_PRIMARY
+                    )
+                }
+            val relativePath =
+                if (isImage) {
+                    Environment.DIRECTORY_PICTURES + "/TianXianFruit"
+                } else {
+                    Environment.DIRECTORY_DOWNLOADS + "/TianXianFruit"
+                }
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, report.displayName)
+                put(MediaStore.MediaColumns.MIME_TYPE, report.mimeType)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(collection, values)
+                ?: throw IllegalStateException("无法创建保存文件")
+
+            try {
+                resolver.openOutputStream(uri, "w")
+                    ?.use { output ->
+                        report.file.inputStream().use { input ->
+                            input.copyTo(output)
+                        }
+                    }
+                    ?: throw IllegalStateException("无法打开保存位置")
+
+                resolver.update(
+                    uri,
+                    ContentValues().apply {
+                        put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    },
+                    null,
+                    null
+                )
+                return relativePath + "/" + report.displayName
+            } catch (error: Throwable) {
+                runCatching { resolver.delete(uri, null, null) }
+                throw error
+            }
+        }
+
+        // Android 8/9 不申请旧式外部存储权限，保存到应用专属外部目录。
+        val directoryType =
+            if (report.mimeType == "image/png") {
+                Environment.DIRECTORY_PICTURES
+            } else {
+                Environment.DIRECTORY_DOWNLOADS
+            }
+        val base =
+            context.getExternalFilesDir(directoryType)
+                ?: context.filesDir
+        val targetDir = File(base, "TianXianFruit").apply {
+            if (!exists() && !mkdirs()) {
+                throw IllegalStateException("无法创建保存目录")
+            }
+        }
+        val target = File(targetDir, report.displayName)
+        report.file.inputStream().use { input ->
+            FileOutputStream(target).use { output ->
+                input.copyTo(output)
+            }
+        }
+        return target.absolutePath
     }
 
     private fun outputFile(

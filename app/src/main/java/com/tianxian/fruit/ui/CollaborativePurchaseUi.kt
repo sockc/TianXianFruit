@@ -457,7 +457,7 @@ internal fun CollaborativePurchaseContent(
                     onClick = { showAdd = true },
                     modifier = Modifier.fillMaxWidth().height(42.dp)
                 ) {
-                    Text("＋ 添加水果")
+                    Text("＋ 添加商品")
                 }
             }
         }
@@ -1046,6 +1046,7 @@ private fun CollaborationPlanEditDialog(
     ) {
         mutableStateOf(
             editing?.fruitId
+                ?: fruits.firstOrNull { it.name == "总价" }?.id
         )
     }
 
@@ -1126,7 +1127,7 @@ private fun CollaborationPlanEditDialog(
                 if (
                     editing == null
                 ) {
-                    "添加采购水果"
+                    "添加采购商品"
                 } else {
                     "修改采购计划"
                 }
@@ -1150,7 +1151,7 @@ private fun CollaborationPlanEditDialog(
                     ) {
                         Text(
                             fruit?.name
-                                ?: "选择水果"
+                                ?: "总价"
                         )
                     }
 
@@ -1299,7 +1300,7 @@ private fun CollaborationPlanEditDialog(
                         selectedFruit == null
                     ) {
                         error =
-                            "请选择水果"
+                            "请选择商品"
                     } else if (
                         qty <= 0
                     ) {

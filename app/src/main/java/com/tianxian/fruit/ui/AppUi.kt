@@ -45,7 +45,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tianxian.fruit.BuildConfig
 import com.tianxian.fruit.data.*
-import com.tianxian.fruit.report.GeneratedReport
 import com.tianxian.fruit.report.ReportGenerator
 import com.tianxian.fruit.report.ReportLine
 import com.tianxian.fruit.report.ReportLineStyle
@@ -717,7 +716,13 @@ fun TianXianApp(
                                     AppPage.MORE
                             }
                         )
-                    AppPage.SETTLEMENT -> SettlementScreen(db, dataVersion) { notifyDataChanged() }
+                    AppPage.SETTLEMENT ->
+                        SettlementScreen(
+                            db = db,
+                            dataVersion = dataVersion,
+                            protectHistoricalAction = protectHistoricalAction,
+                            onChanged = { notifyDataChanged() }
+                        )
                     AppPage.MORE -> MoreScreen(
                         db = db,
                         dataVersion = dataVersion,
@@ -1916,7 +1921,7 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
         } else {
             note = ""
         }
-        fruitId = null
+        fruitId = fruits.firstOrNull { it.name == "总价" }?.id
         quantity = ""
         itemRemark = ""
         unit = "件"
@@ -1937,7 +1942,7 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         item {
-            PageHeader("采购计划", "每种水果独立管理：待采购、已采购、取消")
+            PageHeader("采购计划", "每种商品独立管理：待采购、已采购、取消")
         }
 
         item {
@@ -1963,7 +1968,7 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                 Box(Modifier.weight(1f)) {
-                    CompactSelectButton("水果", fruit?.name ?: "请选择水果", Modifier.fillMaxWidth()) {
+                    CompactSelectButton("商品", fruit?.name ?: "总价", Modifier.fillMaxWidth()) {
                         fruitMenu = true
                     }
                     DropdownMenu(expanded = fruitMenu, onDismissRequest = { fruitMenu = false }) {
@@ -1978,7 +1983,7 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
                             )
                         }
                         DropdownMenuItem(
-                            text = { Text("＋新增水果") },
+                            text = { Text("＋新增商品") },
                             onClick = {
                                 fruitMenu = false
                                 addFruitDialog = true
@@ -2015,7 +2020,7 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
             Button(
                 onClick = {
                     if (fruit == null || q <= 0) {
-                        message = "请选择水果并填写正确数量"
+                        message = "请选择商品并填写正确数量"
                     } else {
                         val existingIndex =
                             draft.indexOfFirst { it.fruit.id == fruit.id && it.unit == unit }
@@ -2035,7 +2040,7 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
                             draft.add(newLine)
                             message = "已加入 ${fruit.name}"
                         }
-                        fruitId = null
+                        fruitId = fruits.firstOrNull { it.name == "总价" }?.id
                         quantity = ""
                         itemRemark = ""
                         unit = "件"
@@ -2165,7 +2170,7 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
             item {
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F8FA))) {
                     Text(
-                        "暂未添加采购商品。选择水果和数量后添加。",
+                        "暂未添加采购商品。选择商品和数量后添加。",
                         modifier = Modifier.fillMaxWidth().padding(14.dp),
                         color = Color.Gray
                     )
@@ -2279,7 +2284,7 @@ private fun PurchaseScreen(
     val fruits = remember(dataVersion) { db.getFruits() }
     val partners = remember(dataVersion) { db.getPartners() }
 
-    // 新增采购时采购人属于“每一种水果”，不再使用整页单一采购人。
+    // 新增采购时采购人属于“每一种商品”，不再使用整页单一采购人。
     // 只有编辑历史正式采购单时，才保留整单采购人选择。
     var editBuyerId by remember { mutableStateOf<Long?>(null) }
     var historicalBuyerName by remember { mutableStateOf("") }
@@ -2293,11 +2298,17 @@ private fun PurchaseScreen(
 
     fun defaultBuyerId(): Long? = partners.firstOrNull()?.id
     fun defaultBuyerName(): String = partners.firstOrNull()?.name.orEmpty()
+    fun defaultProduct(): FruitOption? =
+        fruits.firstOrNull { it.name == "总价" } ?: fruits.firstOrNull()
 
     val rows = remember {
+        val product = defaultProduct()
         mutableStateListOf(
             PurchaseDraftRow(
                 rowId = 1L,
+                fruitId = product?.id,
+                fruitNameSnapshot = product?.name.orEmpty(),
+                unit = product?.defaultUnit ?: "件",
                 buyerId = defaultBuyerId(),
                 buyerNameSnapshot = defaultBuyerName()
             )
@@ -2341,12 +2352,17 @@ private fun PurchaseScreen(
         else -> "请选择"
     }
 
-    fun newBlankRow(): PurchaseDraftRow =
-        PurchaseDraftRow(
+    fun newBlankRow(): PurchaseDraftRow {
+        val product = defaultProduct()
+        return PurchaseDraftRow(
             rowId = nextRowId++,
+            fruitId = product?.id,
+            fruitNameSnapshot = product?.name.orEmpty(),
+            unit = product?.defaultUnit ?: "件",
             buyerId = defaultBuyerId(),
             buyerNameSnapshot = defaultBuyerName()
         )
+    }
 
     fun rowFingerprint(row: PurchaseDraftRow): String =
         listOf(
@@ -2368,7 +2384,14 @@ private fun PurchaseScreen(
         if (index >= 0) rows[index] = updated
     }
 
-    fun meaningfulRows(): List<PurchaseDraftRow> = rows.filterNot { it.isBlank }
+    fun isDefaultEmptyRow(row: PurchaseDraftRow): Boolean =
+        row.fruitId == defaultProduct()?.id &&
+            row.quantity.isBlank() &&
+            row.unitPrice.isBlank() &&
+            row.totalCost.isBlank()
+
+    fun meaningfulRows(): List<PurchaseDraftRow> =
+        rows.filterNot { it.isBlank || isDefaultEmptyRow(it) }
 
     fun loadRowsFromCollaborationPlan() {
         if (editingOrderId != null) return
@@ -2478,7 +2501,7 @@ private fun PurchaseScreen(
     fun saveCollaborationDrafts() {
         val filledRows = meaningfulRows()
         if (filledRows.isEmpty()) {
-            message = "请至少填写一种采购水果"
+            message = "请至少填写一种采购商品"
             return
         }
 
@@ -2506,7 +2529,7 @@ private fun PurchaseScreen(
                     (it.totalCost.toDoubleOrNull() ?: 0.0) <= 0
             }
         ) {
-            message = "有商品没有选水果，或数量/总价没有填写正确"
+            message = "有商品没有选择商品，或数量/总价没有填写正确"
             return
         }
 
@@ -2552,24 +2575,32 @@ private fun PurchaseScreen(
     fun completeCollaborationDrafts() {
         val filledRows = meaningfulRows()
         if (filledRows.isEmpty()) {
-            message = "请至少填写一种采购水果"
+            message = "请至少填写一种采购商品"
             return
         }
 
         val latestPlanItems = db.getPurchasePlan(date)?.items.orEmpty()
+        // 主按钮“完成采购”只处理本次新录入的商品，或当前明确进入修改状态的计划商品。
+        // 已保存的计划采购不会再被顺带完成；需要完成计划时，点击对应待采购商品单独操作。
+        val completionCandidates =
+            filledRows.filter { row ->
+                row.planItemId == null || row.planItemId == editingPlanItemId
+            }
         val pendingRows =
-            filledRows.filterNot { row ->
+            completionCandidates.filterNot { row ->
                 val matched =
                     row.planItemId
                         ?.let { id -> latestPlanItems.firstOrNull { it.id == id } }
-                        ?: row.fruitId?.let { fruitId ->
-                            latestPlanItems.firstOrNull { it.fruitId == fruitId && it.status == 1 }
-                        }
                 matched?.status == 1
             }
 
         if (pendingRows.isEmpty()) {
-            message = "当前商品都已完成采购"
+            message =
+                if (filledRows.any { it.planItemId != null }) {
+                    "计划采购不会自动完成，请点击待采购商品单独完成"
+                } else {
+                    "当前商品都已完成采购"
+                }
             return
         }
 
@@ -2580,7 +2611,7 @@ private fun PurchaseScreen(
                     (it.totalCost.toDoubleOrNull() ?: 0.0) <= 0
             }
         if (invalidData != null) {
-            message = "有商品没有选水果，或数量/总价没有填写正确"
+            message = "有商品没有选择商品，或数量/总价没有填写正确"
             return
         }
 
@@ -2632,7 +2663,8 @@ private fun PurchaseScreen(
                     quantity = row.quantity.toDouble(),
                     unit = row.unit,
                     estimatedAmount = row.totalCost.toDouble(),
-                    buyer = buyer
+                    buyer = buyer,
+                    mergePendingSameProduct = row.planItemId != null
                 )
             if (itemId <= 0L) {
                 message = "${fruit.name} 保存采购数据失败，请重试"
@@ -2861,7 +2893,7 @@ private fun PurchaseScreen(
             OutlinedButton(
                 onClick = {
                     focusManager.clearFocus()
-                    if (rows.lastOrNull()?.isBlank == true) {
+                    if (rows.lastOrNull()?.let { it.isBlank || isDefaultEmptyRow(it) } == true) {
                         message = "下面已经有一组空白商品，直接填写即可"
                     } else {
                         rows.add(newBlankRow())
@@ -2935,12 +2967,12 @@ private fun PurchaseScreen(
                         val filledRows = meaningfulRows()
                         when {
                             editBuyer == null -> message = "请选择采购人"
-                            filledRows.isEmpty() -> message = "请至少填写一种采购水果"
+                            filledRows.isEmpty() -> message = "请至少填写一种采购商品"
                             filledRows.any {
                                 it.fruitId == null ||
                                     (it.quantity.toDoubleOrNull() ?: 0.0) <= 0 ||
                                     (it.totalCost.toDoubleOrNull() ?: 0.0) <= 0
-                            } -> message = "有商品没有选水果，或数量/总价没有填写正确"
+                            } -> message = "有商品没有选择商品，或数量/总价没有填写正确"
                             else -> {
                                 val lines =
                                     filledRows.mapNotNull { r ->
@@ -2961,7 +2993,7 @@ private fun PurchaseScreen(
                                         }
                                     }
                                 if (lines.size != filledRows.size) {
-                                    message = "有历史水果无法识别，请重新选择该商品"
+                                    message = "有历史商品无法识别，请重新选择该商品"
                                 } else {
                                     persistHistoricalEdit(lines)
                                 }
@@ -3242,10 +3274,10 @@ private fun PurchaseScreen(
                             )
                         }
                     }
-                    message = "水果商品已添加"
+                    message = "商品已添加"
                     onChanged()
                 } else {
-                    message = "水果商品保存失败"
+                    message = "商品保存失败"
                 }
                 addFruitDialog = false
                 pendingFruitRowId = null
@@ -3263,7 +3295,7 @@ private fun PurchaseScreen(
             text = {
                 Text(
                     "${detail.order.date} · ${detail.order.buyerName}\n" +
-                        "修改会打开该水果所属采购单；删除会删除整张采购单。"
+                        "修改会打开该商品所属采购单；删除会删除整张采购单。"
                 )
             },
             confirmButton = {
@@ -3317,7 +3349,7 @@ private fun PurchaseScreen(
 
     deleteOrder?.let { detail ->
         ConfirmDelete(
-            "删除 ${detail.order.date} 的采购单？如果来自协作采购，对应水果会恢复为未完成。",
+            "删除 ${detail.order.date} 的采购单？如果来自协作采购，对应商品会恢复为未完成。",
             { deleteOrder = null }
         ) {
             db.deletePurchaseOrder(detail.order.id)
@@ -4210,7 +4242,7 @@ private fun PurchaseDraftRowEditor(
     val fruitDisplay =
         selectedFruit?.name
             ?: row.fruitNameSnapshot.takeIf { it.isNotBlank() }
-            ?: "选择水果"
+            ?: "总价"
 
     val selectedBuyer = partners.firstOrNull { it.id == row.buyerId }
     val buyerDisplay =
@@ -4347,7 +4379,7 @@ private fun PurchaseDraftRowEditor(
             ) {
                 Box(Modifier.weight(1.65f)) {
                     CompactSelectButton(
-                        "水果",
+                        "商品",
                         fruitDisplay,
                         Modifier.fillMaxWidth()
                     ) { fruitMenu = true }
@@ -4372,7 +4404,7 @@ private fun PurchaseDraftRowEditor(
                             )
                         }
                         DropdownMenuItem(
-                            text = { Text("＋新增水果") },
+                            text = { Text("＋新增商品") },
                             onClick = {
                                 fruitMenu = false
                                 onAddFruit()
@@ -5589,6 +5621,7 @@ private fun MoneyCollectorRow(
 private fun SettlementScreen(
     db: AppDatabase,
     dataVersion: Int,
+    protectHistoricalAction: (String, String, () -> Unit) -> Unit,
     onChanged: () -> Unit
 ) {
     var view by remember { mutableStateOf(SettlementView.DAY) }
@@ -5626,6 +5659,7 @@ private fun SettlementScreen(
                 SettlementDayContent(
                     db = db,
                     dataVersion = dataVersion,
+                    protectHistoricalAction = protectHistoricalAction,
                     onChanged = onChanged
                 )
 
@@ -5640,6 +5674,7 @@ private fun SettlementScreen(
                 SettlementStatsContent(
                     db = db,
                     dataVersion = dataVersion,
+                    protectHistoricalAction = protectHistoricalAction,
                     onChanged = onChanged
                 )
         }
@@ -5650,6 +5685,7 @@ private fun SettlementScreen(
 private fun SettlementDayContent(
     db: AppDatabase,
     dataVersion: Int,
+    protectHistoricalAction: (String, String, () -> Unit) -> Unit,
     onChanged: () -> Unit
 ) {
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
@@ -6436,10 +6472,15 @@ private fun SettlementDayContent(
             "删除这张资金轧差记录？不会删除进货、营业、利润分配或利润结算确认。",
             { deleteId = null }
         ) {
-            db.deleteCashSettlement(id)
-            deleteId = null
-            message = "资金轧差记录已删除"
-            onChanged()
+            protectHistoricalAction(
+                date,
+                "删除已结算资金轧差记录"
+            ) {
+                db.deleteCashSettlement(id)
+                deleteId = null
+                message = "资金轧差记录已删除"
+                onChanged()
+            }
         }
     }
 }
@@ -6669,12 +6710,26 @@ private fun SettlementBatchContent(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
-                Column(Modifier.weight(1.18f)) {
-                    Text(
-                        "截至日期",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.Gray
-                    )
+                Row(
+                    Modifier
+                        .weight(1.18f)
+                        .height(40.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(
+                        onClick = {
+                            date =
+                                runCatching {
+                                    LocalDate.parse(date).minusDays(1).toString()
+                                }.getOrDefault(LocalDate.now().minusDays(1).toString())
+                            message = ""
+                        },
+                        modifier = Modifier.width(34.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text("‹", fontSize = 23.sp)
+                    }
+
                     OutlinedButton(
                         onClick = {
                             showDatePicker(context, date) {
@@ -6683,20 +6738,32 @@ private fun SettlementBatchContent(
                             }
                         },
                         modifier = Modifier
-                            .fillMaxWidth()
+                            .weight(1f)
                             .height(40.dp),
-                        contentPadding = PaddingValues(horizontal = 8.dp)
+                        contentPadding = PaddingValues(horizontal = 5.dp)
                     ) {
                         Text(
                             date +
                                 runCatching {
-                                    " · ${chineseWeekday(LocalDate.parse(date))}"
+                                    " ${chineseWeekday(LocalDate.parse(date))}"
                                 }.getOrDefault(""),
-                            modifier = Modifier.weight(1f),
                             fontSize = 12.sp,
                             maxLines = 1
                         )
-                        Text("📅", fontSize = 12.sp)
+                    }
+
+                    TextButton(
+                        onClick = {
+                            date =
+                                runCatching {
+                                    LocalDate.parse(date).plusDays(1).toString()
+                                }.getOrDefault(LocalDate.now().plusDays(1).toString())
+                            message = ""
+                        },
+                        modifier = Modifier.width(34.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text("›", fontSize = 23.sp)
                     }
                 }
 
@@ -7379,6 +7446,7 @@ private fun SettlementBatchContent(
 private fun SettlementStatsContent(
     db: AppDatabase,
     dataVersion: Int,
+    protectHistoricalAction: (String, String, () -> Unit) -> Unit,
     onChanged: () -> Unit
 ) {
     var filter by remember {
@@ -7711,10 +7779,15 @@ private fun SettlementStatsContent(
                 undoCutoffKey = null
             }
         ) {
-            val ok = db.undoCutoffSettlement(batchKey)
-            undoCutoffKey = null
-            if (ok) {
-                onChanged()
+            protectHistoricalAction(
+                "",
+                "撤销结清已结算资金记录"
+            ) {
+                val ok = db.undoCutoffSettlement(batchKey)
+                undoCutoffKey = null
+                if (ok) {
+                    onChanged()
+                }
             }
         }
     }
@@ -8105,7 +8178,8 @@ private fun MoreScreen(
                 }
             ) {
                 SecuritySettingsContent(
-                    operationSecurityManager
+                    manager = operationSecurityManager,
+                    cloudSyncManager = cloudSyncManager
                 )
             }
         }
@@ -8347,14 +8421,15 @@ private fun MoreScreen(
                 { sub = MorePage.MENU }
             ) {
                 ProfitContent(
-                    db,
-                    dataVersion,
-                    BookPermissions.has(
+                    db = db,
+                    dataVersion = dataVersion,
+                    canEdit = BookPermissions.has(
                         currentBook,
                         systemRole,
                         BookPermissions.PROFIT_EDIT
                     ),
-                    onChanged
+                    protectHistoricalAction = protectHistoricalAction,
+                    onChanged = onChanged
                 )
             }
         }
@@ -8408,10 +8483,6 @@ private fun ReportContent(
     var message by remember {
         mutableStateOf("")
     }
-    var pendingSave by remember {
-        mutableStateOf<GeneratedReport?>(null)
-    }
-
     val invalidCustom =
         filter == HistoryTimeFilter.CUSTOM &&
             customStart > customEnd
@@ -8644,58 +8715,6 @@ private fun ReportContent(
                     businessSummaries,
                 rankings = rankings
             )
-        }
-
-    val pdfSaveLauncher =
-        rememberLauncherForActivityResult(
-            ActivityResultContracts.CreateDocument(
-                "application/pdf"
-            )
-        ) { uri ->
-            val report = pendingSave
-            if (uri != null && report != null) {
-                runCatching {
-                    ReportGenerator.copyToUri(
-                        context,
-                        report,
-                        uri
-                    )
-                }
-                    .onSuccess {
-                        message = "PDF 已保存"
-                    }
-                    .onFailure {
-                        message =
-                            "保存失败：${it.message}"
-                    }
-            }
-            pendingSave = null
-        }
-
-    val pngSaveLauncher =
-        rememberLauncherForActivityResult(
-            ActivityResultContracts.CreateDocument(
-                "image/png"
-            )
-        ) { uri ->
-            val report = pendingSave
-            if (uri != null && report != null) {
-                runCatching {
-                    ReportGenerator.copyToUri(
-                        context,
-                        report,
-                        uri
-                    )
-                }
-                    .onSuccess {
-                        message = "图片已保存"
-                    }
-                    .onFailure {
-                        message =
-                            "保存失败：${it.message}"
-                    }
-            }
-            pendingSave = null
         }
 
     fun reportBaseName(): String {
@@ -9154,22 +9173,23 @@ private fun ReportContent(
                             validateBeforeGenerate()
                         ) {
                             runCatching {
-                                ReportGenerator.createPdf(
+                                val report = ReportGenerator.createPdf(
                                     context = context,
                                     baseName =
                                         reportBaseName(),
                                     lines = reportLines
                                 )
+                                ReportGenerator.saveToDevice(
+                                    context,
+                                    report
+                                )
                             }
-                                .onSuccess {
-                                    pendingSave = it
-                                    pdfSaveLauncher.launch(
-                                        it.displayName
-                                    )
+                                .onSuccess { path ->
+                                    message = "PDF 已保存：$path"
                                 }
                                 .onFailure {
                                     message =
-                                        "PDF生成失败：${it.message}"
+                                        "保存失败：${it.message ?: "未知错误"}"
                                 }
                         }
                     },
@@ -9185,22 +9205,23 @@ private fun ReportContent(
                             validateBeforeGenerate()
                         ) {
                             runCatching {
-                                ReportGenerator.createPng(
+                                val report = ReportGenerator.createPng(
                                     context = context,
                                     baseName =
                                         reportBaseName(),
                                     lines = reportLines
                                 )
+                                ReportGenerator.saveToDevice(
+                                    context,
+                                    report
+                                )
                             }
-                                .onSuccess {
-                                    pendingSave = it
-                                    pngSaveLauncher.launch(
-                                        it.displayName
-                                    )
+                                .onSuccess { path ->
+                                    message = "图片已保存：$path"
                                 }
                                 .onFailure {
                                     message =
-                                        "图片生成失败：${it.message}"
+                                        "保存失败：${it.message ?: "未知错误"}"
                                 }
                         }
                     },
@@ -16204,20 +16225,28 @@ private fun FruitManagementContent(
                 }
 
                 if (f.enabled) {
-                    TextButton(
-                        onClick = {
-                            editFruit = f
+                    if (f.name == "总价") {
+                        Text(
+                            "系统项",
+                            color = Color.Gray,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    } else {
+                        TextButton(
+                            onClick = {
+                                editFruit = f
+                            }
+                        ) {
+                            Text("编辑")
                         }
-                    ) {
-                        Text("编辑")
-                    }
 
-                    TextButton(
-                        onClick = {
-                            disableFruit = f
+                        TextButton(
+                            onClick = {
+                                disableFruit = f
+                            }
+                        ) {
+                            Text("删除")
                         }
-                    ) {
-                        Text("删除")
                     }
                 } else {
                     TextButton(
@@ -16630,6 +16659,8 @@ private fun ProfitContent(
     db: AppDatabase,
     dataVersion: Int,
     canEdit: Boolean,
+    protectHistoricalAction:
+        (String, String, () -> Unit) -> Unit,
     onChanged: () -> Unit
 ) {
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
@@ -16777,13 +16808,18 @@ private fun ProfitContent(
                         if (partners.isEmpty()) message = "请先添加合伙人"
                         else if (kotlin.math.abs(totalPercent - 100.0) >= 0.01) message = "百分比合计必须等于100%"
                         else {
-                            db.saveProfitRules(
-                                allocations,
-                                settlementCenterId
-                            )
-                            message =
-                                "利润分配规则和资金中心已保存"
-                            onChanged()
+                            protectHistoricalAction(
+                                date,
+                                "修改利润分配规则和资金中心"
+                            ) {
+                                db.saveProfitRules(
+                                    allocations,
+                                    settlementCenterId
+                                )
+                                message =
+                                    "利润分配规则和资金中心已保存"
+                                onChanged()
+                            }
                         }
                     }, modifier = Modifier.weight(1f)) { Text("保存百分比规则") }
                     Button(onClick = {
@@ -16791,9 +16827,21 @@ private fun ProfitContent(
                         else if (partners.isEmpty()) message = "请先添加合伙人"
                         else if (kotlin.math.abs(totalPercent - 100.0) >= 0.01) message = "百分比合计必须等于100%"
                         else {
-                            val ok = db.saveProfitDistribution(date, allocations)
-                            message = if (ok) "利润分配表已独立保存" else "保存失败"
-                            if (ok) onChanged()
+                            val saveAction = {
+                                val ok = db.saveProfitDistribution(date, allocations)
+                                message = if (ok) "利润分配表已独立保存" else "保存失败"
+                                if (ok) onChanged()
+                            }
+                            if (saved.isNotEmpty()) {
+                                protectHistoricalAction(
+                                    date,
+                                    "修改利润分配 $date"
+                                ) {
+                                    saveAction()
+                                }
+                            } else {
+                                saveAction()
+                            }
                         }
                     }, modifier = Modifier.weight(1f)) { Text("保存当日分配") }
                 }
@@ -16835,7 +16883,12 @@ private fun ProfitContent(
                     if (canEdit) {
                         TextButton(
                             onClick = {
-                                deleteDate = date
+                                protectHistoricalAction(
+                                    date,
+                                    "删除利润分配 $date"
+                                ) {
+                                    deleteDate = date
+                                }
                             }
                         ) {
                             Text("删除")
@@ -16856,7 +16909,12 @@ private fun ProfitContent(
                         if (canEdit) {
                             TextButton(
                                 onClick = {
-                                    deleteDate = d
+                                    protectHistoricalAction(
+                                        d,
+                                        "删除利润分配 $d"
+                                    ) {
+                                        deleteDate = d
+                                    }
                                 }
                             ) {
                                 Text("删除")
