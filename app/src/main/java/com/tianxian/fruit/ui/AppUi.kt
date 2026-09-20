@@ -136,10 +136,10 @@ private enum class ReportDetail(val label: String) {
 
 private enum class BusinessStatsTab(val label: String) {
     OVERVIEW("概览"),
+    CALENDAR("日历"),
     TREND("趋势"),
-    STORES("摊位"),
-    CUSTOMERS("客流"),
-    CALENDAR("日历")
+    STORES("位置"),
+    CUSTOMERS("客流")
 }
 
 private enum class BusinessTrendMetric(val label: String) {
@@ -13104,8 +13104,8 @@ private fun StatsContent(
         )
     }
 
-    var calendarPartnerId by remember {
-        mutableStateOf<Long?>(null)
+    var calendarStoreName by remember {
+        mutableStateOf<String?>(null)
     }
 
     val today =
@@ -13177,38 +13177,47 @@ private fun StatsContent(
             )
         }
 
-    val statsProfitRows =
+    val statsStoreNames =
         remember(
-            dataVersion,
-            queryStart,
-            queryEnd
+            records
         ) {
-            db.getProfitDistributionsBetween(
-                queryStart,
-                queryEnd
-            )
+            records
+                .map { it.storeName }
+                .filter { it.isNotBlank() }
+                .distinct()
+                .sorted()
         }
 
-    val statsPartners =
-        remember(
-            dataVersion,
-            statsProfitRows
+    LaunchedEffect(
+        statsStoreNames,
+        calendarStoreName
+    ) {
+        if (
+            calendarStoreName != null &&
+            calendarStoreName !in statsStoreNames
         ) {
-            val active =
-                db.getPartners()
-                    .associateBy { it.id }
-                    .toMutableMap()
-            statsProfitRows.forEach { row ->
-                if (row.partnerId !in active) {
-                    active[row.partnerId] =
-                        PartnerOption(
-                            row.partnerId,
-                            row.partnerName
-                        )
+            calendarStoreName = null
+        }
+    }
+
+    val recordsByDate =
+        remember(
+            records
+        ) {
+            records.groupBy { it.date }
+        }
+
+    val purchaseByDate =
+        remember(
+            purchases
+        ) {
+            purchases
+                .groupBy { it.order.date }
+                .mapValues { entry ->
+                    entry.value.sumOf {
+                        it.order.totalCost
+                    }
                 }
-            }
-            active.values
-                .sortedBy { it.id }
         }
 
     val activityDates =
@@ -13618,6 +13627,37 @@ private fun StatsContent(
                     it.days
             }
 
+    val bestRevenueStore =
+        rankings
+            .filter {
+                it.days > 0
+            }
+            .maxByOrNull {
+                it.revenue /
+                    it.days
+            }
+
+    val averageDailyRevenue =
+        if (activeDays > 0) {
+            totalRevenue / activeDays
+        } else {
+            0.0
+        }
+
+    val averageDailyProfit =
+        if (activeDays > 0) {
+            totalProfit / activeDays
+        } else {
+            0.0
+        }
+
+    val averageDailyCustomers =
+        if (activeDays > 0) {
+            totalCustomers.toDouble() / activeDays
+        } else {
+            0.0
+        }
+
     val alerts =
         remember(
             totalRevenue,
@@ -13863,6 +13903,29 @@ private fun StatsContent(
             )
         }
 
+    val bestWeekday =
+        weekdayStats
+            .filter {
+                it.second.days > 0
+            }
+            .maxByOrNull {
+                it.second.revenue /
+                    it.second.days
+            }
+
+    val bestWeekdayName =
+        bestWeekday?.first?.let { day ->
+            when (day) {
+                1 -> "星期一"
+                2 -> "星期二"
+                3 -> "星期三"
+                4 -> "星期四"
+                5 -> "星期五"
+                6 -> "星期六"
+                else -> "星期日"
+            }
+        }
+
     val calendarMonth =
         runCatching {
             LocalDate
@@ -13880,45 +13943,36 @@ private fun StatsContent(
             )
         )
 
-    val summaryByDate =
+    val calendarVisibleRecords =
         remember(
-            summaries
+            records,
+            calendarStoreName
         ) {
-            summaries.associateBy {
-                it.date
-            }
+            calendarStoreName?.let { selectedStore ->
+                records.filter {
+                    it.storeName == selectedStore
+                }
+            } ?: records
         }
 
-    val selectedCalendarPartner =
-        statsPartners.firstOrNull {
-            it.id == calendarPartnerId
+    val calendarRevenue =
+        calendarVisibleRecords.sumOf {
+            it.revenue
         }
 
-    val calendarPartnerProfitByDate =
-        remember(
-            statsProfitRows,
-            calendarPartnerId
-        ) {
-            calendarPartnerId?.let { partnerId ->
-                statsProfitRows
-                    .filter {
-                        it.partnerId ==
-                            partnerId
-                    }
-                    .groupBy { it.date }
-                    .mapValues { entry ->
-                        entry.value.sumOf {
-                            it.allocatedProfit
-                        }
-                    }
-            }
-        }
+    val calendarOperatingDays =
+        calendarVisibleRecords
+            .map { it.date }
+            .distinct()
+            .size
 
-    val calendarPartnerTotal =
-        calendarPartnerProfitByDate
-            ?.values
-            ?.sum()
-            ?: 0.0
+    val calendarAverageDailyRevenue =
+        if (calendarOperatingDays > 0) {
+            calendarRevenue /
+                calendarOperatingDays
+        } else {
+            0.0
+        }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -13995,222 +14049,172 @@ private fun StatsContent(
                 item {
                     Card(
                         colors =
-                            CardDefaults
-                                .cardColors(
-                                    containerColor =
-                                        Color(
-                                            0xFFF5FAF7
-                                        )
-                                )
+                            CardDefaults.cardColors(
+                                containerColor = Color(0xFFF5FAF7)
+                            )
                     ) {
                         Text(
                             summaryText,
-                            modifier =
-                                Modifier.padding(
-                                    14.dp
-                                ),
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodyMedium
+                            modifier = Modifier.padding(14.dp),
+                            style = MaterialTheme.typography.bodyMedium
                         )
                     }
                 }
 
                 item {
-                    Row(
-                        horizontalArrangement =
-                            Arrangement
-                                .spacedBy(
-                                    8.dp
-                                )
-                    ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         MetricCard(
                             "营业额",
-                            money(
-                                totalRevenue
-                            ),
-                            Modifier.weight(
-                                1f
-                            ),
+                            money(totalRevenue),
+                            Modifier.weight(1f),
                             SoftGreen,
-                            if (
-                                previousRange !=
-                                null
-                            ) {
-                                changeLabel(
-                                    totalRevenue,
-                                    previousRevenue
-                                )
-                            } else {
-                                null
-                            }
+                            if (previousRange != null) {
+                                changeLabel(totalRevenue, previousRevenue)
+                            } else null
                         )
-
                         MetricCard(
                             "利润",
-                            money(
-                                totalProfit
-                            ),
-                            Modifier.weight(
-                                1f
-                            ),
+                            money(totalProfit),
+                            Modifier.weight(1f),
                             SoftOrange,
-                            if (
-                                previousRange !=
-                                null
-                            ) {
-                                changeLabel(
-                                    totalProfit,
-                                    previousProfit
-                                )
-                            } else {
-                                null
-                            }
+                            if (previousRange != null) {
+                                changeLabel(totalProfit, previousProfit)
+                            } else null
                         )
                     }
                 }
 
                 item {
-                    Row(
-                        horizontalArrangement =
-                            Arrangement
-                                .spacedBy(
-                                    8.dp
-                                )
-                    ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        MetricCard(
+                            "经营天数",
+                            "$activeDays 天",
+                            Modifier.weight(1f),
+                            SoftBlue
+                        )
+                        MetricCard(
+                            "日均营业额",
+                            money(averageDailyRevenue),
+                            Modifier.weight(1f),
+                            SoftPurple
+                        )
+                    }
+                }
+
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        MetricCard(
+                            "采购金额",
+                            money(totalPurchase),
+                            Modifier.weight(1f),
+                            SoftOrange,
+                            if (previousRange != null) {
+                                changeLabel(totalPurchase, previousPurchase)
+                            } else null
+                        )
+                        MetricCard(
+                            "利润率",
+                            String.format(Locale.CHINA, "%.1f%%", profitRate),
+                            Modifier.weight(1f),
+                            SoftGreen
+                        )
+                    }
+                }
+
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         MetricCard(
                             "客户数",
                             "$totalCustomers 人",
-                            Modifier.weight(
-                                1f
-                            ),
+                            Modifier.weight(1f),
                             SoftBlue,
-                            if (
-                                previousRange !=
-                                null
-                            ) {
+                            if (previousRange != null) {
                                 changeLabel(
-                                    totalCustomers
-                                        .toDouble(),
-                                    previousCustomers
-                                        .toDouble()
+                                    totalCustomers.toDouble(),
+                                    previousCustomers.toDouble()
                                 )
-                            } else {
-                                null
-                            }
+                            } else null
                         )
-
                         MetricCard(
                             "客单价",
-                            money(
-                                averageTicket
-                            ),
-                            Modifier.weight(
-                                1f
-                            ),
+                            money(averageTicket),
+                            Modifier.weight(1f),
                             SoftPurple,
-                            if (
-                                previousRange !=
-                                null
-                            ) {
-                                changeLabel(
-                                    averageTicket,
-                                    previousAverageTicket
-                                )
-                            } else {
-                                null
-                            }
+                            if (previousRange != null) {
+                                changeLabel(averageTicket, previousAverageTicket)
+                            } else null
                         )
                     }
                 }
 
                 item {
+                    Text(
+                        "经营效率",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.height(5.dp))
                     Card {
                         Column(
-                            Modifier.padding(
-                                14.dp
-                            ),
-                            verticalArrangement =
-                                Arrangement
-                                    .spacedBy(
-                                        3.dp
-                                    )
+                            Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
                             SummaryRow(
-                                "利润率",
-                                String.format(
-                                    Locale.CHINA,
-                                    "%.1f%%",
-                                    profitRate
-                                )
+                                "采购占营业额",
+                                String.format(Locale.CHINA, "%.1f%%", purchaseInputRate)
                             )
-                            SummaryRow(
-                                "进货投入",
-                                money(
-                                    totalPurchase
-                                )
-                            )
-                            SummaryRow(
-                                "进货投入率",
-                                String.format(
-                                    Locale.CHINA,
-                                    "%.1f%%",
-                                    purchaseInputRate
-                                )
-                            )
-                            SummaryRow(
-                                "业务费用",
-                                money(
-                                    totalExpense
-                                )
-                            )
+                            SummaryRow("业务费用", money(totalExpense))
                             SummaryRow(
                                 "费用率",
-                                String.format(
-                                    Locale.CHINA,
-                                    "%.1f%%",
-                                    expenseRate
-                                )
+                                String.format(Locale.CHINA, "%.1f%%", expenseRate)
                             )
+                            SummaryRow("日均利润", money(averageDailyProfit))
                             SummaryRow(
-                                "经营天数",
-                                "$activeDays 天"
+                                "日均客户",
+                                String.format(Locale.CHINA, "%.1f 人", averageDailyCustomers)
                             )
-                            SummaryRow(
-                                "日均营业额",
-                                money(
-                                    if (
-                                        activeDays >
-                                        0
-                                    ) {
-                                        totalRevenue /
-                                            activeDays
-                                    } else {
-                                        0.0
-                                    }
+                            SummaryRow("单客利润", money(customerProfit))
+                        }
+                    }
+                }
+
+                if (previousRange != null) {
+                    item {
+                        Text(
+                            "与上一周期对比",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(Modifier.height(5.dp))
+                        Card {
+                            Column(
+                                Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                SummaryRow(
+                                    "营业额",
+                                    changeLabel(totalRevenue, previousRevenue)
                                 )
-                            )
-                            SummaryRow(
-                                "日均利润",
-                                money(
-                                    if (
-                                        activeDays >
-                                        0
-                                    ) {
-                                        totalProfit /
-                                            activeDays
-                                    } else {
-                                        0.0
-                                    }
+                                SummaryRow(
+                                    "利润",
+                                    changeLabel(totalProfit, previousProfit)
                                 )
-                            )
-                            SummaryRow(
-                                "单客利润",
-                                money(
-                                    customerProfit
+                                SummaryRow(
+                                    "采购金额",
+                                    changeLabel(totalPurchase, previousPurchase)
                                 )
-                            )
+                                SummaryRow(
+                                    "客户数",
+                                    changeLabel(
+                                        totalCustomers.toDouble(),
+                                        previousCustomers.toDouble()
+                                    )
+                                )
+                                SummaryRow(
+                                    "客单价",
+                                    changeLabel(averageTicket, previousAverageTicket)
+                                )
+                            }
                         }
                     }
                 }
@@ -14218,63 +14222,32 @@ private fun StatsContent(
                 item {
                     Text(
                         "经营提醒",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .titleMedium,
-                        fontWeight =
-                            FontWeight.Bold
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
                     )
-
-                    Spacer(
-                        Modifier.height(
-                            5.dp
-                        )
-                    )
-
+                    Spacer(Modifier.height(5.dp))
                     Card(
-                        colors =
-                            CardDefaults
-                                .cardColors(
-                                    containerColor =
-                                        if (
-                                            alerts
-                                                .isEmpty()
-                                        ) {
-                                            Color(
-                                                0xFFF5FAF7
-                                            )
-                                        } else {
-                                            Color(
-                                                0xFFFFF8E8
-                                            )
-                                        }
-                                )
+                        colors = CardDefaults.cardColors(
+                            containerColor =
+                                if (alerts.isEmpty()) {
+                                    Color(0xFFF5FAF7)
+                                } else {
+                                    Color(0xFFFFF8E8)
+                                }
+                        )
                     ) {
                         Column(
-                            Modifier.padding(
-                                12.dp
-                            ),
-                            verticalArrangement =
-                                Arrangement
-                                    .spacedBy(
-                                        6.dp
-                                    )
+                            Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            if (
-                                alerts.isEmpty()
-                            ) {
+                            if (alerts.isEmpty()) {
                                 Text(
                                     "当前时间范围没有发现明显经营异常。",
-                                    color =
-                                        BrandGreen
+                                    color = BrandGreen
                                 )
                             } else {
-                                alerts.forEach {
-                                    warning ->
-                                    Text(
-                                        "⚠ $warning"
-                                    )
+                                alerts.forEach { warning ->
+                                    Text("⚠ $warning")
                                 }
                             }
                         }
@@ -14283,58 +14256,55 @@ private fun StatsContent(
 
                 item {
                     Text(
-                        "最佳 / 最低记录",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .titleMedium,
-                        fontWeight =
-                            FontWeight.Bold
+                        "经营亮点",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
                     )
-
-                    Spacer(
-                        Modifier.height(
-                            5.dp
-                        )
-                    )
-
+                    Spacer(Modifier.height(5.dp))
                     Card {
-                        Column(
-                            Modifier.padding(
-                                12.dp
-                            )
-                        ) {
+                        Column(Modifier.padding(12.dp)) {
                             SummaryRow(
-                                "最高营业额",
-                                bestRevenueDay
-                                    ?.let {
-                                        "${it.date} · ${money(it.revenue)}"
-                                    }
-                                    ?: "暂无"
+                                "最高营业额经营日",
+                                bestRevenueDay?.let {
+                                    "${it.date} · ${money(it.revenue)}"
+                                } ?: "暂无"
+                            )
+                            SummaryRow(
+                                "最佳位置",
+                                bestRevenueStore?.let {
+                                    val dailyRevenue =
+                                        if (it.days > 0) it.revenue / it.days else 0.0
+                                    "${it.storeName} · 日均 ${money(dailyRevenue)}"
+                                } ?: "暂无"
+                            )
+                            SummaryRow(
+                                "最佳星期",
+                                if (bestWeekday != null && bestWeekdayName != null) {
+                                    val avg =
+                                        bestWeekday.second.revenue /
+                                            bestWeekday.second.days
+                                    "$bestWeekdayName · 日均 ${money(avg)}"
+                                } else {
+                                    "暂无"
+                                }
                             )
                             SummaryRow(
                                 "最高利润",
-                                bestProfitDay
-                                    ?.let {
-                                        "${it.date} · ${money(it.profit)}"
-                                    }
-                                    ?: "暂无"
+                                bestProfitDay?.let {
+                                    "${it.date} · ${money(it.profit)}"
+                                } ?: "暂无"
                             )
                             SummaryRow(
                                 "最低利润",
-                                worstProfitDay
-                                    ?.let {
-                                        "${it.date} · ${money(it.profit)}"
-                                    }
-                                    ?: "暂无"
+                                worstProfitDay?.let {
+                                    "${it.date} · ${money(it.profit)}"
+                                } ?: "暂无"
                             )
                             SummaryRow(
                                 "最高客流",
-                                bestCustomerDay
-                                    ?.let {
-                                        "${it.date} · ${it.customers} 人"
-                                    }
-                                    ?: "暂无"
+                                bestCustomerDay?.let {
+                                    "${it.date} · ${it.customers} 人"
+                                } ?: "暂无"
                             )
                         }
                     }
@@ -14486,7 +14456,7 @@ private fun StatsContent(
                 ) {
                     item {
                         EmptyHint(
-                            "当前时间范围暂无摊位数据"
+                            "当前时间范围暂无位置数据"
                         )
                     }
                 }
@@ -14499,10 +14469,10 @@ private fun StatsContent(
                                 row.days >
                                 0
                             ) {
-                                row.profit /
+                                row.revenue /
                                     row.days
                             } else {
-                                row.profit
+                                row.revenue
                             }
                         },
                     key = {
@@ -14531,6 +14501,16 @@ private fun StatsContent(
                         ) {
                             row.revenue /
                                 row.customers
+                        } else {
+                            0.0
+                        }
+
+                    val dailyRevenue =
+                        if (
+                            row.days > 0
+                        ) {
+                            row.revenue /
+                                row.days
                         } else {
                             0.0
                         }
@@ -14602,12 +14582,21 @@ private fun StatsContent(
                             )
 
                             Text(
-                                "营业 ${row.days} 天 · 日均利润 ${money(dailyProfit)}",
+                                "经营 ${row.days} 天 · 日均营业额 ${money(dailyRevenue)}",
                                 style =
                                     MaterialTheme
                                         .typography
                                         .bodySmall,
                                 color = BrandGreen
+                            )
+
+                            Text(
+                                "日均利润 ${money(dailyProfit)}",
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .bodySmall,
+                                color = Color.Gray
                             )
                         }
                     }
@@ -14615,7 +14604,7 @@ private fun StatsContent(
 
                 item {
                     Text(
-                        "说明：共用进货金额仍按各摊位营业额比例分摊，用于摊位间经营效率比较。",
+                        "说明：共用采购金额仍按各位置营业额比例分摊，仅用于位置间利润效率比较。",
                         style =
                             MaterialTheme
                                 .typography
@@ -14807,112 +14796,68 @@ private fun StatsContent(
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(
-                                rememberScrollState()
-                            ),
-                        horizontalArrangement =
-                            Arrangement.spacedBy(6.dp)
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         FilterChip(
-                            selected =
-                                calendarPartnerId ==
-                                    null,
-                            onClick = {
-                                calendarPartnerId =
-                                    null
-                            },
-                            label = {
-                                Text("总利润")
-                            }
+                            selected = calendarStoreName == null,
+                            onClick = { calendarStoreName = null },
+                            label = { Text("全部位置") }
                         )
 
-                        statsPartners.forEach {
-                            partner ->
+                        statsStoreNames.forEach { storeName ->
                             FilterChip(
-                                selected =
-                                    calendarPartnerId ==
-                                        partner.id,
-                                onClick = {
-                                    calendarPartnerId =
-                                        partner.id
-                                },
-                                label = {
-                                    Text(partner.name)
-                                }
+                                selected = calendarStoreName == storeName,
+                                onClick = { calendarStoreName = storeName },
+                                label = { Text(storeName) }
                             )
                         }
                     }
                 }
 
-                if (selectedCalendarPartner != null) {
-                    item {
-                        Card(
-                            colors =
-                                CardDefaults.cardColors(
-                                    containerColor =
-                                        Color(0xFFF5FAF7)
-                                )
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFFF5FAF7)
+                        )
+                    ) {
+                        Column(
+                            Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                verticalAlignment =
-                                    Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    selectedCalendarPartner.name +
-                                        " · 当前筛选利润",
-                                    modifier =
-                                        Modifier.weight(1f),
-                                    fontWeight =
-                                        FontWeight.SemiBold
-                                )
-                                Text(
-                                    money(
-                                        calendarPartnerTotal
-                                    ),
-                                    color =
-                                        if (calendarPartnerTotal < 0) {
-                                            MaterialTheme
-                                                .colorScheme
-                                                .error
-                                        } else {
-                                            BrandGreen
-                                        },
-                                    fontWeight =
-                                        FontWeight.Bold
-                                )
-                            }
+                            SummaryRow(
+                                "当前位置",
+                                calendarStoreName ?: "全部位置"
+                            )
+                            SummaryRow(
+                                "营业额",
+                                money(calendarRevenue)
+                            )
+                            SummaryRow(
+                                "经营日数",
+                                "$calendarOperatingDays 天"
+                            )
+                            SummaryRow(
+                                "平均每日营业额",
+                                money(calendarAverageDailyRevenue)
+                            )
                         }
                     }
                 }
 
                 item {
                     BusinessCalendarCard(
-                        month =
-                            calendarMonth,
-                        summaryByDate =
-                            summaryByDate,
-                        partnerProfitByDate =
-                            calendarPartnerProfitByDate,
-                        partnerName =
-                            selectedCalendarPartner
-                                ?.name
+                        month = calendarMonth,
+                        recordsByDate = recordsByDate,
+                        purchaseByDate = purchaseByDate,
+                        selectedStoreName = calendarStoreName
                     )
                 }
 
                 item {
                     Text(
-                        if (selectedCalendarPartner == null) {
-                            "日历以当前筛选结束日期所在月份显示；绿色表示总利润为正，红色表示总利润为负。"
-                        } else {
-                            "当前显示 ${selectedCalendarPartner.name} 的实际利润分配记录；有经营但未生成该合伙人分配记录的日期显示“待分配”。"
-                        },
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall,
+                        "日历以当前筛选结束日期所在月份显示；选择“全部位置”时，同一经营日会汇总全部位置营业额并显示经营位置。采购金额按采购日显示，为当日总采购，不按位置分摊。",
+                        style = MaterialTheme.typography.bodySmall,
                         color = Color.Gray
                     )
                 }
@@ -15052,267 +14997,152 @@ private fun BusinessTrendRow(
 @Composable
 private fun BusinessCalendarCard(
     month: LocalDate,
-    summaryByDate:
-        Map<String, DailySummary>,
-    partnerProfitByDate:
-        Map<String, Double>? = null,
-    partnerName: String? = null
+    recordsByDate: Map<String, List<StoreDailyRecord>>,
+    purchaseByDate: Map<String, Double>,
+    selectedStoreName: String? = null
 ) {
-    val first =
-        month.withDayOfMonth(
-            1
-        )
+    val first = month.withDayOfMonth(1)
+    val daysInMonth = first.lengthOfMonth()
+    val leading = first.dayOfWeek.value - 1
+    val totalCells = (leading + daysInMonth + 6) / 7 * 7
 
-    val daysInMonth =
-        first.lengthOfMonth()
-
-    val leading =
-        first.dayOfWeek
-            .value - 1
-
-    val totalCells =
-        (
-            leading +
-                daysInMonth +
-                6
-            ) /
-            7 *
-            7
-
-    Card(
-        Modifier.fillMaxWidth()
-    ) {
+    Card(Modifier.fillMaxWidth()) {
         Column(
-            Modifier.padding(
-                12.dp
-            ),
-            verticalArrangement =
-                Arrangement.spacedBy(
-                    7.dp
-                )
+            Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
         ) {
             Text(
-                first.format(
-                    DateTimeFormatter
-                        .ofPattern(
-                            "yyyy年M月"
-                        )
-                ) +
-                    if (partnerName.isNullOrBlank()) {
-                        ""
-                    } else {
-                        " · $partnerName"
-                    },
-                style =
-                    MaterialTheme
-                        .typography
-                        .titleMedium,
-                fontWeight =
-                    FontWeight.Bold
+                first.format(DateTimeFormatter.ofPattern("yyyy年M月")) +
+                    " · " + (selectedStoreName ?: "全部位置"),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
             )
 
-            Row(
-                Modifier.fillMaxWidth()
-            ) {
-                listOf(
-                    "一",
-                    "二",
-                    "三",
-                    "四",
-                    "五",
-                    "六",
-                    "日"
-                ).forEach {
-                    day ->
-                    Text(
-                        day,
-                        Modifier.weight(
-                            1f
-                        ),
-                        style =
-                            MaterialTheme
-                                .typography
-                                .labelSmall,
-                        color =
-                            Color.Gray,
-                        textAlign =
-                            androidx.compose
-                                .ui
-                                .text
-                                .style
-                                .TextAlign
-                                .Center
-                    )
-                }
+            Row(Modifier.fillMaxWidth()) {
+                listOf("一", "二", "三", "四", "五", "六", "日")
+                    .forEach { day ->
+                        Text(
+                            day,
+                            Modifier.weight(1f),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.Gray,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                    }
             }
 
-            for (
-                rowStart in
-                0 until
-                    totalCells
-                step 7
-            ) {
-                Row(
-                    Modifier.fillMaxWidth()
-                ) {
-                    repeat(7) {
-                        column ->
-                        val cell =
-                            rowStart +
-                                column
+            for (rowStart in 0 until totalCells step 7) {
+                Row(Modifier.fillMaxWidth()) {
+                    repeat(7) { column ->
+                        val cell = rowStart + column
+                        val day = cell - leading + 1
 
-                        val day =
-                            cell -
-                                leading +
-                                1
-
-                        if (
-                            day !in
-                            1..daysInMonth
-                        ) {
+                        if (day !in 1..daysInMonth) {
                             Spacer(
                                 Modifier
-                                    .weight(
-                                        1f
-                                    )
-                                    .height(
-                                        48.dp
-                                    )
+                                    .weight(1f)
+                                    .height(82.dp)
                             )
                         } else {
-                            val date =
-                                first
-                                    .withDayOfMonth(
-                                        day
-                                    )
-                                    .toString()
-
-                            val summary =
-                                summaryByDate[
-                                    date
-                                ]
-
-                            val partnerMode =
-                                partnerProfitByDate !=
-                                    null
-                            val hasPartnerRecord =
-                                partnerProfitByDate
-                                    ?.containsKey(date) ==
-                                    true
-                            val displayProfit =
-                                if (partnerMode) {
-                                    partnerProfitByDate
-                                        ?.get(date)
+                            val date = first.withDayOfMonth(day).toString()
+                            val allRecords = recordsByDate[date].orEmpty()
+                            val visibleRecords =
+                                if (selectedStoreName == null) {
+                                    allRecords
                                 } else {
-                                    summary?.profit
+                                    allRecords.filter {
+                                        it.storeName == selectedStoreName
+                                    }
                                 }
+
+                            val hasBusiness = visibleRecords.isNotEmpty()
+                            val revenue = visibleRecords.sumOf { it.revenue }
+                            val purchase = purchaseByDate[date] ?: 0.0
+                            val showPurchase =
+                                if (selectedStoreName == null) {
+                                    kotlin.math.abs(purchase) > 0.005
+                                } else {
+                                    hasBusiness && kotlin.math.abs(purchase) > 0.005
+                                }
+
+                            val storeNames =
+                                visibleRecords
+                                    .map { it.storeName }
+                                    .filter { it.isNotBlank() }
+                                    .distinct()
+
+                            val storeText =
+                                when {
+                                    storeNames.isEmpty() -> ""
+                                    storeNames.size <= 2 ->
+                                        storeNames.joinToString("·")
+                                    else ->
+                                        storeNames.take(2).joinToString("·") +
+                                            "+${storeNames.size - 2}"
+                                }
+
+                            val hasAnyData =
+                                hasBusiness ||
+                                    (selectedStoreName == null && showPurchase)
 
                             val background =
                                 when {
-                                    partnerMode &&
-                                        summary != null &&
-                                        !hasPartnerRecord ->
-                                        Color(0xFFF5F5F5)
-
-                                    displayProfit != null &&
-                                        displayProfit <
-                                        -0.005 ->
-                                        Color(
-                                            0xFFFFECEA
-                                        )
-
-                                    displayProfit != null ->
-                                        Color(
-                                            0xFFEAF8F0
-                                        )
-
-                                    else ->
-                                        Color.Transparent
+                                    hasBusiness -> Color(0xFFEAF8F0)
+                                    showPurchase -> Color(0xFFFFF4E6)
+                                    else -> Color.Transparent
                                 }
 
                             Column(
                                 Modifier
-                                    .weight(
-                                        1f
-                                    )
+                                    .weight(1f)
+                                    .padding(1.dp)
+                                    .clip(RoundedCornerShape(7.dp))
+                                    .background(background)
                                     .padding(
-                                        2.dp
+                                        horizontal = 2.dp,
+                                        vertical = 4.dp
                                     )
-                                    .clip(
-                                        RoundedCornerShape(
-                                            8.dp
-                                        )
-                                    )
-                                    .background(
-                                        background
-                                    )
-                                    .padding(
-                                        vertical =
-                                            5.dp
-                                    ),
-                                horizontalAlignment =
-                                    Alignment.CenterHorizontally
+                                    .height(74.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(
                                     day.toString(),
-                                    style =
-                                        MaterialTheme
-                                            .typography
-                                            .bodySmall,
+                                    style = MaterialTheme.typography.bodySmall,
                                     fontWeight =
-                                        if (
-                                            summary != null ||
-                                            hasPartnerRecord
-                                        ) {
-                                            FontWeight
-                                                .SemiBold
+                                        if (hasAnyData) {
+                                            FontWeight.SemiBold
                                         } else {
-                                            FontWeight
-                                                .Normal
+                                            FontWeight.Normal
                                         }
                                 )
 
                                 Text(
-                                    when {
-                                        partnerMode &&
-                                            summary != null &&
-                                            !hasPartnerRecord ->
-                                            "待分配"
-
-                                        displayProfit == null ->
-                                            ""
-
-                                        kotlin.math.abs(
-                                            displayProfit
-                                        ) < 0.005 ->
-                                            "—"
-
-                                        else ->
-                                            fmt(displayProfit)
+                                    if (hasBusiness) {
+                                        "营${fmt(revenue)}"
+                                    } else {
+                                        ""
                                     },
-                                    style =
-                                        MaterialTheme
-                                            .typography
-                                            .labelSmall,
-                                    color =
-                                        when {
-                                            partnerMode &&
-                                                summary != null &&
-                                                !hasPartnerRecord ->
-                                                Color.Gray
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = BrandGreen,
+                                    maxLines = 1
+                                )
 
-                                            displayProfit == null ->
-                                                Color.Transparent
+                                Text(
+                                    storeText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.DarkGray,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
 
-                                            displayProfit <
-                                                -0.005 ->
-                                                MaterialTheme
-                                                    .colorScheme
-                                                    .error
-
-                                            else ->
-                                                BrandGreen
-                                        },
+                                Text(
+                                    if (showPurchase) {
+                                        "采${fmt(purchase)}"
+                                    } else {
+                                        ""
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFFC46A00),
                                     maxLines = 1
                                 )
                             }
