@@ -703,6 +703,96 @@ class AppDatabase(
                 db
             )
         }
+        if (oldVersion < 24) {
+            createV24InventorySync(
+                db
+            )
+        }
+    }
+
+    private fun createV24InventorySync(
+        db: SQLiteDatabase
+    ) {
+        if (!tableExists(db, "inventory_snapshot")) {
+            createV23InventoryTrial(db)
+        }
+
+        if (!columnExists(db, "inventory_snapshot", "sync_id")) {
+            db.execSQL(
+                "ALTER TABLE inventory_snapshot ADD COLUMN sync_id TEXT NOT NULL DEFAULT ''"
+            )
+        }
+        if (!columnExists(db, "inventory_snapshot", "sync_status")) {
+            db.execSQL(
+                "ALTER TABLE inventory_snapshot ADD COLUMN sync_status INTEGER NOT NULL DEFAULT 0"
+            )
+        }
+        if (!columnExists(db, "inventory_snapshot", "row_version")) {
+            db.execSQL(
+                "ALTER TABLE inventory_snapshot ADD COLUMN row_version INTEGER NOT NULL DEFAULT 1"
+            )
+        }
+        if (!columnExists(db, "inventory_snapshot", "modified_by")) {
+            db.execSQL(
+                "ALTER TABLE inventory_snapshot ADD COLUMN modified_by TEXT NOT NULL DEFAULT ''"
+            )
+        }
+        if (!columnExists(db, "inventory_snapshot", "deleted")) {
+            db.execSQL(
+                "ALTER TABLE inventory_snapshot ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0"
+            )
+        }
+
+        val now = System.currentTimeMillis()
+        db.rawQuery(
+            "SELECT id,date,fruit_id,unit FROM inventory_snapshot",
+            null
+        ).use { c ->
+            while (c.moveToNext()) {
+                val deterministic = inventorySyncId(
+                    c.str("date"),
+                    c.long("fruit_id"),
+                    c.str("unit")
+                )
+                db.update(
+                    "inventory_snapshot",
+                    ContentValues().apply {
+                        put("sync_id", deterministic)
+                        put("row_version", 1)
+                        put("modified_by", deviceId)
+                        put("sync_status", 2)
+                        put("updated_at", now)
+                    },
+                    "id=?",
+                    arrayOf(c.long("id").toString())
+                )
+            }
+        }
+
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_inventory_snapshot_sync_id " +
+                "ON inventory_snapshot(sync_id)"
+        )
+
+        if (tableExists(db, "sync_change_log")) {
+            db.execSQL(
+                """
+                INSERT INTO sync_change_log(
+                    table_name,record_sync_id,operation,row_version,device_id,changed_at,uploaded
+                )
+                SELECT
+                    'inventory_snapshot',sync_id,
+                    CASE WHEN deleted=1 THEN 'DELETE' ELSE 'UPSERT' END,
+                    row_version,modified_by,updated_at,0
+                FROM inventory_snapshot
+                WHERE sync_id<>''
+                """.trimIndent()
+            )
+        }
+
+        if (tableExists(db, "sync_context")) {
+            createSyncTriggers(db)
+        }
     }
 
     private fun createV23InventoryTrial(
@@ -717,6 +807,11 @@ class AppDatabase(
                 fruit_name TEXT NOT NULL,
                 unit TEXT NOT NULL DEFAULT '件',
                 remaining_quantity REAL NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL DEFAULT '',
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                row_version INTEGER NOT NULL DEFAULT 1,
+                modified_by TEXT NOT NULL DEFAULT '',
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 UNIQUE(date,fruit_id,unit)
@@ -1711,7 +1806,7 @@ class AppDatabase(
         ensureSyncContext(db)
         ensureBookMeta(db)
 
-        syncableTables().forEach {
+        syncableTables().filter { tableExists(db, it) }.forEach {
             table ->
             if (
                 !columnExists(
@@ -1768,7 +1863,7 @@ class AppDatabase(
         }
 
         if (initialData) {
-            syncableTables().forEach {
+            syncableTables().filter { tableExists(db, it) }.forEach {
                 table ->
                 db.execSQL(
                     "UPDATE $table SET " +
@@ -2129,7 +2224,7 @@ class AppDatabase(
     private fun createSyncTriggers(
         db: SQLiteDatabase
     ) {
-        syncableTables().forEach {
+        syncableTables().filter { tableExists(db, it) }.forEach {
             table ->
             db.execSQL(
                 "DROP TRIGGER IF EXISTS " +
@@ -2281,7 +2376,8 @@ class AppDatabase(
             "settlement_partner",
             "settlement_transfer",
             "profit_settlement_batch",
-            "profit_settlement_item"
+            "profit_settlement_item",
+            "inventory_snapshot"
         )
 
     fun getSyncFoundationStatus():
@@ -3026,7 +3122,8 @@ class AppDatabase(
                     tableName == "profit_distribution" ||
                     tableName == "daily_cash_settlement" ||
                     tableName == "settlement_partner" ||
-                    tableName == "settlement_transfer"
+                    tableName == "settlement_transfer" ||
+                    tableName == "inventory_snapshot"
                 ) {
                     values.remove("id")
                 }
@@ -3087,7 +3184,7 @@ class AppDatabase(
         val db =
             writableDatabase
 
-        syncableTables().forEach {
+        syncableTables().filter { tableExists(db, it) }.forEach {
             table ->
             val currentSeq =
                 db.rawQuery(
@@ -7058,6 +7155,16 @@ class AppDatabase(
         ))
     } }
 
+    private fun inventorySyncId(
+        date: String,
+        fruitId: Long,
+        unit: String
+    ): String =
+        UUID.nameUUIDFromBytes(
+            (ledgerId + "|inventory_snapshot|" + date + "|" + fruitId + "|" + unit.trim())
+                .toByteArray(Charsets.UTF_8)
+        ).toString()
+
     fun getInventoryDayItems(date: String): List<InventoryDayItemRecord> {
         data class InventoryKey(
             val fruitId: Long,
@@ -7109,7 +7216,7 @@ class AppDatabase(
             """
             SELECT fruit_id,fruit_name,unit,remaining_quantity
             FROM inventory_snapshot
-            WHERE date<?
+            WHERE date<? AND deleted=0
             ORDER BY date DESC,id DESC
             """.trimIndent(),
             arrayOf(date)
@@ -7133,7 +7240,7 @@ class AppDatabase(
             """
             SELECT fruit_id,fruit_name,unit,remaining_quantity
             FROM inventory_snapshot
-            WHERE date=?
+            WHERE date=? AND deleted=0
             ORDER BY id
             """.trimIndent(),
             arrayOf(date)
@@ -7221,6 +7328,7 @@ class AppDatabase(
                     ContentValues().apply {
                         put("fruit_name", cleanName)
                         put("remaining_quantity", item.remainingQuantity)
+                        put("deleted", 0)
                         put("updated_at", now)
                     }
                 val changed =
@@ -7239,6 +7347,13 @@ class AppDatabase(
                                 put("date", date)
                                 put("fruit_id", item.fruitId)
                                 put("unit", cleanUnit)
+                                put(
+                                    "sync_id",
+                                    inventorySyncId(date, item.fruitId, cleanUnit)
+                                )
+                                put("sync_status", 0)
+                                put("row_version", 1)
+                                put("modified_by", "")
                                 put("created_at", now)
                             }
                         )
@@ -8672,13 +8787,13 @@ class AppDatabase(
                 getReceiptsByPartner(date)
                     .firstOrNull { it.partnerId == partnerId }
             val profit =
-                getProfitDistribution(date)
+                getEffectiveProfitShares(date)
                     .firstOrNull { it.partnerId == partnerId }
 
             val purchaseAmount = roundMoney(purchase?.amount ?: 0.0)
             val expenseAmount = roundMoney(expense?.amount ?: 0.0)
             val receiptAmount = roundMoney(receipt?.amount ?: 0.0)
-            val profitAmount = roundMoney(profit?.allocatedProfit ?: 0.0)
+            val profitAmount = roundMoney(profit?.amount ?: 0.0)
             val raw =
                 roundMoney(
                     purchaseAmount +
@@ -8876,10 +8991,10 @@ class AppDatabase(
                 .forEach {
                     acc(it.partnerId, it.partnerName).receipt += it.amount
                 }
-            getProfitDistribution(date)
+            getEffectiveProfitShares(date)
                 .filter { it.partnerId > 0 }
                 .forEach {
-                    acc(it.partnerId, it.partnerName).profit += it.allocatedProfit
+                    acc(it.partnerId, it.partnerName).profit += it.amount
                 }
         }
 
@@ -9072,10 +9187,10 @@ class AppDatabase(
                 .forEach {
                     acc(it.partnerId, it.partnerName).receipt += it.amount
                 }
-            getProfitDistribution(date)
+            getEffectiveProfitShares(date)
                 .filter { it.partnerId > 0 }
                 .forEach {
-                    acc(it.partnerId, it.partnerName).profit += it.allocatedProfit
+                    acc(it.partnerId, it.partnerName).profit += it.amount
                 }
         }
 
@@ -9585,7 +9700,7 @@ class AppDatabase(
                 getReceiptsByPartner(date)
                     .firstOrNull { it.partnerId == partnerId }
             val profit =
-                getProfitDistribution(date)
+                getEffectiveProfitShares(date)
                     .firstOrNull { it.partnerId == partnerId }
             val bundle = getCashSettlement(date)
             val settlementPartner =
@@ -9605,7 +9720,7 @@ class AppDatabase(
             val purchaseAmount = roundMoney(purchase?.amount ?: 0.0)
             val expenseAmount = roundMoney(expense?.amount ?: 0.0)
             val receiptAmount = roundMoney(receipt?.amount ?: 0.0)
-            val profitAmount = roundMoney(profit?.allocatedProfit ?: 0.0)
+            val profitAmount = roundMoney(profit?.amount ?: 0.0)
             val sourceBalance =
                 roundMoney(
                     purchaseAmount +
@@ -10149,6 +10264,68 @@ class AppDatabase(
               )
         )
         """.trimIndent()
+
+    /**
+     * 资金余额/经营统计专用的“实际个人利润”口径。
+     *
+     * 总利润始终来自 getDailySummary(date)，因此不会因为某天没有打开
+     * “当日结算”而漏掉 profit_distribution。若该日已有完整历史利润分配，
+     * 复用其比例；否则使用当前利润规则。该函数只读，不写回利润分配表，
+     * 也不改变当日结算的冻结逻辑。
+     */
+    fun getEffectiveProfitShares(date: String): List<PartnerMoneySummary> {
+        val actualProfit = roundMoney(getDailySummary(date).profit)
+        if (kotlin.math.abs(actualProfit) <= 0.005) return emptyList()
+
+        val existing = getProfitDistribution(date)
+        val existingRatioTotal = existing.sumOf { it.ratio }
+
+        data class ShareRule(
+            val partnerId: Long,
+            val partnerName: String,
+            val ratio: Double
+        )
+
+        val rules: List<ShareRule> =
+            if (existing.isNotEmpty() && kotlin.math.abs(existingRatioTotal - 1.0) < 0.01) {
+                existing.map {
+                    ShareRule(
+                        partnerId = it.partnerId,
+                        partnerName = it.partnerName,
+                        ratio = it.ratio
+                    )
+                }
+            } else {
+                getProfitRules().map {
+                    ShareRule(
+                        partnerId = it.partnerId,
+                        partnerName = it.partnerName,
+                        ratio = it.percent / 100.0
+                    )
+                }
+            }
+
+        if (rules.isEmpty()) return emptyList()
+        val totalRatio = rules.sumOf { it.ratio }
+        if (totalRatio <= 0.000001) return emptyList()
+
+        var allocated = 0.0
+        return rules.mapIndexed { index, rule ->
+            val amount =
+                if (index == rules.lastIndex) {
+                    roundMoney(actualProfit - allocated)
+                } else {
+                    roundMoney(actualProfit * rule.ratio / totalRatio).also {
+                        allocated = roundMoney(allocated + it)
+                    }
+                }
+            PartnerMoneySummary(
+                partnerId = rule.partnerId,
+                partnerName = rule.partnerName,
+                amount = amount
+            )
+        }
+    }
 
     fun getProfitDistribution(date: String): List<ProfitDistributionRecord> {
         val latest = latestProfitDistributionPredicate("pd")
@@ -10897,7 +11074,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 23
+        const val DB_VERSION = 24
     }
 }
 

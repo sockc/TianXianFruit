@@ -1956,7 +1956,7 @@ private fun InventoryScreen(
         verticalArrangement = Arrangement.spacedBy(9.dp)
     ) {
         item {
-            PageHeader("剩余库存", "测试功能 · 先记录库存，不参与利润、结算和各类报表")
+            PageHeader("剩余库存", "独立库存清单 · 已同步 · 暂不参与利润、结算和报表")
         }
 
         item {
@@ -1970,7 +1970,7 @@ private fun InventoryScreen(
                 ) {
                     Text("🧪 库存试验模块", fontWeight = FontWeight.Bold, color = Color(0xFF7B5C00))
                     Text(
-                        "自动读取当日已完成采购，排除“总价”；上一次已保存的剩余库存会继续结转。当前库存数据仅保存在本账本本机数据库，暂不进入云同步。",
+                        "自动读取当日已完成采购，排除“总价”；上一次已保存的剩余库存会继续结转。剩余库存现已独立同步，但仍不参与利润、结算、报表，也暂不回写采购表下一日库存。",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color(0xFF6F6250)
                     )
@@ -4859,6 +4859,7 @@ private fun SessionScreen(
     var oldCustomer by remember { mutableStateOf("") }
 
     var editingRecordId by remember { mutableStateOf<Long?>(null) }
+    var newBusinessFormExpanded by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
     var deleteRecord by remember { mutableStateOf<StoreDailyRecord?>(null) }
@@ -5076,6 +5077,12 @@ private fun SessionScreen(
         }
     }
 
+    LaunchedEffect(date) {
+        if (editingRecordId == null) {
+            newBusinessFormExpanded = false
+        }
+    }
+
     // V1.4.7.29: the legacy monetary opening/closing inventory fields are no longer
     // part of new business-entry workflow. Historical values stay untouched when editing.
     LaunchedEffect(date, storeId) {
@@ -5113,6 +5120,7 @@ private fun SessionScreen(
                         Text("正在编辑营业记录 #$editingRecordId", Modifier.weight(1f), fontWeight = FontWeight.Bold)
                         TextButton(onClick = {
                             clearForm()
+                            newBusinessFormExpanded = false
                             message = "已取消编辑"
                             isError = false
                         }) { Text("取消编辑") }
@@ -5264,6 +5272,27 @@ private fun SessionScreen(
                 }
             }
         }
+
+        val showBusinessEntryForm =
+            editingRecordId != null ||
+                todayRecords.isEmpty() ||
+                newBusinessFormExpanded
+
+        if (!showBusinessEntryForm) {
+            item {
+                OutlinedButton(
+                    onClick = {
+                        clearForm()
+                        newBusinessFormExpanded = true
+                        message = ""
+                        isError = false
+                    },
+                    modifier = Modifier.fillMaxWidth().height(44.dp)
+                ) {
+                    Text("＋ 新增营业记录")
+                }
+            }
+        } else {
 
         item {
             Box(Modifier.fillMaxWidth()) {
@@ -5545,6 +5574,7 @@ private fun SessionScreen(
                     if (result.success) {
                         // 保存完成后立即退出编辑模式，避免继续显示“正在编辑营业记录”。
                         clearForm()
+                        newBusinessFormExpanded = false
                         onChanged()
                     }
                 },
@@ -5562,6 +5592,7 @@ private fun SessionScreen(
                     modifier = Modifier.padding(top = 3.dp)
                 )
             }
+        }
         }
 
 
@@ -11592,7 +11623,7 @@ private fun syncTableLabel(
 ): String =
     when (tableName) {
         "fruit" -> "商品"
-        "store" -> "摊位"
+        "store" -> "位置"
         "partner" -> "合伙人"
         "purchase_plan" ->
             "采购清单"
@@ -11618,6 +11649,8 @@ private fun syncTableLabel(
             "利润结算批次"
         "profit_settlement_item" ->
             "利润结算明细"
+        "inventory_snapshot" ->
+            "剩余库存"
         else -> tableName
     }
 
@@ -13414,12 +13447,18 @@ private fun StatsContent(
         mutableStateOf<String?>(null)
     }
 
-    var calendarMetric by remember {
-        mutableStateOf(BusinessCalendarMetric.REVENUE)
+    var calendarMetrics by remember {
+        mutableStateOf(
+            setOf(
+                BusinessCalendarMetric.REVENUE,
+                BusinessCalendarMetric.PURCHASE,
+                BusinessCalendarMetric.PROFIT
+            )
+        )
     }
 
-    var calendarPartnerId by remember {
-        mutableStateOf<Long?>(null)
+    var calendarPartnerIds by remember {
+        mutableStateOf<Set<Long>>(emptySet())
     }
 
     val today =
@@ -13565,19 +13604,17 @@ private fun StatsContent(
     }
 
     LaunchedEffect(calendarStoreName) {
-        // 利润分配和个人采购都没有位置归属。为避免把整日数据误认为某位置数据，
-        // 合伙人维度只允许在“全部位置”查看。
+        // 个人采购和个人利润没有位置归属，具体位置下只看整体数据。
         if (calendarStoreName != null) {
-            calendarPartnerId = null
+            calendarPartnerIds = emptySet()
         }
     }
 
-    LaunchedEffect(statsPartners, calendarPartnerId) {
-        if (
-            calendarPartnerId != null &&
-            statsPartners.none { it.id == calendarPartnerId }
-        ) {
-            calendarPartnerId = null
+    LaunchedEffect(statsPartners) {
+        val valid = statsPartners.map { it.id }.toSet()
+        val normalized = calendarPartnerIds.intersect(valid)
+        if (normalized != calendarPartnerIds) {
+            calendarPartnerIds = normalized
         }
     }
 
@@ -13591,11 +13628,6 @@ private fun StatsContent(
     val purchaseDetailsByDate =
         remember(purchases) {
             purchases.groupBy { it.order.date }
-        }
-
-    val profitDistributionByDate =
-        remember(profitDistributions) {
-            profitDistributions.groupBy { it.date }
         }
 
     val activityDates =
@@ -14333,100 +14365,128 @@ private fun StatsContent(
             } ?: records
         }
 
-    val calendarPartner =
-        statsPartners.firstOrNull {
-            it.id == calendarPartnerId
-        }
+    val calendarSelectedPartners =
+        statsPartners.filter { it.id in calendarPartnerIds }
 
     val calendarVisibleDates =
         calendarVisibleRecords
             .map { it.date }
             .toSet()
 
-    val calendarMetricTotal =
-        when (calendarMetric) {
-            BusinessCalendarMetric.REVENUE ->
-                if (calendarPartnerId == null) {
-                    calendarVisibleRecords.sumOf { it.revenue }
-                } else {
-                    calendarVisibleRecords.sumOf {
-                        it.receiptAmountForPartner(calendarPartnerId!!)
-                    }
-                }
+    val dailySummaryByDate =
+        remember(dataVersion, activityDates) {
+            activityDates.associateWith { db.getDailySummary(it) }
+        }
 
-            BusinessCalendarMetric.PURCHASE ->
-                purchases
-                    .asSequence()
-                    .filter { detail ->
-                        calendarPartnerId == null ||
-                            detail.order.buyerId == calendarPartnerId
-                    }
-                    .filter { detail ->
-                        calendarStoreName == null ||
-                            detail.order.date in calendarVisibleDates
-                    }
-                    .sumOf { it.order.totalCost }
+    val effectiveProfitSharesByDate =
+        remember(dataVersion, activityDates) {
+            activityDates.associateWith { db.getEffectiveProfitShares(it) }
+        }
 
-            BusinessCalendarMetric.PROFIT ->
-                if (calendarPartnerId == null) {
-                    calendarVisibleRecords.sumOf { it.profit }
+    fun calendarValueForDate(
+        date: String,
+        metric: BusinessCalendarMetric
+    ): Pair<Double, Boolean> {
+        val allRecords = recordsByDate[date].orEmpty()
+        val visibleRecords =
+            if (calendarStoreName == null) {
+                allRecords
+            } else {
+                allRecords.filter { it.storeName == calendarStoreName }
+            }
+        val hasSelectedStoreBusiness =
+            calendarStoreName == null || visibleRecords.isNotEmpty()
+
+        return when (metric) {
+            BusinessCalendarMetric.REVENUE -> {
+                val value =
+                    if (calendarPartnerIds.isEmpty()) {
+                        visibleRecords.sumOf { it.revenue }
+                    } else {
+                        visibleRecords.sumOf { record ->
+                            calendarPartnerIds.sumOf { id ->
+                                record.receiptAmountForPartner(id)
+                            }
+                        }
+                    }
+                value to
+                    if (calendarPartnerIds.isEmpty()) {
+                        visibleRecords.isNotEmpty()
+                    } else {
+                        kotlin.math.abs(value) > 0.005
+                    }
+            }
+
+            BusinessCalendarMetric.PURCHASE -> {
+                val datePurchases =
+                    purchaseDetailsByDate[date].orEmpty().filter { detail ->
+                        calendarPartnerIds.isEmpty() ||
+                            detail.order.buyerId in calendarPartnerIds
+                    }
+                val value = datePurchases.sumOf { it.order.totalCost }
+                value to (datePurchases.isNotEmpty() && hasSelectedStoreBusiness)
+            }
+
+            BusinessCalendarMetric.PROFIT -> {
+                if (calendarPartnerIds.isEmpty()) {
+                    val value =
+                        if (calendarStoreName == null) {
+                            dailySummaryByDate[date]?.profit ?: 0.0
+                        } else {
+                            // 采购未绑定位置；具体位置下保留该位置原始经营利润口径。
+                            visibleRecords.sumOf { it.profit }
+                        }
+                    value to visibleRecords.isNotEmpty()
                 } else {
-                    profitDistributions
-                        .filter { it.partnerId == calendarPartnerId }
-                        .sumOf { it.allocatedProfit }
+                    val rows = effectiveProfitSharesByDate[date].orEmpty()
+                        .filter { it.partnerId in calendarPartnerIds }
+                    val value = rows.sumOf { it.amount }
+                    value to rows.isNotEmpty()
                 }
+            }
+        }
+    }
+
+    val calendarMetricTotals =
+        calendarMetrics.associateWith { metric ->
+            activityDates.sumOf { date ->
+                calendarValueForDate(date, metric).first
+            }
         }
 
     val calendarMetricDays =
-        when (calendarMetric) {
-            BusinessCalendarMetric.REVENUE ->
-                if (calendarPartnerId == null) {
-                    calendarVisibleRecords.map { it.date }.distinct().size
-                } else {
-                    calendarVisibleRecords
-                        .filter { kotlin.math.abs(it.receiptAmountForPartner(calendarPartnerId!!)) > 0.005 }
-                        .map { it.date }
-                        .distinct()
-                        .size
-                }
-
-            BusinessCalendarMetric.PURCHASE ->
-                purchases
-                    .filter { detail ->
-                        (calendarPartnerId == null || detail.order.buyerId == calendarPartnerId) &&
-                            (calendarStoreName == null || detail.order.date in calendarVisibleDates)
-                    }
-                    .map { it.order.date }
-                    .distinct()
-                    .size
-
-            BusinessCalendarMetric.PROFIT ->
-                if (calendarPartnerId == null) {
-                    calendarVisibleRecords.map { it.date }.distinct().size
-                } else {
-                    profitDistributions
-                        .filter { it.partnerId == calendarPartnerId }
-                        .map { it.date }
-                        .distinct()
-                        .size
-                }
+        calendarMetrics.associateWith { metric ->
+            activityDates.count { date ->
+                calendarValueForDate(date, metric).second
+            }
         }
 
-    val calendarMetricAverage =
-        if (calendarMetricDays > 0) {
-            calendarMetricTotal / calendarMetricDays
-        } else {
-            0.0
+    val calendarMetricAverages =
+        calendarMetrics.associateWith { metric ->
+            val days = calendarMetricDays[metric] ?: 0
+            if (days > 0) {
+                (calendarMetricTotals[metric] ?: 0.0) / days
+            } else {
+                0.0
+            }
         }
 
     val calendarMetricLabel =
-        if (
-            calendarMetric == BusinessCalendarMetric.REVENUE &&
-            calendarPartnerId != null
-        ) {
-            "收款额"
+        calendarMetrics
+            .sortedBy { it.ordinal }
+            .joinToString(" / ") { metric ->
+                if (metric == BusinessCalendarMetric.REVENUE && calendarPartnerIds.isNotEmpty()) {
+                    "收款额"
+                } else {
+                    metric.label
+                }
+            }
+
+    val calendarPartnerLabel =
+        if (calendarPartnerIds.isEmpty()) {
+            "全部"
         } else {
-            calendarMetric.label
+            calendarSelectedPartners.joinToString("、") { it.name }
         }
 
     LazyColumn(
@@ -15279,8 +15339,19 @@ private fun StatsContent(
                     ) {
                         BusinessCalendarMetric.entries.forEach { metric ->
                             FilterChip(
-                                selected = calendarMetric == metric,
-                                onClick = { calendarMetric = metric },
+                                selected = metric in calendarMetrics,
+                                onClick = {
+                                    calendarMetrics =
+                                        if (metric in calendarMetrics) {
+                                            if (calendarMetrics.size > 1) {
+                                                calendarMetrics - metric
+                                            } else {
+                                                calendarMetrics
+                                            }
+                                        } else {
+                                            calendarMetrics + metric
+                                        }
+                                },
                                 label = { Text(metric.label) }
                             )
                         }
@@ -15302,14 +15373,21 @@ private fun StatsContent(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 FilterChip(
-                                    selected = calendarPartnerId == null,
-                                    onClick = { calendarPartnerId = null },
-                                    label = { Text("全部合伙人") }
+                                    selected = calendarPartnerIds.isEmpty(),
+                                    onClick = { calendarPartnerIds = emptySet() },
+                                    label = { Text("全部") }
                                 )
                                 statsPartners.forEach { partner ->
                                     FilterChip(
-                                        selected = calendarPartnerId == partner.id,
-                                        onClick = { calendarPartnerId = partner.id },
+                                        selected = partner.id in calendarPartnerIds,
+                                        onClick = {
+                                            calendarPartnerIds =
+                                                if (partner.id in calendarPartnerIds) {
+                                                    calendarPartnerIds - partner.id
+                                                } else {
+                                                    calendarPartnerIds + partner.id
+                                                }
+                                        },
                                         label = { Text(partner.name) }
                                     )
                                 }
@@ -15317,7 +15395,7 @@ private fun StatsContent(
                         }
                     } else {
                         Text(
-                            "合伙人利润和采购没有位置归属，切换到“全部位置”后可查看合伙人数据。",
+                            "个人采购和个人利润没有位置归属，切换到“全部位置”后可多选合伙人数据。",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.Gray
                         )
@@ -15344,20 +15422,26 @@ private fun StatsContent(
                             )
                             SummaryRow(
                                 "合伙人",
-                                calendarPartner?.name ?: "全部合伙人"
+                                calendarPartnerLabel
                             )
-                            SummaryRow(
-                                "本期合计",
-                                money(calendarMetricTotal)
-                            )
-                            SummaryRow(
-                                "数据天数",
-                                "$calendarMetricDays 天"
-                            )
-                            SummaryRow(
-                                "日均",
-                                money(calendarMetricAverage)
-                            )
+                            calendarMetrics
+                                .sortedBy { it.ordinal }
+                                .forEach { metric ->
+                                    val label =
+                                        if (metric == BusinessCalendarMetric.REVENUE && calendarPartnerIds.isNotEmpty()) {
+                                            "收款额"
+                                        } else {
+                                            metric.label
+                                        }
+                                    SummaryRow(
+                                        "${label}合计",
+                                        money(calendarMetricTotals[metric] ?: 0.0)
+                                    )
+                                    SummaryRow(
+                                        "${label}日均",
+                                        money(calendarMetricAverages[metric] ?: 0.0)
+                                    )
+                                }
                         }
                     }
                 }
@@ -15367,11 +15451,12 @@ private fun StatsContent(
                         month = calendarMonth,
                         recordsByDate = recordsByDate,
                         purchaseDetailsByDate = purchaseDetailsByDate,
-                        profitDistributionByDate = profitDistributionByDate,
+                        dailySummaryByDate = dailySummaryByDate,
+                        effectiveProfitSharesByDate = effectiveProfitSharesByDate,
                         selectedStoreName = calendarStoreName,
-                        metric = calendarMetric,
-                        selectedPartnerId = calendarPartnerId,
-                        selectedPartnerName = calendarPartner?.name
+                        metrics = calendarMetrics,
+                        selectedPartnerIds = calendarPartnerIds,
+                        selectedPartnerNames = calendarPartnerLabel
                     )
                 }
 
@@ -15389,7 +15474,7 @@ private fun StatsContent(
 
                 item {
                     Text(
-                        "日历格内只显示数字：营业额为蓝色、采购额为黄色、正利润为绿色、负利润为红色。采购金额仍按采购日统计，不按位置分摊；合伙人营业额显示其归属收款额。",
+                        "日历格内只显示所选指标数字：营业额蓝色、采购额黄色、正利润绿色、负利润红色。指标和合伙人都支持多选；“全部”表示整体数据。采购仍按采购日统计，不做位置分摊。",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.Gray
                     )
@@ -15571,23 +15656,19 @@ private fun BusinessCalendarCard(
     month: LocalDate,
     recordsByDate: Map<String, List<StoreDailyRecord>>,
     purchaseDetailsByDate: Map<String, List<PurchaseOrderDetail>>,
-    profitDistributionByDate: Map<String, List<ProfitDistributionRecord>>,
+    dailySummaryByDate: Map<String, DailySummary>,
+    effectiveProfitSharesByDate: Map<String, List<PartnerMoneySummary>>,
     selectedStoreName: String? = null,
-    metric: BusinessCalendarMetric = BusinessCalendarMetric.REVENUE,
-    selectedPartnerId: Long? = null,
-    selectedPartnerName: String? = null
+    metrics: Set<BusinessCalendarMetric>,
+    selectedPartnerIds: Set<Long>,
+    selectedPartnerNames: String
 ) {
     val first = month.withDayOfMonth(1)
     val daysInMonth = first.lengthOfMonth()
     val leading = first.dayOfWeek.value - 1
     val totalCells = (leading + daysInMonth + 6) / 7 * 7
-
-    val metricTitle =
-        if (metric == BusinessCalendarMetric.REVENUE && selectedPartnerId != null) {
-            "收款额"
-        } else {
-            metric.label
-        }
+    val orderedMetrics = metrics.sortedBy { it.ordinal }
+    val cellHeight = (44 + orderedMetrics.size * 15).dp
 
     Card(Modifier.fillMaxWidth()) {
         Column(
@@ -15595,15 +15676,13 @@ private fun BusinessCalendarCard(
             verticalArrangement = Arrangement.spacedBy(7.dp)
         ) {
             Text(
-                first.format(DateTimeFormatter.ofPattern("yyyy年M月")) +
-                    " · " + metricTitle,
+                first.format(DateTimeFormatter.ofPattern("yyyy年M月")),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
 
             Text(
-                (selectedStoreName ?: "全部位置") +
-                    " · " + (selectedPartnerName ?: "全部合伙人"),
+                (selectedStoreName ?: "全部位置") + " · " + selectedPartnerNames,
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.Gray
             )
@@ -15631,7 +15710,7 @@ private fun BusinessCalendarCard(
                             Spacer(
                                 Modifier
                                     .weight(1f)
-                                    .height(58.dp)
+                                    .height(cellHeight)
                             )
                         } else {
                             val date = first.withDayOfMonth(day).toString()
@@ -15642,74 +15721,67 @@ private fun BusinessCalendarCard(
                                 } else {
                                     allRecords.filter { it.storeName == selectedStoreName }
                                 }
-
-                            val datePurchases =
-                                purchaseDetailsByDate[date]
-                                    .orEmpty()
-                                    .filter { detail ->
-                                        selectedPartnerId == null ||
-                                            detail.order.buyerId == selectedPartnerId
-                                    }
-
-                            val dateProfitRows =
-                                profitDistributionByDate[date]
-                                    .orEmpty()
-                                    .filter { row ->
-                                        selectedPartnerId == null ||
-                                            row.partnerId == selectedPartnerId
-                                    }
-
                             val hasSelectedStoreBusiness =
                                 selectedStoreName == null || visibleRecords.isNotEmpty()
 
-                            val value: Double
-                            val hasData: Boolean
-
-                            when (metric) {
-                                BusinessCalendarMetric.REVENUE -> {
-                                    value =
-                                        if (selectedPartnerId == null) {
-                                            visibleRecords.sumOf { it.revenue }
-                                        } else {
-                                            visibleRecords.sumOf {
-                                                it.receiptAmountForPartner(selectedPartnerId)
+                            val values = orderedMetrics.map { metric ->
+                                val value: Double
+                                val hasData: Boolean
+                                when (metric) {
+                                    BusinessCalendarMetric.REVENUE -> {
+                                        value =
+                                            if (selectedPartnerIds.isEmpty()) {
+                                                visibleRecords.sumOf { it.revenue }
+                                            } else {
+                                                visibleRecords.sumOf { record ->
+                                                    selectedPartnerIds.sumOf { id ->
+                                                        record.receiptAmountForPartner(id)
+                                                    }
+                                                }
                                             }
-                                        }
-                                    hasData =
-                                        if (selectedPartnerId == null) {
-                                            visibleRecords.isNotEmpty()
+                                        hasData =
+                                            if (selectedPartnerIds.isEmpty()) {
+                                                visibleRecords.isNotEmpty()
+                                            } else {
+                                                kotlin.math.abs(value) > 0.005
+                                            }
+                                    }
+
+                                    BusinessCalendarMetric.PURCHASE -> {
+                                        val rows =
+                                            purchaseDetailsByDate[date]
+                                                .orEmpty()
+                                                .filter { detail ->
+                                                    selectedPartnerIds.isEmpty() ||
+                                                        detail.order.buyerId in selectedPartnerIds
+                                                }
+                                        value = rows.sumOf { it.order.totalCost }
+                                        hasData = rows.isNotEmpty() && hasSelectedStoreBusiness
+                                    }
+
+                                    BusinessCalendarMetric.PROFIT -> {
+                                        if (selectedPartnerIds.isEmpty()) {
+                                            value =
+                                                if (selectedStoreName == null) {
+                                                    dailySummaryByDate[date]?.profit ?: 0.0
+                                                } else {
+                                                    visibleRecords.sumOf { it.profit }
+                                                }
+                                            hasData = visibleRecords.isNotEmpty()
                                         } else {
-                                            kotlin.math.abs(value) > 0.005
+                                            val rows =
+                                                effectiveProfitSharesByDate[date]
+                                                    .orEmpty()
+                                                    .filter { it.partnerId in selectedPartnerIds }
+                                            value = rows.sumOf { it.amount }
+                                            hasData = rows.isNotEmpty()
                                         }
-                                }
-
-                                BusinessCalendarMetric.PURCHASE -> {
-                                    value = datePurchases.sumOf { it.order.totalCost }
-                                    hasData = datePurchases.isNotEmpty() && hasSelectedStoreBusiness
-                                }
-
-                                BusinessCalendarMetric.PROFIT -> {
-                                    if (selectedPartnerId == null) {
-                                        value = visibleRecords.sumOf { it.profit }
-                                        hasData = visibleRecords.isNotEmpty()
-                                    } else {
-                                        value = dateProfitRows.sumOf { it.allocatedProfit }
-                                        hasData = dateProfitRows.isNotEmpty()
                                     }
                                 }
+                                Triple(metric, value, hasData)
                             }
 
-                            val valueColor =
-                                when (metric) {
-                                    BusinessCalendarMetric.REVENUE -> Color(0xFF1976D2)
-                                    BusinessCalendarMetric.PURCHASE -> Color(0xFFF9A825)
-                                    BusinessCalendarMetric.PROFIT ->
-                                        if (value < -0.005) {
-                                            MaterialTheme.colorScheme.error
-                                        } else {
-                                            BrandGreen
-                                        }
-                                }
+                            val anyData = values.any { it.third }
 
                             Column(
                                 Modifier
@@ -15717,30 +15789,40 @@ private fun BusinessCalendarCard(
                                     .padding(1.dp)
                                     .clip(RoundedCornerShape(7.dp))
                                     .background(
-                                        if (hasData) Color(0xFFF8FAFC) else Color.Transparent
+                                        if (anyData) Color(0xFFF8FAFC) else Color.Transparent
                                     )
-                                    .padding(
-                                        horizontal = 2.dp,
-                                        vertical = 4.dp
-                                    )
-                                    .height(50.dp),
+                                    .padding(horizontal = 2.dp, vertical = 3.dp)
+                                    .height(cellHeight),
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                                verticalArrangement = Arrangement.spacedBy(1.dp)
                             ) {
                                 Text(
                                     day.toString(),
                                     style = MaterialTheme.typography.bodySmall,
                                     fontWeight =
-                                        if (hasData) FontWeight.SemiBold else FontWeight.Normal
+                                        if (anyData) FontWeight.SemiBold else FontWeight.Normal
                                 )
 
-                                Text(
-                                    if (hasData) fmt(value) else "",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = valueColor,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1
-                                )
+                                values.forEach { (metric, value, hasData) ->
+                                    val valueColor =
+                                        when (metric) {
+                                            BusinessCalendarMetric.REVENUE -> Color(0xFF1976D2)
+                                            BusinessCalendarMetric.PURCHASE -> Color(0xFFF9A825)
+                                            BusinessCalendarMetric.PROFIT ->
+                                                if (value < -0.005) {
+                                                    MaterialTheme.colorScheme.error
+                                                } else {
+                                                    BrandGreen
+                                                }
+                                        }
+                                    Text(
+                                        if (hasData) fmt(value) else "",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = valueColor,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1
+                                    )
+                                }
                             }
                         }
                     }

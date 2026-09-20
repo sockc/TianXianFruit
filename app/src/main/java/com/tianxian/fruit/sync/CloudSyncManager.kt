@@ -1098,6 +1098,12 @@ class CloudSyncManager(
                             .BUSINESS_EDIT
                     )
 
+                "inventory_snapshot" ->
+                    setOf(
+                        BookPermissions.PURCHASE_EDIT,
+                        BookPermissions.BUSINESS_EDIT
+                    )
+
                 "profit_rule",
                 "profit_distribution" ->
                     setOf(
@@ -2480,7 +2486,7 @@ class CloudSyncManager(
             "https://sync.830888.xyz"
 
         private const val APP_VERSION =
-            "1.4.7.27"
+            "1.4.7.31"
 
         private const val KEY_PURCHASE_ACTIVITY_BACKFILL_PREFIX =
             "purchase_activity_backfill_v1_4_"
