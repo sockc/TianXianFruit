@@ -5719,31 +5719,83 @@ private fun SettlementDayContent(
     val settlementCenter = remember(dataVersion) {
         db.getSettlementCenter()
     }
+    val fundBalancesThroughDate = remember(dataVersion, date) {
+        db.getPartnerFundBalances(endDate = date)
+            .associateBy { it.partnerId }
+    }
+
+    // V1.4.7.24: old builds generated the daily transfer plan from the day's
+    // movement only. Reconstruct the cumulative balance immediately before
+    // this bundle's already-confirmed transfers. If it differs from the
+    // stored partner.balance, the bundle is an old non-netted plan.
+    val legacyDailyPlanMismatch =
+        bundle?.let { currentBundle ->
+            val bundlePartnerIds =
+                currentBundle.partners
+                    .map { it.partnerId }
+                    .toSet()
+            val missingOutstandingPartner =
+                fundBalancesThroughDate.values.any {
+                    kotlin.math.abs(it.currentBalance) > 0.01 &&
+                        it.partnerId !in bundlePartnerIds
+                }
+            missingOutstandingPartner ||
+                currentBundle.partners.any { partner ->
+                    val settledSent =
+                        currentBundle.transfers
+                            .filter {
+                                it.fromPartnerId == partner.partnerId &&
+                                    it.settledAmount > 0.005
+                            }
+                            .sumOf { it.settledAmount }
+                    val settledReceived =
+                        currentBundle.transfers
+                            .filter {
+                                it.toPartnerId == partner.partnerId &&
+                                    it.settledAmount > 0.005
+                            }
+                            .sumOf { it.settledAmount }
+                    val beforeBundle =
+                        (fundBalancesThroughDate[partner.partnerId]
+                            ?.currentBalance ?: 0.0) -
+                            settledSent +
+                            settledReceived
+                    kotlin.math.abs(beforeBundle - partner.balance) > 0.01
+                }
+        } ?: false
 
     LaunchedEffect(
         dataVersion,
         date,
         bundle?.settlement?.id,
-        settlementCenter?.id
+        settlementCenter?.id,
+        legacyDailyPlanMismatch
     ) {
         val currentBundle = bundle
         val center = settlementCenter
-        if (
-            currentBundle != null &&
-            center != null &&
-            currentBundle.transfers.isNotEmpty() &&
-            currentBundle.transfers.none {
-                it.settledAmount > 0.005
-            } &&
-            currentBundle.transfers.any {
-                it.fromPartnerId != center.id &&
-                    it.toPartnerId != center.id
-            }
-        ) {
-            val regenerated =
-                db.generateCashSettlement(date)
-            if (regenerated.success) {
-                onChanged()
+        if (currentBundle != null && center != null) {
+            val hasSettledTransfer =
+                currentBundle.transfers.any {
+                    it.settledAmount > 0.005
+                }
+            val bypassesCenter =
+                currentBundle.transfers.any {
+                    it.fromPartnerId != center.id &&
+                        it.toPartnerId != center.id
+                }
+
+            // Unexecuted old plans are safe to self-heal. Once a transfer was
+            // confirmed we never rewrite history automatically: the user may
+            // already have moved real money.
+            if (
+                !hasSettledTransfer &&
+                (bypassesCenter || legacyDailyPlanMismatch)
+            ) {
+                val regenerated =
+                    db.generateCashSettlement(date)
+                if (regenerated.success) {
+                    onChanged()
+                }
             }
         }
     }
@@ -5800,7 +5852,7 @@ private fun SettlementDayContent(
         item {
             PageHeader(
                 "当日结算",
-                "先确认当日利润 / 亏损分担，再按资金中心执行实际转账"
+                "先确认当日利润 / 亏损分担，再与历史未结余额自动轧差后执行实际转账"
             )
         }
 
@@ -5941,6 +5993,39 @@ private fun SettlementDayContent(
             }
         }
 
+        if (
+            legacyDailyPlanMismatch &&
+            bundle?.transfers?.any { it.settledAmount > 0.005 } == true
+        ) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFFFFF4E5)
+                    )
+                ) {
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            "检测到旧版当日方案与累计资金余额不一致",
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFB45309)
+                        )
+                        Text(
+                            "旧版只按当天差额生成转账，没有先抵扣历史未结余额。因为该方案已经存在“已结”转账，系统不会自动改写真实流水。",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "如果只是误点“已结清”且实际没有转账：先在下方“处理”把已结金额改为0，再点“重新生成资金轧差方案”；如果钱已经实际转出，请保留记录，资金余额会继续按真实资金流轧差。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.DarkGray
+                        )
+                    }
+                }
+            }
+        }
+
         item {
             HorizontalDivider()
 
@@ -5950,7 +6035,7 @@ private fun SettlementDayContent(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                "这里计算当天采购垫付、费用、收款和利润/亏损形成的资金差额；当天未结清的金额会继续进入“资金余额”。",
+                "这里先计算当天采购垫付、费用、收款和利润/亏损形成的资金差额，再与历史未结余额自动抵扣；只对截至所选日期的净余额生成实际转账。",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.Gray
             )
@@ -6017,7 +6102,7 @@ private fun SettlementDayContent(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "每人最终余额",
+                        "每人截至今日净额",
                         style =
                             MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
@@ -6061,6 +6146,13 @@ private fun SettlementDayContent(
                 val remainingAmount =
                     (totalNeed - settledAmount)
                         .coerceAtLeast(0.0)
+                val dayMovement =
+                    p.purchasePaid +
+                        p.expensePaid +
+                        p.profitShare -
+                        p.revenueReceived
+                val historicalCarry =
+                    p.balance - dayMovement
 
                 Card(Modifier.fillMaxWidth()) {
                     Column(
@@ -6112,17 +6204,43 @@ private fun SettlementDayContent(
                             color = Color.Gray
                         )
 
+                        if (
+                            !legacyDailyPlanMismatch &&
+                            kotlin.math.abs(historicalCarry) > 0.005
+                        ) {
+                            val carryText =
+                                if (historicalCarry > 0.005) {
+                                    "历史结转应收 ${money(historicalCarry)}"
+                                } else {
+                                    "历史结转应补 ${money(-historicalCarry)}"
+                                }
+                            val dayText =
+                                when {
+                                    dayMovement > 0.005 ->
+                                        "当日变动应收 ${money(dayMovement)}"
+                                    dayMovement < -0.005 ->
+                                        "当日变动应补 ${money(-dayMovement)}"
+                                    else ->
+                                        "当日变动 ${money(0.0)}"
+                                }
+                            Text(
+                                "$carryText · $dayText",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.Gray
+                            )
+                        }
+
                         if (totalNeed > 0.005) {
                             Text(
                                 when {
                                     settledAmount <= 0.005 ->
-                                        "当日资金：未结算 · 结转 ${money(totalNeed)}"
+                                        "净额结算：未结算 · 结转 ${money(totalNeed)}"
 
                                     remainingAmount <= 0.005 ->
-                                        "当日资金：已结清 ${money(settledAmount)}"
+                                        "净额结算：已结清 ${money(settledAmount)}"
 
                                     else ->
-                                        "当日资金：已结 ${money(settledAmount)} · 结转 ${money(remainingAmount)}"
+                                        "净额结算：已结 ${money(settledAmount)} · 结转 ${money(remainingAmount)}"
                                 },
                                 style =
                                     MaterialTheme.typography.bodySmall,
@@ -6138,9 +6256,9 @@ private fun SettlementDayContent(
 
                             Text(
                                 if (p.purchasePaid > 0.005) {
-                                    "采购 / 当日资金请在下方转账方案逐笔确认，未结金额会自动进入资金余额。"
+                                    "采购 / 当日资金会先抵扣历史结转，再按下方净额方案逐笔确认。"
                                 } else {
-                                    "当日资金请在下方转账方案逐笔确认，未结金额会自动进入资金余额。"
+                                    "当日资金会先抵扣历史结转，再按下方净额方案逐笔确认。"
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = Color.Gray
@@ -6265,7 +6383,7 @@ private fun SettlementDayContent(
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("全部确认当日资金已结清")
+                        Text("全部确认截至今日净额已结清")
                     }
                 }
 
@@ -9783,7 +9901,7 @@ private fun buildSettlementReportLines(
 
                     lines +=
                         ReportLine(
-                            "每人最终余额",
+                            "每人截至结算日净额",
                             ReportLineStyle.SECTION
                         )
 
@@ -9819,7 +9937,7 @@ private fun buildSettlementReportLines(
                                 )
                             lines +=
                                 ReportLine(
-                                    "最终应留 ${money(partner.shouldKeep)}",
+                                    "当日应留 ${money(partner.shouldKeep)}",
                                     ReportLineStyle.NORMAL
                                 )
                         }
