@@ -365,7 +365,8 @@ data class DailyCashSettlementRecord(
     val status: Int,
     val createdAt: Long,
     val updatedAt: Long,
-    val confirmedAt: Long = 0L
+    val confirmedAt: Long = 0L,
+    val effectiveStatusSourceDate: String = ""
 )
 
 data class CashSettlementBundle(
@@ -8152,16 +8153,131 @@ class AppDatabase(
         return CashSettlementBundle(settlement, partners, transfers)
     }
 
-    fun getRecentCashSettlements(limit: Int = 20): List<DailyCashSettlementRecord> = readableDatabase.rawQuery(
-        "SELECT * FROM daily_cash_settlement WHERE deleted=0 ORDER BY date DESC,id DESC LIMIT ?",
-        arrayOf(limit.toString())
-    ).use { c -> buildList {
-        while (c.moveToNext()) add(DailyCashSettlementRecord(
-            c.long("id"), c.str("date"), c.dbl("revenue"), c.dbl("purchase_cost"),
-            c.dbl("expense"), c.dbl("profit"), c.int("status"), c.long("created_at"),
-            c.long("updated_at"), c.long("confirmed_at")
-        ))
-    } }
+    private fun cutoffCoveringDailyTransfer(
+        transfer: SettlementTransferRecord,
+        settlementDate: String
+    ): String {
+        val centerId = getSettlementCenter()?.id ?: 0L
+        val focusPartnerId =
+            when {
+                centerId > 0L && transfer.fromPartnerId == centerId ->
+                    transfer.toPartnerId
+                centerId > 0L && transfer.toPartnerId == centerId ->
+                    transfer.fromPartnerId
+                else -> 0L
+            }
+        if (focusPartnerId <= 0L) return ""
+
+        return readableDatabase.rawQuery(
+            """
+            SELECT date
+            FROM settlement_transfer
+            WHERE deleted=0
+              AND settlement_id=0
+              AND settlement_kind IN ('CUTOFF','CUTOFF_CENTER')
+              AND settled_amount>0.005
+              AND confirmed_at>0
+              AND focus_partner_id=?
+              AND range_start_date<>''
+              AND range_end_date<>''
+              AND range_start_date<=?
+              AND range_end_date>=?
+            ORDER BY date DESC,confirmed_at DESC,id DESC
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(
+                focusPartnerId.toString(),
+                settlementDate,
+                settlementDate
+            )
+        ).use { c ->
+            if (c.moveToFirst()) c.str("date") else ""
+        }
+    }
+
+    private fun effectiveDailyCashSettlementStatus(
+        record: DailyCashSettlementRecord
+    ): Pair<Int, String> {
+        val bundle =
+            getCashSettlement(record.date)
+                ?.takeIf { it.settlement.id == record.id }
+                ?: return record.status to ""
+
+        if (bundle.transfers.isEmpty()) return 1 to ""
+
+        var fullyCovered = 0
+        var hasAnySettlement = false
+        var latestCutoffDate = ""
+
+        bundle.transfers.forEach { transfer ->
+            val directFull =
+                transfer.settledAmount + 0.005 >= transfer.amount
+            if (directFull) {
+                fullyCovered++
+                hasAnySettlement = true
+                return@forEach
+            }
+
+            if (transfer.settledAmount > 0.005) {
+                hasAnySettlement = true
+            }
+
+            val cutoffDate =
+                cutoffCoveringDailyTransfer(
+                    transfer,
+                    record.date
+                )
+            if (cutoffDate.isNotBlank()) {
+                fullyCovered++
+                hasAnySettlement = true
+                if (
+                    latestCutoffDate.isBlank() ||
+                    cutoffDate > latestCutoffDate
+                ) {
+                    latestCutoffDate = cutoffDate
+                }
+            }
+        }
+
+        val status =
+            when {
+                fullyCovered == bundle.transfers.size -> 1
+                hasAnySettlement -> 2
+                else -> 0
+            }
+        return status to latestCutoffDate
+    }
+
+    fun getRecentCashSettlements(limit: Int = 20): List<DailyCashSettlementRecord> =
+        readableDatabase.rawQuery(
+            "SELECT * FROM daily_cash_settlement WHERE deleted=0 ORDER BY date DESC,id DESC LIMIT ?",
+            arrayOf(limit.toString())
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    val raw =
+                        DailyCashSettlementRecord(
+                            c.long("id"),
+                            c.str("date"),
+                            c.dbl("revenue"),
+                            c.dbl("purchase_cost"),
+                            c.dbl("expense"),
+                            c.dbl("profit"),
+                            c.int("status"),
+                            c.long("created_at"),
+                            c.long("updated_at"),
+                            c.long("confirmed_at")
+                        )
+                    val effective = effectiveDailyCashSettlementStatus(raw)
+                    add(
+                        raw.copy(
+                            status = effective.first,
+                            effectiveStatusSourceDate = effective.second
+                        )
+                    )
+                }
+            }
+        }
 
     fun getCashSettlementsBetween(
         start: String?,

@@ -1000,10 +1000,10 @@ private fun HomeScreen(
         db.getInventoryDayItems(selectedDateString)
     }
     val inventoryPreviewText =
-        when {
-            inventoryPreview.isEmpty() -> "暂无库存"
-            inventoryPreview.all { it.saved } -> "${inventoryPreview.size}种 · 已盘点"
-            else -> "${inventoryPreview.size}种 · 待盘点"
+        if (inventoryPreview.isEmpty()) {
+            "暂无库存"
+        } else {
+            "${inventoryPreview.size}种"
         }
 
     val collaborationDate =
@@ -6171,6 +6171,9 @@ private fun SettlementDayContent(
     var settleInput by remember {
         mutableStateOf("")
     }
+    var settleInputKey by remember {
+        mutableStateOf(0L)
+    }
 
     val summary = remember(dataVersion, date) {
         db.getDailySummary(date)
@@ -6744,57 +6747,54 @@ private fun SettlementDayContent(
                 ) {
                     Row(
                         Modifier.padding(12.dp),
-                        verticalAlignment =
-                            Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            "${t.fromPartnerName}  →  " +
-                                t.toPartnerName,
-                            modifier = Modifier.weight(1f),
-                            fontWeight = FontWeight.Bold
-                        )
                         Column(
-                            horizontalAlignment = Alignment.End
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
-                            Text(
-                                money(t.amount),
-                                fontWeight = FontWeight.Bold,
-                                color = BrandGreen
-                            )
-                            if (t.settledAmount > 0.005) {
-                                Text(
-                                    if (t.pendingAmount <= 0.005) {
-                                        "已结清"
-                                    } else {
-                                        "已结 ${money(t.settledAmount)} · 剩 ${money(t.pendingAmount)}"
-                                    },
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color.Gray
-                                )
-                            } else {
-                                Text(
-                                    "未结算",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color.Gray
-                                )
-                            }
-                            TextButton(
-                                onClick = {
-                                    settleTransfer = t
-                                    settleInput =
-                                        if (t.settledAmount > 0.005) {
-                                            cleanNumber(t.settledAmount)
-                                        } else {
-                                            ""
-                                        }
-                                },
-                                contentPadding = PaddingValues(
-                                    horizontal = 6.dp,
-                                    vertical = 0.dp
-                                )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text("处理")
+                                Text(
+                                    "${t.fromPartnerName}  →  ${t.toPartnerName}",
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    money(t.amount),
+                                    fontWeight = FontWeight.Bold,
+                                    color = BrandGreen
+                                )
                             }
+                            Text(
+                                when {
+                                    t.pendingAmount <= 0.005 -> "已结清"
+                                    t.settledAmount > 0.005 ->
+                                        "已结 ${money(t.settledAmount)} · 剩 ${money(t.pendingAmount)}"
+                                    else -> "未结算"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color =
+                                    if (t.pendingAmount <= 0.005) {
+                                        BrandGreen
+                                    } else {
+                                        Color.Gray
+                                    }
+                            )
+                        }
+                        TextButton(
+                            onClick = {
+                                settleTransfer = t
+                                settleInput = cleanNumber(t.amount)
+                                settleInputKey = System.nanoTime()
+                            },
+                            contentPadding = PaddingValues(
+                                horizontal = 6.dp,
+                                vertical = 0.dp
+                            )
+                        ) {
+                            Text("处理")
                         }
                     }
                 }
@@ -6860,19 +6860,31 @@ private fun SettlementDayContent(
                                 MaterialTheme.typography.bodySmall
                         )
                     }
-                    Text(
-                        when (h.status) {
-                            1 -> "已结清"
-                            2 -> "部分结算"
-                            else -> "未结算"
-                        },
-                        color =
+                    Column(
+                        horizontalAlignment = Alignment.End
+                    ) {
+                        Text(
                             when (h.status) {
-                                1 -> BrandGreen
-                                2 -> Color(0xFF8A6D00)
-                                else -> MaterialTheme.colorScheme.error
-                            }
-                    )
+                                1 -> "已结清"
+                                2 -> "部分结算"
+                                else -> "未结算"
+                            },
+                            color =
+                                when (h.status) {
+                                    1 -> BrandGreen
+                                    2 -> Color(0xFF8A6D00)
+                                    else -> MaterialTheme.colorScheme.error
+                                },
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        if (h.effectiveStatusSourceDate.isNotBlank()) {
+                            Text(
+                                "含 ${h.effectiveStatusSourceDate.substring(5)} 截至今日结清",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.Gray
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -6897,122 +6909,94 @@ private fun SettlementDayContent(
                     verticalArrangement =
                         Arrangement.spacedBy(10.dp)
                 ) {
-                    Text(
-                        "这笔转账单独记录结算状态，不会自动把其他合伙人的转账一起标记为已结算。",
-                        style =
-                            MaterialTheme.typography.bodySmall
-                    )
-
-                    NumberField(
-                        "累计已结算金额",
-                        settleInput,
-                        {
-                            settleInput = it
-                        },
-                        Modifier.fillMaxWidth()
+                    DefaultNumberField(
+                        label = "结算金额",
+                        value = settleInput,
+                        defaultValue = cleanNumber(maxAmount),
+                        stateKey = "cash-transfer-${transfer.id}-$settleInputKey",
+                        onValue = { settleInput = it },
+                        modifier = Modifier.fillMaxWidth()
                     )
 
                     Text(
-                        "当前已结 ${money(currentSettled)} · 最多 ${money(maxAmount)}",
-                        style =
-                            MaterialTheme.typography.labelSmall,
+                        "方案 ${money(maxAmount)} · 已结 ${money(currentSettled)} · 剩 ${money(transfer.pendingAmount)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Gray
+                    )
+                    Text(
+                        "输入的是本笔累计结算金额；保留默认金额直接结算，即视为本笔全部结清。",
+                        style = MaterialTheme.typography.labelSmall,
                         color = Color.Gray
                     )
                 }
             },
             confirmButton = {
-                Column(
-                    horizontalAlignment = Alignment.End
-                ) {
-                    Row {
-                        TextButton(
-                            onClick = {
-                                if (
-                                    db.setCashSettlementTransferSettledAmount(
-                                        transfer.id,
-                                        0.0
-                                    )
-                                ) {
-                                    message =
-                                        "${transfer.fromPartnerName} → ${transfer.toPartnerName} 已设为未结算"
-                                    settleTransfer = null
-                                    settleInput = ""
-                                    onChanged()
-                                }
-                            }
-                        ) {
-                            Text("未结算")
-                        }
+                Button(
+                    onClick = {
+                        val amount =
+                            settleInput
+                                .toDoubleOrNull()
 
-                        TextButton(
-                            onClick = {
-                                if (
-                                    db.setCashSettlementTransferSettledAmount(
-                                        transfer.id,
-                                        maxAmount
-                                    )
-                                ) {
-                                    message =
-                                        "${transfer.fromPartnerName} → ${transfer.toPartnerName} 已全部结清"
-                                    settleTransfer = null
-                                    settleInput = ""
-                                    onChanged()
-                                }
-                            }
+                        if (amount == null) {
+                            message = "请输入结算金额"
+                        } else if (
+                            amount < 0 ||
+                            amount > maxAmount + 0.005
                         ) {
-                            Text("全部结算")
+                            message =
+                                "结算金额不能超过 ${money(maxAmount)}"
+                        } else if (
+                            db.setCashSettlementTransferSettledAmount(
+                                transfer.id,
+                                amount
+                            )
+                        ) {
+                            message =
+                                when {
+                                    amount <= 0.005 ->
+                                        "${transfer.fromPartnerName} → ${transfer.toPartnerName} 已设为未结算"
+                                    amount + 0.005 >= maxAmount ->
+                                        "${transfer.fromPartnerName} → ${transfer.toPartnerName} 已结清"
+                                    else ->
+                                        "本笔已结 ${money(amount)}，剩余自动结转"
+                                }
+                            settleTransfer = null
+                            settleInput = ""
+                            onChanged()
                         }
                     }
-
-                    Button(
+                ) {
+                    Text("结算")
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
                         onClick = {
-                            val amount =
-                                settleInput
-                                    .toDoubleOrNull()
-
-                            if (amount == null) {
-                                message =
-                                    "请输入累计已结算金额"
-                            } else if (
-                                amount < 0 ||
-                                amount >
-                                maxAmount + 0.005
-                            ) {
-                                message =
-                                    "结算金额不能超过 ${money(maxAmount)}"
-                            } else if (
+                            if (
                                 db.setCashSettlementTransferSettledAmount(
                                     transfer.id,
-                                    amount
+                                    0.0
                                 )
                             ) {
                                 message =
-                                    if (
-                                        amount + 0.005 >=
-                                        maxAmount
-                                    ) {
-                                        "${transfer.fromPartnerName} → ${transfer.toPartnerName} 已全部结清"
-                                    } else {
-                                        "本笔已结 ${money(amount)}，剩余自动结转"
-                                    }
+                                    "${transfer.fromPartnerName} → ${transfer.toPartnerName} 已改为未结算"
                                 settleTransfer = null
                                 settleInput = ""
                                 onChanged()
                             }
                         }
                     ) {
-                        Text("保存部分结算")
+                        Text("改为未结算")
                     }
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        settleTransfer = null
-                        settleInput = ""
+                    TextButton(
+                        onClick = {
+                            settleTransfer = null
+                            settleInput = ""
+                        }
+                    ) {
+                        Text("取消")
                     }
-                ) {
-                    Text("取消")
                 }
             }
         )
@@ -18511,6 +18495,93 @@ private fun DateField(label: String, date: String, onDate: (String) -> Unit) {
 private fun showDatePicker(context: Context, current: String, onDate: (String) -> Unit) {
     val d = runCatching { LocalDate.parse(current) }.getOrDefault(LocalDate.now())
     DatePickerDialog(context, { _, y, m, day -> onDate(LocalDate.of(y, m + 1, day).toString()) }, d.year, d.monthValue - 1, d.dayOfMonth).show()
+}
+
+@Composable
+private fun DefaultNumberField(
+    label: String,
+    value: String,
+    defaultValue: String,
+    stateKey: String,
+    onValue: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var fieldValue by remember(stateKey) {
+        mutableStateOf(
+            TextFieldValue(
+                text = value,
+                selection = TextRange(0, value.length)
+            )
+        )
+    }
+    var firstEditPending by remember(stateKey) { mutableStateOf(true) }
+
+    LaunchedEffect(value) {
+        if (fieldValue.text != value) {
+            fieldValue =
+                TextFieldValue(
+                    text = value,
+                    selection =
+                        if (firstEditPending && value == defaultValue) {
+                            TextRange(0, value.length)
+                        } else {
+                            TextRange(value.length)
+                        }
+                )
+        }
+    }
+
+    OutlinedTextField(
+        value = fieldValue,
+        onValueChange = { next ->
+            val candidate =
+                if (
+                    firstEditPending &&
+                    fieldValue.text == defaultValue &&
+                    next.text != defaultValue
+                ) {
+                    when {
+                        next.text.length > defaultValue.length &&
+                            next.text.startsWith(defaultValue) ->
+                            next.text.removePrefix(defaultValue)
+
+                        next.text.length > defaultValue.length &&
+                            next.text.endsWith(defaultValue) ->
+                            next.text.removeSuffix(defaultValue)
+
+                        else -> next.text
+                    }
+                } else {
+                    next.text
+                }
+
+            if (candidate.matches(Regex("^\\d*(\\.\\d{0,2})?$"))) {
+                firstEditPending = false
+                fieldValue =
+                    TextFieldValue(
+                        text = candidate,
+                        selection = TextRange(candidate.length)
+                    )
+                onValue(candidate)
+            }
+        },
+        label = { Text(label) },
+        modifier =
+            modifier.onFocusChanged { state ->
+                if (
+                    state.isFocused &&
+                    firstEditPending &&
+                    fieldValue.text == defaultValue
+                ) {
+                    fieldValue =
+                        fieldValue.copy(
+                            selection = TextRange(0, fieldValue.text.length)
+                        )
+                }
+            },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+    )
 }
 
 @Composable
