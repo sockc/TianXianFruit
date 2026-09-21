@@ -2479,6 +2479,83 @@ class AppDatabase(
             }
         }
 
+    fun getPendingSyncChangeCount(
+        tableNames: Set<String> = emptySet()
+    ): Int {
+        val where =
+            if (tableNames.isEmpty()) {
+                "uploaded=0"
+            } else {
+                val placeholders =
+                    tableNames.joinToString(",") { "?" }
+                "uploaded=0 AND table_name IN($placeholders)"
+            }
+
+        val args =
+            if (tableNames.isEmpty()) {
+                null
+            } else {
+                tableNames.toTypedArray()
+            }
+
+        return readableDatabase.rawQuery(
+            "SELECT COUNT(*) AS c FROM sync_change_log WHERE $where",
+            args
+        ).use { c ->
+            if (c.moveToFirst()) c.int("c") else 0
+        }
+    }
+
+    fun getPendingSyncChangesExcludingTables(
+        excludedTables: Set<String>,
+        limit: Int = 200
+    ): List<SyncChangeRecord> {
+        if (excludedTables.isEmpty()) {
+            return getPendingSyncChanges(limit)
+        }
+
+        val placeholders =
+            excludedTables.joinToString(",") { "?" }
+        val args =
+            excludedTables.toList() +
+                limit.toString()
+
+        return readableDatabase.rawQuery(
+            """
+            SELECT
+                id,
+                table_name,
+                record_sync_id,
+                operation,
+                row_version,
+                device_id,
+                changed_at
+            FROM sync_change_log
+            WHERE uploaded=0
+              AND table_name NOT IN($placeholders)
+            ORDER BY id
+            LIMIT ?
+            """.trimIndent(),
+            args.toTypedArray()
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    add(
+                        SyncChangeRecord(
+                            id = c.long("id"),
+                            tableName = c.str("table_name"),
+                            recordSyncId = c.str("record_sync_id"),
+                            operation = c.str("operation"),
+                            rowVersion = c.long("row_version"),
+                            deviceId = c.str("device_id"),
+                            changedAt = c.long("changed_at")
+                        )
+                    )
+                }
+            }
+        }
+    }
+
     fun markSyncChangesUploaded(
         ids: List<Long>
     ) {

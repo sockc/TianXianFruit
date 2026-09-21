@@ -241,6 +241,332 @@ private data class PurchaseHistoryEditDraft(
     val totalCost: String
 )
 
+private data class PageSyncUiContext(
+    val db: AppDatabase,
+    val cloudSyncManager: CloudSyncManager,
+    val currentBook: LedgerBook,
+    val refreshVersion: Int,
+    val syncing: Boolean,
+    val requestSync: () -> Unit
+)
+
+private val LocalPageSyncUiContext =
+    compositionLocalOf<PageSyncUiContext?> { null }
+
+private fun syncTablesForPageTitle(
+    title: String
+): Set<String> =
+    when {
+        title.contains("库存") ->
+            setOf("inventory_snapshot")
+
+        title.contains("采购计划") ->
+            setOf(
+                "purchase_plan",
+                "purchase_plan_item",
+                "purchase_collaboration"
+            )
+
+        title.contains("采购") ->
+            setOf(
+                "purchase_order",
+                "purchase_item",
+                "purchase_activity",
+                "purchase_collaboration"
+            )
+
+        title.contains("营业") ->
+            setOf("store_daily_record")
+
+        title.contains("结算") ||
+            title.contains("资金余额") ->
+            setOf(
+                "profit_distribution",
+                "daily_cash_settlement",
+                "settlement_partner",
+                "settlement_transfer",
+                "profit_settlement_batch",
+                "profit_settlement_item"
+            )
+
+        title.contains("利润分配") ->
+            setOf(
+                "profit_rule",
+                "profit_distribution"
+            )
+
+        title.contains("合伙人管理") ->
+            setOf("partner")
+
+        title.contains("位置管理") ||
+            title.contains("摊位管理") ->
+            setOf("store")
+
+        title.contains("商品管理") ->
+            setOf("fruit")
+
+        else ->
+            emptySet()
+    }
+
+private fun compactSyncTime(
+    epochMillis: Long
+): String =
+    if (epochMillis <= 0L) {
+        ""
+    } else {
+        Instant
+            .ofEpochMilli(epochMillis)
+            .atZone(ZoneId.systemDefault())
+            .format(
+                DateTimeFormatter.ofPattern(
+                    "HH:mm"
+                )
+            )
+    }
+
+@Composable
+private fun PageSyncStatus(
+    pageTitle: String
+) {
+    val syncContext =
+        LocalPageSyncUiContext.current
+            ?: return
+
+    val scopeTables =
+        remember(pageTitle) {
+            syncTablesForPageTitle(
+                pageTitle
+            )
+        }
+
+    val pendingCount =
+        remember(
+            syncContext.refreshVersion,
+            scopeTables
+        ) {
+            syncContext.db
+                .getPendingSyncChangeCount(
+                    scopeTables
+                )
+        }
+
+    val allPendingCount =
+        remember(
+            syncContext.refreshVersion
+        ) {
+            syncContext.db
+                .getPendingSyncChangeCount()
+        }
+
+    val cloudStatus =
+        remember(
+            syncContext.refreshVersion
+        ) {
+            syncContext.db
+                .getCloudSyncLocalStatus()
+        }
+
+    val tableError =
+        remember(
+            syncContext.refreshVersion,
+            scopeTables
+        ) {
+            scopeTables
+                .asSequence()
+                .mapNotNull {
+                    tableName ->
+                    syncContext
+                        .cloudSyncManager
+                        .getTableSyncError(
+                            syncContext
+                                .currentBook.id,
+                            tableName
+                        )
+                        .takeIf {
+                            it.isNotBlank()
+                        }
+                }
+                .firstOrNull()
+                .orEmpty()
+        }
+
+    val effectiveError =
+        if (tableError.isNotBlank()) {
+            tableError
+        } else if (scopeTables.isEmpty()) {
+            cloudStatus.lastError
+        } else {
+            ""
+        }
+
+    val statusText =
+        when {
+            syncContext.syncing ->
+                "↻ 同步中"
+
+            syncContext.currentBook.permission ==
+                "REVOKED" ->
+                "! 无云权限"
+
+            effectiveError.isNotBlank() ->
+                "! 同步异常"
+
+            pendingCount > 0 ->
+                "↑ 待同步 $pendingCount"
+
+            syncContext.currentBook.cloudEnabled -> {
+                val time =
+                    compactSyncTime(
+                        cloudStatus.lastSyncAt
+                    )
+                if (time.isBlank()) {
+                    "✓ 已同步"
+                } else {
+                    "✓ 已同步 $time"
+                }
+            }
+
+            else ->
+                "仅本机"
+        }
+
+    val statusColor =
+        when {
+            effectiveError.isNotBlank() ||
+                syncContext.currentBook.permission ==
+                    "REVOKED" ->
+                MaterialTheme.colorScheme.error
+
+            syncContext.syncing ->
+                BrandGreen
+
+            pendingCount > 0 ->
+                Color(0xFFC37B00)
+
+            syncContext.currentBook.cloudEnabled ->
+                BrandGreen
+
+            else ->
+                Color.Gray
+        }
+
+    var showDetails by remember {
+        mutableStateOf(false)
+    }
+
+    Surface(
+        modifier =
+            Modifier
+                .clip(
+                    RoundedCornerShape(14.dp)
+                )
+                .clickable {
+                    showDetails = true
+                },
+        color =
+            statusColor.copy(
+                alpha = 0.09f
+            )
+    ) {
+        Text(
+            statusText,
+            modifier =
+                Modifier.padding(
+                    horizontal = 9.dp,
+                    vertical = 5.dp
+                ),
+            color = statusColor,
+            style =
+                MaterialTheme.typography
+                    .labelSmall,
+            fontWeight =
+                FontWeight.SemiBold,
+            maxLines = 1
+        )
+    }
+
+    if (showDetails) {
+        AlertDialog(
+            onDismissRequest = {
+                showDetails = false
+            },
+            title = {
+                Text("同步详情")
+            },
+            text = {
+                Column(
+                    verticalArrangement =
+                        Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        "当前页面：$pageTitle"
+                    )
+                    Text(
+                        "最近同步：" +
+                            formatDateTime(
+                                cloudStatus.lastSyncAt
+                            )
+                    )
+                    Text(
+                        "当前页面待上传：" +
+                            "$pendingCount 条"
+                    )
+                    if (
+                        allPendingCount !=
+                        pendingCount
+                    ) {
+                        Text(
+                            "全账本待上传：" +
+                                "$allPendingCount 条"
+                        )
+                    }
+                    Text(
+                        "同步序号：" +
+                            cloudStatus.serverCursor
+                    )
+                    if (
+                        effectiveError.isNotBlank()
+                    ) {
+                        Text(
+                            "最近错误：" +
+                                effectiveError,
+                            color =
+                                MaterialTheme
+                                    .colorScheme
+                                    .error
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDetails = false
+                        syncContext.requestSync()
+                    },
+                    enabled =
+                        !syncContext.syncing &&
+                            syncContext.currentBook
+                                .permission !=
+                                "REVOKED"
+                ) {
+                    Text("立即同步")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showDetails = false
+                    }
+                ) {
+                    Text("关闭")
+                }
+            }
+        )
+    }
+}
+
 
 @Composable
 fun TianXianApp(
@@ -271,6 +597,9 @@ fun TianXianApp(
     var dataVersion by remember {
         mutableIntStateOf(0)
     }
+    var syncRequested by remember {
+        mutableStateOf(false)
+    }
 
     val syncRefreshVersion =
         SyncUiRefreshBus.version.intValue
@@ -279,7 +608,8 @@ fun TianXianApp(
         syncRefreshVersion
     ) {
         if (syncRefreshVersion > 0) {
-            // 自动同步完成后只刷新当前 Compose 数据缓存；
+            // 自动同步结束（成功或失败）后刷新状态与当前页面缓存。
+            syncRequested = false
             // 不调用 notifyDataChanged()，避免再次调度云同步。
             dataVersion++
         }
@@ -519,7 +849,34 @@ fun TianXianApp(
     BackHandler(enabled = page != AppPage.HOME) { page = AppPage.HOME }
 
     MaterialTheme(colorScheme = lightColorScheme(primary = BrandGreen, secondary = BrandGreen)) {
-        Scaffold(
+        val pageSyncContext =
+            PageSyncUiContext(
+                db = db,
+                cloudSyncManager =
+                    cloudSyncManager,
+                currentBook =
+                    liveCurrentBook,
+                refreshVersion =
+                    dataVersion +
+                        syncRefreshVersion,
+                syncing =
+                    syncRequested ||
+                        cloudSyncManager
+                            .isSyncRunning(),
+                requestSync = {
+                    syncRequested = true
+                    cloudSyncManager
+                        .scheduleAutoSync(
+                            liveCurrentBook
+                        )
+                }
+            )
+
+        CompositionLocalProvider(
+            LocalPageSyncUiContext provides
+                pageSyncContext
+        ) {
+            Scaffold(
             contentWindowInsets = WindowInsets.safeDrawing,
             bottomBar = {
                 NavigationBar {
@@ -807,6 +1164,7 @@ fun TianXianApp(
                 }
             }
         }
+        }
     }
 
     HistorySecurityHost(
@@ -836,22 +1194,32 @@ private fun PageHeader(
     title: String,
     subtitle: String? = null
 ) {
-    Column(
+    Row(
         Modifier
             .fillMaxWidth()
             .padding(
                 top = 8.dp,
                 bottom = 8.dp
-            )
+            ),
+        verticalAlignment =
+            Alignment.CenterVertically,
+        horizontalArrangement =
+            Arrangement.spacedBy(8.dp)
     ) {
         Text(
             title,
+            modifier =
+                Modifier.weight(1f),
             style =
                 MaterialTheme
                     .typography
                     .headlineSmall,
             fontWeight =
                 FontWeight.Bold
+        )
+
+        PageSyncStatus(
+            pageTitle = title
         )
     }
 }
@@ -1974,7 +2342,7 @@ private fun InventoryScreen(
         verticalArrangement = Arrangement.spacedBy(9.dp)
     ) {
         item {
-            PageHeader("库存", "独立库存清单 · 已同步")
+            PageHeader("库存", "独立库存清单")
         }
 
         item {
@@ -14164,13 +14532,41 @@ private fun MenuCard(
 }
 
 @Composable
-private fun SubPage(title: String, back: () -> Unit, content: @Composable () -> Unit) {
+private fun SubPage(
+    title: String,
+    back: () -> Unit,
+    content: @Composable () -> Unit
+) {
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = back) { Text("← 返回") }
-            Text(title, fontWeight = FontWeight.Bold)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(
+                    horizontal = 8.dp,
+                    vertical = 4.dp
+                ),
+            verticalAlignment =
+                Alignment.CenterVertically
+        ) {
+            TextButton(
+                onClick = back
+            ) {
+                Text("← 返回")
+            }
+            Text(
+                title,
+                modifier =
+                    Modifier.weight(1f),
+                fontWeight =
+                    FontWeight.Bold
+            )
+            PageSyncStatus(
+                pageTitle = title
+            )
         }
-        Box(Modifier.weight(1f)) { content() }
+        Box(Modifier.weight(1f)) {
+            content()
+        }
     }
 }
 

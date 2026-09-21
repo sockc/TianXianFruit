@@ -148,6 +148,69 @@ class CloudSyncManager(
         autoSyncListener = listener
     }
 
+    fun isSyncRunning(): Boolean =
+        autoRunning.get()
+
+    fun getTableSyncError(
+        bookId: String,
+        tableName: String
+    ): String =
+        prefs.getString(
+            tableErrorKey(bookId, tableName),
+            ""
+        ).orEmpty()
+
+    private fun setTableSyncError(
+        bookId: String,
+        tableName: String,
+        message: String
+    ) {
+        prefs.edit()
+            .putString(
+                tableErrorKey(bookId, tableName),
+                message
+            )
+            .apply()
+    }
+
+    private fun clearTableSyncError(
+        bookId: String,
+        tableName: String
+    ) {
+        prefs.edit()
+            .remove(
+                tableErrorKey(bookId, tableName)
+            )
+            .apply()
+    }
+
+    private fun tableErrorKey(
+        bookId: String,
+        tableName: String
+    ): String =
+        "table_sync_error_${bookId}_${tableName}"
+
+    private fun isUnsupportedBusinessTableError(
+        error: Throwable
+    ): Boolean {
+        val message =
+            error.message.orEmpty()
+
+        return message.contains(
+            "不允许同步未知业务表"
+        ) ||
+            (
+                message.contains(
+                    "unknown",
+                    ignoreCase = true
+                ) &&
+                message.contains(
+                    "table",
+                    ignoreCase = true
+                )
+            )
+    }
+
     fun defaultBaseUrl(): String =
         prefs.getString(
             KEY_BASE_URL,
@@ -1217,15 +1280,11 @@ class CloudSyncManager(
                             seedDefaults = false
                         )
 
-                    var syncSucceeded =
-                        false
-
                     try {
                         syncCurrentBook(
                             db = localDb,
                             book = liveBook
                         )
-                        syncSucceeded = true
                     } catch (
                         error: Throwable
                     ) {
@@ -1238,9 +1297,7 @@ class CloudSyncManager(
                         )
                     } finally {
                         localDb.close()
-                    }
-
-                    if (syncSucceeded) {
+                        // 成功或失败都刷新前台同步状态，避免页面长期停留在旧状态。
                         runCatching {
                             autoSyncListener
                                 ?.invoke()
@@ -1618,12 +1675,16 @@ class CloudSyncManager(
 
         var uploadedCount = 0
         var conflictCount = 0
+        val blockedTables =
+            linkedSetOf<String>()
 
         if (canEdit) {
             while (true) {
                 val pending =
-                    db.getPendingSyncChanges(
-                        100
+                    db.getPendingSyncChangesExcludingTables(
+                        excludedTables =
+                            blockedTables,
+                        limit = 100
                     )
 
                 if (pending.isEmpty()) {
@@ -1645,13 +1706,52 @@ class CloudSyncManager(
                     break
                 }
 
+                // 同一业务表单独推送，避免新版业务表暂未被服务器接受时
+                // 把采购、营业、结算等旧表的同步一起阻塞。
+                val tableName =
+                    allowedPending.first()
+                        .tableName
+                val tableBatch =
+                    allowedPending
+                        .takeWhile {
+                            it.tableName ==
+                                tableName
+                        }
+                        .take(50)
+
                 val pushResult =
-                    pushBatch(
-                        current,
-                        db,
-                        book,
-                        allowedPending
-                    )
+                    try {
+                        pushBatch(
+                            current,
+                            db,
+                            book,
+                            tableBatch
+                        ).also {
+                            clearTableSyncError(
+                                book.id,
+                                tableName
+                            )
+                        }
+                    } catch (
+                        error: Throwable
+                    ) {
+                        if (
+                            isUnsupportedBusinessTableError(
+                                error
+                            )
+                        ) {
+                            blockedTables +=
+                                tableName
+                            setTableSyncError(
+                                book.id,
+                                tableName,
+                                error.message
+                                    ?: "服务器暂不支持该业务表"
+                            )
+                            continue
+                        }
+                        throw error
+                    }
 
                 if (
                     pushResult.acceptedLocalIds
@@ -1785,6 +1885,10 @@ class CloudSyncManager(
 
                 !canEdit ->
                     "权限同步完成：下载 $downloadedCount 条"
+
+                blockedTables.isNotEmpty() ->
+                    "同步完成：上传 $uploadedCount 条，下载 $downloadedCount 条；" +
+                        "${blockedTables.size} 个业务表等待服务器支持"
 
                 else ->
                     "同步完成：上传 $uploadedCount 条，下载 $downloadedCount 条"
@@ -2486,7 +2590,7 @@ class CloudSyncManager(
             "https://sync.830888.xyz"
 
         private const val APP_VERSION =
-            "1.4.7.35"
+            "1.4.7.36"
 
         private const val KEY_PURCHASE_ACTIVITY_BACKFILL_PREFIX =
             "purchase_activity_backfill_v1_4_"
