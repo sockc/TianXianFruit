@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -36,6 +37,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.onFocusChanged
@@ -2348,7 +2350,7 @@ private fun InventoryScreen(
 
         item {
             CompactDateNavigator(
-                label = "盘点日期",
+                label = null,
                 date = date,
                 modifier = Modifier.fillMaxWidth(),
                 chineseDisplay = true,
@@ -3030,6 +3032,14 @@ private fun PurchaseScreen(
         remember(dayPurchaseOrders) {
             dayPurchaseOrders.sumOf { it.order.totalCost }
         }
+    val dayPlannedTotal =
+        remember(collaborationPlan) {
+            collaborationPlan
+                ?.items
+                .orEmpty()
+                .filter { it.status != 2 }
+                .sumOf { it.estimatedAmount }
+        }
     val latestInventorySnapshot =
         remember(dataVersion, date) {
             db.getLatestInventorySnapshotBefore(date)
@@ -3043,15 +3053,9 @@ private fun PurchaseScreen(
                     it.fruitId to it.unit
                 }
         }
-    val hasExistingDayPurchase =
-        collaborationPlan
-            ?.items
-            .orEmpty()
-            .isNotEmpty() ||
-            dayPurchaseOrders.isNotEmpty()
-
     var purchaseFormExpanded by remember(date) {
-        mutableStateOf(!hasExistingDayPurchase)
+        // 顶部“新增采购”位置固定；即使当天没有记录，也不再自动展开录入区。
+        mutableStateOf(false)
     }
     var completedPurchasesExpanded by remember(date) {
         mutableStateOf(false)
@@ -3644,19 +3648,31 @@ private fun PurchaseScreen(
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     CompactDateNavigator(
-                        label = "日期",
+                        label = null,
                         date = date,
                         modifier = Modifier.fillMaxWidth(),
                         chineseDisplay = true,
                         showWeekday = true
                     ) { onWorkDateChange(it) }
-                    Text(
-                        "当日已采购总额 ${money(dayPurchasedTotal)}",
-                        modifier = Modifier.fillMaxWidth(),
-                        textAlign = TextAlign.Center,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.Gray
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(22.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "计划金额：${money(dayPlannedTotal)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.Gray
+                        )
+                        Spacer(Modifier.width(18.dp))
+                        Text(
+                            "已采购金额：${money(dayPurchasedTotal)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.Gray
+                        )
+                    }
                 }
             } else {
                 Row(
@@ -3665,7 +3681,7 @@ private fun PurchaseScreen(
                     verticalAlignment = Alignment.Bottom
                 ) {
                     CompactDateNavigator(
-                        label = "日期",
+                        label = null,
                         date = date,
                         modifier = Modifier.weight(1f),
                         chineseDisplay = true,
@@ -3694,6 +3710,27 @@ private fun PurchaseScreen(
                             }
                         }
                     }
+                }
+            }
+        }
+
+        if (
+            editingOrderId == null &&
+            !purchaseFormExpanded
+        ) {
+            item {
+                OutlinedButton(
+                    onClick = {
+                        focusManager.clearFocus()
+                        if (rows.none { it.planItemId == null }) {
+                            rows.add(newBlankRow())
+                        }
+                        purchaseFormExpanded = true
+                        message = ""
+                    },
+                    modifier = Modifier.fillMaxWidth().height(38.dp)
+                ) {
+                    Text("＋ 新增采购")
                 }
             }
         }
@@ -3859,28 +3896,6 @@ private fun PurchaseScreen(
                     ) {
                         Text("一键完成采购")
                     }
-                }
-            }
-        }
-
-        if (
-            editingOrderId == null &&
-            !purchaseFormExpanded &&
-            hasExistingDayPurchase
-        ) {
-            item {
-                OutlinedButton(
-                    onClick = {
-                        focusManager.clearFocus()
-                        if (rows.none { it.planItemId == null }) {
-                            rows.add(newBlankRow())
-                        }
-                        purchaseFormExpanded = true
-                        message = ""
-                    },
-                    modifier = Modifier.fillMaxWidth().height(38.dp)
-                ) {
-                    Text("＋ 新增采购")
                 }
             }
         }
@@ -6056,7 +6071,7 @@ private fun SessionScreen(
 
         item {
             CompactDateNavigator(
-                label = "营业日期",
+                label = null,
                 date = date,
                 modifier = Modifier.fillMaxWidth(),
                 chineseDisplay = true,
@@ -6292,31 +6307,38 @@ private fun SessionScreen(
                         if (target >= 0) receiptRows.removeAt(target)
                     }
                 )
-                if (index != receiptRows.lastIndex) Spacer(Modifier.height(7.dp))
+                if (index != receiptRows.lastIndex) Spacer(Modifier.height(5.dp))
             }
 
-            OutlinedButton(
-                onClick = {
-                    val unused =
-                        partners.firstOrNull { p ->
-                            receiptRows.none { it.partnerId == p.id }
-                        }
-                    receiptRows.add(
-                        ReceiptDraftRow(
-                            rowId = nextReceiptRowId++,
-                            partnerId = unused?.id,
-                            partnerNameSnapshot = unused?.name.orEmpty()
-                        )
-                    )
-                },
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(top = 6.dp)
-                        .height(42.dp),
-                enabled = partners.isNotEmpty()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
+                horizontalArrangement = Arrangement.End
             ) {
-                Text("＋ 再添加收款人")
+                OutlinedButton(
+                    onClick = {
+                        val unused =
+                            partners.firstOrNull { p ->
+                                receiptRows.none { it.partnerId == p.id }
+                            }
+                        receiptRows.add(
+                            ReceiptDraftRow(
+                                rowId = nextReceiptRowId++,
+                                partnerId = unused?.id,
+                                partnerNameSnapshot = unused?.name.orEmpty()
+                            )
+                        )
+                    },
+                    modifier = Modifier.height(30.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    enabled = partners.isNotEmpty()
+                ) {
+                    Text(
+                        if (receiptRows.size > 1) "＋ 再添加" else "＋ 添加收款人",
+                        fontSize = 12.sp
+                    )
+                }
             }
         }
 
@@ -6766,15 +6788,44 @@ private fun ReceiptSplitDraftRow(
         )
     ) {
         Column(
-            Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(22.dp)
+            ) {
+                if (canDelete) {
+                    TextButton(
+                        onClick = onDelete,
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .height(22.dp),
+                        contentPadding = PaddingValues(horizontal = 3.dp, vertical = 0.dp)
+                    ) {
+                        Text(
+                            "删除",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+                Text(
+                    "小计 ${money(row.total)}",
+                    modifier = Modifier.align(Alignment.CenterEnd),
+                    fontWeight = FontWeight.SemiBold,
+                    color = BrandGreen,
+                    fontSize = 12.sp
+                )
+            }
+
             Row(
                 Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.Bottom
             ) {
-                Box(Modifier.weight(1f)) {
+                Box(Modifier.weight(1.25f)) {
                     CompactSelectButton(
                         "收款人",
                         display,
@@ -6801,35 +6852,6 @@ private fun ReceiptSplitDraftRow(
                     }
                 }
 
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(
-                        "小计",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.Gray
-                    )
-                    Text(
-                        money(row.total),
-                        fontWeight = FontWeight.Bold,
-                        color = BrandGreen
-                    )
-                }
-
-                if (canDelete) {
-                    TextButton(
-                        onClick = onDelete,
-                        modifier = Modifier.height(38.dp),
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                    ) {
-                        Text(
-                            "删除",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                }
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 CompactNumberField(
                     "微信",
                     row.wechat,
@@ -7193,7 +7215,7 @@ private fun SettlementDayContent(
 
         item {
             CompactDateNavigator(
-                label = "结算日期",
+                label = null,
                 date = date,
                 modifier = Modifier.fillMaxWidth(),
                 chineseDisplay = true,
@@ -19710,6 +19732,124 @@ private fun TimeFilterSelector(
 }
 
 @Composable
+private fun QuickDatePickerDialog(
+    selectedDate: LocalDate,
+    onDismiss: () -> Unit,
+    onSelect: (LocalDate) -> Unit
+) {
+    var visibleMonth by remember(selectedDate) {
+        mutableStateOf(selectedDate.withDayOfMonth(1))
+    }
+    val today = LocalDate.now()
+    val weekLabels = listOf("一", "二", "三", "四", "五", "六", "日")
+    val firstOffset = visibleMonth.dayOfWeek.value - 1
+    val daysInMonth = visibleMonth.lengthOfMonth()
+    val cellCount = ((firstOffset + daysInMonth + 6) / 7) * 7
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {},
+        title = {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = { visibleMonth = visibleMonth.minusMonths(1) },
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    Text("‹", fontSize = 28.sp, color = BrandGreen)
+                }
+                Text(
+                    visibleMonth.format(DateTimeFormatter.ofPattern("yyyy年M月")),
+                    modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.Center,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+                IconButton(
+                    onClick = { visibleMonth = visibleMonth.plusMonths(1) },
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    Text("›", fontSize = 28.sp, color = BrandGreen)
+                }
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(Modifier.fillMaxWidth()) {
+                    weekLabels.forEach { label ->
+                        Text(
+                            label,
+                            modifier = Modifier.weight(1f),
+                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.Gray
+                        )
+                    }
+                }
+
+                repeat(cellCount / 7) { rowIndex ->
+                    Row(Modifier.fillMaxWidth()) {
+                        repeat(7) { columnIndex ->
+                            val index = rowIndex * 7 + columnIndex
+                            val dayNumber = index - firstOffset + 1
+                            val cellDate =
+                                if (dayNumber in 1..daysInMonth) {
+                                    visibleMonth.withDayOfMonth(dayNumber)
+                                } else {
+                                    null
+                                }
+                            val selected = cellDate == selectedDate
+                            val isToday = cellDate == today
+                            val cellModifier =
+                                Modifier
+                                    .weight(1f)
+                                    .aspectRatio(1f)
+                                    .padding(2.dp)
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .then(
+                                        when {
+                                            selected -> Modifier.background(BrandGreen)
+                                            isToday -> Modifier.background(SoftGreen)
+                                            else -> Modifier
+                                        }
+                                    )
+                                    .clickable(enabled = cellDate != null) {
+                                        cellDate?.let(onSelect)
+                                    }
+
+                            Box(
+                                cellModifier,
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (cellDate != null) {
+                                    Text(
+                                        cellDate.dayOfMonth.toString(),
+                                        color = if (selected) Color.White else Color.DarkGray,
+                                        fontWeight =
+                                            if (selected || isToday) FontWeight.Bold
+                                            else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                TextButton(
+                    onClick = { onSelect(today) },
+                    modifier = Modifier.align(Alignment.End),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                ) {
+                    Text("今天")
+                }
+            }
+        }
+    )
+}
+
+@Composable
 internal fun CompactDateNavigator(
     label: String?,
     date: String,
@@ -19718,10 +19858,10 @@ internal fun CompactDateNavigator(
     showWeekday: Boolean = false,
     onDate: (String) -> Unit
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
     val parsedDate =
         runCatching { LocalDate.parse(date) }
             .getOrElse { LocalDate.now() }
+    var showPicker by remember { mutableStateOf(false) }
 
     val displayText =
         if (chineseDisplay) {
@@ -19750,7 +19890,26 @@ internal fun CompactDateNavigator(
         }
 
         Row(
-            Modifier.fillMaxWidth(),
+            Modifier
+                .fillMaxWidth()
+                .pointerInput(parsedDate) {
+                    var totalDrag = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { totalDrag = 0f },
+                        onHorizontalDrag = { _, dragAmount ->
+                            totalDrag += dragAmount
+                        },
+                        onDragEnd = {
+                            when {
+                                totalDrag <= -70f ->
+                                    onDate(parsedDate.plusDays(1).toString())
+                                totalDrag >= 70f ->
+                                    onDate(parsedDate.minusDays(1).toString())
+                            }
+                        },
+                        onDragCancel = { totalDrag = 0f }
+                    )
+                },
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(3.dp)
         ) {
@@ -19769,13 +19928,7 @@ internal fun CompactDateNavigator(
             }
 
             OutlinedButton(
-                onClick = {
-                    showDatePicker(
-                        context,
-                        parsedDate.toString(),
-                        onDate
-                    )
-                },
+                onClick = { showPicker = true },
                 modifier = Modifier
                     .weight(1f)
                     .height(48.dp),
@@ -19784,6 +19937,7 @@ internal fun CompactDateNavigator(
                 Text(
                     displayText,
                     modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.Center,
                     fontSize = if (chineseDisplay) 16.sp else 15.sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1
@@ -19809,6 +19963,17 @@ internal fun CompactDateNavigator(
             }
         }
     }
+
+    if (showPicker) {
+        QuickDatePickerDialog(
+            selectedDate = parsedDate,
+            onDismiss = { showPicker = false },
+            onSelect = { selected ->
+                showPicker = false
+                onDate(selected.toString())
+            }
+        )
+    }
 }
 
 @Composable
@@ -19819,10 +19984,10 @@ private fun CompactDateSelector(
     showWeekday: Boolean = false,
     onDate: (String) -> Unit
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val parsed = runCatching { LocalDate.parse(date) }.getOrNull()
+    val parsed = runCatching { LocalDate.parse(date) }.getOrElse { LocalDate.now() }
+    var showPicker by remember { mutableStateOf(false) }
     val display =
-        if (showWeekday && parsed != null) {
+        if (showWeekday) {
             "$date  ${chineseWeekday(parsed)}"
         } else {
             date
@@ -19830,7 +19995,7 @@ private fun CompactDateSelector(
     Column(modifier) {
         Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
         OutlinedButton(
-            onClick = { showDatePicker(context, date, onDate) },
+            onClick = { showPicker = true },
             modifier = Modifier.fillMaxWidth().height(48.dp),
             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp)
         ) {
@@ -19843,6 +20008,17 @@ private fun CompactDateSelector(
             )
             Text("📅", fontSize = 14.sp)
         }
+    }
+
+    if (showPicker) {
+        QuickDatePickerDialog(
+            selectedDate = parsed,
+            onDismiss = { showPicker = false },
+            onSelect = { selected ->
+                showPicker = false
+                onDate(selected.toString())
+            }
+        )
     }
 }
 
