@@ -1347,8 +1347,7 @@ private fun CollaborationPlanEditDialog(
         },
         dismissButton = {
             TextButton(
-                onClick =
-                    onDismiss
+                onClick = onDismiss
             ) {
                 Text("取消")
             }
@@ -1364,7 +1363,10 @@ internal fun CollaborationCompleteDialog(
     recorderUsername: String,
     recorderDisplayName: String,
     onDismiss: () -> Unit,
-    onCompleted: (String) -> Unit
+    onCompleted: (String) -> Unit,
+    batchMode: Boolean = false,
+    onSkip: (() -> Unit)? = null,
+    referenceUnitPrice: Double? = null
 ) {
     val partners =
         remember {
@@ -1406,10 +1408,7 @@ internal fun CollaborationCompleteDialog(
             if (editingCompleted) {
                 collaborationNumber(item.actualAmount)
             } else {
-                item.estimatedAmount
-                    .takeIf { it > 0 }
-                    ?.let { collaborationNumber(it) }
-                    .orEmpty()
+                ""
             }
         )
     }
@@ -1445,6 +1444,17 @@ internal fun CollaborationCompleteDialog(
         } else {
             0.0
         }
+
+    val rememberedUnitPrice =
+        referenceUnitPrice
+            ?: if (
+                item.quantity > 0 &&
+                item.estimatedAmount > 0
+            ) {
+                item.estimatedAmount / item.quantity
+            } else {
+                null
+            }
 
     AlertDialog(
         onDismissRequest =
@@ -1498,12 +1508,15 @@ internal fun CollaborationCompleteDialog(
                 }
 
                 Text(
-                    if (
-                        amountParsed != null && quantityNumber > 0
-                    ) {
-                        "单价 ${collaborationMoney(unitPrice)}/${item.unit}"
-                    } else {
-                        "单价 —"
+                    when {
+                        amountParsed != null && quantityNumber > 0 ->
+                            "单价 ${collaborationMoney(unitPrice)}/${item.unit}"
+
+                        rememberedUnitPrice != null ->
+                            "参考单价 ${collaborationMoney(rememberedUnitPrice)}/${item.unit} · 总价请按实际确认"
+
+                        else ->
+                            "单价 — · 总价请按实际确认"
                     },
                     color = Color.Gray
                 )
@@ -1557,7 +1570,7 @@ internal fun CollaborationCompleteDialog(
                     if (editingCompleted) {
                         "保存后会同步修改对应正式采购记录和当天进货金额。"
                     } else {
-                        "确认后会直接生成正式采购记录，并计入当天进货金额。"
+                        "计划单价只作参考；实际总价不会自动带入，确认后才计入当天进货。"
                     },
                     style =
                         MaterialTheme
@@ -1637,20 +1650,28 @@ internal fun CollaborationCompleteDialog(
                 }
             ) {
                 Text(
-                    if (editingCompleted) {
-                        "保存修改"
-                    } else {
-                        "确认完成"
+                    when {
+                        editingCompleted -> "保存修改"
+                        batchMode -> "确认并下一个"
+                        else -> "确认完成"
                     }
                 )
             }
         },
         dismissButton = {
-            TextButton(
-                onClick =
-                    onDismiss
-            ) {
-                Text("取消")
+            Row {
+                if (batchMode && onSkip != null) {
+                    TextButton(
+                        onClick = onSkip
+                    ) {
+                        Text("跳过")
+                    }
+                }
+                TextButton(
+                    onClick = onDismiss
+                ) {
+                    Text(if (batchMode) "结束" else "取消")
+                }
             }
         }
     )

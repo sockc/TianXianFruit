@@ -66,6 +66,18 @@ data class InventorySaveInput(
     val remainingQuantity: Double
 )
 
+data class InventoryImportItemRecord(
+    val fruitId: Long,
+    val fruitName: String,
+    val unit: String,
+    val remainingQuantity: Double
+)
+
+data class InventoryImportSnapshot(
+    val date: String,
+    val items: List<InventoryImportItemRecord>
+)
+
 data class PurchaseOrderDetail(
     val order: PurchaseOrderRecord,
     val items: List<PurchaseItemRecord>,
@@ -7375,6 +7387,90 @@ class AppDatabase(
                 .thenBy { it.fruitName }
                 .thenBy { it.unit }
         )
+    }
+
+    fun getLatestInventorySnapshotBefore(
+        date: String
+    ): InventoryImportSnapshot? {
+        if (runCatching { LocalDate.parse(date) }.isFailure) return null
+
+        val snapshotDate =
+            readableDatabase.rawQuery(
+                """
+                SELECT MAX(i.date) AS snapshot_date
+                FROM inventory_snapshot i
+                JOIN fruit f ON f.id=i.fruit_id
+                WHERE i.date<?
+                  AND i.deleted=0
+                  AND f.deleted=0
+                  AND TRIM(i.fruit_name)<>'总价'
+                """.trimIndent(),
+                arrayOf(date)
+            ).use { c ->
+                if (c.moveToFirst()) c.str("snapshot_date").takeIf { it.isNotBlank() } else null
+            } ?: return null
+
+        val items =
+            readableDatabase.rawQuery(
+                """
+                SELECT i.fruit_id,i.fruit_name,i.unit,i.remaining_quantity
+                FROM inventory_snapshot i
+                JOIN fruit f ON f.id=i.fruit_id
+                WHERE i.date=?
+                  AND i.deleted=0
+                  AND f.deleted=0
+                  AND TRIM(i.fruit_name)<>'总价'
+                ORDER BY i.id
+                """.trimIndent(),
+                arrayOf(snapshotDate)
+            ).use { c ->
+                buildList {
+                    while (c.moveToNext()) {
+                        add(
+                            InventoryImportItemRecord(
+                                fruitId = c.long("fruit_id"),
+                                fruitName = c.str("fruit_name"),
+                                unit = c.str("unit").ifBlank { "件" },
+                                remainingQuantity = c.dbl("remaining_quantity").coerceAtLeast(0.0)
+                            )
+                        )
+                    }
+                }
+            }
+
+        if (items.isEmpty()) return null
+        return InventoryImportSnapshot(snapshotDate, items)
+    }
+
+    fun getLatestPurchaseUnitPrice(
+        fruitId: Long,
+        unit: String,
+        onOrBeforeDate: String
+    ): Double? {
+        if (fruitId <= 0L || unit.isBlank()) return null
+        if (runCatching { LocalDate.parse(onOrBeforeDate) }.isFailure) return null
+
+        return readableDatabase.rawQuery(
+            """
+            SELECT pi.unit_price
+            FROM purchase_item pi
+            JOIN purchase_order po ON po.id=pi.order_id
+            WHERE pi.fruit_id=?
+              AND pi.unit=?
+              AND po.date<=?
+              AND pi.deleted=0
+              AND po.deleted=0
+            ORDER BY po.date DESC,po.created_at DESC,pi.id DESC
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(
+                fruitId.toString(),
+                unit.trim(),
+                onOrBeforeDate
+            )
+        ).use { c ->
+            if (c.moveToFirst()) c.dbl("unit_price").coerceAtLeast(0.0) else null
+        }
     }
 
     fun saveInventoryDay(
