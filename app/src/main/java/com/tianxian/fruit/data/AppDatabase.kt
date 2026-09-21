@@ -78,6 +78,46 @@ data class InventoryImportSnapshot(
     val items: List<InventoryImportItemRecord>
 )
 
+data class OperatingAnalysisItemRecord(
+    val fruitId: Long,
+    val fruitName: String,
+    val unit: String,
+    val openingQuantity: Double,
+    val openingUnitCost: Double?,
+    val openingCost: Double?,
+    val purchasedQuantity: Double,
+    val purchaseCost: Double,
+    val availableQuantity: Double,
+    val averageUnitCost: Double?,
+    val remainingQuantity: Double,
+    val closingCost: Double?,
+    val consumedQuantity: Double,
+    val consumedCost: Double?,
+    val inventorySaved: Boolean,
+    val previousSnapshotDate: String?,
+    val quantityAnomaly: Boolean,
+    val costAvailable: Boolean
+)
+
+data class OperatingAnalysisRecord(
+    val date: String,
+    val revenue: Double,
+    val expense: Double,
+    val purchaseCost: Double,
+    val openingInventoryCost: Double?,
+    val closingInventoryCost: Double?,
+    val consumedCost: Double?,
+    val grossProfit: Double?,
+    val grossMargin: Double?,
+    val operatingProfit: Double?,
+    val operatingMargin: Double?,
+    val inventoryComplete: Boolean,
+    val costComplete: Boolean,
+    val previousDayAligned: Boolean,
+    val hasBusinessData: Boolean,
+    val items: List<OperatingAnalysisItemRecord>
+)
+
 data class PurchaseOrderDetail(
     val order: PurchaseOrderRecord,
     val items: List<PurchaseItemRecord>,
@@ -7471,6 +7511,304 @@ class AppDatabase(
         ).use { c ->
             if (c.moveToFirst()) c.dbl("unit_price").coerceAtLeast(0.0) else null
         }
+    }
+
+    private data class InventoryCostBasis(
+        val unitCost: Double?,
+        val costAvailable: Boolean
+    )
+
+    private fun latestInventorySnapshotDateBeforeForItem(
+        date: String,
+        fruitId: Long,
+        unit: String
+    ): String? =
+        readableDatabase.rawQuery(
+            """
+            SELECT MAX(date) AS snapshot_date
+            FROM inventory_snapshot
+            WHERE date<?
+              AND fruit_id=?
+              AND unit=?
+              AND deleted=0
+            """.trimIndent(),
+            arrayOf(date, fruitId.toString(), unit)
+        ).use { c ->
+            if (c.moveToFirst()) c.str("snapshot_date").takeIf { it.isNotBlank() } else null
+        }
+
+    private fun estimateInventoryCostBasisAtSnapshot(
+        snapshotDate: String,
+        fruitId: Long,
+        unit: String
+    ): InventoryCostBasis {
+        data class PurchaseAgg(val quantity: Double, val cost: Double)
+
+        val purchases = linkedMapOf<String, PurchaseAgg>()
+        readableDatabase.rawQuery(
+            """
+            SELECT po.date,
+                   COALESCE(SUM(pi.quantity),0) AS quantity,
+                   COALESCE(SUM(pi.total_cost),0) AS total_cost
+            FROM purchase_item pi
+            JOIN purchase_order po ON po.id=pi.order_id
+            WHERE pi.fruit_id=?
+              AND pi.unit=?
+              AND po.date<=?
+              AND po.deleted=0
+              AND pi.deleted=0
+              AND TRIM(pi.fruit_name)<>'总价'
+            GROUP BY po.date
+            ORDER BY po.date
+            """.trimIndent(),
+            arrayOf(fruitId.toString(), unit, snapshotDate)
+        ).use { c ->
+            while (c.moveToNext()) {
+                purchases[c.str("date")] =
+                    PurchaseAgg(
+                        c.dbl("quantity").coerceAtLeast(0.0),
+                        c.dbl("total_cost").coerceAtLeast(0.0)
+                    )
+            }
+        }
+
+        val snapshots = linkedMapOf<String, Double>()
+        readableDatabase.rawQuery(
+            """
+            SELECT date,remaining_quantity
+            FROM inventory_snapshot
+            WHERE fruit_id=?
+              AND unit=?
+              AND date<=?
+              AND deleted=0
+            ORDER BY date,id
+            """.trimIndent(),
+            arrayOf(fruitId.toString(), unit, snapshotDate)
+        ).use { c ->
+            while (c.moveToNext()) {
+                snapshots[c.str("date")] = c.dbl("remaining_quantity").coerceAtLeast(0.0)
+            }
+        }
+
+        val dates = (purchases.keys + snapshots.keys).toSortedSet()
+        if (dates.isEmpty()) return InventoryCostBasis(null, false)
+
+        var runningQuantity = 0.0
+        var runningCost = 0.0
+        var lastUnitCost: Double? = null
+        var costAvailable = true
+
+        dates.forEach { day ->
+            purchases[day]?.let { purchase ->
+                runningQuantity += purchase.quantity
+                runningCost += purchase.cost
+                if (runningQuantity > 0.000001) {
+                    lastUnitCost = runningCost / runningQuantity
+                }
+            }
+
+            snapshots[day]?.let { remaining ->
+                if (remaining <= 0.000001) {
+                    // 库存归零后，旧批次成本链结束；后续新采购可以重新建立成本基础。
+                    runningQuantity = 0.0
+                    runningCost = 0.0
+                    lastUnitCost = null
+                    costAvailable = true
+                } else {
+                    val unitCost =
+                        when {
+                            runningQuantity > 0.000001 -> runningCost / runningQuantity
+                            lastUnitCost != null -> lastUnitCost
+                            else -> null
+                        }
+                    if (unitCost == null) {
+                        costAvailable = false
+                    }
+                    runningQuantity = remaining
+                    runningCost = if (unitCost != null) remaining * unitCost else 0.0
+                    if (unitCost != null) lastUnitCost = unitCost
+                }
+            }
+        }
+
+        val finalUnitCost =
+            when {
+                runningQuantity <= 0.000001 -> lastUnitCost ?: 0.0
+                runningCost > 0.000001 -> runningCost / runningQuantity
+                lastUnitCost != null -> lastUnitCost
+                else -> null
+            }
+        return InventoryCostBasis(finalUnitCost, costAvailable && finalUnitCost != null)
+    }
+
+    fun getOperatingAnalysis(date: String): OperatingAnalysisRecord {
+        val parsedDate = runCatching { LocalDate.parse(date) }.getOrElse { LocalDate.now() }
+        val inventoryItems = getInventoryDayItems(date)
+        val dailyRecords = getDailyRecords(date)
+        val revenue = roundMoney(dailyRecords.sumOf { it.revenue })
+        val expense = roundMoney(dailyRecords.sumOf { it.expense })
+
+        data class PurchaseAgg(
+            val fruitId: Long,
+            val fruitName: String,
+            val unit: String,
+            val quantity: Double,
+            val cost: Double
+        )
+
+        val purchaseByKey = linkedMapOf<Pair<Long, String>, PurchaseAgg>()
+        readableDatabase.rawQuery(
+            """
+            SELECT pi.fruit_id,
+                   MAX(pi.fruit_name) AS fruit_name,
+                   pi.unit,
+                   COALESCE(SUM(pi.quantity),0) AS quantity,
+                   COALESCE(SUM(pi.total_cost),0) AS total_cost
+            FROM purchase_item pi
+            JOIN purchase_order po ON po.id=pi.order_id
+            WHERE po.date=?
+              AND po.deleted=0
+              AND pi.deleted=0
+              AND TRIM(pi.fruit_name)<>'总价'
+            GROUP BY pi.fruit_id,pi.unit
+            ORDER BY MIN(pi.id)
+            """.trimIndent(),
+            arrayOf(date)
+        ).use { c ->
+            while (c.moveToNext()) {
+                val row =
+                    PurchaseAgg(
+                        fruitId = c.long("fruit_id"),
+                        fruitName = c.str("fruit_name"),
+                        unit = c.str("unit"),
+                        quantity = c.dbl("quantity").coerceAtLeast(0.0),
+                        cost = c.dbl("total_cost").coerceAtLeast(0.0)
+                    )
+                purchaseByKey[row.fruitId to row.unit] = row
+            }
+        }
+
+        val analysisItems = inventoryItems.map { item ->
+            val key = item.fruitId to item.unit
+            val purchase = purchaseByKey[key]
+            val previousSnapshotDate =
+                if (item.openingQuantity > 0.000001) {
+                    latestInventorySnapshotDateBeforeForItem(date, item.fruitId, item.unit)
+                } else {
+                    null
+                }
+            val openingBasis =
+                if (item.openingQuantity > 0.000001 && previousSnapshotDate != null) {
+                    estimateInventoryCostBasisAtSnapshot(
+                        previousSnapshotDate,
+                        item.fruitId,
+                        item.unit
+                    )
+                } else {
+                    InventoryCostBasis(0.0, true)
+                }
+            val openingCost =
+                if (openingBasis.costAvailable && openingBasis.unitCost != null) {
+                    roundMoney(item.openingQuantity * openingBasis.unitCost)
+                } else {
+                    null
+                }
+            val purchasedQuantity = purchase?.quantity ?: item.purchasedQuantity
+            val purchaseCost = roundMoney(purchase?.cost ?: 0.0)
+            val availableQuantity = item.openingQuantity + purchasedQuantity
+            val costAvailable = openingCost != null
+            val availableCost = openingCost?.plus(purchaseCost)
+            val averageUnitCost =
+                when {
+                    !costAvailable -> null
+                    availableQuantity > 0.000001 -> (availableCost ?: 0.0) / availableQuantity
+                    else -> openingBasis.unitCost ?: 0.0
+                }
+            val remaining = item.remainingQuantity.coerceAtLeast(0.0)
+            val quantityAnomaly = remaining > availableQuantity + 0.000001
+            val closingCost =
+                if (averageUnitCost != null) {
+                    roundMoney(remaining * averageUnitCost)
+                } else {
+                    null
+                }
+            val consumedCost =
+                if (availableCost != null && closingCost != null) {
+                    roundMoney(availableCost - closingCost)
+                } else {
+                    null
+                }
+            OperatingAnalysisItemRecord(
+                fruitId = item.fruitId,
+                fruitName = item.fruitName,
+                unit = item.unit,
+                openingQuantity = item.openingQuantity,
+                openingUnitCost = openingBasis.unitCost,
+                openingCost = openingCost,
+                purchasedQuantity = purchasedQuantity,
+                purchaseCost = purchaseCost,
+                availableQuantity = availableQuantity,
+                averageUnitCost = averageUnitCost,
+                remainingQuantity = remaining,
+                closingCost = closingCost,
+                consumedQuantity = availableQuantity - remaining,
+                consumedCost = consumedCost,
+                inventorySaved = item.saved,
+                previousSnapshotDate = previousSnapshotDate,
+                quantityAnomaly = quantityAnomaly,
+                costAvailable = costAvailable
+            )
+        }
+
+        val purchaseCost = roundMoney(purchaseByKey.values.sumOf { it.cost })
+        val hasBusinessData =
+            revenue > 0.000001 || expense > 0.000001 || purchaseCost > 0.000001 || inventoryItems.isNotEmpty()
+        val inventoryComplete =
+            if (!hasBusinessData) {
+                true
+            } else {
+                inventoryItems.isNotEmpty() &&
+                    inventoryItems.all { it.saved } &&
+                    analysisItems.none { it.quantityAnomaly }
+            }
+        val costComplete = analysisItems.all { it.costAvailable }
+        val expectedPreviousDate = parsedDate.minusDays(1).toString()
+        val previousDayAligned =
+            analysisItems
+                .filter { it.openingQuantity > 0.000001 }
+                .all { it.previousSnapshotDate == expectedPreviousDate }
+
+        val openingInventoryCost =
+            if (costComplete) roundMoney(analysisItems.sumOf { it.openingCost ?: 0.0 }) else null
+        val closingInventoryCost =
+            if (costComplete) roundMoney(analysisItems.sumOf { it.closingCost ?: 0.0 }) else null
+        val consumedCost =
+            if (costComplete) roundMoney(analysisItems.sumOf { it.consumedCost ?: 0.0 }) else null
+        val grossProfit = consumedCost?.let { roundMoney(revenue - it) }
+        val operatingProfit = grossProfit?.let { roundMoney(it - expense) }
+        val grossMargin =
+            if (grossProfit != null && revenue > 0.000001) grossProfit / revenue else null
+        val operatingMargin =
+            if (operatingProfit != null && revenue > 0.000001) operatingProfit / revenue else null
+
+        return OperatingAnalysisRecord(
+            date = date,
+            revenue = revenue,
+            expense = expense,
+            purchaseCost = purchaseCost,
+            openingInventoryCost = openingInventoryCost,
+            closingInventoryCost = closingInventoryCost,
+            consumedCost = consumedCost,
+            grossProfit = grossProfit,
+            grossMargin = grossMargin,
+            operatingProfit = operatingProfit,
+            operatingMargin = operatingMargin,
+            inventoryComplete = inventoryComplete,
+            costComplete = costComplete,
+            previousDayAligned = previousDayAligned,
+            hasBusinessData = hasBusinessData,
+            items = analysisItems
+        )
     }
 
     fun saveInventoryDay(

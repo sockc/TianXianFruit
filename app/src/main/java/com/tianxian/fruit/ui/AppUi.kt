@@ -100,6 +100,7 @@ private enum class MorePage {
     HISTORY,
     PURCHASE_ACTIVITY,
     STATS,
+    OPERATING_ANALYSIS,
     PERSONAL_SUMMARY,
     BACKUP,
     PARTNERS,
@@ -117,6 +118,7 @@ private enum class HomeQuickAction(
     HISTORY("🧾", "历史记录", MorePage.HISTORY),
     PURCHASE_ACTIVITY("🛒", "协作采购", MorePage.PURCHASE_ACTIVITY),
     STATS("📊", "经营统计", MorePage.STATS),
+    OPERATING_ANALYSIS("🧮", "经营分析", MorePage.OPERATING_ANALYSIS),
     PERSONAL_SUMMARY("👤", "个人汇总", MorePage.PERSONAL_SUMMARY),
     REPORT("📄", "生成报表", MorePage.REPORT),
     PROFIT("💰", "利润分配", MorePage.PROFIT),
@@ -147,6 +149,7 @@ private fun homeQuickActionAllowed(
             allowed(BookPermissions.PURCHASE_ACTIVITY_VIEW) ||
                 allowed(BookPermissions.PURCHASE_PLAN_EDIT)
         HomeQuickAction.STATS,
+        HomeQuickAction.OPERATING_ANALYSIS,
         HomeQuickAction.PERSONAL_SUMMARY -> allowed(BookPermissions.STATS_VIEW)
         HomeQuickAction.REPORT -> allowed(BookPermissions.REPORT_VIEW)
         HomeQuickAction.PROFIT -> allowed(BookPermissions.PROFIT_VIEW)
@@ -9500,6 +9503,15 @@ private fun MoreScreen(
 
                             SettingsDivider()
                             SettingsRow(
+                                "🧮",
+                                "经营分析"
+                            ) {
+                                sub =
+                                    MorePage.OPERATING_ANALYSIS
+                            }
+
+                            SettingsDivider()
+                            SettingsRow(
                                 "👤",
                                 "个人汇总"
                             ) {
@@ -9969,6 +9981,20 @@ private fun MoreScreen(
             }
         }
 
+        MorePage.OPERATING_ANALYSIS -> {
+            SubPage(
+                "经营分析",
+                {
+                    sub = MorePage.MENU
+                }
+            ) {
+                OperatingAnalysisContent(
+                    db = db,
+                    dataVersion = dataVersion
+                )
+            }
+        }
+
         MorePage.PERSONAL_SUMMARY -> {
             SubPage(
                 "个人汇总",
@@ -10070,6 +10096,294 @@ private fun MoreScreen(
     }
 }
 
+
+@Composable
+private fun OperatingAnalysisContent(
+    db: AppDatabase,
+    dataVersion: Int
+) {
+    var date by remember { mutableStateOf(LocalDate.now().toString()) }
+    var showCalculation by remember(date) { mutableStateOf(true) }
+    val analysis = remember(dataVersion, date) { db.getOperatingAnalysis(date) }
+
+    fun percent(value: Double?): String =
+        value?.let { String.format(Locale.CHINA, "%.1f%%", it * 100.0) } ?: "—"
+
+    val statusText =
+        when {
+            !analysis.hasBusinessData -> "暂无经营数据"
+            !analysis.inventoryComplete -> "库存未完整盘点 · 当前结果仅供参考"
+            !analysis.costComplete -> "部分结转库存缺少成本依据"
+            !analysis.previousDayAligned -> "结转库存不是昨日盘点 · 按最近库存估算"
+            else -> "数据完整 · 可用于当日经营复盘"
+        }
+    val statusColor =
+        when {
+            !analysis.hasBusinessData -> Color.Gray
+            analysis.inventoryComplete && analysis.costComplete && analysis.previousDayAligned -> BrandGreen
+            else -> Color(0xFFB26A00)
+        }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            CompactDateSelector(
+                label = "分析日期",
+                date = date,
+                modifier = Modifier.fillMaxWidth(),
+                showWeekday = true,
+                onDate = { date = it }
+            )
+        }
+
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("数据状态", fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        statusText,
+                        modifier = Modifier.weight(1f),
+                        color = statusColor,
+                        textAlign = TextAlign.End,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+
+        item {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                MetricCard(
+                    title = "预估经营利润",
+                    value = analysis.operatingProfit?.let { money(it) } ?: "—",
+                    modifier = Modifier.weight(1f),
+                    color = if ((analysis.operatingProfit ?: 0.0) >= 0) SoftGreen else Color(0xFFFFECEC),
+                    sub = "利润率 ${percent(analysis.operatingMargin)}"
+                )
+                MetricCard(
+                    title = "预估毛利",
+                    value = analysis.grossProfit?.let { money(it) } ?: "—",
+                    modifier = Modifier.weight(1f),
+                    color = SoftBlue,
+                    sub = "毛利率 ${percent(analysis.grossMargin)}"
+                )
+            }
+        }
+
+        item {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                MetricCard(
+                    "营业额",
+                    money(analysis.revenue),
+                    Modifier.weight(1f),
+                    SoftGreen
+                )
+                MetricCard(
+                    "货品消耗成本",
+                    analysis.consumedCost?.let { money(it) } ?: "—",
+                    Modifier.weight(1f),
+                    SoftOrange
+                )
+            }
+        }
+
+        item {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                MetricCard(
+                    "今日采购",
+                    money(analysis.purchaseCost),
+                    Modifier.weight(1f),
+                    Color(0xFFFFF7EA)
+                )
+                MetricCard(
+                    "日常开销",
+                    money(analysis.expense),
+                    Modifier.weight(1f),
+                    Color(0xFFF6F0FF)
+                )
+            }
+        }
+
+        item {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                MetricCard(
+                    "结转库存成本",
+                    analysis.openingInventoryCost?.let { money(it) } ?: "—",
+                    Modifier.weight(1f),
+                    Color(0xFFF3F6FA)
+                )
+                MetricCard(
+                    "剩余库存成本",
+                    analysis.closingInventoryCost?.let { money(it) } ?: "—",
+                    Modifier.weight(1f),
+                    Color(0xFFF3F6FA)
+                )
+            }
+        }
+
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { showCalculation = !showCalculation },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("计算明细", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                        Text(if (showCalculation) "收起" else "展开", color = BrandGreen)
+                    }
+                    if (showCalculation) {
+                        AnalysisFormulaRow("结转库存成本", analysis.openingInventoryCost?.let { money(it) } ?: "—")
+                        AnalysisFormulaRow("＋ 今日实际采购", money(analysis.purchaseCost))
+                        AnalysisFormulaRow("－ 今日剩余库存", analysis.closingInventoryCost?.let { money(it) } ?: "—")
+                        HorizontalDivider(color = Color(0xFFEAEAEA))
+                        AnalysisFormulaRow("＝ 货品消耗成本", analysis.consumedCost?.let { money(it) } ?: "—", true)
+                        AnalysisFormulaRow("营业额 － 货品消耗", analysis.grossProfit?.let { money(it) } ?: "—", true)
+                        AnalysisFormulaRow("预估毛利 － 日常开销", analysis.operatingProfit?.let { money(it) } ?: "—", true)
+                    }
+                }
+            }
+        }
+
+        item {
+            Text(
+                "商品成本明细",
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleMedium
+            )
+        }
+
+        if (analysis.items.isEmpty()) {
+            item {
+                Text(
+                    "当天没有可分析的库存或采购商品。",
+                    color = Color.Gray,
+                    modifier = Modifier.padding(vertical = 8.dp)
+                )
+            }
+        } else {
+            items(
+                items = analysis.items,
+                key = { "${it.fruitId}|${it.unit}" }
+            ) { item ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFAFBFC)),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 11.dp, vertical = 9.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                item.fruitName,
+                                modifier = Modifier.weight(1f),
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                when {
+                                    item.quantityAnomaly -> "库存异常"
+                                    !item.inventorySaved -> "待盘点"
+                                    !item.costAvailable -> "缺成本"
+                                    else -> "已盘点"
+                                },
+                                color = when {
+                                    item.quantityAnomaly -> MaterialTheme.colorScheme.error
+                                    !item.inventorySaved || !item.costAvailable -> Color(0xFFB26A00)
+                                    else -> BrandGreen
+                                },
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                        Text(
+                            "结转 ${fmt(item.openingQuantity)}${item.unit}  ＋ 采购 ${fmt(item.purchasedQuantity)}${item.unit}  － 剩余 ${fmt(item.remainingQuantity)}${item.unit}  ＝ 消耗 ${fmt(item.consumedQuantity)}${item.unit}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "加权成本 ${item.averageUnitCost?.let { money(it) + "/" + item.unit } ?: "—"}  ·  消耗成本 ${item.consumedCost?.let { money(it) } ?: "—"}  ·  剩余成本 ${item.closingCost?.let { money(it) } ?: "—"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.DarkGray
+                        )
+                        if (item.openingQuantity > 0.000001 && item.previousSnapshotDate != null) {
+                            Text(
+                                "结转来源：${item.previousSnapshotDate}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (item.previousSnapshotDate == runCatching { LocalDate.parse(date).minusDays(1).toString() }.getOrDefault("")) Color.Gray else Color(0xFFB26A00)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            Text(
+                "说明：本页使用库存成本估算经营利润。库存按商品＋单位采用移动加权成本；计划采购不计入成本，只统计已完成采购。正常损耗已经包含在库存减少中，不会重复扣除。若今日库存未完整盘点或结转成本缺失，结果会标记为参考值。",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun AnalysisFormulaRow(
+    label: String,
+    value: String,
+    bold: Boolean = false
+) {
+    Row(Modifier.fillMaxWidth()) {
+        Text(
+            label,
+            modifier = Modifier.weight(1f),
+            color = if (bold) Color.Unspecified else Color.DarkGray,
+            fontWeight = if (bold) FontWeight.SemiBold else FontWeight.Normal
+        )
+        Text(
+            value,
+            fontWeight = if (bold) FontWeight.Bold else FontWeight.Medium
+        )
+    }
+}
 
 private enum class PersonalTrendMetric(val label: String) {
     RECEIPT("收款"),
@@ -14979,7 +15293,7 @@ private fun AboutAppContent(
                     icon = "📝",
                     title = "本版更新",
                     subtitle =
-                        "更多页分组、首页顶部个性化、更新入口移入关于",
+                        "新增经营分析与预估经营利润，修复快捷操作设置滚动",
                     onClick = {
                     }
                 )
@@ -15225,7 +15539,8 @@ private fun HomeQuickActionsSettingsContent(
 
     Column(
         Modifier
-            .fillMaxWidth()
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
