@@ -2338,8 +2338,8 @@ private fun InventoryScreen(
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(9.dp)
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp)
     ) {
         item {
             PageHeader("库存", "独立库存清单")
@@ -2425,36 +2425,48 @@ private fun InventoryScreen(
 
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(11.dp),
                     colors = CardDefaults.cardColors(containerColor = Color.White)
                 ) {
                     Column(
-                        Modifier.fillMaxWidth().padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(7.dp)
+                        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Row(
                             Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(item.fruitName, fontWeight = FontWeight.Bold, fontSize = 17.sp)
-                                Text(
-                                    if (item.purchasedQuantity > 0.000001) "今日有采购" else "历史库存结转",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (item.purchasedQuantity > 0.000001) BrandGreen else Color.Gray
-                                )
-                            }
-                            if (item.saved) {
-                                Text(
-                                    "已保存",
-                                    color = BrandGreen,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
+                            Text(
+                                item.fruitName,
+                                modifier = Modifier.weight(1f),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                maxLines = 1
+                            )
+                            Text(
+                                buildString {
+                                    append(
+                                        if (item.purchasedQuantity > 0.000001) {
+                                            "今日有采购"
+                                        } else {
+                                            "历史结转"
+                                        }
+                                    )
+                                    if (item.saved) append(" · 已保存")
+                                },
+                                color =
+                                    if (item.purchasedQuantity > 0.000001 || item.saved) {
+                                        BrandGreen
+                                    } else {
+                                        Color.Gray
+                                    },
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1
+                            )
                         }
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             CompactReadOnlyField(
                                 "结转库存",
                                 "${fmt(item.openingQuantity)}${item.unit}",
@@ -2466,30 +2478,24 @@ private fun InventoryScreen(
                                 Modifier.weight(1f)
                             )
                             CompactReadOnlyField(
-                                "可用合计",
+                                "可售合计",
                                 "${fmt(available)}${item.unit}",
+                                Modifier.weight(1f)
+                            )
+                            CompactNumberField(
+                                "剩余库存",
+                                input,
+                                { remainingInputs[key] = it },
                                 Modifier.weight(1f)
                             )
                         }
 
-                        CompactNumberField(
-                            "剩余库存（${item.unit}）",
-                            input,
-                            { remainingInputs[key] = it },
-                            Modifier.fillMaxWidth()
-                        )
-
-                        if (delta != null) {
-                            val text =
-                                if (delta >= -0.000001) {
-                                    "本日减少 ${fmt(delta.coerceAtLeast(0.0))}${item.unit}"
-                                } else {
-                                    "盘点比可用库存多 ${fmt(-delta)}${item.unit}，请核对采购或结转记录"
-                                }
+                        if (delta != null && delta < -0.000001) {
                             Text(
-                                text,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (delta >= -0.000001) Color.Gray else MaterialTheme.colorScheme.error
+                                "盘点比可售合计多 ${fmt(-delta)}${item.unit}，请核对采购或结转记录",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                                maxLines = 1
                             )
                         }
                     }
@@ -2990,9 +2996,10 @@ private fun PurchaseScreen(
                 unit = product?.defaultUnit ?: "件",
                 quantity = "1",
                 unitPrice = "0",
-                totalCost = "",
+                totalCost = "0",
                 buyerId = defaultBuyerId(),
-                buyerNameSnapshot = defaultBuyerName()
+                buyerNameSnapshot = defaultBuyerName(),
+                priceSource = PurchasePriceSource.UNIT
             )
         )
     }
@@ -3085,9 +3092,10 @@ private fun PurchaseScreen(
             unit = product?.defaultUnit ?: "件",
             quantity = "1",
             unitPrice = "0",
-            totalCost = "",
+            totalCost = "0",
             buyerId = defaultBuyerId(),
-            buyerNameSnapshot = defaultBuyerName()
+            buyerNameSnapshot = defaultBuyerName(),
+            priceSource = PurchasePriceSource.UNIT
         )
     }
 
@@ -3156,7 +3164,11 @@ private fun PurchaseScreen(
                     quantity = cleanNumber(quantityValue),
                     unitPrice = cleanNumber(rememberedPrice),
                     totalCost =
-                        if (item.status == 1) cleanNumber(item.actualAmount) else "",
+                        if (item.status == 1) {
+                            cleanNumber(item.actualAmount)
+                        } else {
+                            cleanNumber(quantityValue * rememberedPrice)
+                        },
                     buyerId = item.buyerId.takeIf { it > 0L },
                     buyerNameSnapshot = item.buyerName,
                     priceSource =
@@ -3237,7 +3249,7 @@ private fun PurchaseScreen(
                     unit = stock.unit,
                     quantity = "1",
                     unitPrice = cleanNumber(rememberedPrice),
-                    totalCost = "",
+                    totalCost = cleanNumber(rememberedPrice),
                     buyerId = defaultBuyerId(),
                     buyerNameSnapshot = defaultBuyerName(),
                     priceSource = PurchasePriceSource.UNIT
@@ -3607,30 +3619,13 @@ private fun PurchaseScreen(
 
         item {
             if (editingOrderId == null) {
-                Row(
+                CompactDateNavigator(
+                    label = "日期",
+                    date = date,
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.Bottom
-                ) {
-                    CompactDateNavigator(
-                        label = "日期",
-                        date = date,
-                        modifier = Modifier.weight(1f),
-                        chineseDisplay = true,
-                        showWeekday = true
-                    ) { onWorkDateChange(it) }
-
-                    OutlinedButton(
-                        onClick = {
-                            focusManager.clearFocus()
-                            importPreviousInventory()
-                        },
-                        modifier = Modifier.height(44.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp)
-                    ) {
-                        Text("导入库存", maxLines = 1)
-                    }
-                }
+                    chineseDisplay = true,
+                    showWeekday = true
+                ) { onWorkDateChange(it) }
             } else {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -3670,6 +3665,20 @@ private fun PurchaseScreen(
                 }
             }
         }
+
+        val importInventoryRowId =
+            if (editingOrderId == null) {
+                rows.firstOrNull { candidate ->
+                    val candidateItem = collaborationItemFor(candidate)
+                    candidate.planItemId == null ||
+                        (
+                            candidateItem?.status == 0 &&
+                                editingPlanItemId == candidateItem.id
+                        )
+                }?.rowId
+            } else {
+                null
+            }
 
         items(rows, key = { row -> "purchase_draft_${row.rowId}" }) { row ->
             val collaborationItem = collaborationItemFor(row)
@@ -3734,6 +3743,13 @@ private fun PurchaseScreen(
                                     unit = unit,
                                     onOrBeforeDate = date
                                 )
+                            },
+                            showImportInventory =
+                                editingOrderId == null &&
+                                    row.rowId == importInventoryRowId,
+                            onImportInventory = {
+                                focusManager.clearFocus()
+                                importPreviousInventory()
                             },
                             onChange = { updated -> updateRow(row.rowId, updated) },
                         onAddFruit = {
@@ -4242,7 +4258,7 @@ private fun PurchaseScreen(
                                     fruitNameSnapshot = name.trim(),
                                     unit = defaultUnit.ifBlank { "件" },
                                     unitPrice = "0",
-                                    totalCost = "",
+                                    totalCost = "0",
                                     priceSource = PurchasePriceSource.UNIT
                                 )
                             )
@@ -5317,6 +5333,8 @@ private fun PurchaseDraftRowEditor(
     canDelete: Boolean,
     inventoryQuantity: Double?,
     lookupUnitPrice: (Long, String) -> Double?,
+    showImportInventory: Boolean,
+    onImportInventory: () -> Unit,
     onChange: (PurchaseDraftRow) -> Unit,
     onAddFruit: () -> Unit,
     onDelete: () -> Unit
@@ -5388,12 +5406,21 @@ private fun PurchaseDraftRowEditor(
         return
     }
 
+    fun calculatedTotal(quantityText: String, unitPriceText: String): String {
+        val quantity = quantityText.toDoubleOrNull() ?: return "0"
+        val unitPrice = unitPriceText.toDoubleOrNull() ?: return "0"
+        return cleanNumber((quantity * unitPrice).coerceAtLeast(0.0))
+    }
+
     fun updateQuantity(value: String) {
         val quantity = value.toDoubleOrNull() ?: 0.0
         val updated =
             when (row.priceSource) {
                 PurchasePriceSource.UNIT ->
-                    row.copy(quantity = value)
+                    row.copy(
+                        quantity = value,
+                        totalCost = calculatedTotal(value, row.unitPrice)
+                    )
 
                 PurchasePriceSource.TOTAL -> {
                     val total = row.totalCost.toDoubleOrNull()
@@ -5420,6 +5447,7 @@ private fun PurchaseDraftRowEditor(
         onChange(
             row.copy(
                 unitPrice = value,
+                totalCost = calculatedTotal(row.quantity, value),
                 priceSource = PurchasePriceSource.UNIT
             )
         )
@@ -5490,7 +5518,11 @@ private fun PurchaseDraftRowEditor(
                                             fruitNameSnapshot = fruit.name,
                                             unit = targetUnit,
                                             unitPrice = cleanNumber(remembered),
-                                            totalCost = "",
+                                            totalCost =
+                                                calculatedTotal(
+                                                    row.quantity,
+                                                    cleanNumber(remembered)
+                                                ),
                                             priceSource = PurchasePriceSource.UNIT
                                         )
                                     )
@@ -5546,6 +5578,20 @@ private fun PurchaseDraftRowEditor(
                                 )
                             }
                         }
+                    }
+                }
+
+                if (showImportInventory) {
+                    OutlinedButton(
+                        onClick = onImportInventory,
+                        modifier = Modifier.height(36.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                    ) {
+                        Text(
+                            "导入库存",
+                            fontSize = 12.sp,
+                            maxLines = 1
+                        )
                     }
                 }
 
@@ -5625,7 +5671,11 @@ private fun PurchaseDraftRowEditor(
                                         row.copy(
                                             unit = unit,
                                             unitPrice = cleanNumber(remembered),
-                                            totalCost = "",
+                                            totalCost =
+                                                calculatedTotal(
+                                                    row.quantity,
+                                                    cleanNumber(remembered)
+                                                ),
                                             priceSource = PurchasePriceSource.UNIT
                                         )
                                     )
