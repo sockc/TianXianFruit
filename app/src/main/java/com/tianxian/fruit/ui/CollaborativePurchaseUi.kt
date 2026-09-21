@@ -1387,29 +1387,49 @@ internal fun CollaborationCompleteDialog(
         mutableStateOf(false)
     }
 
+    val initialQuantity =
+        if (editingCompleted && item.actualQuantity > 0) {
+            item.actualQuantity
+        } else {
+            item.quantity
+        }
+    val initialAmount =
+        if (editingCompleted) {
+            item.actualAmount
+        } else {
+            item.estimatedAmount
+        }
+    val initialUnitPrice =
+        when {
+            initialQuantity > 0 -> initialAmount / initialQuantity
+            referenceUnitPrice != null -> referenceUnitPrice.coerceAtLeast(0.0)
+            else -> 0.0
+        }
+
     var quantity by remember(
-        item.id
+        item.id,
+        editingCompleted
     ) {
         mutableStateOf(
-            collaborationNumber(
-                if (editingCompleted && item.actualQuantity > 0) {
-                    item.actualQuantity
-                } else {
-                    item.quantity
-                }
-            )
+            collaborationNumber(initialQuantity)
+        )
+    }
+
+    var unitPriceInput by remember(
+        item.id,
+        editingCompleted
+    ) {
+        mutableStateOf(
+            collaborationNumber(initialUnitPrice)
         )
     }
 
     var amount by remember(
-        item.id
+        item.id,
+        editingCompleted
     ) {
         mutableStateOf(
-            if (editingCompleted) {
-                collaborationNumber(item.actualAmount)
-            } else {
-                ""
-            }
+            collaborationNumber(initialAmount)
         )
     }
 
@@ -1433,17 +1453,11 @@ internal fun CollaborationCompleteDialog(
     val amountNumber =
         amountParsed ?: 0.0
 
+    val unitPriceParsed =
+        unitPriceInput.toDoubleOrNull()
+
     val unitPrice =
-        if (
-            quantityNumber > 0 &&
-            amountParsed != null &&
-            amountNumber >= 0
-        ) {
-            amountNumber /
-                quantityNumber
-        } else {
-            0.0
-        }
+        unitPriceParsed ?: 0.0
 
     val rememberedUnitPrice =
         referenceUnitPrice
@@ -1491,8 +1505,27 @@ internal fun CollaborationCompleteDialog(
                     CollaborationNumberField(
                         "实际数量",
                         quantity,
-                        {
-                            quantity = it
+                        { value ->
+                            quantity = value
+                            val q = value.toDoubleOrNull()
+                            val p = unitPriceInput.toDoubleOrNull()
+                            if (q != null && q > 0 && p != null && p >= 0) {
+                                amount = collaborationNumber(q * p)
+                            }
+                        },
+                        Modifier.weight(1f)
+                    )
+
+                    CollaborationNumberField(
+                        "实际单价",
+                        unitPriceInput,
+                        { value ->
+                            unitPriceInput = value
+                            val q = quantity.toDoubleOrNull()
+                            val p = value.toDoubleOrNull()
+                            if (q != null && q > 0 && p != null && p >= 0) {
+                                amount = collaborationNumber(q * p)
+                            }
                         },
                         Modifier.weight(1f)
                     )
@@ -1500,8 +1533,13 @@ internal fun CollaborationCompleteDialog(
                     CollaborationNumberField(
                         "实际总价",
                         amount,
-                        {
-                            amount = it
+                        { value ->
+                            amount = value
+                            val q = quantity.toDoubleOrNull()
+                            val total = value.toDoubleOrNull()
+                            if (q != null && q > 0 && total != null && total >= 0) {
+                                unitPriceInput = collaborationNumber(total / q)
+                            }
                         },
                         Modifier.weight(1f)
                     )
@@ -1509,14 +1547,11 @@ internal fun CollaborationCompleteDialog(
 
                 Text(
                     when {
-                        amountParsed != null && quantityNumber > 0 ->
-                            "单价 ${collaborationMoney(unitPrice)}/${item.unit}"
-
                         rememberedUnitPrice != null ->
-                            "参考单价 ${collaborationMoney(rememberedUnitPrice)}/${item.unit} · 总价请按实际确认"
+                            "计划总价 ${collaborationMoney(item.estimatedAmount)} · 参考单价 ${collaborationMoney(rememberedUnitPrice)}/${item.unit}"
 
                         else ->
-                            "单价 — · 总价请按实际确认"
+                            "计划总价 ${collaborationMoney(item.estimatedAmount)}"
                     },
                     color = Color.Gray
                 )
@@ -1568,9 +1603,9 @@ internal fun CollaborationCompleteDialog(
 
                 Text(
                     if (editingCompleted) {
-                        "保存后会同步修改对应正式采购记录和当天进货金额。"
+                        "修改实际单价会自动计算总价；修改实际总价会自动反算单价。保存后同步更新当天进货金额。"
                     } else {
-                        "计划单价只作参考；实际总价不会自动带入，确认后才计入当天进货。"
+                        "实际总价默认使用计划总价。价格不同时可修改实际单价或实际总价，两者会自动换算。"
                     },
                     style =
                         MaterialTheme
@@ -1609,11 +1644,13 @@ internal fun CollaborationCompleteDialog(
                             "请选择采购人"
                     } else if (
                         quantityNumber <= 0 ||
+                        unitPriceParsed == null ||
+                        unitPrice < 0 ||
                         amountParsed == null ||
                         amountNumber < 0
                     ) {
                         error =
-                            "实际数量必须大于0，总价可填写0但不能留空"
+                            "实际数量必须大于0，实际单价和总价可为0但不能留空"
                     } else {
                         val result =
                             if (editingCompleted) {

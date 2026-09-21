@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -3025,6 +3026,10 @@ private fun PurchaseScreen(
         remember(dataVersion, date) {
             db.getPurchaseOrdersForDate(date)
         }
+    val dayPurchasedTotal =
+        remember(dayPurchaseOrders) {
+            dayPurchaseOrders.sumOf { it.order.totalCost }
+        }
     val latestInventorySnapshot =
         remember(dataVersion, date) {
             db.getLatestInventorySnapshotBefore(date)
@@ -3493,7 +3498,7 @@ private fun PurchaseScreen(
                     (it.totalCost.toDoubleOrNull() ?: -1.0) < 0
             }
         if (invalidData != null) {
-            message = "完成采购前请填写实际总价；计划中的总价不会自动带入"
+            message = "完成采购前请确认实际数量和总价"
             return
         }
 
@@ -3634,13 +3639,25 @@ private fun PurchaseScreen(
 
         item {
             if (editingOrderId == null) {
-                CompactDateNavigator(
-                    label = "日期",
-                    date = date,
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    chineseDisplay = true,
-                    showWeekday = true
-                ) { onWorkDateChange(it) }
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    CompactDateNavigator(
+                        label = "日期",
+                        date = date,
+                        modifier = Modifier.fillMaxWidth(),
+                        chineseDisplay = true,
+                        showWeekday = true
+                    ) { onWorkDateChange(it) }
+                    Text(
+                        "当日已采购总额 ${money(dayPurchasedTotal)}",
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.Gray
+                    )
+                }
             } else {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -5301,9 +5318,19 @@ private fun PurchasePlanStatusCard(
                 Spacer(Modifier.width(7.dp))
                 Text(
                     item.fruitName,
-                    modifier = Modifier.weight(1f),
                     fontWeight = FontWeight.Bold
                 )
+                if (!completed) {
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        "剩余库存 " +
+                            (inventoryQuantity?.let { "${fmt(it)}${item.unit}" } ?: "—"),
+                        color = Color(0xFFD32F2F),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Spacer(Modifier.weight(1f))
                 Text(
                     if (completed) "已完成采购" else "待采购  ›",
                     color = if (completed) BrandGreen else Color(0xFF8A6D00),
@@ -5318,15 +5345,9 @@ private fun PurchasePlanStatusCard(
                         "单价 ${money(unitPrice)}/${item.unit}   " +
                         "总价 ${money(amount)}   $buyer"
                 } else {
-                    "库存 " +
-                        (
-                            inventoryQuantity
-                                ?.let { fmt(it) }
-                                ?: "—"
-                            ) +
-                        "   数量 ${fmt(quantity)}${item.unit}   " +
+                    "计划数量 ${fmt(quantity)}${item.unit}   " +
                         "单价 ${money(unitPrice)}/${item.unit}   " +
-                        "总价 ${money(amount)}   $buyer"
+                        "计划总额 ${money(amount)}   $buyer"
                 }
 
             Text(
