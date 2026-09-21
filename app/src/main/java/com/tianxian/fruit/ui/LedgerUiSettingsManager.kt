@@ -123,6 +123,40 @@ class LedgerUiSettingsManager(
             .apply()
     }
 
+    fun loadHomeQuickActions(
+        ledgerId: String
+    ): List<String> {
+        val prefix = keyPrefix(ledgerId)
+        val raw = prefs.getString(
+            "${prefix}_home_quick_actions",
+            DEFAULT_HOME_QUICK_ACTIONS
+        ).orEmpty()
+
+        return raw.split(',')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .take(8)
+    }
+
+    fun saveHomeQuickActions(
+        ledgerId: String,
+        actionKeys: List<String>
+    ) {
+        val prefix = keyPrefix(ledgerId)
+        prefs.edit()
+            .putString(
+                "${prefix}_home_quick_actions",
+                actionKeys
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .take(8)
+                    .joinToString(",")
+            )
+            .apply()
+    }
+
     fun saveBackgroundImage(
         ledgerId: String,
         source: Uri
@@ -250,6 +284,9 @@ class LedgerUiSettingsManager(
             .remove(
                 "${prefix}_background"
             )
+            .remove(
+                "${prefix}_home_quick_actions"
+            )
             .apply()
     }
 
@@ -335,6 +372,9 @@ class LedgerUiSettingsManager(
 
         private const val DEFAULT_TAGLINE =
             "新鲜水果 · 从这里开始！"
+
+        private const val DEFAULT_HOME_QUICK_ACTIONS =
+            "STATS,PROFIT,REPORT,HISTORY"
 
         private const val MAX_IMAGE_WIDTH =
             1920

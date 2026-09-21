@@ -79,12 +79,12 @@ private val SoftPurple = Color(0xFFF3ECFF)
 
 enum class AppPage(val title: String, val emoji: String) {
     HOME("首页", "🏠"),
-    PURCHASE("采购", "📦"),
+    INVENTORY("库存", "📦"),
+    PURCHASE("采购", "🛒"),
     SESSION("营业", "📝"),
     SETTLEMENT("结算", "🧾"),
     MORE("更多", "☰"),
-    PLAN("采购", "🛒"),
-    INVENTORY("库存", "📦")
+    PLAN("采购计划", "📋")
 }
 
 private enum class MorePage {
@@ -94,6 +94,7 @@ private enum class MorePage {
     MEMBER_PERMISSIONS,
     SYSTEM_ADMIN,
     HOME_HEADER,
+    HOME_QUICK_ACTIONS,
     SECURITY,
     ABOUT,
     HISTORY,
@@ -106,6 +107,62 @@ private enum class MorePage {
     PROFIT,
     FRUITS,
     REPORT
+}
+
+private enum class HomeQuickAction(
+    val icon: String,
+    val label: String,
+    val target: MorePage
+) {
+    HISTORY("🧾", "历史记录", MorePage.HISTORY),
+    PURCHASE_ACTIVITY("🛒", "协作采购", MorePage.PURCHASE_ACTIVITY),
+    STATS("📊", "经营统计", MorePage.STATS),
+    PERSONAL_SUMMARY("👤", "个人汇总", MorePage.PERSONAL_SUMMARY),
+    REPORT("📄", "生成报表", MorePage.REPORT),
+    PROFIT("💰", "利润分配", MorePage.PROFIT),
+    BACKUP("💾", "数据备份", MorePage.BACKUP),
+    CLOUD_BOOKS("☁️", "云端账本", MorePage.CLOUD_BOOKS),
+    MEMBER_PERMISSIONS("👥", "成员权限", MorePage.MEMBER_PERMISSIONS),
+    PARTNERS("🤝", "合伙人", MorePage.PARTNERS),
+    STORES("📍", "位置管理", MorePage.STORES),
+    FRUITS("🍇", "商品管理", MorePage.FRUITS),
+    SECURITY("🔐", "安全验证", MorePage.SECURITY),
+    HOME_HEADER("🎨", "首页设置", MorePage.HOME_HEADER),
+    ABOUT("ℹ️", "关于", MorePage.ABOUT),
+    BOOKS("📚", "账本管理", MorePage.BOOKS),
+    SYSTEM_ADMIN("🛡", "系统管理", MorePage.SYSTEM_ADMIN)
+}
+
+private fun homeQuickActionAllowed(
+    action: HomeQuickAction,
+    currentBook: LedgerBook,
+    systemRole: String
+): Boolean {
+    fun allowed(permission: String): Boolean =
+        BookPermissions.has(currentBook, systemRole, permission)
+
+    return when (action) {
+        HomeQuickAction.HISTORY -> allowed(BookPermissions.HISTORY_VIEW)
+        HomeQuickAction.PURCHASE_ACTIVITY ->
+            allowed(BookPermissions.PURCHASE_ACTIVITY_VIEW) ||
+                allowed(BookPermissions.PURCHASE_PLAN_EDIT)
+        HomeQuickAction.STATS,
+        HomeQuickAction.PERSONAL_SUMMARY -> allowed(BookPermissions.STATS_VIEW)
+        HomeQuickAction.REPORT -> allowed(BookPermissions.REPORT_VIEW)
+        HomeQuickAction.PROFIT -> allowed(BookPermissions.PROFIT_VIEW)
+        HomeQuickAction.BACKUP ->
+            currentBook.permission == "OWNER" || systemRole == "SUPERADMIN"
+        HomeQuickAction.MEMBER_PERMISSIONS -> currentBook.cloudEnabled
+        HomeQuickAction.PARTNERS,
+        HomeQuickAction.STORES,
+        HomeQuickAction.FRUITS -> allowed(BookPermissions.BASIC_EDIT)
+        HomeQuickAction.BOOKS,
+        HomeQuickAction.SYSTEM_ADMIN -> systemRole == "SUPERADMIN"
+        HomeQuickAction.CLOUD_BOOKS,
+        HomeQuickAction.SECURITY,
+        HomeQuickAction.HOME_HEADER,
+        HomeQuickAction.ABOUT -> true
+    }
 }
 
 private enum class HistoryTimeFilter(val label: String) {
@@ -896,8 +953,9 @@ fun TianXianApp(
                                     canBusinessEdit
                                 AppPage.SETTLEMENT ->
                                     canSettlementEdit
-                                AppPage.PLAN,
                                 AppPage.INVENTORY ->
+                                    true
+                                AppPage.PLAN ->
                                     false
                             }
                         }
@@ -1044,6 +1102,10 @@ fun TianXianApp(
                                 MorePage.MENU
                             page =
                                 AppPage.MORE
+                        },
+                        onOpenMore = { target ->
+                            moreTarget = target
+                            page = AppPage.MORE
                         }
                     )
                     AppPage.INVENTORY ->
@@ -1228,6 +1290,73 @@ private fun PageHeader(
 }
 
 @Composable
+private fun BusinessDateHeader(
+    pageTitle: String,
+    date: String,
+    onDate: (String) -> Unit
+) {
+    val parsedDate =
+        runCatching { LocalDate.parse(date) }
+            .getOrElse { LocalDate.now() }
+    var showPicker by remember { mutableStateOf(false) }
+    val displayText =
+        parsedDate.format(
+            DateTimeFormatter.ofPattern("yyyy年M月d日")
+        ) + "  " + chineseWeekday(parsedDate)
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        TextButton(
+            onClick = { showPicker = true },
+            modifier = Modifier
+                .weight(1f)
+                .height(44.dp)
+                .pointerInput(parsedDate) {
+                    var totalDrag = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { totalDrag = 0f },
+                        onHorizontalDrag = { _, dragAmount -> totalDrag += dragAmount },
+                        onDragEnd = {
+                            when {
+                                totalDrag <= -70f -> onDate(parsedDate.plusDays(1).toString())
+                                totalDrag >= 70f -> onDate(parsedDate.minusDays(1).toString())
+                            }
+                        },
+                        onDragCancel = { totalDrag = 0f }
+                    )
+                },
+            contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp)
+        ) {
+            Text(
+                displayText,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
+        }
+        PageSyncStatus(pageTitle = pageTitle)
+    }
+
+    if (showPicker) {
+        QuickDatePickerDialog(
+            selectedDate = parsedDate,
+            onDismiss = { showPicker = false },
+            onSelect = { selected ->
+                showPicker = false
+                onDate(selected.toString())
+            }
+        )
+    }
+}
+
+@Composable
 private fun MetricCard(title: String, value: String, modifier: Modifier = Modifier, color: Color = SoftGreen, sub: String? = null) {
     Card(modifier, colors = CardDefaults.cardColors(containerColor = color)) {
         Column(Modifier.padding(14.dp)) {
@@ -1263,7 +1392,8 @@ private fun HomeScreen(
     onReport: () -> Unit,
     onFruits: () -> Unit,
     onInventory: () -> Unit,
-    onMore: () -> Unit
+    onMore: () -> Unit,
+    onOpenMore: (MorePage) -> Unit
 ) {
     var selectedDate by remember {
         mutableStateOf(
@@ -1885,86 +2015,65 @@ private fun HomeScreen(
                             }
                             }
 
+                        val availableQuickActions =
+                            HomeQuickAction.entries.filter {
+                                homeQuickActionAllowed(it, currentBook, systemRole)
+                            }
+                        val savedQuickActionKeys =
+                            ledgerUiSettingsManager.loadHomeQuickActions(currentBook.id)
                         val quickActions =
-                            buildList {
-                                if (canViewStats) {
-                                    add(
-                                        Triple(
-                                            "📊",
-                                            "经营统计",
-                                            onStats
-                                        )
-                                    )
-                                }
-                                if (canViewProfit) {
-                                    add(
-                                        Triple(
-                                            "💰",
-                                            "利润分配",
-                                            onProfit
-                                        )
-                                    )
-                                }
-                                if (canViewReport) {
-                                    add(
-                                        Triple(
-                                            "📄",
-                                            "生成报表",
-                                            onReport
-                                        )
-                                    )
-                                }
-                                if (canViewHistory) {
-                                    add(
-                                        Triple(
-                                            "🧾",
-                                            "历史记录",
-                                            onHistory
-                                        )
-                                    )
+                            savedQuickActionKeys.mapNotNull { key ->
+                                HomeQuickAction.entries.firstOrNull { it.name == key }
+                            }.filter { it in availableQuickActions }
+                                .take(8)
+
+                        if (availableQuickActions.isNotEmpty()) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "快捷操作",
+                                    modifier = Modifier.weight(1f),
+                                    fontWeight = FontWeight.Bold
+                                )
+                                TextButton(
+                                    onClick = { onOpenMore(MorePage.HOME_QUICK_ACTIONS) },
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                                ) {
+                                    Text("编辑", fontSize = 12.sp)
                                 }
                             }
 
-                        if (quickActions.isNotEmpty()) {
-                            Text(
-                                "快捷操作",
-                                fontWeight =
-                                    FontWeight.Bold
-                            )
-
-                            Row(
-                                horizontalArrangement =
-                                    Arrangement.spacedBy(8.dp)
-                            ) {
-                                quickActions
-                                    .take(4)
-                                    .forEachIndexed {
-                                        index,
-                                        action ->
-                                        QuickActionTile(
-                                            action.first,
-                                            action.second,
-                                            action.third,
-                                            Modifier.weight(1f),
-                                            listOf(
-                                                SoftGreen,
-                                                SoftOrange,
-                                                SoftBlue,
-                                                SoftPurple
-                                            )[index]
-                                        )
+                            if (quickActions.isEmpty()) {
+                                Text(
+                                    "暂未设置首页快捷操作",
+                                    color = Color.Gray,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            } else {
+                                quickActions.chunked(4).forEachIndexed { rowIndex, rowActions ->
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        rowActions.forEachIndexed { columnIndex, action ->
+                                            val colorIndex = (rowIndex * 4 + columnIndex) % 4
+                                            QuickActionTile(
+                                                action.icon,
+                                                action.label,
+                                                { onOpenMore(action.target) },
+                                                Modifier.weight(1f),
+                                                listOf(SoftGreen, SoftOrange, SoftBlue, SoftPurple)[colorIndex]
+                                            )
+                                        }
+                                        repeat(4 - rowActions.size) {
+                                            Spacer(Modifier.weight(1f))
+                                        }
                                     }
-
-                                repeat(
-                                    (4 -
-                                        quickActions
-                                            .take(4)
-                                            .size)
-                                        .coerceAtLeast(0)
-                                ) {
-                                    Spacer(
-                                        Modifier.weight(1f)
-                                    )
+                                    if (rowIndex != quickActions.chunked(4).lastIndex) {
+                                        Spacer(Modifier.height(5.dp))
+                                    }
                                 }
                             }
                         }
@@ -2345,16 +2454,9 @@ private fun InventoryScreen(
         verticalArrangement = Arrangement.spacedBy(5.dp)
     ) {
         item {
-            PageHeader("库存", "独立库存清单")
-        }
-
-        item {
-            CompactDateNavigator(
-                label = null,
+            BusinessDateHeader(
+                pageTitle = "库存",
                 date = date,
-                modifier = Modifier.fillMaxWidth(),
-                chineseDisplay = true,
-                showWeekday = true,
                 onDate = onWorkDateChange
             )
         }
@@ -3612,7 +3714,13 @@ private fun PurchaseScreen(
         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        item { PageHeader("采购", null) }
+        item {
+            BusinessDateHeader(
+                pageTitle = "采购",
+                date = date,
+                onDate = onWorkDateChange
+            )
+        }
 
         if (editingOrderId != null) {
             item {
@@ -3647,13 +3755,6 @@ private fun PurchaseScreen(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    CompactDateNavigator(
-                        label = null,
-                        date = date,
-                        modifier = Modifier.fillMaxWidth(),
-                        chineseDisplay = true,
-                        showWeekday = true
-                    ) { onWorkDateChange(it) }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -3680,15 +3781,7 @@ private fun PurchaseScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.Bottom
                 ) {
-                    CompactDateNavigator(
-                        label = null,
-                        date = date,
-                        modifier = Modifier.weight(1f),
-                        chineseDisplay = true,
-                        showWeekday = true
-                    ) { onWorkDateChange(it) }
-
-                    Box(Modifier.width(110.dp)) {
+                    Box(Modifier.fillMaxWidth()) {
                         CompactSelectButton(
                             "采购人",
                             editBuyerDisplayName,
@@ -6048,7 +6141,13 @@ private fun SessionScreen(
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(7.dp)
     ) {
-        item { PageHeader("营业记录", null) }
+        item {
+            BusinessDateHeader(
+                pageTitle = "营业",
+                date = date,
+                onDate = onWorkDateChange
+            )
+        }
 
         if (editingRecordId != null) {
             item {
@@ -6067,16 +6166,6 @@ private fun SessionScreen(
                     }
                 }
             }
-        }
-
-        item {
-            CompactDateNavigator(
-                label = null,
-                date = date,
-                modifier = Modifier.fillMaxWidth(),
-                chineseDisplay = true,
-                showWeekday = true
-            ) { onWorkDateChange(it) }
         }
 
         if (todayRecords.isNotEmpty()) {
@@ -6292,12 +6381,66 @@ private fun SessionScreen(
         }
 
         item {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                CompactNumberField(
+                    "日常开销",
+                    expense,
+                    { expense = it },
+                    Modifier.weight(1f)
+                )
+
+                Box(Modifier.weight(1.15f)) {
+                    CompactSelectButton(
+                        "费用付款人",
+                        expensePayerDisplayName,
+                        Modifier.fillMaxWidth()
+                    ) { expensePayerMenu = true }
+
+                    DropdownMenu(
+                        expanded = expensePayerMenu,
+                        onDismissRequest = { expensePayerMenu = false }
+                    ) {
+                        partners.forEach { p ->
+                            DropdownMenuItem(
+                                text = { Text(p.name) },
+                                onClick = {
+                                    expensePayerId = p.id
+                                    historicalExpensePayerName = ""
+                                    expensePayerMenu = false
+                                }
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = { Text("未指定") },
+                            onClick = {
+                                expensePayerId = null
+                                historicalExpensePayerName = ""
+                                expensePayerMenu = false
+                            }
+                        )
+                    }
+                }
+
+                CompactReadOnlyField(
+                    "小计",
+                    money(receiptRows.firstOrNull()?.total ?: 0.0),
+                    Modifier.weight(1f)
+                )
+            }
+        }
+
+        item {
             receiptRows.forEachIndexed { index, row ->
                 ReceiptSplitDraftRow(
                     row = row,
                     partners = partners,
                     historical = editingRecordId != null,
-                    canDelete = receiptRows.size > 1,
+                    showHeader = index > 0,
+                    canDelete = index > 0,
                     onChange = { updated ->
                         val target = receiptRows.indexOfFirst { it.rowId == updated.rowId }
                         if (target >= 0) receiptRows[target] = updated
@@ -6340,46 +6483,6 @@ private fun SessionScreen(
                     )
                 }
             }
-        }
-
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
-                CompactNumberField("日常开销", expense, { expense = it }, Modifier.weight(1f))
-
-                Box(Modifier.weight(1f)) {
-                    CompactSelectButton(
-                        "费用付款人",
-                        expensePayerDisplayName,
-                        Modifier.fillMaxWidth()
-                    ) { expensePayerMenu = true }
-
-                    DropdownMenu(
-                        expanded = expensePayerMenu,
-                        onDismissRequest = { expensePayerMenu = false }
-                    ) {
-                        partners.forEach { p ->
-                            DropdownMenuItem(
-                                text = { Text(p.name) },
-                                onClick = {
-                                    expensePayerId = p.id
-                                    historicalExpensePayerName = ""
-                                    expensePayerMenu = false
-                                }
-                            )
-                        }
-                        DropdownMenuItem(
-                            text = { Text("未指定") },
-                            onClick = {
-                                expensePayerId = null
-                                historicalExpensePayerName = ""
-                                expensePayerMenu = false
-                            }
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(5.dp))
         }
 
         item {
@@ -6766,6 +6869,7 @@ private fun ReceiptSplitDraftRow(
     row: ReceiptDraftRow,
     partners: List<PartnerOption>,
     historical: Boolean,
+    showHeader: Boolean,
     canDelete: Boolean,
     onChange: (ReceiptDraftRow) -> Unit,
     onDelete: () -> Unit
@@ -6791,33 +6895,35 @@ private fun ReceiptSplitDraftRow(
             Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
             verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(22.dp)
-            ) {
-                if (canDelete) {
-                    TextButton(
-                        onClick = onDelete,
-                        modifier = Modifier
-                            .align(Alignment.CenterStart)
-                            .height(22.dp),
-                        contentPadding = PaddingValues(horizontal = 3.dp, vertical = 0.dp)
-                    ) {
-                        Text(
-                            "删除",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.error
-                        )
+            if (showHeader) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(22.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "小计 ${money(row.total)}",
+                        fontWeight = FontWeight.SemiBold,
+                        color = BrandGreen,
+                        fontSize = 12.sp
+                    )
+                    if (canDelete) {
+                        Spacer(Modifier.width(5.dp))
+                        TextButton(
+                            onClick = onDelete,
+                            modifier = Modifier.height(22.dp),
+                            contentPadding = PaddingValues(horizontal = 3.dp, vertical = 0.dp)
+                        ) {
+                            Text(
+                                "删除",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
                     }
                 }
-                Text(
-                    "小计 ${money(row.total)}",
-                    modifier = Modifier.align(Alignment.CenterEnd),
-                    fontWeight = FontWeight.SemiBold,
-                    color = BrandGreen,
-                    fontSize = 12.sp
-                )
             }
 
             Row(
@@ -9563,6 +9669,14 @@ private fun MoreScreen(
                             sub =
                                 MorePage.HOME_HEADER
                         }
+                        SettingsDivider()
+                        SettingsRow(
+                            "⚡",
+                            "首页快捷操作"
+                        ) {
+                            sub =
+                                MorePage.HOME_QUICK_ACTIONS
+                        }
                     }
                 }
 
@@ -9677,6 +9791,23 @@ private fun MoreScreen(
                         uiSettingsVersion,
                     onChanged =
                         onUiSettingsChanged
+                )
+            }
+        }
+
+        MorePage.HOME_QUICK_ACTIONS -> {
+            SubPage(
+                "首页快捷操作",
+                {
+                    sub = MorePage.MENU
+                }
+            ) {
+                HomeQuickActionsSettingsContent(
+                    manager = ledgerUiSettingsManager,
+                    currentBook = currentBook,
+                    systemRole = systemRole,
+                    uiSettingsVersion = uiSettingsVersion,
+                    onChanged = onUiSettingsChanged
                 )
             }
         }
@@ -15065,6 +15196,140 @@ internal fun SettingsDivider() {
 }
 
 @Composable
+private fun HomeQuickActionsSettingsContent(
+    manager: LedgerUiSettingsManager,
+    currentBook: LedgerBook,
+    systemRole: String,
+    uiSettingsVersion: Int,
+    onChanged: () -> Unit
+) {
+    val available = remember(currentBook.id, currentBook.permission, currentBook.cloudEnabled, systemRole) {
+        HomeQuickAction.entries.filter {
+            homeQuickActionAllowed(it, currentBook, systemRole)
+        }
+    }
+    val selected = remember(currentBook.id, uiSettingsVersion, available) {
+        val allowedKeys = available.map { it.name }.toSet()
+        mutableStateListOf<String>().apply {
+            addAll(
+                manager.loadHomeQuickActions(currentBook.id)
+                    .filter { it in allowedKeys }
+            )
+        }
+    }
+
+    fun persist() {
+        manager.saveHomeQuickActions(currentBook.id, selected.toList())
+        onChanged()
+    }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            "首页最多显示 8 个快捷操作，按下方顺序每行 4 个。",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color.Gray
+        )
+
+        val selectedActions = selected.mapNotNull { key ->
+            available.firstOrNull { it.name == key }
+        }
+
+        if (selectedActions.isNotEmpty()) {
+            Text("已显示", fontWeight = FontWeight.Bold)
+            selectedActions.forEachIndexed { index, action ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC)),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 9.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(action.icon, fontSize = 19.sp)
+                        Spacer(Modifier.width(7.dp))
+                        Text(action.label, modifier = Modifier.weight(1f))
+                        IconButton(
+                            onClick = {
+                                if (index > 0) {
+                                    val key = selected.removeAt(index)
+                                    selected.add(index - 1, key)
+                                    persist()
+                                }
+                            },
+                            enabled = index > 0,
+                            modifier = Modifier.size(34.dp)
+                        ) { Text("↑") }
+                        IconButton(
+                            onClick = {
+                                if (index < selectedActions.lastIndex) {
+                                    val actualIndex = selected.indexOf(action.name)
+                                    if (actualIndex >= 0 && actualIndex < selected.lastIndex) {
+                                        val key = selected.removeAt(actualIndex)
+                                        selected.add(actualIndex + 1, key)
+                                        persist()
+                                    }
+                                }
+                            },
+                            enabled = index < selectedActions.lastIndex,
+                            modifier = Modifier.size(34.dp)
+                        ) { Text("↓") }
+                        TextButton(
+                            onClick = {
+                                selected.remove(action.name)
+                                persist()
+                            },
+                            contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp)
+                        ) {
+                            Text("隐藏", fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        val hidden = available.filter { it.name !in selected }
+        if (hidden.isNotEmpty()) {
+            Text("可添加", fontWeight = FontWeight.Bold)
+            hidden.forEach { action ->
+                Surface(
+                    onClick = {
+                        if (selected.size < 8) {
+                            selected.add(action.name)
+                            persist()
+                        }
+                    },
+                    shape = RoundedCornerShape(9.dp),
+                    color = Color(0xFFF8FAF9)
+                ) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(action.icon, fontSize = 18.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(action.label, modifier = Modifier.weight(1f))
+                        Text(
+                            if (selected.size < 8) "+ 添加" else "最多8个",
+                            color = if (selected.size < 8) BrandGreen else Color.Gray,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun MenuCard(
     title: String,
     onClick: () -> Unit
@@ -19910,27 +20175,12 @@ internal fun CompactDateNavigator(
                         onDragCancel = { totalDrag = 0f }
                     )
                 },
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(3.dp)
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(
-                onClick = {
-                    onDate(parsedDate.minusDays(1).toString())
-                },
-                modifier = Modifier.size(40.dp)
-            ) {
-                Text(
-                    "‹",
-                    color = BrandGreen,
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
             OutlinedButton(
                 onClick = { showPicker = true },
                 modifier = Modifier
-                    .weight(1f)
+                    .fillMaxWidth()
                     .height(48.dp),
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 3.dp)
             ) {
@@ -19945,20 +20195,6 @@ internal fun CompactDateNavigator(
                 Text(
                     "📅",
                     fontSize = 14.sp
-                )
-            }
-
-            IconButton(
-                onClick = {
-                    onDate(parsedDate.plusDays(1).toString())
-                },
-                modifier = Modifier.size(40.dp)
-            ) {
-                Text(
-                    "›",
-                    color = BrandGreen,
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Bold
                 )
             }
         }
