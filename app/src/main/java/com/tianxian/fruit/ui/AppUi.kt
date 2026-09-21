@@ -3161,13 +3161,13 @@ private fun PurchaseScreen(
                     fruitId = item.fruitId,
                     fruitNameSnapshot = item.fruitName,
                     unit = item.unit,
-                    quantity = cleanNumber(quantityValue),
-                    unitPrice = cleanNumber(rememberedPrice),
+                    quantity = purchaseNumber(quantityValue),
+                    unitPrice = purchaseNumber(rememberedPrice),
                     totalCost =
                         if (item.status == 1) {
-                            cleanNumber(item.actualAmount)
+                            purchaseNumber(item.actualAmount)
                         } else {
-                            cleanNumber(quantityValue * rememberedPrice)
+                            purchaseNumber(item.estimatedAmount)
                         },
                     buyerId = item.buyerId.takeIf { it > 0L },
                     buyerNameSnapshot = item.buyerName,
@@ -3248,8 +3248,8 @@ private fun PurchaseScreen(
                     fruitNameSnapshot = stock.fruitName,
                     unit = stock.unit,
                     quantity = "1",
-                    unitPrice = cleanNumber(rememberedPrice),
-                    totalCost = cleanNumber(rememberedPrice),
+                    unitPrice = purchaseNumber(rememberedPrice),
+                    totalCost = purchaseNumber(rememberedPrice),
                     buyerId = defaultBuyerId(),
                     buyerNameSnapshot = defaultBuyerName(),
                     priceSource = PurchasePriceSource.UNIT
@@ -3308,9 +3308,9 @@ private fun PurchaseScreen(
                     fruitId = item.fruitId,
                     fruitNameSnapshot = item.fruitName,
                     unit = item.unit,
-                    quantity = cleanNumber(item.quantity),
-                    unitPrice = cleanNumber(item.unitPrice),
-                    totalCost = cleanNumber(item.totalCost),
+                    quantity = purchaseNumber(item.quantity),
+                    unitPrice = purchaseNumber(item.unitPrice),
+                    totalCost = purchaseNumber(item.totalCost),
                     buyerId = detail.order.buyerId,
                     buyerNameSnapshot = detail.order.buyerName,
                     priceSource = PurchasePriceSource.TOTAL
@@ -3375,8 +3375,16 @@ private fun PurchaseScreen(
             return
         }
 
+        // V1.4.7.39：只校验并保存新增/真正修改过的计划行。
+        // 未改动的其他待采购商品不再阻断当前商品保存。
+        val rowsToSave =
+            pendingRows.filter { row ->
+                row.planItemId == null ||
+                    syncedFingerprints[row.rowId] != rowFingerprint(row)
+            }
+
         if (
-            pendingRows.any {
+            rowsToSave.any {
                 val quantity = it.quantity.toDoubleOrNull() ?: 0.0
                 val unitPrice = it.unitPrice.toDoubleOrNull() ?: -1.0
                 val explicitTotal =
@@ -3394,7 +3402,7 @@ private fun PurchaseScreen(
         }
 
         var savedCount = 0
-        pendingRows.forEach { row ->
+        rowsToSave.forEach { row ->
             val fruit =
                 fruits.firstOrNull { it.id == row.fruitId }
                     ?: row.fruitId?.let { id ->
@@ -3428,10 +3436,17 @@ private fun PurchaseScreen(
             }
         }
 
-        if (savedCount == pendingRows.size) {
+        if (savedCount == rowsToSave.size) {
             db.updatePurchasePlanNote(date, remark)
-            message = "采购清单已保存到协作采购，完成采购后才正式入账"
+            editingPlanItemId = null
+            loadRowsFromCollaborationPlan()
             purchaseFormExpanded = false
+            message =
+                if (rowsToSave.isEmpty()) {
+                    "采购计划没有商品变更，备注已保存"
+                } else {
+                    "采购清单已保存到协作采购，完成采购后才正式入账"
+                }
             onChanged()
         } else {
             message = "部分商品保存失败，请检查后重试"
@@ -4372,7 +4387,7 @@ private fun PurchaseScreen(
                         val referencePrice =
                             if (quantity > 0 && amount > 0) amount / quantity else 0.0
                         "待采购\n数量 ${fmt(quantity)}${item.unit} · " +
-                            "参考单价 ${money(referencePrice)}/${item.unit} · 总价待确认" +
+                            "参考单价 ${money(referencePrice)}/${item.unit} · 计划总价 ${money(amount)}" +
                             if (item.buyerName.isNotBlank()) " · ${item.buyerName}" else ""
                     }
                 )
@@ -5311,7 +5326,7 @@ private fun PurchasePlanStatusCard(
                             ) +
                         "   数量 ${fmt(quantity)}${item.unit}   " +
                         "单价 ${money(unitPrice)}/${item.unit}   " +
-                        "总价 —   $buyer"
+                        "总价 ${money(amount)}   $buyer"
                 }
 
             Text(
@@ -5409,7 +5424,7 @@ private fun PurchaseDraftRowEditor(
     fun calculatedTotal(quantityText: String, unitPriceText: String): String {
         val quantity = quantityText.toDoubleOrNull() ?: return "0"
         val unitPrice = unitPriceText.toDoubleOrNull() ?: return "0"
-        return cleanNumber((quantity * unitPrice).coerceAtLeast(0.0))
+        return purchaseNumber((quantity * unitPrice).coerceAtLeast(0.0))
     }
 
     fun updateQuantity(value: String) {
@@ -5517,11 +5532,11 @@ private fun PurchaseDraftRowEditor(
                                             fruitId = fruit.id,
                                             fruitNameSnapshot = fruit.name,
                                             unit = targetUnit,
-                                            unitPrice = cleanNumber(remembered),
+                                            unitPrice = purchaseNumber(remembered),
                                             totalCost =
                                                 calculatedTotal(
                                                     row.quantity,
-                                                    cleanNumber(remembered)
+                                                    purchaseNumber(remembered)
                                                 ),
                                             priceSource = PurchasePriceSource.UNIT
                                         )
@@ -5670,11 +5685,11 @@ private fun PurchaseDraftRowEditor(
                                     onChange(
                                         row.copy(
                                             unit = unit,
-                                            unitPrice = cleanNumber(remembered),
+                                            unitPrice = purchaseNumber(remembered),
                                             totalCost =
                                                 calculatedTotal(
                                                     row.quantity,
-                                                    cleanNumber(remembered)
+                                                    purchaseNumber(remembered)
                                                 ),
                                             priceSource = PurchasePriceSource.UNIT
                                         )
@@ -20212,3 +20227,6 @@ private fun profitRatioPercent(
 private fun uiRoundMoney(v: Double): Double = kotlin.math.round(v * 100.0) / 100.0
 
 private fun cleanNumber(v: Double): String = if (v == 0.0) "" else fmt(v)
+
+// 采购录入中的 0 是有效值，不能像普通空字段一样折叠为空字符串。
+private fun purchaseNumber(v: Double): String = fmt(v)
