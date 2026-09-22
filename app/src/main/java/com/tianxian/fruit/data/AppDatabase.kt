@@ -14,7 +14,32 @@ import java.util.UUID
 import kotlin.math.round
 
 data class FruitOption(val id: Long, val name: String, val defaultUnit: String)
-data class StoreOption(val id: Long, val name: String, val address: String)
+data class StoreOption(
+    val id: Long,
+    val name: String,
+    val address: String,
+    val latitude: Double? = null,
+    val longitude: Double? = null
+)
+
+data class WeatherStoreResolution(
+    val store: StoreOption?,
+    val source: String,
+    val confidence: Double = 0.0,
+    val sampleCount: Int = 0
+)
+
+data class WeatherSnapshotRecord(
+    val date: String,
+    val storeId: Long,
+    val storeName: String,
+    val latitude: Double,
+    val longitude: Double,
+    val snapshotType: String,
+    val payloadJson: String,
+    val observedAt: Long,
+    val updatedAt: Long
+)
 data class PartnerOption(val id: Long, val name: String)
 
 data class PurchaseLineInput(
@@ -654,6 +679,9 @@ class AppDatabase(
         createV23InventoryTrial(
             db
         )
+        createV25Weather(
+            db
+        )
         createV8SyncFoundation(
             db,
             initialData = false
@@ -760,6 +788,54 @@ class AppDatabase(
             createV24InventorySync(
                 db
             )
+        }
+        if (oldVersion < 25) {
+            createV25Weather(
+                db
+            )
+        }
+    }
+
+    private fun createV25Weather(
+        db: SQLiteDatabase
+    ) {
+        if (!columnExists(db, "store", "latitude")) {
+            db.execSQL("ALTER TABLE store ADD COLUMN latitude REAL NULL")
+        }
+        if (!columnExists(db, "store", "longitude")) {
+            db.execSQL("ALTER TABLE store ADD COLUMN longitude REAL NULL")
+        }
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS weather_snapshot(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                store_id INTEGER NOT NULL DEFAULT 0,
+                store_name TEXT NOT NULL DEFAULT '',
+                latitude REAL NOT NULL DEFAULT 0,
+                longitude REAL NOT NULL DEFAULT 0,
+                snapshot_type TEXT NOT NULL DEFAULT 'FORECAST',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                observed_at INTEGER NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                row_version INTEGER NOT NULL DEFAULT 1,
+                modified_by TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(date,store_id,snapshot_type)
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_weather_snapshot_date_store " +
+                "ON weather_snapshot(date,store_id,snapshot_type)"
+        )
+
+        if (tableExists(db, "sync_context")) {
+            createSyncTriggers(db)
         }
     }
 
@@ -1289,6 +1365,8 @@ class AppDatabase(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
                 address TEXT NOT NULL DEFAULT '',
+                latitude REAL NULL,
+                longitude REAL NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 deleted INTEGER NOT NULL DEFAULT 0,
                 sort_order INTEGER NOT NULL DEFAULT 0,
@@ -2430,7 +2508,8 @@ class AppDatabase(
             "settlement_transfer",
             "profit_settlement_batch",
             "profit_settlement_item",
-            "inventory_snapshot"
+            "inventory_snapshot",
+            "weather_snapshot"
         )
 
     fun getSyncFoundationStatus():
@@ -3934,42 +4013,48 @@ class AppDatabase(
         ) > 0
     }
 
+    private fun storeFromCursor(c: Cursor): StoreOption {
+        val latIndex = c.getColumnIndex("latitude")
+        val lonIndex = c.getColumnIndex("longitude")
+        return StoreOption(
+            id = c.long("id"),
+            name = c.str("name"),
+            address = c.str("address"),
+            latitude = if (latIndex >= 0 && !c.isNull(latIndex)) c.getDouble(latIndex) else null,
+            longitude = if (lonIndex >= 0 && !c.isNull(lonIndex)) c.getDouble(lonIndex) else null
+        )
+    }
+
     fun getStores(): List<StoreOption> = readableDatabase.rawQuery(
-        "SELECT id,name,address FROM store " +
+        "SELECT id,name,address,latitude,longitude FROM store " +
             "WHERE enabled=1 AND deleted=0 " +
             "ORDER BY sort_order ASC,id ASC",
         null
     ).use { c ->
         buildList {
-            while (c.moveToNext()) {
-                add(
-                    StoreOption(
-                        c.long("id"),
-                        c.str("name"),
-                        c.str("address")
-                    )
-                )
-            }
+            while (c.moveToNext()) add(storeFromCursor(c))
         }
     }
 
     fun getStoreById(id: Long): StoreOption? = readableDatabase.rawQuery(
-        "SELECT id,name,address FROM store WHERE id=? AND enabled=1 AND deleted=0 LIMIT 1",
+        "SELECT id,name,address,latitude,longitude FROM store WHERE id=? AND enabled=1 AND deleted=0 LIMIT 1",
         arrayOf(id.toString())
     ).use { c ->
-        if (c.moveToFirst()) StoreOption(c.long("id"), c.str("name"), c.str("address")) else null
+        if (c.moveToFirst()) storeFromCursor(c) else null
     }
 
     fun getStoreByIdIncludingDeleted(id: Long): StoreOption? = readableDatabase.rawQuery(
-        "SELECT id,name,address FROM store WHERE id=? LIMIT 1",
+        "SELECT id,name,address,latitude,longitude FROM store WHERE id=? LIMIT 1",
         arrayOf(id.toString())
     ).use { c ->
-        if (c.moveToFirst()) StoreOption(c.long("id"), c.str("name"), c.str("address")) else null
+        if (c.moveToFirst()) storeFromCursor(c) else null
     }
 
     fun addStore(
         name: String,
-        address: String
+        address: String,
+        latitude: Double? = null,
+        longitude: Double? = null
     ): Long {
         val clean =
             name.trim()
@@ -4000,6 +4085,8 @@ class AppDatabase(
                     "address",
                     address.trim()
                 )
+                if (latitude != null) put("latitude", latitude) else putNull("latitude")
+                if (longitude != null) put("longitude", longitude) else putNull("longitude")
                 put("enabled", 1)
                 put("deleted", 0)
                 put(
@@ -4009,6 +4096,158 @@ class AppDatabase(
             },
             SQLiteDatabase.CONFLICT_IGNORE
         )
+    }
+
+    fun updateStore(
+        id: Long,
+        name: String,
+        address: String,
+        latitude: Double?,
+        longitude: Double?
+    ): Boolean {
+        val clean = name.trim()
+        if (clean.isBlank()) return false
+        return writableDatabase.update(
+            "store",
+            ContentValues().apply {
+                put("name", clean)
+                put("address", address.trim())
+                if (latitude != null) put("latitude", latitude) else putNull("latitude")
+                if (longitude != null) put("longitude", longitude) else putNull("longitude")
+                put("sync_status", 2)
+                put("updated_at", System.currentTimeMillis())
+            },
+            "id=? AND deleted=0",
+            arrayOf(id.toString())
+        ) > 0
+    }
+
+    fun resolveWeatherStore(date: String): WeatherStoreResolution {
+        val exact = readableDatabase.rawQuery(
+            """
+            SELECT s.id,s.name,s.address,s.latitude,s.longitude
+            FROM store_daily_record r
+            JOIN store s ON s.id=r.store_id
+            WHERE r.date=? AND r.deleted=0 AND s.deleted=0 AND s.enabled=1
+            ORDER BY r.id ASC
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(date)
+        ).use { c -> if (c.moveToFirst()) storeFromCursor(c) else null }
+        if (exact != null) {
+            return WeatherStoreResolution(exact, "ACTUAL_RECORD", 1.0, 1)
+        }
+
+        val target = runCatching { LocalDate.parse(date) }.getOrElse { LocalDate.now() }
+        val weekday = target.dayOfWeek.value
+        val from = target.minusWeeks(10).toString()
+        val candidates = readableDatabase.rawQuery(
+            """
+            SELECT r.store_id,r.store_name,COUNT(*) AS cnt,MAX(r.date) AS latest
+            FROM store_daily_record r
+            WHERE r.deleted=0 AND r.date<? AND r.date>=?
+              AND CAST(strftime('%w',r.date) AS INTEGER)=?
+            GROUP BY r.store_id,r.store_name
+            ORDER BY cnt DESC,latest DESC
+            """.trimIndent(),
+            arrayOf(date, from, (weekday % 7).toString())
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    add(Triple(c.long("store_id"), c.str("store_name"), c.int("cnt")))
+                }
+            }
+        }
+        val total = candidates.sumOf { it.third }
+        val best = candidates.firstOrNull()
+        val inferred = best?.first?.let { getStoreById(it) }
+        if (inferred != null) {
+            return WeatherStoreResolution(
+                inferred,
+                "WEEKDAY_HISTORY",
+                if (total > 0) best.third.toDouble() / total.toDouble() else 0.0,
+                total
+            )
+        }
+
+        val fallback = getStores().firstOrNull { it.latitude != null && it.longitude != null }
+            ?: getStores().firstOrNull()
+        return WeatherStoreResolution(fallback, "FALLBACK", 0.0, 0)
+    }
+
+    fun saveWeatherSnapshot(
+        date: String,
+        store: StoreOption,
+        snapshotType: String,
+        payloadJson: String,
+        observedAt: Long = System.currentTimeMillis()
+    ): Boolean {
+        val lat = store.latitude ?: return false
+        val lon = store.longitude ?: return false
+        val type = snapshotType.uppercase().let { if (it == "ACTUAL") "ACTUAL" else "FORECAST" }
+        val db = writableDatabase
+        val existing = db.rawQuery(
+            "SELECT id FROM weather_snapshot WHERE date=? AND store_id=? AND snapshot_type=? LIMIT 1",
+            arrayOf(date, store.id.toString(), type)
+        ).use { c -> if (c.moveToFirst()) c.long("id") else null }
+        val now = System.currentTimeMillis()
+        val values = ContentValues().apply {
+            put("date", date)
+            put("store_id", store.id)
+            put("store_name", store.name)
+            put("latitude", lat)
+            put("longitude", lon)
+            put("snapshot_type", type)
+            put("payload_json", payloadJson)
+            put("observed_at", observedAt)
+            put("deleted", 0)
+            put("sync_status", 2)
+            put("updated_at", now)
+        }
+        return if (existing != null) {
+            db.update("weather_snapshot", values, "id=?", arrayOf(existing.toString())) > 0
+        } else {
+            db.insert(
+                "weather_snapshot",
+                null,
+                baseSyncValues().apply {
+                    putAll(values)
+                    put("row_version", 1)
+                    put("modified_by", deviceId)
+                }
+            ) > 0
+        }
+    }
+
+    fun getWeatherSnapshot(
+        date: String,
+        storeId: Long,
+        preferredType: String? = null
+    ): WeatherSnapshotRecord? {
+        val whereType = if (preferredType.isNullOrBlank()) "" else " AND snapshot_type=?"
+        val args = buildList {
+            add(date)
+            add(storeId.toString())
+            if (!preferredType.isNullOrBlank()) add(preferredType.uppercase())
+        }.toTypedArray()
+        return readableDatabase.rawQuery(
+            "SELECT date,store_id,store_name,latitude,longitude,snapshot_type,payload_json,observed_at,updated_at " +
+                "FROM weather_snapshot WHERE date=? AND store_id=? AND deleted=0$whereType " +
+                "ORDER BY CASE snapshot_type WHEN 'ACTUAL' THEN 0 ELSE 1 END,updated_at DESC LIMIT 1",
+            args
+        ).use { c ->
+            if (!c.moveToFirst()) null else WeatherSnapshotRecord(
+                date = c.str("date"),
+                storeId = c.long("store_id"),
+                storeName = c.str("store_name"),
+                latitude = c.dbl("latitude"),
+                longitude = c.dbl("longitude"),
+                snapshotType = c.str("snapshot_type"),
+                payloadJson = c.str("payload_json"),
+                observedAt = c.long("observed_at"),
+                updatedAt = c.long("updated_at")
+            )
+        }
     }
 
     fun reorderStores(
@@ -11701,7 +11940,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 24
+        const val DB_VERSION = 25
     }
 }
 

@@ -61,10 +61,15 @@ import com.tianxian.fruit.sync.CloudApiException
 import com.tianxian.fruit.sync.CloudAuditInfo
 import com.tianxian.fruit.sync.CloudBookInfo
 import com.tianxian.fruit.sync.CloudSyncManager
+import com.tianxian.fruit.sync.WeatherClient
+import com.tianxian.fruit.sync.WeatherOverview
+import com.tianxian.fruit.sync.WeatherHour
 import com.tianxian.fruit.update.AppUpdateCheckResult
 import com.tianxian.fruit.update.AppUpdateInfo
 import com.tianxian.fruit.update.AppUpdateManager
 import org.json.JSONObject
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -101,6 +106,7 @@ private enum class MorePage {
     PURCHASE_ACTIVITY,
     STATS,
     OPERATING_ANALYSIS,
+    WEATHER_DETAIL,
     PERSONAL_SUMMARY,
     BACKUP,
     PARTNERS,
@@ -657,6 +663,9 @@ fun TianXianApp(
             HistorySection.BUSINESS
         )
     }
+    var weatherDetailDate by remember(currentBook.id) {
+        mutableStateOf(LocalDate.now().toString())
+    }
     var dataVersion by remember {
         mutableIntStateOf(0)
     }
@@ -996,6 +1005,8 @@ fun TianXianApp(
                             ledgerManager,
                         currentBook =
                             liveCurrentBook,
+                        cloudSyncManager =
+                            cloudSyncManager,
                         books =
                             ledgerManager.books(),
                         ledgerUiSettingsManager =
@@ -1100,6 +1111,11 @@ fun TianXianApp(
                         onInventory = {
                             page = AppPage.INVENTORY
                         },
+                        onOpenWeather = { date ->
+                            weatherDetailDate = date
+                            moreTarget = MorePage.WEATHER_DETAIL
+                            page = AppPage.MORE
+                        },
                         onMore = {
                             moreTarget =
                                 MorePage.MENU
@@ -1157,6 +1173,8 @@ fun TianXianApp(
                         SessionScreen(
                             db = db,
                             dataVersion = dataVersion,
+                            cloudSyncManager = cloudSyncManager,
+                            currentBook = liveCurrentBook,
                             workDate = workDate,
                             onWorkDateChange = { workDate = it },
                             onChanged = { notifyDataChanged() },
@@ -1185,6 +1203,7 @@ fun TianXianApp(
                         dataVersion = dataVersion,
                         initialSub = moreTarget,
                         initialHistorySection = historyTarget,
+                        initialWeatherDate = weatherDetailDate,
                         ledgerManager =
                             ledgerManager,
                         cloudSyncManager =
@@ -1370,12 +1389,612 @@ private fun MetricCard(title: String, value: String, modifier: Modifier = Modifi
     }
 }
 
+
+private fun weatherEmoji(code: String, text: String): String {
+    val t = text.lowercase(Locale.CHINA)
+    val c = code.toIntOrNull() ?: -1
+    return when {
+        "雷" in t -> "⛈️"
+        "暴雨" in t -> "🌧️"
+        "雨" in t -> "🌦️"
+        "雪" in t -> "🌨️"
+        "雾" in t || "霾" in t -> "🌫️"
+        "阴" in t -> "☁️"
+        "云" in t -> "⛅"
+        "晴" in t -> "☀️"
+        c in 300..399 -> "🌧️"
+        c in 400..499 -> "🌨️"
+        c in 500..515 -> "🌫️"
+        else -> "🌤️"
+    }
+}
+
+private fun weatherTemp(value: Double?): String =
+    value?.let { "${String.format(Locale.CHINA, "%.0f", it)}°" } ?: "—"
+
+private fun weatherAmount(value: Double?): String =
+    value?.let { String.format(Locale.CHINA, "%.1fmm", it) } ?: "—"
+
+private fun weatherPercent(value: Double?): String =
+    value?.let { "${String.format(Locale.CHINA, "%.0f", it)}%" } ?: "—"
+
+private fun weatherHourLabel(value: String): String {
+    val raw = value.substringAfter('T', value)
+    return raw.take(5).ifBlank { value.takeLast(5) }
+}
+
+private fun weatherDateLabel(date: LocalDate): String {
+    val today = LocalDate.now()
+    val prefix = when (date) {
+        today -> "今天"
+        today.plusDays(1) -> "明天"
+        today.minusDays(1) -> "昨天"
+        else -> date.format(DateTimeFormatter.ofPattern("M月d日"))
+    }
+    return "$prefix · ${date.format(DateTimeFormatter.ofPattern("M月d日"))} ${chineseWeekday(date)}"
+}
+
+private fun weatherLocationSourceText(source: String, confidence: Double, sampleCount: Int): String =
+    when (source) {
+        "ACTUAL_RECORD" -> "当天营业位置"
+        "WEEKDAY_HISTORY" -> {
+            val pct = (confidence * 100).toInt().coerceIn(0, 100)
+            "根据同星期历史安排 · $pct% · ${sampleCount}次"
+        }
+        else -> "默认经营位置"
+    }
+
+private fun weatherBookId(book: LedgerBook): String =
+    book.cloudBookId.ifBlank { book.id.takeIf { it.contains('-') }.orEmpty() }
+
+private data class WeatherUiState(
+    val overview: WeatherOverview? = null,
+    val loading: Boolean = false,
+    val error: String = "",
+    val snapshotType: String = ""
+)
+
+@Composable
+private fun HomeWeatherCard(
+    db: AppDatabase,
+    dataVersion: Int,
+    currentBook: LedgerBook,
+    cloudSyncManager: CloudSyncManager,
+    onOpenDetail: (String) -> Unit
+) {
+    var selectedDate by remember { mutableStateOf(LocalDate.now()) }
+    var manualStoreId by remember(selectedDate) { mutableStateOf<Long?>(null) }
+    var storeMenu by remember { mutableStateOf(false) }
+    var state by remember(selectedDate, manualStoreId, dataVersion) { mutableStateOf(WeatherUiState(loading = true)) }
+
+    val stores = remember(dataVersion) { db.getStores().filter { it.latitude != null && it.longitude != null } }
+    val resolution = remember(dataVersion, selectedDate) { db.resolveWeatherStore(selectedDate.toString()) }
+    val selectedStore = stores.firstOrNull { it.id == manualStoreId }
+        ?: resolution.store?.takeIf { it.latitude != null && it.longitude != null }
+        ?: stores.firstOrNull()
+
+    LaunchedEffect(selectedDate, selectedStore?.id, dataVersion, currentBook.cloudBookId) {
+        val store = selectedStore
+        if (store == null) {
+            state = WeatherUiState(error = "还没有为经营位置绑定经纬度")
+            return@LaunchedEffect
+        }
+        state = WeatherUiState(loading = true)
+        val result = withContext(Dispatchers.IO) {
+            runCatching {
+                val past = selectedDate.isBefore(LocalDate.now())
+                val snap = db.getWeatherSnapshot(selectedDate.toString(), store.id)
+                if (past && snap != null) {
+                    WeatherUiState(
+                        overview = WeatherClient.parseOverview(snap.payloadJson, historical = true),
+                        snapshotType = snap.snapshotType
+                    )
+                } else if (past) {
+                    WeatherUiState(error = "该日期暂无已保存的天气记录")
+                } else {
+                    val bookId = weatherBookId(currentBook)
+                    if (bookId.isBlank()) throw IllegalStateException("当前账本尚未连接云端天气服务")
+                    val overview = WeatherClient(cloudSyncManager).fetchOverview(bookId, store, selectedDate, 96)
+                    db.saveWeatherSnapshot(selectedDate.toString(), store, "FORECAST", overview.rawJson)
+                    if (selectedDate == LocalDate.now()) {
+                        db.saveWeatherSnapshot(selectedDate.toString(), store, "ACTUAL", overview.rawJson)
+                    }
+                    WeatherUiState(overview = overview, snapshotType = if (selectedDate == LocalDate.now()) "ACTUAL" else "FORECAST")
+                }
+            }.getOrElse { WeatherUiState(error = it.message ?: "天气加载失败") }
+        }
+        state = result
+    }
+
+    val overview = state.overview
+    val current = overview?.current
+    val day = overview?.daily?.firstOrNull { it.date == selectedDate.toString() } ?: overview?.selectedDay()
+    val businessHours = overview?.hourly.orEmpty().filter {
+        it.time.startsWith(selectedDate.toString()) &&
+            ((it.time.substringAfter('T', "").take(2).toIntOrNull() ?: -1) in 16..23)
+    }
+    val maxPop = businessHours.mapNotNull { it.precipitationProbability }.maxOrNull()
+    val rainAmount = businessHours.sumOf { it.precipitation ?: 0.0 }
+    val headline = current?.text?.takeIf { selectedDate == LocalDate.now() }
+        ?: day?.textDay.orEmpty().ifBlank { businessHours.firstOrNull()?.text.orEmpty() }
+    val temp = current?.temperature?.takeIf { selectedDate == LocalDate.now() }
+        ?: businessHours.firstOrNull()?.temperature
+        ?: day?.tempMax
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .pointerInput(selectedDate) {
+                var drag = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { drag = 0f },
+                    onHorizontalDrag = { _, amount -> drag += amount },
+                    onDragEnd = {
+                        when {
+                            drag <= -70f -> selectedDate = selectedDate.plusDays(1)
+                            drag >= 70f -> selectedDate = selectedDate.minusDays(1)
+                        }
+                    }
+                )
+            },
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF8FF)),
+        shape = RoundedCornerShape(18.dp)
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clickable { onOpenDetail(selectedDate.toString()) }
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box {
+                    TextButton(onClick = { if (stores.isNotEmpty()) storeMenu = true }) {
+                        Text("${selectedStore?.name ?: "经营天气"} ▾", fontWeight = FontWeight.Bold)
+                    }
+                    DropdownMenu(expanded = storeMenu, onDismissRequest = { storeMenu = false }) {
+                        stores.forEach { store ->
+                            DropdownMenuItem(
+                                text = { Text(store.name) },
+                                onClick = {
+                                    manualStoreId = store.id
+                                    storeMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                Text(weatherDateLabel(selectedDate), style = MaterialTheme.typography.labelMedium, color = Color.DarkGray)
+            }
+
+            if (state.loading) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Text("正在更新天气…", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            } else if (state.error.isNotBlank()) {
+                Text(state.error, color = Color(0xFFB26A00), style = MaterialTheme.typography.bodyMedium)
+                if (selectedStore == null) {
+                    Text("请在 更多 → 位置管理 中为摆摊位置填写经纬度", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                }
+            } else if (overview != null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(weatherEmoji(current?.code ?: day?.codeDay.orEmpty(), headline), fontSize = 32.sp)
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(headline.ifBlank { "天气" }, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            "${weatherTemp(day?.tempMin)} / ${weatherTemp(day?.tempMax)} · 16–24时降雨 ${weatherPercent(maxPop ?: day?.precipitationProbability)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.DarkGray
+                        )
+                    }
+                    Text(weatherTemp(temp), fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                }
+                if (rainAmount > 0.05 || overview.minutelySummary.isNotBlank()) {
+                    Text(
+                        buildString {
+                            if (rainAmount > 0.05) append("经营时段预计降雨 ${weatherAmount(rainAmount)}")
+                            if (overview.minutelySummary.isNotBlank()) {
+                                if (isNotEmpty()) append(" · ")
+                                append(overview.minutelySummary)
+                            }
+                        },
+                        color = Color(0xFF2C6E9B),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                if (overview.alerts.isNotEmpty()) {
+                    Text("⚠ ${overview.alerts.first().title}", color = Color(0xFFC62828), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val autoText = if (manualStoreId != null) "手动查看位置" else weatherLocationSourceText(resolution.source, resolution.confidence, resolution.sampleCount)
+                    Text(autoText, style = MaterialTheme.typography.labelSmall, color = Color.Gray, modifier = Modifier.weight(1f))
+                    Text("左右滑动日期 · 查看详细天气 ›", style = MaterialTheme.typography.labelSmall, color = BrandGreen)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BusinessWeatherCard(
+    db: AppDatabase,
+    date: String,
+    store: StoreOption?,
+    currentBook: LedgerBook,
+    cloudSyncManager: CloudSyncManager
+) {
+    var expanded by remember(date, store?.id) { mutableStateOf(false) }
+    var state by remember(date, store?.id) { mutableStateOf(WeatherUiState(loading = true)) }
+    val selectedDate = runCatching { LocalDate.parse(date) }.getOrElse { LocalDate.now() }
+
+    LaunchedEffect(date, store?.id, currentBook.cloudBookId) {
+        val selectedStore = store
+        if (selectedStore?.latitude == null || selectedStore.longitude == null) {
+            state = WeatherUiState(error = "当前营业位置未绑定天气坐标")
+            return@LaunchedEffect
+        }
+        state = WeatherUiState(loading = true)
+        state = withContext(Dispatchers.IO) {
+            runCatching {
+                val past = selectedDate.isBefore(LocalDate.now())
+                val snap = db.getWeatherSnapshot(date, selectedStore.id)
+                if (past && snap != null) {
+                    WeatherUiState(WeatherClient.parseOverview(snap.payloadJson, true), snapshotType = snap.snapshotType)
+                } else if (past) {
+                    WeatherUiState(error = "该营业日暂无天气记录")
+                } else {
+                    val bookId = weatherBookId(currentBook)
+                    if (bookId.isBlank()) throw IllegalStateException("账本尚未连接云端天气服务")
+                    val overview = WeatherClient(cloudSyncManager).fetchOverview(bookId, selectedStore, selectedDate, 72)
+                    db.saveWeatherSnapshot(date, selectedStore, "FORECAST", overview.rawJson)
+                    if (selectedDate == LocalDate.now()) db.saveWeatherSnapshot(date, selectedStore, "ACTUAL", overview.rawJson)
+                    WeatherUiState(overview, snapshotType = if (selectedDate == LocalDate.now()) "ACTUAL" else "FORECAST")
+                }
+            }.getOrElse { WeatherUiState(error = it.message ?: "天气加载失败") }
+        }
+    }
+
+    val ov = state.overview
+    val bh = ov?.hourly.orEmpty().filter {
+        it.time.startsWith(date) && ((it.time.substringAfter('T', "").take(2).toIntOrNull() ?: -1) in 16..23)
+    }
+    val pop = bh.mapNotNull { it.precipitationProbability }.maxOrNull()
+    val rain = bh.sumOf { it.precipitation ?: 0.0 }
+    val day = ov?.daily?.firstOrNull { it.date == date } ?: ov?.selectedDay()
+    val text = ov?.current?.text?.takeIf { selectedDate == LocalDate.now() } ?: day?.textDay.orEmpty()
+    val temp = ov?.current?.temperature?.takeIf { selectedDate == LocalDate.now() } ?: bh.firstOrNull()?.temperature ?: day?.tempMax
+
+    Card(
+        Modifier.fillMaxWidth().clickable { if (ov != null) expanded = !expanded },
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF5FAFF)),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(Modifier.padding(horizontal = 11.dp, vertical = 7.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (state.loading) {
+                    Text("🌤️ ${store?.name ?: "营业天气"} · 更新中…", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                } else if (state.error.isNotBlank()) {
+                    Text("🌤️ ${store?.name ?: "营业天气"} · ${state.error}", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                } else {
+                    Text(
+                        "${weatherEmoji(ov?.current?.code ?: day?.codeDay.orEmpty(), text)} ${store?.name.orEmpty()} · ${text.ifBlank { "天气" }} · ${weatherTemp(temp)}",
+                        modifier = Modifier.weight(1f),
+                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text("16–24时 降雨${weatherPercent(pop)} · ${weatherAmount(rain)}", style = MaterialTheme.typography.labelSmall, color = Color.DarkGray)
+                }
+                if (ov != null) Text(if (expanded) "  收起⌃" else "  详情›", style = MaterialTheme.typography.labelSmall, color = BrandGreen)
+            }
+            if (expanded && ov != null) {
+                HorizontalDivider()
+                val c = ov.current
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("体感 ${weatherTemp(c?.feelsLike)}", style = MaterialTheme.typography.labelSmall)
+                    Text("湿度 ${weatherPercent(c?.humidity)}", style = MaterialTheme.typography.labelSmall)
+                    Text("风 ${c?.windDirection.orEmpty()} ${c?.windScale.orEmpty()}级", style = MaterialTheme.typography.labelSmall)
+                    Text("能见度 ${c?.visibilityKm?.let { String.format(Locale.CHINA, "%.1fkm", it) } ?: "—"}", style = MaterialTheme.typography.labelSmall)
+                }
+                if (ov.minutelySummary.isNotBlank()) Text("未来2小时：${ov.minutelySummary}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF2C6E9B))
+                ov.alerts.firstOrNull()?.let { Text("⚠ ${it.title}", color = Color(0xFFC62828), style = MaterialTheme.typography.bodySmall) }
+                if (bh.isNotEmpty()) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        bh.take(8).forEach { hour ->
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(54.dp)) {
+                                Text(weatherHourLabel(hour.time), style = MaterialTheme.typography.labelSmall)
+                                Text(weatherEmoji(hour.code, hour.text), fontSize = 18.sp)
+                                Text(weatherTemp(hour.temperature), fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall)
+                                Text(weatherPercent(hour.precipitationProbability), color = Color(0xFF2C6E9B), style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OperatingAnalysisWeatherCard(
+    db: AppDatabase,
+    date: String,
+    dataVersion: Int
+) {
+    val resolution = remember(dataVersion, date) { db.resolveWeatherStore(date) }
+    val store = resolution.store
+    val snapshot = remember(dataVersion, date, store?.id) { store?.let { db.getWeatherSnapshot(date, it.id) } }
+    val overview = remember(snapshot?.payloadJson) {
+        snapshot?.let { runCatching { WeatherClient.parseOverview(it.payloadJson, historical = true) }.getOrNull() }
+    }
+    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF5FAFF)), shape = RoundedCornerShape(12.dp)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("天气关联", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text(store?.name ?: "未确定位置", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            }
+            if (snapshot == null || overview == null) {
+                Text("暂无该营业日天气快照，后续营业记录会自动沉淀天气数据。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            } else {
+                val day = overview.daily.firstOrNull { it.date == date } ?: overview.selectedDay()
+                val bh = overview.hourly.filter { it.time.startsWith(date) && ((it.time.substringAfter('T', "").take(2).toIntOrNull() ?: -1) in 16..23) }
+                val pop = bh.mapNotNull { it.precipitationProbability }.maxOrNull()
+                val rain = bh.sumOf { it.precipitation ?: 0.0 }
+                val text = day?.textDay.orEmpty().ifBlank { overview.current?.text.orEmpty() }
+                Text(
+                    "${weatherEmoji(day?.codeDay.orEmpty(), text)} $text · 16–24时降雨 ${weatherPercent(pop)} · ${weatherAmount(rain)}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    "${if (snapshot.snapshotType == "ACTUAL") "营业日天气快照" else "营业前预测快照"} · 用于与营业额、利润和库存消耗关联分析",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.Gray
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun WeatherDetailContent(
+    db: AppDatabase,
+    dataVersion: Int,
+    currentBook: LedgerBook,
+    cloudSyncManager: CloudSyncManager,
+    initialDate: String
+) {
+    var selectedDate by remember(initialDate) { mutableStateOf(runCatching { LocalDate.parse(initialDate) }.getOrElse { LocalDate.now() }) }
+    var manualStoreId by remember(selectedDate) { mutableStateOf<Long?>(null) }
+    var storeMenu by remember { mutableStateOf(false) }
+    var state by remember(selectedDate, manualStoreId, dataVersion) { mutableStateOf(WeatherUiState(loading = true)) }
+    val stores = remember(dataVersion) { db.getStores().filter { it.latitude != null && it.longitude != null } }
+    val resolution = remember(dataVersion, selectedDate) { db.resolveWeatherStore(selectedDate.toString()) }
+    val store = stores.firstOrNull { it.id == manualStoreId }
+        ?: resolution.store?.takeIf { it.latitude != null && it.longitude != null }
+        ?: stores.firstOrNull()
+
+    LaunchedEffect(selectedDate, store?.id, currentBook.cloudBookId) {
+        val s = store
+        if (s == null) {
+            state = WeatherUiState(error = "没有已绑定经纬度的经营位置")
+            return@LaunchedEffect
+        }
+        state = WeatherUiState(loading = true)
+        state = withContext(Dispatchers.IO) {
+            runCatching {
+                val past = selectedDate.isBefore(LocalDate.now())
+                val snap = db.getWeatherSnapshot(selectedDate.toString(), s.id)
+                if (past && snap != null) {
+                    WeatherUiState(WeatherClient.parseOverview(snap.payloadJson, true), snapshotType = snap.snapshotType)
+                } else if (past) {
+                    WeatherUiState(error = "该日期暂无已保存的历史天气")
+                } else {
+                    val bookId = weatherBookId(currentBook)
+                    if (bookId.isBlank()) throw IllegalStateException("当前账本尚未连接云端天气服务")
+                    val ov = WeatherClient(cloudSyncManager).fetchOverview(bookId, s, selectedDate, 120)
+                    db.saveWeatherSnapshot(selectedDate.toString(), s, "FORECAST", ov.rawJson)
+                    if (selectedDate == LocalDate.now()) db.saveWeatherSnapshot(selectedDate.toString(), s, "ACTUAL", ov.rawJson)
+                    WeatherUiState(ov, snapshotType = if (selectedDate == LocalDate.now()) "ACTUAL" else "FORECAST")
+                }
+            }.getOrElse { WeatherUiState(error = it.message ?: "天气加载失败") }
+        }
+    }
+
+    val ov = state.overview
+    val day = ov?.daily?.firstOrNull { it.date == selectedDate.toString() } ?: ov?.selectedDay()
+    val hoursForDate = ov?.hourly.orEmpty().filter { it.time.startsWith(selectedDate.toString()) }
+    val trendTemps = hoursForDate.mapNotNull { it.temperature }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(selectedDate) {
+                var drag = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { drag = 0f },
+                    onHorizontalDrag = { _, amount -> drag += amount },
+                    onDragEnd = {
+                        when {
+                            drag <= -70f -> selectedDate = selectedDate.plusDays(1)
+                            drag >= 70f -> selectedDate = selectedDate.minusDays(1)
+                        }
+                    }
+                )
+            },
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFEAF5FF)), shape = RoundedCornerShape(18.dp)) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box {
+                            TextButton(onClick = { if (stores.isNotEmpty()) storeMenu = true }) { Text("${store?.name ?: "经营位置"} ▾", fontWeight = FontWeight.Bold) }
+                            DropdownMenu(expanded = storeMenu, onDismissRequest = { storeMenu = false }) {
+                                stores.forEach { option ->
+                                    DropdownMenuItem(text = { Text(option.name) }, onClick = { manualStoreId = option.id; storeMenu = false })
+                                }
+                            }
+                        }
+                        Spacer(Modifier.weight(1f))
+                        Text(weatherDateLabel(selectedDate), style = MaterialTheme.typography.labelMedium, color = Color.DarkGray)
+                    }
+                    when {
+                        state.loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                        state.error.isNotBlank() -> Text(state.error, color = Color(0xFFB26A00))
+                        ov != null -> {
+                            val c = ov.current
+                            val text = c?.text?.takeIf { selectedDate == LocalDate.now() } ?: day?.textDay.orEmpty()
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(weatherEmoji(c?.code ?: day?.codeDay.orEmpty(), text), fontSize = 46.sp)
+                                Spacer(Modifier.width(12.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(text.ifBlank { "天气" }, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                                    Text("${weatherTemp(day?.tempMin)} ～ ${weatherTemp(day?.tempMax)}", style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        if (manualStoreId != null) "手动查看位置" else weatherLocationSourceText(resolution.source, resolution.confidence, resolution.sampleCount),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.Gray
+                                    )
+                                }
+                                Text(weatherTemp(c?.temperature ?: hoursForDate.firstOrNull()?.temperature ?: day?.tempMax), fontSize = 38.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("体感 ${weatherTemp(c?.feelsLike)}", style = MaterialTheme.typography.bodySmall)
+                                Text("湿度 ${weatherPercent(c?.humidity ?: day?.humidity)}", style = MaterialTheme.typography.bodySmall)
+                                Text("风 ${c?.windDirection.orEmpty()} ${c?.windScale.orEmpty()}级", style = MaterialTheme.typography.bodySmall)
+                                Text("能见度 ${c?.visibilityKm?.let { String.format(Locale.CHINA, "%.1fkm", it) } ?: "—"}", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (ov != null) {
+            if (ov.alerts.isNotEmpty()) {
+                item {
+                    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFEEEE))) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("天气预警", fontWeight = FontWeight.Bold, color = Color(0xFFC62828))
+                            ov.alerts.take(3).forEach { alert ->
+                                Text("⚠ ${alert.title}", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                                if (alert.description.isNotBlank()) Text(alert.description, style = MaterialTheme.typography.bodySmall, color = Color.DarkGray, maxLines = 3)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (ov.minutelySummary.isNotBlank() && selectedDate == LocalDate.now()) {
+                item {
+                    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFEAF7FF))) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text("未来2小时降雨", fontWeight = FontWeight.Bold)
+                            Text(ov.minutelySummary, color = Color(0xFF2C6E9B), style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            }
+
+            item {
+                Text("逐小时预报", fontWeight = FontWeight.Bold)
+                if (hoursForDate.isEmpty()) {
+                    Text("该日期暂无逐小时数据", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        hoursForDate.take(24).forEach { h ->
+                            Card(shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                                Column(Modifier.width(68.dp).padding(vertical = 9.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    Text(weatherHourLabel(h.time), style = MaterialTheme.typography.labelSmall)
+                                    Text(weatherEmoji(h.code, h.text), fontSize = 22.sp)
+                                    Text(weatherTemp(h.temperature), fontWeight = FontWeight.Bold)
+                                    Text(weatherPercent(h.precipitationProbability), color = Color(0xFF2C6E9B), style = MaterialTheme.typography.labelSmall)
+                                    if ((h.precipitation ?: 0.0) > 0) Text(weatherAmount(h.precipitation), style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (trendTemps.size >= 2) {
+                item {
+                    Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text("温度趋势", fontWeight = FontWeight.Bold)
+                            Canvas(Modifier.fillMaxWidth().height(120.dp).padding(top = 8.dp)) {
+                                val minT = trendTemps.minOrNull() ?: 0.0
+                                val maxT = trendTemps.maxOrNull() ?: minT + 1.0
+                                val range = (maxT - minT).coerceAtLeast(1.0)
+                                val stepX = if (trendTemps.size <= 1) size.width else size.width / (trendTemps.size - 1)
+                                val pts = trendTemps.mapIndexed { i, t ->
+                                    Offset(i * stepX, size.height - (((t - minT) / range).toFloat() * (size.height * 0.75f)) - size.height * 0.1f)
+                                }
+                                for (i in 0 until pts.lastIndex) {
+                                    drawLine(Color(0xFF3A86C8), pts[i], pts[i + 1], strokeWidth = 4f)
+                                }
+                                pts.forEach { drawCircle(Color(0xFF3A86C8), radius = 5f, center = it) }
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                val business = hoursForDate.filter { (it.time.substringAfter('T', "").take(2).toIntOrNull() ?: -1) in 16..23 }
+                val maxPop = business.mapNotNull { it.precipitationProbability }.maxOrNull()
+                val amount = business.sumOf { it.precipitation ?: 0.0 }
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF6FBFF))) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("经营时段 16:00–24:00", fontWeight = FontWeight.Bold)
+                        Text("最高降雨概率 ${weatherPercent(maxPop)} · 预计降雨 ${weatherAmount(amount)}")
+                        val wet = business.filter { (it.precipitationProbability ?: 0.0) >= 40 || (it.precipitation ?: 0.0) > 0.05 }
+                        if (wet.isNotEmpty()) {
+                            Text("重点时段：${wet.joinToString("、") { weatherHourLabel(it.time) }}", color = Color(0xFF2C6E9B), style = MaterialTheme.typography.bodySmall)
+                        } else {
+                            Text("经营时段暂无明显降雨信号", color = BrandGreen, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+
+            item {
+                Text("未来天气", fontWeight = FontWeight.Bold)
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ov.daily.take(10).forEach { d ->
+                        Row(
+                            Modifier.fillMaxWidth().background(Color.White, RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                runCatching { LocalDate.parse(d.date) }.getOrNull()?.let { weatherDateLabel(it) } ?: d.date,
+                                modifier = Modifier.width(118.dp),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(weatherEmoji(d.codeDay, d.textDay), modifier = Modifier.width(34.dp), fontSize = 18.sp)
+                            Text(d.textDay.ifBlank { "—" }, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            Text("${weatherTemp(d.tempMin)} / ${weatherTemp(d.tempMax)}", modifier = Modifier.width(72.dp), textAlign = TextAlign.End, style = MaterialTheme.typography.bodySmall)
+                            Text(weatherPercent(d.precipitationProbability), modifier = Modifier.width(52.dp), textAlign = TextAlign.End, color = Color(0xFF2C6E9B), style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            }
+
+            item {
+                Text("数据来源：${ov.attribution} · 左右滑动切换日期", style = MaterialTheme.typography.labelSmall, color = Color.Gray, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+            }
+        }
+    }
+}
+
 @Composable
 private fun HomeScreen(
     db: AppDatabase,
     dataVersion: Int,
     ledgerManager: LedgerManager,
     currentBook: LedgerBook,
+    cloudSyncManager: CloudSyncManager,
     books: List<LedgerBook>,
     ledgerUiSettingsManager:
         LedgerUiSettingsManager,
@@ -1395,6 +2014,7 @@ private fun HomeScreen(
     onReport: () -> Unit,
     onFruits: () -> Unit,
     onInventory: () -> Unit,
+    onOpenWeather: (String) -> Unit,
     onMore: () -> Unit,
     onOpenMore: (MorePage) -> Unit
 ) {
@@ -1901,6 +2521,16 @@ private fun HomeScreen(
                     }
                 }
             }
+        }
+
+        item {
+            HomeWeatherCard(
+                db = db,
+                dataVersion = dataVersion,
+                currentBook = currentBook,
+                cloudSyncManager = cloudSyncManager,
+                onOpenDetail = onOpenWeather
+            )
         }
 
         item {
@@ -3247,7 +3877,14 @@ private fun PurchaseScreen(
         if (editingOrderId != null) return
 
         val detail = db.getPurchasePlan(date)
-        val planItems = detail?.items.orEmpty().filter { it.status != 2 }
+        val planItems =
+            detail?.items.orEmpty()
+                .filter { it.status != 2 }
+                .sortedWith(
+                    compareBy<PurchasePlanItemRecord> { it.status }
+                        .thenBy { it.buyerName.ifBlank { "未指定采购人" } }
+                        .thenBy { it.id }
+                )
 
         rows.clear()
         syncedFingerprints.clear()
@@ -3551,13 +4188,12 @@ private fun PurchaseScreen(
         }
 
         if (savedCount == rowsToSave.size) {
-            db.updatePurchasePlanNote(date, remark)
             editingPlanItemId = null
             loadRowsFromCollaborationPlan()
             purchaseFormExpanded = false
             message =
                 if (rowsToSave.isEmpty()) {
-                    "采购计划没有商品变更，备注已保存"
+                    "采购计划没有商品变更"
                 } else {
                     "采购清单已保存到协作采购，完成采购后才正式入账"
                 }
@@ -3730,8 +4366,6 @@ private fun PurchaseScreen(
             }
             prepared += itemId to target
         }
-
-        db.updatePurchasePlanNote(date, remark)
 
         var completedCount = 0
         var failedMessage = ""
@@ -3907,6 +4541,15 @@ private fun PurchaseScreen(
                 null
             }
 
+        val groupedPendingItems =
+            collaborationPlan
+                ?.items
+                .orEmpty()
+                .filter { it.status == 0 }
+                .groupBy { it.buyerId to it.buyerName.ifBlank { "未指定采购人" } }
+        val pendingGroupFirstItemIds =
+            groupedPendingItems.values.mapNotNull { group -> group.firstOrNull()?.id }.toSet()
+
         items(rows, key = { row -> "purchase_draft_${row.rowId}" }) { row ->
             val collaborationItem = collaborationItemFor(row)
             val completed = editingOrderId == null && collaborationItem?.status == 1
@@ -3923,27 +4566,48 @@ private fun PurchaseScreen(
                 }
 
                 savedPending && !editingSavedPending -> {
-                    PurchasePlanStatusCard(
-                        item = collaborationItem!!,
-                        completed = false,
-                        inventoryQuantity =
-                            row.fruitId
-                                ?.let { id ->
-                                    inventoryByProductUnit[
-                                        id to row.unit
-                                    ]?.remainingQuantity
-                                },
-                        referenceUnitPrice =
-                            row.unitPrice.toDoubleOrNull(),
-                        onClick = {
-                            protectHistoricalAction(
-                                date,
-                                "查看或修改 ${collaborationItem.fruitName} 的历史采购"
+                    val planItem = collaborationItem!!
+                    val groupKey = planItem.buyerId to planItem.buyerName.ifBlank { "未指定采购人" }
+                    val groupItems = groupedPendingItems[groupKey].orEmpty()
+                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        if (planItem.id in pendingGroupFirstItemIds) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(top = 3.dp, start = 2.dp, end = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                planActionItem = collaborationItem
+                                Text(
+                                    planItem.buyerName.ifBlank { "未指定采购人" },
+                                    modifier = Modifier.weight(1f),
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF4B5563)
+                                )
+                                Text(
+                                    "${groupItems.size}项  ·  ${money(groupItems.sumOf { it.estimatedAmount })}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = BrandGreen,
+                                    fontWeight = FontWeight.SemiBold
+                                )
                             }
                         }
-                    )
+                        PurchasePlanStatusCard(
+                            item = planItem,
+                            completed = false,
+                            inventoryQuantity =
+                                row.fruitId?.let { id ->
+                                    inventoryByProductUnit[id to row.unit]?.remainingQuantity
+                                },
+                            referenceUnitPrice = row.unitPrice.toDoubleOrNull(),
+                            showBuyer = false,
+                            onClick = {
+                                protectHistoricalAction(
+                                    date,
+                                    "查看或修改 ${planItem.fruitName} 的历史采购"
+                                ) {
+                                    planActionItem = planItem
+                                }
+                            }
+                        )
+                    }
                 }
 
                 else -> {
@@ -4050,6 +4714,7 @@ private fun PurchaseScreen(
         if (
             editingOrderId == null &&
                 editingPlanItemId == null &&
+                !purchaseFormExpanded &&
                 pendingPlanItems.isNotEmpty()
         ) {
             item {
@@ -4115,12 +4780,14 @@ private fun PurchaseScreen(
         }
 
         item {
-            CompactTextField(
-                "备注（可选）",
-                remark,
-                { remark = it },
-                Modifier.fillMaxWidth()
-            )
+            if (editingOrderId != null) {
+                CompactTextField(
+                    "备注（可选）",
+                    remark,
+                    { remark = it },
+                    Modifier.fillMaxWidth()
+                )
+            }
 
             if (editingOrderId == null) {
                 val hasSavedPending =
@@ -4129,7 +4796,7 @@ private fun PurchaseScreen(
                     }
 
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 7.dp),
+                    modifier = Modifier.fillMaxWidth().padding(top = if (editingOrderId == null) 1.dp else 7.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     OutlinedButton(
@@ -5463,6 +6130,7 @@ private fun PurchasePlanStatusCard(
     completed: Boolean,
     inventoryQuantity: Double? = null,
     referenceUnitPrice: Double? = null,
+    showBuyer: Boolean = true,
     onClick: () -> Unit
 ) {
     val quantity =
@@ -5531,11 +6199,11 @@ private fun PurchasePlanStatusCard(
                 if (completed) {
                     "数量 ${fmt(quantity)}${item.unit}   " +
                         "单价 ${money(unitPrice)}/${item.unit}   " +
-                        "总价 ${money(amount)}   $buyer"
+                        "总价 ${money(amount)}" + if (showBuyer) "   $buyer" else ""
                 } else {
                     "计划数量 ${fmt(quantity)}${item.unit}   " +
                         "单价 ${money(unitPrice)}/${item.unit}   " +
-                        "计划总额 ${money(amount)}   $buyer"
+                        "计划总额 ${money(amount)}" + if (showBuyer) "   $buyer" else ""
                 }
 
             Text(
@@ -5935,6 +6603,8 @@ private fun PurchaseDraftRowEditor(
 private fun SessionScreen(
     db: AppDatabase,
     dataVersion: Int,
+    cloudSyncManager: CloudSyncManager,
+    currentBook: LedgerBook,
     workDate: String,
     onWorkDateChange: (String) -> Unit,
     onChanged: () -> Unit,
@@ -6180,7 +6850,7 @@ private fun SessionScreen(
     LaunchedEffect(dataVersion, stores.map { it.id }, partners.map { it.id }, editingRecordId) {
         if (editingRecordId == null) {
             if (storeId == null || stores.none { it.id == storeId }) {
-                storeId = stores.firstOrNull()?.id
+                storeId = db.resolveWeatherStore(date).store?.id ?: stores.firstOrNull()?.id
                 historicalStoreName = ""
             }
             if (expensePayerId != null && partners.none { it.id == expensePayerId }) {
@@ -6215,6 +6885,8 @@ private fun SessionScreen(
     val o = oldCustomer.toIntOrNull() ?: 0
     val revenue = w + a + c
     val contribution = revenue + close - open - e
+    val businessWeatherStore =
+        stores.firstOrNull { it.id == storeId } ?: db.resolveWeatherStore(date).store
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -6226,6 +6898,16 @@ private fun SessionScreen(
                 pageTitle = "营业",
                 date = date,
                 onDate = onWorkDateChange
+            )
+        }
+
+        item {
+            BusinessWeatherCard(
+                db = db,
+                date = date,
+                store = businessWeatherStore,
+                currentBook = currentBook,
+                cloudSyncManager = cloudSyncManager
             )
         }
 
@@ -6912,9 +7594,10 @@ private fun SessionScreen(
 
     if (addStoreDialog) {
         AddStoreDialog(
-            onDismiss = { addStoreDialog = false }
-        ) { name, address ->
-            val newId = db.addStore(name, address)
+            onDismiss = { addStoreDialog = false },
+            initial = null
+        ) { name, address, latitude, longitude ->
+            val newId = db.addStore(name, address, latitude, longitude)
             addStoreDialog = false
             if (newId > 0) storeId = newId
             onChanged()
@@ -9448,6 +10131,7 @@ private fun MoreScreen(
     dataVersion: Int,
     initialSub: MorePage = MorePage.MENU,
     initialHistorySection: HistorySection = HistorySection.BUSINESS,
+    initialWeatherDate: String = LocalDate.now().toString(),
     ledgerManager: LedgerManager,
     cloudSyncManager: CloudSyncManager,
     currentBook: LedgerBook,
@@ -10067,6 +10751,21 @@ private fun MoreScreen(
             }
         }
 
+        MorePage.WEATHER_DETAIL -> {
+            SubPage(
+                "经营天气",
+                { sub = MorePage.MENU }
+            ) {
+                WeatherDetailContent(
+                    db = db,
+                    dataVersion = dataVersion,
+                    currentBook = currentBook,
+                    cloudSyncManager = cloudSyncManager,
+                    initialDate = initialWeatherDate
+                )
+            }
+        }
+
         MorePage.PERSONAL_SUMMARY -> {
             SubPage(
                 "个人汇总",
@@ -10233,6 +10932,14 @@ private fun OperatingAnalysisContent(
                     )
                 }
             }
+        }
+
+        item {
+            OperatingAnalysisWeatherCard(
+                db = db,
+                date = date,
+                dataVersion = dataVersion
+            )
         }
 
         item {
@@ -19460,6 +20167,7 @@ private fun StoreContent(
             StoreOption?
         >(null)
     }
+    var editStore by remember { mutableStateOf<StoreOption?>(null) }
 
     var message by remember {
         mutableStateOf("")
@@ -19534,13 +20242,30 @@ private fun StoreContent(
     ) {
         item {
             Text(
-                "点击 ↑ / ↓ 调整位置顺序，修改后立即保存",
+                "点击 ↑ / ↓ 调整位置顺序；天气功能需要为位置绑定经纬度。",
                 color = Color.Gray,
-                style =
-                    MaterialTheme
-                        .typography
-                        .bodySmall
+                style = MaterialTheme.typography.bodySmall
             )
+        }
+
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF7FAF8))) {
+                Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("每周常用位置 · 自动从近10周营业记录判断", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
+                    val base = LocalDate.now()
+                    (1..7).forEach { weekday ->
+                        val target = base.plusDays(((weekday - base.dayOfWeek.value + 7) % 7).toLong())
+                        val inferred = db.resolveWeatherStore(target.toString())
+                        Text(
+                            "星期${listOf("一","二","三","四","五","六","日")[weekday - 1]}  ${inferred.store?.name ?: "暂无规律"}" +
+                                if (inferred.source == "WEEKDAY_HISTORY" && inferred.sampleCount > 0)
+                                    "  ·  ${(inferred.confidence * 100).toInt()}%（${inferred.sampleCount}次）" else "",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.DarkGray
+                        )
+                    }
+                }
+            }
         }
 
         items(
@@ -19590,28 +20315,24 @@ private fun StoreContent(
                             FontWeight.Bold
                     )
 
-                    if (
-                        s.address
-                            .isNotBlank()
-                    ) {
+                    if (s.address.isNotBlank()) {
                         Text(
                             s.address,
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodySmall,
+                            style = MaterialTheme.typography.bodySmall,
                             color = Color.Gray
                         )
                     }
+                    Text(
+                        if (s.latitude != null && s.longitude != null)
+                            "天气定位 ${String.format(Locale.CHINA, "%.4f", s.latitude)}, ${String.format(Locale.CHINA, "%.4f", s.longitude)}"
+                        else "天气定位：未绑定经纬度",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (s.latitude != null && s.longitude != null) BrandGreen else Color(0xFFB26A00)
+                    )
                 }
 
-                TextButton(
-                    onClick = {
-                        delete = s
-                    }
-                ) {
-                    Text("删除")
-                }
+                TextButton(onClick = { editStore = s }) { Text("编辑") }
+                TextButton(onClick = { delete = s }) { Text("删除") }
             }
         }
 
@@ -19656,17 +20377,10 @@ private fun StoreContent(
 
     if (addDialog) {
         AddStoreDialog(
-            {
-                addDialog = false
-            }
-        ) {
-            name,
-            address ->
-            val id =
-                db.addStore(
-                    name,
-                    address
-                )
+            onDismiss = { addDialog = false },
+            initial = null
+        ) { name, address, latitude, longitude ->
+            val id = db.addStore(name, address, latitude, longitude)
 
             addDialog = false
             message =
@@ -19676,6 +20390,18 @@ private fun StoreContent(
                     "保存失败，位置名称可能重复"
                 }
             onChanged()
+        }
+    }
+
+    editStore?.let { store ->
+        AddStoreDialog(
+            onDismiss = { editStore = null },
+            initial = store
+        ) { name, address, latitude, longitude ->
+            val ok = db.updateStore(store.id, name, address, latitude, longitude)
+            message = if (ok) "位置和天气坐标已更新" else "位置修改失败"
+            editStore = null
+            if (ok) onChanged()
         }
     }
 
@@ -20933,16 +21659,58 @@ private fun FruitEditDialog(
 }
 
 @Composable
-private fun AddStoreDialog(onDismiss: () -> Unit, onSave: (String, String) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    var address by remember { mutableStateOf("") }
+private fun AddStoreDialog(
+    onDismiss: () -> Unit,
+    initial: StoreOption? = null,
+    onSave: (String, String, Double?, Double?) -> Unit
+) {
+    var name by remember(initial?.id) { mutableStateOf(initial?.name.orEmpty()) }
+    var address by remember(initial?.id) { mutableStateOf(initial?.address.orEmpty()) }
+    var latitude by remember(initial?.id) { mutableStateOf(initial?.latitude?.toString().orEmpty()) }
+    var longitude by remember(initial?.id) { mutableStateOf(initial?.longitude?.toString().orEmpty()) }
+    val lat = latitude.toDoubleOrNull()
+    val lon = longitude.toDoubleOrNull()
+    val coordsValid = (latitude.isBlank() && longitude.isBlank()) ||
+        (lat != null && lat in -90.0..90.0 && lon != null && lon in -180.0..180.0)
     AlertDialog(
-        onDismissRequest = onDismiss, title = { Text("新增位置") },
-        text = { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(name, { name = it }, label = { Text("位置简称，例如：龙归A摊") }, singleLine = true)
-            OutlinedTextField(address, { address = it }, label = { Text("详细位置（可选）") })
-        } },
-        confirmButton = { Button(onClick = { if (name.isNotBlank()) onSave(name, address) }) { Text("保存") } },
+        onDismissRequest = onDismiss,
+        title = { Text(if (initial == null) "新增位置" else "编辑位置") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(name, { name = it }, label = { Text("位置简称，例如：龙归A摊") }, singleLine = true)
+                OutlinedTextField(address, { address = it }, label = { Text("详细位置（可选）") })
+                Text("天气定位", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    OutlinedTextField(
+                        latitude,
+                        { v -> if (v.matches(Regex("^-?\\d*(\\.\\d{0,6})?$"))) latitude = v },
+                        label = { Text("纬度") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        longitude,
+                        { v -> if (v.matches(Regex("^-?\\d*(\\.\\d{0,6})?$"))) longitude = v },
+                        label = { Text("经度") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Text(
+                    "绑定经纬度后，首页和营业表会按实际摊位获取天气；API Key 只保存在服务器。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (coordsValid) Color.Gray else MaterialTheme.colorScheme.error
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(name.trim(), address.trim(), lat, lon) },
+                enabled = name.isNotBlank() && coordsValid
+            ) { Text("保存") }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
 }
