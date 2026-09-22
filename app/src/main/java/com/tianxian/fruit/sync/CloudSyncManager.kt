@@ -1167,6 +1167,11 @@ class CloudSyncManager(
                         BookPermissions.BUSINESS_EDIT
                     )
 
+                "weather_snapshot" ->
+                    setOf(
+                        BookPermissions.BUSINESS_EDIT
+                    )
+
                 "profit_rule",
                 "profit_distribution" ->
                     setOf(

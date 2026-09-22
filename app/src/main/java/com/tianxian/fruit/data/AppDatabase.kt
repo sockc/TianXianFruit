@@ -40,6 +40,14 @@ data class WeatherSnapshotRecord(
     val observedAt: Long,
     val updatedAt: Long
 )
+
+data class WeatherCacheRecord(
+    val date: String,
+    val storeId: Long,
+    val payloadJson: String,
+    val fetchedAt: Long,
+    val expiresAt: Long
+)
 data class PartnerOption(val id: Long, val name: String)
 
 data class PurchaseLineInput(
@@ -686,6 +694,9 @@ class AppDatabase(
             db,
             initialData = false
         )
+        createV26WeatherSyncAndCache(
+            db
+        )
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -794,6 +805,11 @@ class AppDatabase(
                 db
             )
         }
+        if (oldVersion < 26) {
+            createV26WeatherSyncAndCache(
+                db
+            )
+        }
     }
 
     private fun createV25Weather(
@@ -837,6 +853,124 @@ class AppDatabase(
         if (tableExists(db, "sync_context")) {
             createSyncTriggers(db)
         }
+    }
+
+    private fun createV26WeatherSyncAndCache(
+        db: SQLiteDatabase
+    ) {
+        if (!tableExists(db, "weather_snapshot")) {
+            createV25Weather(db)
+        }
+
+        if (!columnExists(db, "weather_snapshot", "store_sync_id")) {
+            db.execSQL(
+                "ALTER TABLE weather_snapshot ADD COLUMN store_sync_id TEXT NOT NULL DEFAULT ''"
+            )
+        }
+
+        val canSuppressSyncTriggers = tableExists(db, "sync_context")
+        if (canSuppressSyncTriggers) {
+            setRemoteApply(db, true)
+        }
+        try {
+            val rows = db.rawQuery(
+                "SELECT id,date,store_id,snapshot_type,row_version FROM weather_snapshot",
+                null
+            ).use { c ->
+                buildList {
+                    while (c.moveToNext()) {
+                        add(
+                            arrayOf<Any>(
+                                c.long("id"),
+                                c.str("date"),
+                                c.long("store_id"),
+                                c.str("snapshot_type"),
+                                c.long("row_version")
+                            )
+                        )
+                    }
+                }
+            }
+
+            val now = System.currentTimeMillis()
+            rows.forEach { row ->
+                val id = row[0] as Long
+                val date = row[1] as String
+                val storeId = row[2] as Long
+                val type = row[3] as String
+                val rowVersion = row[4] as Long
+                val storeSyncId = db.rawQuery(
+                    "SELECT sync_id FROM store WHERE id=? LIMIT 1",
+                    arrayOf(storeId.toString())
+                ).use { c -> if (c.moveToFirst()) c.str("sync_id") else "" }
+                val storeName = db.rawQuery(
+                    "SELECT name FROM store WHERE id=? LIMIT 1",
+                    arrayOf(storeId.toString())
+                ).use { c -> if (c.moveToFirst()) c.str("name") else "" }
+                val seed = "$ledgerId|weather|$date|${storeSyncId.ifBlank { storeName }}|${type.uppercase()}"
+                val deterministicSyncId =
+                    UUID.nameUUIDFromBytes(seed.toByteArray(Charsets.UTF_8)).toString()
+
+                db.update(
+                    "weather_snapshot",
+                    ContentValues().apply {
+                        put("store_sync_id", storeSyncId)
+                        put("sync_id", deterministicSyncId)
+                        put("sync_status", 2)
+                        put("row_version", rowVersion.coerceAtLeast(1L) + 1L)
+                        put("modified_by", deviceId)
+                        put("updated_at", now)
+                    },
+                    "id=?",
+                    arrayOf(id.toString())
+                )
+            }
+
+            if (tableExists(db, "sync_change_log")) {
+                db.delete("sync_change_log", "table_name=?", arrayOf("weather_snapshot"))
+                db.execSQL(
+                    """
+                    INSERT INTO sync_change_log(
+                        table_name,record_sync_id,operation,row_version,device_id,changed_at,uploaded
+                    )
+                    SELECT
+                        'weather_snapshot',sync_id,
+                        CASE WHEN deleted=1 THEN 'DELETE' ELSE 'UPSERT' END,
+                        row_version,modified_by,updated_at,0
+                    FROM weather_snapshot
+                    WHERE sync_id<>''
+                    """.trimIndent()
+                )
+            }
+        } finally {
+            if (canSuppressSyncTriggers) {
+                setRemoteApply(db, false)
+            }
+        }
+
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_weather_snapshot_store_sync " +
+                "ON weather_snapshot(store_sync_id,date,snapshot_type)"
+        )
+
+        // weather_cache is deliberately local-only. Forecast/current weather is
+        // disposable cache data; only weather_snapshot participates in cloud sync.
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS weather_cache(
+                date TEXT NOT NULL,
+                store_id INTEGER NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                fetched_at INTEGER NOT NULL DEFAULT 0,
+                expires_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(date,store_id)
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_weather_cache_expiry " +
+                "ON weather_cache(expires_at)"
+        )
     }
 
     private fun createV24InventorySync(
@@ -3225,7 +3359,7 @@ class AppDatabase(
                 true
             )
 
-            val existingId =
+            var existingId =
                 existingState?.first
 
             val values =
@@ -3270,6 +3404,49 @@ class AppDatabase(
                 values.getAsLong("id") ?: 0L
             val recordDate =
                 values.getAsString("date") ?: ""
+
+            if (tableName == "weather_snapshot") {
+                val stableStoreSyncId =
+                    values.getAsString("store_sync_id")
+                        ?.trim()
+                        .orEmpty()
+                val remoteStoreId =
+                    values.getAsLong("store_id") ?: 0L
+                val storeName =
+                    values.getAsString("store_name")
+                        ?.trim()
+                        .orEmpty()
+
+                resolveLocalWeatherStoreId(
+                    db = db,
+                    storeSyncId = stableStoreSyncId,
+                    remoteStoreId = remoteStoreId,
+                    storeName = storeName
+                )?.let { localStoreId ->
+                    values.put("store_id", localStoreId)
+                }
+
+                if (existingId == null) {
+                    val localStoreId = values.getAsLong("store_id") ?: 0L
+                    val snapshotType = values.getAsString("snapshot_type")?.trim().orEmpty()
+                    val logicalState = if (recordDate.isNotBlank() && localStoreId > 0 && snapshotType.isNotBlank()) {
+                        db.rawQuery(
+                            "SELECT id,row_version FROM weather_snapshot WHERE date=? AND store_id=? AND snapshot_type=? LIMIT 1",
+                            arrayOf(recordDate, localStoreId.toString(), snapshotType)
+                        ).use { c ->
+                            if (c.moveToFirst()) c.long("id") to c.long("row_version") else null
+                        }
+                    } else {
+                        null
+                    }
+                    if (logicalState != null) {
+                        if (!force && logicalState.second >= rowVersion) {
+                            return
+                        }
+                        existingId = logicalState.first
+                    }
+                }
+            }
 
             // daily_cash_settlement is a parent table whose local numeric id is
             // referenced by settlement_partner / settlement_transfer. The cloud
@@ -3332,7 +3509,8 @@ class AppDatabase(
                     tableName == "daily_cash_settlement" ||
                     tableName == "settlement_partner" ||
                     tableName == "settlement_transfer" ||
-                    tableName == "inventory_snapshot"
+                    tableName == "inventory_snapshot" ||
+                    tableName == "weather_snapshot"
                 ) {
                     values.remove("id")
                 }
@@ -3380,6 +3558,38 @@ class AppDatabase(
             }
             db.endTransaction()
         }
+    }
+
+    private fun resolveLocalWeatherStoreId(
+        db: SQLiteDatabase,
+        storeSyncId: String,
+        remoteStoreId: Long,
+        storeName: String
+    ): Long? {
+        if (storeSyncId.isNotBlank()) {
+            val bySync = db.rawQuery(
+                "SELECT id FROM store WHERE sync_id=? LIMIT 1",
+                arrayOf(storeSyncId)
+            ).use { c -> if (c.moveToFirst()) c.long("id") else null }
+            if (bySync != null) return bySync
+        }
+
+        if (remoteStoreId > 0) {
+            val byId = db.rawQuery(
+                "SELECT id FROM store WHERE id=? LIMIT 1",
+                arrayOf(remoteStoreId.toString())
+            ).use { c -> if (c.moveToFirst()) c.long("id") else null }
+            if (byId != null) return byId
+        }
+
+        if (storeName.isNotBlank()) {
+            return db.rawQuery(
+                "SELECT id FROM store WHERE name=? AND deleted=0 ORDER BY id LIMIT 1",
+                arrayOf(storeName)
+            ).use { c -> if (c.moveToFirst()) c.long("id") else null }
+        }
+
+        return null
     }
 
     fun prepareCloudIdRanges() {
@@ -4180,20 +4390,25 @@ class AppDatabase(
         store: StoreOption,
         snapshotType: String,
         payloadJson: String,
-        observedAt: Long = System.currentTimeMillis()
+        observedAt: Long = System.currentTimeMillis(),
+        replaceExisting: Boolean = true
     ): Boolean {
         val lat = store.latitude ?: return false
         val lon = store.longitude ?: return false
         val type = snapshotType.uppercase().let { if (it == "ACTUAL") "ACTUAL" else "FORECAST" }
         val db = writableDatabase
+        val storeSyncId = getStoreSyncId(store.id)
         val existing = db.rawQuery(
             "SELECT id FROM weather_snapshot WHERE date=? AND store_id=? AND snapshot_type=? LIMIT 1",
             arrayOf(date, store.id.toString(), type)
         ).use { c -> if (c.moveToFirst()) c.long("id") else null }
+        if (existing != null && !replaceExisting) return true
+
         val now = System.currentTimeMillis()
         val values = ContentValues().apply {
             put("date", date)
             put("store_id", store.id)
+            put("store_sync_id", storeSyncId)
             put("store_name", store.name)
             put("latitude", lat)
             put("longitude", lon)
@@ -4207,11 +4422,13 @@ class AppDatabase(
         return if (existing != null) {
             db.update("weather_snapshot", values, "id=?", arrayOf(existing.toString())) > 0
         } else {
+            val stableSeed = "$ledgerId|weather|$date|${storeSyncId.ifBlank { store.name }}|$type"
             db.insert(
                 "weather_snapshot",
                 null,
                 baseSyncValues().apply {
                     putAll(values)
+                    put("sync_id", UUID.nameUUIDFromBytes(stableSeed.toByteArray(Charsets.UTF_8)).toString())
                     put("row_version", 1)
                     put("modified_by", deviceId)
                 }
@@ -4249,6 +4466,56 @@ class AppDatabase(
             )
         }
     }
+
+    fun saveWeatherCache(
+        date: String,
+        storeId: Long,
+        payloadJson: String,
+        ttlMs: Long,
+        fetchedAt: Long = System.currentTimeMillis()
+    ) {
+        val expiresAt = fetchedAt + ttlMs.coerceAtLeast(60_000L)
+        writableDatabase.execSQL(
+            """
+            INSERT INTO weather_cache(date,store_id,payload_json,fetched_at,expires_at)
+            VALUES(?,?,?,?,?)
+            ON CONFLICT(date,store_id)
+            DO UPDATE SET
+                payload_json=excluded.payload_json,
+                fetched_at=excluded.fetched_at,
+                expires_at=excluded.expires_at
+            """.trimIndent(),
+            arrayOf<Any?>(date, storeId, payloadJson, fetchedAt, expiresAt)
+        )
+        writableDatabase.delete(
+            "weather_cache",
+            "fetched_at<?",
+            arrayOf((fetchedAt - 7L * 24L * 60L * 60L * 1000L).toString())
+        )
+    }
+
+    fun getWeatherCache(
+        date: String,
+        storeId: Long
+    ): WeatherCacheRecord? =
+        readableDatabase.rawQuery(
+            "SELECT date,store_id,payload_json,fetched_at,expires_at FROM weather_cache WHERE date=? AND store_id=? LIMIT 1",
+            arrayOf(date, storeId.toString())
+        ).use { c ->
+            if (!c.moveToFirst()) null else WeatherCacheRecord(
+                date = c.str("date"),
+                storeId = c.long("store_id"),
+                payloadJson = c.str("payload_json"),
+                fetchedAt = c.long("fetched_at"),
+                expiresAt = c.long("expires_at")
+            )
+        }
+
+    fun getStoreSyncId(storeId: Long): String =
+        readableDatabase.rawQuery(
+            "SELECT sync_id FROM store WHERE id=? LIMIT 1",
+            arrayOf(storeId.toString())
+        ).use { c -> if (c.moveToFirst()) c.str("sync_id") else "" }
 
     fun reorderStores(
         orderedIds: List<Long>
@@ -11699,7 +11966,7 @@ class AppDatabase(
             getSyncFoundationStatus()
                 .pendingChanges
         )
-        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot").forEach { table ->
+        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot", "weather_snapshot").forEach { table ->
             root.put(table, tableAsJson(table))
         }
         return root.toString(2)
@@ -11940,7 +12207,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 25
+        const val DB_VERSION = 26
     }
 }
 

@@ -345,7 +345,16 @@ private fun syncTablesForPageTitle(
             )
 
         title.contains("营业") ->
-            setOf("store_daily_record")
+            setOf("store_daily_record", "weather_snapshot")
+
+        title.contains("经营分析") ->
+            setOf(
+                "store_daily_record",
+                "purchase_order",
+                "purchase_item",
+                "inventory_snapshot",
+                "weather_snapshot"
+            )
 
         title.contains("结算") ||
             title.contains("资金余额") ->
@@ -1447,11 +1456,26 @@ private fun weatherLocationSourceText(source: String, confidence: Double, sample
 private fun weatherBookId(book: LedgerBook): String =
     book.cloudBookId.ifBlank { book.id.takeIf { it.contains('-') }.orEmpty() }
 
+private const val WEATHER_CACHE_TODAY_MS = 10 * 60 * 1000L
+private const val WEATHER_CACHE_FUTURE_MS = 30 * 60 * 1000L
+
+private fun weatherCacheTtl(date: LocalDate): Long =
+    if (date == LocalDate.now()) WEATHER_CACHE_TODAY_MS else WEATHER_CACHE_FUTURE_MS
+
+private fun weatherUpdatedText(timeMillis: Long): String {
+    if (timeMillis <= 0L) return ""
+    return Instant.ofEpochMilli(timeMillis)
+        .atZone(ZoneId.systemDefault())
+        .format(DateTimeFormatter.ofPattern("HH:mm"))
+}
+
 private data class WeatherUiState(
     val overview: WeatherOverview? = null,
     val loading: Boolean = false,
+    val refreshing: Boolean = false,
     val error: String = "",
-    val snapshotType: String = ""
+    val snapshotType: String = "",
+    val updatedAtMillis: Long = 0L
 )
 
 @Composable
@@ -1465,7 +1489,7 @@ private fun HomeWeatherCard(
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     var manualStoreId by remember(selectedDate) { mutableStateOf<Long?>(null) }
     var storeMenu by remember { mutableStateOf(false) }
-    var state by remember(selectedDate, manualStoreId, dataVersion) { mutableStateOf(WeatherUiState(loading = true)) }
+    var state by remember(selectedDate, manualStoreId) { mutableStateOf(WeatherUiState(loading = true)) }
 
     val stores = remember(dataVersion) { db.getStores().filter { it.latitude != null && it.longitude != null } }
     val resolution = remember(dataVersion, selectedDate) { db.resolveWeatherStore(selectedDate.toString()) }
@@ -1473,37 +1497,87 @@ private fun HomeWeatherCard(
         ?: resolution.store?.takeIf { it.latitude != null && it.longitude != null }
         ?: stores.firstOrNull()
 
-    LaunchedEffect(selectedDate, selectedStore?.id, dataVersion, currentBook.cloudBookId) {
+    LaunchedEffect(
+        selectedDate,
+        selectedStore?.id,
+        selectedStore?.latitude,
+        selectedStore?.longitude,
+        currentBook.cloudBookId
+    ) {
         val store = selectedStore
         if (store == null) {
             state = WeatherUiState(error = "还没有为经营位置绑定经纬度")
             return@LaunchedEffect
         }
-        state = WeatherUiState(loading = true)
-        val result = withContext(Dispatchers.IO) {
-            runCatching {
-                val past = selectedDate.isBefore(LocalDate.now())
-                val snap = db.getWeatherSnapshot(selectedDate.toString(), store.id)
-                if (past && snap != null) {
+
+        val past = selectedDate.isBefore(LocalDate.now())
+        if (past) {
+            val snap = withContext(Dispatchers.IO) {
+                db.getWeatherSnapshot(selectedDate.toString(), store.id)
+            }
+            state = if (snap != null) {
+                val parsed = runCatching { WeatherClient.parseOverview(snap.payloadJson, historical = true) }.getOrNull()
+                if (parsed != null) {
                     WeatherUiState(
-                        overview = WeatherClient.parseOverview(snap.payloadJson, historical = true),
-                        snapshotType = snap.snapshotType
+                        overview = parsed,
+                        snapshotType = snap.snapshotType,
+                        updatedAtMillis = snap.updatedAt
                     )
-                } else if (past) {
-                    WeatherUiState(error = "该日期暂无已保存的天气记录")
                 } else {
-                    val bookId = weatherBookId(currentBook)
-                    if (bookId.isBlank()) throw IllegalStateException("当前账本尚未连接云端天气服务")
-                    val overview = WeatherClient(cloudSyncManager).fetchOverview(bookId, store, selectedDate, 96)
-                    db.saveWeatherSnapshot(selectedDate.toString(), store, "FORECAST", overview.rawJson)
-                    if (selectedDate == LocalDate.now()) {
-                        db.saveWeatherSnapshot(selectedDate.toString(), store, "ACTUAL", overview.rawJson)
-                    }
-                    WeatherUiState(overview = overview, snapshotType = if (selectedDate == LocalDate.now()) "ACTUAL" else "FORECAST")
+                    WeatherUiState(error = "历史天气数据无法解析")
                 }
-            }.getOrElse { WeatherUiState(error = it.message ?: "天气加载失败") }
+            } else {
+                WeatherUiState(error = "该日期暂无已保存的天气记录")
+            }
+            return@LaunchedEffect
         }
-        state = result
+
+        val now = System.currentTimeMillis()
+        val cached = withContext(Dispatchers.IO) {
+            db.getWeatherCache(selectedDate.toString(), store.id)
+        }
+        var hasUsableCache = false
+        if (cached != null) {
+            val cachedOverview = runCatching { WeatherClient.parseOverview(cached.payloadJson, historical = false) }.getOrNull()
+            if (cachedOverview != null) {
+                hasUsableCache = true
+                val stale = cached.expiresAt <= now
+                state = WeatherUiState(
+                    overview = cachedOverview,
+                    loading = false,
+                    refreshing = stale,
+                    snapshotType = "CACHE",
+                    updatedAtMillis = cached.fetchedAt
+                )
+                if (!stale) return@LaunchedEffect
+            }
+        }
+
+        if (!hasUsableCache) state = WeatherUiState(loading = true)
+        val refreshed = withContext(Dispatchers.IO) {
+            runCatching {
+                val bookId = weatherBookId(currentBook)
+                if (bookId.isBlank()) throw IllegalStateException("当前账本尚未连接云端天气服务")
+                val overview = WeatherClient(cloudSyncManager).fetchOverview(bookId, store, selectedDate, 96)
+                val fetchedAt = System.currentTimeMillis()
+                db.saveWeatherCache(
+                    selectedDate.toString(),
+                    store.id,
+                    overview.rawJson,
+                    weatherCacheTtl(selectedDate),
+                    fetchedAt
+                )
+                WeatherUiState(
+                    overview = overview,
+                    snapshotType = "CACHE",
+                    updatedAtMillis = fetchedAt
+                )
+            }
+        }
+        state = refreshed.getOrElse { error ->
+            if (hasUsableCache) state.copy(refreshing = false)
+            else WeatherUiState(error = error.message ?: "天气加载失败")
+        }
     }
 
     val overview = state.overview
@@ -1608,8 +1682,18 @@ private fun HomeWeatherCard(
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val autoText = if (manualStoreId != null) "手动查看位置" else weatherLocationSourceText(resolution.source, resolution.confidence, resolution.sampleCount)
-                    Text(autoText, style = MaterialTheme.typography.labelSmall, color = Color.Gray, modifier = Modifier.weight(1f))
-                    Text("左右滑动日期 · 查看详细天气 ›", style = MaterialTheme.typography.labelSmall, color = BrandGreen)
+                    val updateText = weatherUpdatedText(state.updatedAtMillis)
+                    Text(
+                        buildString {
+                            append(autoText)
+                            if (updateText.isNotBlank()) append(" · 更新于 $updateText")
+                            if (state.refreshing) append(" · 后台更新中")
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Gray,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text("左右滑动 · 详情 ›", style = MaterialTheme.typography.labelSmall, color = BrandGreen)
                 }
             }
         }
@@ -1628,30 +1712,78 @@ private fun BusinessWeatherCard(
     var state by remember(date, store?.id) { mutableStateOf(WeatherUiState(loading = true)) }
     val selectedDate = runCatching { LocalDate.parse(date) }.getOrElse { LocalDate.now() }
 
-    LaunchedEffect(date, store?.id, currentBook.cloudBookId) {
+    LaunchedEffect(
+        date,
+        store?.id,
+        store?.latitude,
+        store?.longitude,
+        currentBook.cloudBookId
+    ) {
         val selectedStore = store
         if (selectedStore?.latitude == null || selectedStore.longitude == null) {
             state = WeatherUiState(error = "当前营业位置未绑定天气坐标")
             return@LaunchedEffect
         }
-        state = WeatherUiState(loading = true)
-        state = withContext(Dispatchers.IO) {
-            runCatching {
-                val past = selectedDate.isBefore(LocalDate.now())
-                val snap = db.getWeatherSnapshot(date, selectedStore.id)
-                if (past && snap != null) {
-                    WeatherUiState(WeatherClient.parseOverview(snap.payloadJson, true), snapshotType = snap.snapshotType)
-                } else if (past) {
-                    WeatherUiState(error = "该营业日暂无天气记录")
-                } else {
-                    val bookId = weatherBookId(currentBook)
-                    if (bookId.isBlank()) throw IllegalStateException("账本尚未连接云端天气服务")
-                    val overview = WeatherClient(cloudSyncManager).fetchOverview(bookId, selectedStore, selectedDate, 72)
-                    db.saveWeatherSnapshot(date, selectedStore, "FORECAST", overview.rawJson)
-                    if (selectedDate == LocalDate.now()) db.saveWeatherSnapshot(date, selectedStore, "ACTUAL", overview.rawJson)
-                    WeatherUiState(overview, snapshotType = if (selectedDate == LocalDate.now()) "ACTUAL" else "FORECAST")
+
+        val past = selectedDate.isBefore(LocalDate.now())
+        if (past) {
+            val snap = withContext(Dispatchers.IO) { db.getWeatherSnapshot(date, selectedStore.id) }
+            state = if (snap != null) {
+                val parsed = runCatching { WeatherClient.parseOverview(snap.payloadJson, true) }.getOrNull()
+                if (parsed != null) WeatherUiState(parsed, snapshotType = snap.snapshotType, updatedAtMillis = snap.updatedAt)
+                else WeatherUiState(error = "该营业日天气记录无法解析")
+            } else {
+                WeatherUiState(error = "该营业日暂无天气记录")
+            }
+            return@LaunchedEffect
+        }
+
+        val now = System.currentTimeMillis()
+        val cached = withContext(Dispatchers.IO) { db.getWeatherCache(date, selectedStore.id) }
+        var hasUsableCache = false
+        if (cached != null) {
+            val parsed = runCatching { WeatherClient.parseOverview(cached.payloadJson, false) }.getOrNull()
+            if (parsed != null) {
+                hasUsableCache = true
+                withContext(Dispatchers.IO) {
+                    db.saveWeatherSnapshot(date, selectedStore, "FORECAST", cached.payloadJson, cached.fetchedAt, replaceExisting = false)
+                    if (selectedDate == LocalDate.now()) {
+                        db.saveWeatherSnapshot(date, selectedStore, "ACTUAL", cached.payloadJson, cached.fetchedAt, replaceExisting = false)
+                    }
                 }
-            }.getOrElse { WeatherUiState(error = it.message ?: "天气加载失败") }
+                val stale = cached.expiresAt <= now
+                state = WeatherUiState(
+                    overview = parsed,
+                    refreshing = stale,
+                    snapshotType = if (selectedDate == LocalDate.now()) "ACTUAL" else "FORECAST",
+                    updatedAtMillis = cached.fetchedAt
+                )
+                if (!stale) return@LaunchedEffect
+            }
+        }
+
+        if (!hasUsableCache) state = WeatherUiState(loading = true)
+        val refreshed = withContext(Dispatchers.IO) {
+            runCatching {
+                val bookId = weatherBookId(currentBook)
+                if (bookId.isBlank()) throw IllegalStateException("账本尚未连接云端天气服务")
+                val overview = WeatherClient(cloudSyncManager).fetchOverview(bookId, selectedStore, selectedDate, 72)
+                val fetchedAt = System.currentTimeMillis()
+                db.saveWeatherCache(date, selectedStore.id, overview.rawJson, weatherCacheTtl(selectedDate), fetchedAt)
+                db.saveWeatherSnapshot(date, selectedStore, "FORECAST", overview.rawJson, fetchedAt, replaceExisting = false)
+                if (selectedDate == LocalDate.now()) {
+                    db.saveWeatherSnapshot(date, selectedStore, "ACTUAL", overview.rawJson, fetchedAt, replaceExisting = true)
+                }
+                WeatherUiState(
+                    overview = overview,
+                    snapshotType = if (selectedDate == LocalDate.now()) "ACTUAL" else "FORECAST",
+                    updatedAtMillis = fetchedAt
+                )
+            }
+        }
+        state = refreshed.getOrElse { error ->
+            if (hasUsableCache) state.copy(refreshing = false)
+            else WeatherUiState(error = error.message ?: "天气加载失败")
         }
     }
 
@@ -1686,6 +1818,13 @@ private fun BusinessWeatherCard(
                     Text("16–24时 降雨${weatherPercent(pop)} · ${weatherAmount(rain)}", style = MaterialTheme.typography.labelSmall, color = Color.DarkGray)
                 }
                 if (ov != null) Text(if (expanded) "  收起⌃" else "  详情›", style = MaterialTheme.typography.labelSmall, color = BrandGreen)
+            }
+            if (ov != null && state.updatedAtMillis > 0L) {
+                Text(
+                    "更新于 ${weatherUpdatedText(state.updatedAtMillis)}${if (state.refreshing) " · 后台更新中" else ""}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.Gray
+                )
             }
             if (expanded && ov != null) {
                 HorizontalDivider()
@@ -1766,37 +1905,77 @@ private fun WeatherDetailContent(
     var selectedDate by remember(initialDate) { mutableStateOf(runCatching { LocalDate.parse(initialDate) }.getOrElse { LocalDate.now() }) }
     var manualStoreId by remember(selectedDate) { mutableStateOf<Long?>(null) }
     var storeMenu by remember { mutableStateOf(false) }
-    var state by remember(selectedDate, manualStoreId, dataVersion) { mutableStateOf(WeatherUiState(loading = true)) }
+    var state by remember(selectedDate, manualStoreId) { mutableStateOf(WeatherUiState(loading = true)) }
     val stores = remember(dataVersion) { db.getStores().filter { it.latitude != null && it.longitude != null } }
     val resolution = remember(dataVersion, selectedDate) { db.resolveWeatherStore(selectedDate.toString()) }
     val store = stores.firstOrNull { it.id == manualStoreId }
         ?: resolution.store?.takeIf { it.latitude != null && it.longitude != null }
         ?: stores.firstOrNull()
 
-    LaunchedEffect(selectedDate, store?.id, currentBook.cloudBookId) {
+    LaunchedEffect(
+        selectedDate,
+        store?.id,
+        store?.latitude,
+        store?.longitude,
+        currentBook.cloudBookId
+    ) {
         val s = store
         if (s == null) {
             state = WeatherUiState(error = "没有已绑定经纬度的经营位置")
             return@LaunchedEffect
         }
-        state = WeatherUiState(loading = true)
-        state = withContext(Dispatchers.IO) {
+
+        val past = selectedDate.isBefore(LocalDate.now())
+        if (past) {
+            val snap = withContext(Dispatchers.IO) { db.getWeatherSnapshot(selectedDate.toString(), s.id) }
+            state = if (snap != null) {
+                val parsed = runCatching { WeatherClient.parseOverview(snap.payloadJson, true) }.getOrNull()
+                if (parsed != null) WeatherUiState(parsed, snapshotType = snap.snapshotType, updatedAtMillis = snap.updatedAt)
+                else WeatherUiState(error = "该日期历史天气无法解析")
+            } else {
+                WeatherUiState(error = "该日期暂无已保存的历史天气")
+            }
+            return@LaunchedEffect
+        }
+
+        val now = System.currentTimeMillis()
+        val cached = withContext(Dispatchers.IO) { db.getWeatherCache(selectedDate.toString(), s.id) }
+        var hasUsableCache = false
+        if (cached != null) {
+            val parsed = runCatching { WeatherClient.parseOverview(cached.payloadJson, false) }.getOrNull()
+            if (parsed != null) {
+                hasUsableCache = true
+                val stale = cached.expiresAt <= now
+                state = WeatherUiState(
+                    overview = parsed,
+                    refreshing = stale,
+                    snapshotType = "CACHE",
+                    updatedAtMillis = cached.fetchedAt
+                )
+                if (!stale) return@LaunchedEffect
+            }
+        }
+
+        if (!hasUsableCache) state = WeatherUiState(loading = true)
+        val refreshed = withContext(Dispatchers.IO) {
             runCatching {
-                val past = selectedDate.isBefore(LocalDate.now())
-                val snap = db.getWeatherSnapshot(selectedDate.toString(), s.id)
-                if (past && snap != null) {
-                    WeatherUiState(WeatherClient.parseOverview(snap.payloadJson, true), snapshotType = snap.snapshotType)
-                } else if (past) {
-                    WeatherUiState(error = "该日期暂无已保存的历史天气")
-                } else {
-                    val bookId = weatherBookId(currentBook)
-                    if (bookId.isBlank()) throw IllegalStateException("当前账本尚未连接云端天气服务")
-                    val ov = WeatherClient(cloudSyncManager).fetchOverview(bookId, s, selectedDate, 120)
-                    db.saveWeatherSnapshot(selectedDate.toString(), s, "FORECAST", ov.rawJson)
-                    if (selectedDate == LocalDate.now()) db.saveWeatherSnapshot(selectedDate.toString(), s, "ACTUAL", ov.rawJson)
-                    WeatherUiState(ov, snapshotType = if (selectedDate == LocalDate.now()) "ACTUAL" else "FORECAST")
-                }
-            }.getOrElse { WeatherUiState(error = it.message ?: "天气加载失败") }
+                val bookId = weatherBookId(currentBook)
+                if (bookId.isBlank()) throw IllegalStateException("当前账本尚未连接云端天气服务")
+                val ov = WeatherClient(cloudSyncManager).fetchOverview(bookId, s, selectedDate, 120)
+                val fetchedAt = System.currentTimeMillis()
+                db.saveWeatherCache(
+                    selectedDate.toString(),
+                    s.id,
+                    ov.rawJson,
+                    weatherCacheTtl(selectedDate),
+                    fetchedAt
+                )
+                WeatherUiState(ov, snapshotType = "CACHE", updatedAtMillis = fetchedAt)
+            }
+        }
+        state = refreshed.getOrElse { error ->
+            if (hasUsableCache) state.copy(refreshing = false)
+            else WeatherUiState(error = error.message ?: "天气加载失败")
         }
     }
 
@@ -1843,8 +2022,9 @@ private fun WeatherDetailContent(
                         state.loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
                         state.error.isNotBlank() -> Text(state.error, color = Color(0xFFB26A00))
                         ov != null -> {
-                            val c = ov.current
-                            val text = c?.text?.takeIf { selectedDate == LocalDate.now() } ?: day?.textDay.orEmpty()
+                            val c = ov.current?.takeIf { selectedDate == LocalDate.now() }
+                            val firstHour = hoursForDate.firstOrNull()
+                            val text = c?.text ?: day?.textDay.orEmpty().ifBlank { firstHour?.text.orEmpty() }
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(weatherEmoji(c?.code ?: day?.codeDay.orEmpty(), text), fontSize = 46.sp)
                                 Spacer(Modifier.width(12.dp))
@@ -1852,7 +2032,12 @@ private fun WeatherDetailContent(
                                     Text(text.ifBlank { "天气" }, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                                     Text("${weatherTemp(day?.tempMin)} ～ ${weatherTemp(day?.tempMax)}", style = MaterialTheme.typography.bodyMedium)
                                     Text(
-                                        if (manualStoreId != null) "手动查看位置" else weatherLocationSourceText(resolution.source, resolution.confidence, resolution.sampleCount),
+                                        buildString {
+                                            append(if (manualStoreId != null) "手动查看位置" else weatherLocationSourceText(resolution.source, resolution.confidence, resolution.sampleCount))
+                                            val updated = weatherUpdatedText(state.updatedAtMillis)
+                                            if (updated.isNotBlank()) append(" · 更新于 $updated")
+                                            if (state.refreshing) append(" · 后台更新中")
+                                        },
                                         style = MaterialTheme.typography.labelSmall,
                                         color = Color.Gray
                                     )
@@ -1860,9 +2045,9 @@ private fun WeatherDetailContent(
                                 Text(weatherTemp(c?.temperature ?: hoursForDate.firstOrNull()?.temperature ?: day?.tempMax), fontSize = 38.sp, fontWeight = FontWeight.Bold)
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("体感 ${weatherTemp(c?.feelsLike)}", style = MaterialTheme.typography.bodySmall)
-                                Text("湿度 ${weatherPercent(c?.humidity ?: day?.humidity)}", style = MaterialTheme.typography.bodySmall)
-                                Text("风 ${c?.windDirection.orEmpty()} ${c?.windScale.orEmpty()}级", style = MaterialTheme.typography.bodySmall)
+                                Text("体感 ${weatherTemp(c?.feelsLike ?: firstHour?.feelsLike)}", style = MaterialTheme.typography.bodySmall)
+                                Text("湿度 ${weatherPercent(c?.humidity ?: firstHour?.humidity ?: day?.humidity)}", style = MaterialTheme.typography.bodySmall)
+                                Text("风 ${(c?.windDirection ?: firstHour?.windDirection).orEmpty()} ${(c?.windScale ?: firstHour?.windScale).orEmpty()}级", style = MaterialTheme.typography.bodySmall)
                                 Text("能见度 ${c?.visibilityKm?.let { String.format(Locale.CHINA, "%.1fkm", it) } ?: "—"}", style = MaterialTheme.typography.bodySmall)
                             }
                         }
