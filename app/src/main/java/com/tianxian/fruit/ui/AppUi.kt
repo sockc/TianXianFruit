@@ -3568,6 +3568,68 @@ private fun PurchaseScreen(
     }
 
 
+    fun saveEditedPendingPlan(row: PurchaseDraftRow) {
+        if (editingOrderId != null || row.planItemId == null || row.planItemId != editingPlanItemId) {
+            message = "当前没有可保存的计划修改"
+            return
+        }
+
+        val quantity = row.quantity.toDoubleOrNull() ?: 0.0
+        val unitPrice = row.unitPrice.toDoubleOrNull() ?: -1.0
+        val explicitTotal =
+            if (row.totalCost.isBlank()) null else row.totalCost.toDoubleOrNull()
+
+        if (
+            row.fruitId == null ||
+                quantity <= 0 ||
+                unitPrice < 0 ||
+                (row.totalCost.isNotBlank() && (explicitTotal == null || explicitTotal < 0))
+        ) {
+            message = "商品、数量或单价填写不正确"
+            return
+        }
+
+        val fruit =
+            fruits.firstOrNull { it.id == row.fruitId }
+                ?: row.fruitId?.let { id ->
+                    row.fruitNameSnapshot.takeIf { it.isNotBlank() }?.let { name ->
+                        FruitOption(id, name, row.unit)
+                    }
+                }
+        if (fruit == null) {
+            message = "商品已失效，请重新选择"
+            return
+        }
+
+        val buyer = row.buyerId?.let { id -> partners.firstOrNull { it.id == id } }
+        if (buyer == null) {
+            message = "请选择采购人"
+            return
+        }
+
+        val amount = explicitTotal ?: (quantity * unitPrice)
+        val itemId =
+            db.upsertPurchaseDraftToCollaboration(
+                date = date,
+                itemId = row.planItemId,
+                fruit = fruit,
+                quantity = quantity,
+                unit = row.unit,
+                estimatedAmount = amount,
+                buyer = buyer
+            )
+
+        if (itemId > 0L) {
+            editingPlanItemId = null
+            loadRowsFromCollaborationPlan()
+            purchaseFormExpanded = false
+            message = "${fruit.name} 计划修改已保存"
+            onChanged()
+        } else {
+            message = "修改保存失败，请重试"
+        }
+    }
+
     fun completeCollaborationDrafts() {
         val filledRows = meaningfulRows()
         if (filledRows.isEmpty()) {
@@ -3950,13 +4012,24 @@ private fun PurchaseScreen(
                     if (editingSavedPending) {
                         Row(
                             Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             TextButton(
                                 onClick = {
                                     focusManager.clearFocus()
                                     editingPlanItemId = null
-                                    message = "${collaborationItem?.fruitName.orEmpty()} 修改已保存"
+                                    loadRowsFromCollaborationPlan()
+                                    purchaseFormExpanded = false
+                                    message = "已取消修改"
+                                }
+                            ) {
+                                Text("取消修改")
+                            }
+                            TextButton(
+                                onClick = {
+                                    focusManager.clearFocus()
+                                    saveEditedPendingPlan(row)
                                 }
                             ) {
                                 Text("完成修改")
@@ -3974,7 +4047,11 @@ private fun PurchaseScreen(
                 .orEmpty()
                 .filter { it.status == 0 }
 
-        if (editingOrderId == null && pendingPlanItems.isNotEmpty()) {
+        if (
+            editingOrderId == null &&
+                editingPlanItemId == null &&
+                pendingPlanItems.isNotEmpty()
+        ) {
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -3996,7 +4073,7 @@ private fun PurchaseScreen(
             }
         }
 
-        if (editingOrderId != null || purchaseFormExpanded) {
+        if ((editingOrderId != null || purchaseFormExpanded) && editingPlanItemId == null) {
         item {
             OutlinedButton(
                 onClick = {
@@ -6356,31 +6433,32 @@ private fun SessionScreen(
             }
         }
 
-        item {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "收款明细",
-                    fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    "营业额 ${money(revenue)}",
-                    color = BrandGreen,
-                    fontWeight = FontWeight.SemiBold,
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
+        if (receiptRows.size > 1) {
+            item {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "收款明细",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        "营业额 ${money(revenue)}",
+                        color = BrandGreen,
+                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                CompactReadOnlyField("微信合计", money(w), Modifier.weight(1f))
-                CompactReadOnlyField("支付宝合计", money(a), Modifier.weight(1f))
-                CompactReadOnlyField("现金合计", money(c), Modifier.weight(1f))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    CompactReadOnlyField("微信合计", money(w), Modifier.weight(1f))
+                    CompactReadOnlyField("支付宝合计", money(a), Modifier.weight(1f))
+                    CompactReadOnlyField("现金合计", money(c), Modifier.weight(1f))
+                }
             }
-
         }
 
         item {
@@ -6428,11 +6506,6 @@ private fun SessionScreen(
                     }
                 }
 
-                CompactReadOnlyField(
-                    "小计",
-                    money(receiptRows.firstOrNull()?.total ?: 0.0),
-                    Modifier.weight(1f)
-                )
             }
         }
 
@@ -6442,7 +6515,7 @@ private fun SessionScreen(
                     row = row,
                     partners = partners,
                     historical = editingRecordId != null,
-                    showHeader = index > 0,
+                    showSubtotal = receiptRows.size > 1,
                     canDelete = index > 0,
                     onChange = { updated ->
                         val target = receiptRows.indexOfFirst { it.rowId == updated.rowId }
@@ -6872,7 +6945,7 @@ private fun ReceiptSplitDraftRow(
     row: ReceiptDraftRow,
     partners: List<PartnerOption>,
     historical: Boolean,
-    showHeader: Boolean,
+    showSubtotal: Boolean,
     canDelete: Boolean,
     onChange: (ReceiptDraftRow) -> Unit,
     onDelete: () -> Unit
@@ -6895,40 +6968,9 @@ private fun ReceiptSplitDraftRow(
         )
     ) {
         Column(
-            Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
-            verticalArrangement = Arrangement.spacedBy(3.dp)
+            Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(1.dp)
         ) {
-            if (showHeader) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(22.dp),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "小计 ${money(row.total)}",
-                        fontWeight = FontWeight.SemiBold,
-                        color = BrandGreen,
-                        fontSize = 12.sp
-                    )
-                    if (canDelete) {
-                        Spacer(Modifier.width(5.dp))
-                        TextButton(
-                            onClick = onDelete,
-                            modifier = Modifier.height(22.dp),
-                            contentPadding = PaddingValues(horizontal = 3.dp, vertical = 0.dp)
-                        ) {
-                            Text(
-                                "删除",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                        }
-                    }
-                }
-            }
-
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
@@ -6973,12 +7015,42 @@ private fun ReceiptSplitDraftRow(
                     { onChange(row.copy(alipay = it)) },
                     Modifier.weight(1f)
                 )
-                CompactNumberField(
-                    "现金",
-                    row.cash,
-                    { onChange(row.copy(cash = it)) },
-                    Modifier.weight(1f)
-                )
+                Column(
+                    Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(0.dp)
+                ) {
+                    if (showSubtotal) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(15.dp),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "小计 ${money(row.total)}",
+                                fontSize = 9.sp,
+                                color = BrandGreen,
+                                maxLines = 1
+                            )
+                            if (canDelete) {
+                                Spacer(Modifier.width(3.dp))
+                                Text(
+                                    "删除",
+                                    fontSize = 9.sp,
+                                    color = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.clickable(onClick = onDelete)
+                                )
+                            }
+                        }
+                    }
+                    CompactNumberField(
+                        "现金",
+                        row.cash,
+                        { onChange(row.copy(cash = it)) },
+                        Modifier.fillMaxWidth()
+                    )
+                }
             }
         }
     }
