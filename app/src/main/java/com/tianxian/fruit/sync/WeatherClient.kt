@@ -37,7 +37,13 @@ data class WeatherHour(
     val precipitationProbability: Double?,
     val windDirection: String,
     val windScale: String,
-    val windSpeed: Double?
+    val windSpeed: Double?,
+    val forecastText: String = "",
+    val forecastCode: String = "999",
+    val forecastTemperature: Double? = null,
+    val forecastPrecipitation: Double? = null,
+    val actualAvailable: Boolean = false,
+    val forecastAvailable: Boolean = false
 )
 
 data class WeatherDay(
@@ -117,6 +123,31 @@ class WeatherClient(
         return parseOverview(json, historical = false)
     }
 
+    fun fetchArchive(
+        bookId: String,
+        store: StoreOption,
+        date: LocalDate
+    ): WeatherOverview {
+        val session = cloudSyncManager.session()
+            ?: throw IllegalStateException("尚未登录云端，无法读取历史天气")
+        val stableStoreId = store.syncId.trim()
+        if (stableStoreId.isBlank()) {
+            throw IllegalStateException("该位置尚未同步稳定位置ID")
+        }
+        val encodedBook = URLEncoder.encode(bookId, "UTF-8")
+        val encodedStore = URLEncoder.encode(stableStoreId, "UTF-8")
+        val path = buildString {
+            append("/api/v1/weather/archive?book_id=")
+            append(encodedBook)
+            append("&store_sync_id=")
+            append(encodedStore)
+            append("&date=")
+            append(date)
+        }
+        val json = requestJson(session, path)
+        return parseOverview(json, historical = true)
+    }
+
     companion object {
         fun parseOverview(jsonText: String, historical: Boolean = false): WeatherOverview =
             parseOverview(JSONObject(jsonText), historical)
@@ -161,7 +192,13 @@ class WeatherClient(
                             precipitationProbability = nullableDouble(it, "precipitation_probability"),
                             windDirection = it.optString("wind_direction"),
                             windScale = it.optString("wind_scale"),
-                            windSpeed = nullableDouble(it, "wind_speed")
+                            windSpeed = nullableDouble(it, "wind_speed"),
+                            forecastText = it.optString("forecast_text"),
+                            forecastCode = it.optString("forecast_code", "999"),
+                            forecastTemperature = nullableDouble(it, "forecast_temperature"),
+                            forecastPrecipitation = nullableDouble(it, "forecast_precipitation"),
+                            actualAvailable = it.optBoolean("actual_available", false),
+                            forecastAvailable = it.optBoolean("forecast_available", false)
                         )
                     )
                 }

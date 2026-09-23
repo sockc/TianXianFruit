@@ -19,7 +19,10 @@ data class StoreOption(
     val name: String,
     val address: String,
     val latitude: Double? = null,
-    val longitude: Double? = null
+    val longitude: Double? = null,
+    val syncId: String = "",
+    val defaultStartTime: String = "16:00",
+    val defaultEndTime: String = "24:00"
 )
 
 data class WeatherStoreResolution(
@@ -697,6 +700,8 @@ class AppDatabase(
         createV26WeatherSyncAndCache(
             db
         )
+        createV27StoreWeatherSettings(db)
+        createV28ServerWeatherArchive(db)
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -809,6 +814,12 @@ class AppDatabase(
             createV26WeatherSyncAndCache(
                 db
             )
+        }
+        if (oldVersion < 27) {
+            createV27StoreWeatherSettings(db)
+        }
+        if (oldVersion < 28) {
+            createV28ServerWeatherArchive(db)
         }
     }
 
@@ -954,7 +965,7 @@ class AppDatabase(
         )
 
         // weather_cache is deliberately local-only. Forecast/current weather is
-        // disposable cache data; only weather_snapshot participates in cloud sync.
+        // disposable cache data. V28 makes both cache and legacy weather snapshots local-only; server owns hourly archives.
         db.execSQL(
             """
             CREATE TABLE IF NOT EXISTS weather_cache(
@@ -1501,6 +1512,8 @@ class AppDatabase(
                 address TEXT NOT NULL DEFAULT '',
                 latitude REAL NULL,
                 longitude REAL NULL,
+                default_start_time TEXT NOT NULL DEFAULT '16:00',
+                default_end_time TEXT NOT NULL DEFAULT '24:00',
                 enabled INTEGER NOT NULL DEFAULT 1,
                 deleted INTEGER NOT NULL DEFAULT 0,
                 sort_order INTEGER NOT NULL DEFAULT 0,
@@ -1510,6 +1523,90 @@ class AppDatabase(
                 updated_at INTEGER NOT NULL
             )
             """.trimIndent()
+        )
+    }
+
+    private fun createV27StoreWeatherSettings(db: SQLiteDatabase) {
+        if (!columnExists(db, "store", "default_start_time")) {
+            db.execSQL(
+                "ALTER TABLE store ADD COLUMN default_start_time TEXT NOT NULL DEFAULT '16:00'"
+            )
+        }
+        if (!columnExists(db, "store", "default_end_time")) {
+            db.execSQL(
+                "ALTER TABLE store ADD COLUMN default_end_time TEXT NOT NULL DEFAULT '24:00'"
+            )
+        }
+
+        // 本机星期固定位置仅用于首页计划/天气选择，不创建营业记录，也不参与云同步。
+        // 使用 store_sync_id 而非本机自增 id，位置恢复后仍能匹配同一个经营位置。
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS weather_weekday_plan(
+                weekday INTEGER PRIMARY KEY,
+                store_sync_id TEXT NOT NULL DEFAULT '',
+                updated_at INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent()
+        )
+    }
+
+    private fun createV28ServerWeatherArchive(db: SQLiteDatabase) {
+        // V1.4.7.48: weather observations are server-owned data. Android keeps
+        // only disposable cache; legacy weather_snapshot stays readable for
+        // rollback compatibility but no longer participates in cloud sync.
+        if (!columnExists(db, "store_daily_record", "store_sync_id")) {
+            db.execSQL(
+                "ALTER TABLE store_daily_record ADD COLUMN store_sync_id TEXT NOT NULL DEFAULT ''"
+            )
+        }
+
+        val canSuppress = tableExists(db, "sync_context")
+        if (canSuppress) setRemoteApply(db, true)
+        try {
+            db.execSQL(
+                """
+                UPDATE store_daily_record
+                SET store_sync_id=COALESCE(
+                    (SELECT s.sync_id FROM store s WHERE s.id=store_daily_record.store_id LIMIT 1),
+                    store_sync_id
+                )
+                WHERE COALESCE(store_sync_id,'')=''
+                """.trimIndent()
+            )
+
+            // Weather cache/snapshots must never inflate pending sync or create
+            // multi-device conflicts from V28 onward.
+            if (tableExists(db, "sync_change_log")) {
+                db.delete("sync_change_log", "table_name=?", arrayOf("weather_snapshot"))
+            }
+            if (tableExists(db, "sync_conflict")) {
+                db.delete("sync_conflict", "table_name=?", arrayOf("weather_snapshot"))
+            }
+            db.execSQL("DROP TRIGGER IF EXISTS sync_weather_snapshot_ai")
+            db.execSQL("DROP TRIGGER IF EXISTS sync_weather_snapshot_au")
+            if (tableExists(db, "weather_snapshot")) {
+                db.execSQL("UPDATE weather_snapshot SET sync_status=0")
+            }
+            if (tableExists(db, "weather_cache")) {
+                // Old cache rows may contain client-generated snapshots. Clear
+                // them once so historical views cannot mistake them for the new
+                // server-owned hourly archive.
+                db.delete("weather_cache", null, null)
+            }
+
+            // Existing business records are NOT force-requeued here. Doing so on
+            // several phones at the same time would manufacture version conflicts.
+            // Old cloud rows remain readable through the server's store-name/id
+            // fallback; the stable store_sync_id is uploaded naturally the next
+            // time a business record is created or edited.
+        } finally {
+            if (canSuppress) setRemoteApply(db, false)
+        }
+
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_store_daily_store_sync_date " +
+                "ON store_daily_record(store_sync_id,date)"
         )
     }
 
@@ -1578,6 +1675,7 @@ class AppDatabase(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 date TEXT NOT NULL,
                 store_id INTEGER NOT NULL,
+                store_sync_id TEXT NOT NULL DEFAULT '',
                 store_name TEXT NOT NULL,
                 wechat_income REAL NOT NULL DEFAULT 0,
                 wechat_collector_id INTEGER NOT NULL DEFAULT 0,
@@ -2642,8 +2740,7 @@ class AppDatabase(
             "settlement_transfer",
             "profit_settlement_batch",
             "profit_settlement_item",
-            "inventory_snapshot",
-            "weather_snapshot"
+            "inventory_snapshot"
         )
 
     fun getSyncFoundationStatus():
@@ -3404,6 +3501,30 @@ class AppDatabase(
                 values.getAsLong("id") ?: 0L
             val recordDate =
                 values.getAsString("date") ?: ""
+
+            if (tableName == "store_daily_record") {
+                val stableStoreSyncId =
+                    values.getAsString("store_sync_id")
+                        ?.trim()
+                        .orEmpty()
+                val remoteStoreId = values.getAsLong("store_id") ?: 0L
+                val storeName =
+                    values.getAsString("store_name")
+                        ?.trim()
+                        .orEmpty()
+
+                resolveLocalWeatherStoreId(
+                    db = db,
+                    storeSyncId = stableStoreSyncId,
+                    remoteStoreId = remoteStoreId,
+                    storeName = storeName
+                )?.let { localStoreId ->
+                    values.put("store_id", localStoreId)
+                    if (stableStoreSyncId.isBlank()) {
+                        values.put("store_sync_id", getStoreSyncId(localStoreId))
+                    }
+                }
+            }
 
             if (tableName == "weather_snapshot") {
                 val stableStoreSyncId =
@@ -4226,17 +4347,23 @@ class AppDatabase(
     private fun storeFromCursor(c: Cursor): StoreOption {
         val latIndex = c.getColumnIndex("latitude")
         val lonIndex = c.getColumnIndex("longitude")
+        val syncIndex = c.getColumnIndex("sync_id")
+        val startIndex = c.getColumnIndex("default_start_time")
+        val endIndex = c.getColumnIndex("default_end_time")
         return StoreOption(
             id = c.long("id"),
             name = c.str("name"),
             address = c.str("address"),
             latitude = if (latIndex >= 0 && !c.isNull(latIndex)) c.getDouble(latIndex) else null,
-            longitude = if (lonIndex >= 0 && !c.isNull(lonIndex)) c.getDouble(lonIndex) else null
+            longitude = if (lonIndex >= 0 && !c.isNull(lonIndex)) c.getDouble(lonIndex) else null,
+            syncId = if (syncIndex >= 0 && !c.isNull(syncIndex)) c.getString(syncIndex) else "",
+            defaultStartTime = if (startIndex >= 0 && !c.isNull(startIndex)) c.getString(startIndex) else "16:00",
+            defaultEndTime = if (endIndex >= 0 && !c.isNull(endIndex)) c.getString(endIndex) else "24:00"
         )
     }
 
     fun getStores(): List<StoreOption> = readableDatabase.rawQuery(
-        "SELECT id,name,address,latitude,longitude FROM store " +
+        "SELECT id,name,address,latitude,longitude,sync_id,default_start_time,default_end_time FROM store " +
             "WHERE enabled=1 AND deleted=0 " +
             "ORDER BY sort_order ASC,id ASC",
         null
@@ -4247,14 +4374,14 @@ class AppDatabase(
     }
 
     fun getStoreById(id: Long): StoreOption? = readableDatabase.rawQuery(
-        "SELECT id,name,address,latitude,longitude FROM store WHERE id=? AND enabled=1 AND deleted=0 LIMIT 1",
+        "SELECT id,name,address,latitude,longitude,sync_id,default_start_time,default_end_time FROM store WHERE id=? AND enabled=1 AND deleted=0 LIMIT 1",
         arrayOf(id.toString())
     ).use { c ->
         if (c.moveToFirst()) storeFromCursor(c) else null
     }
 
     fun getStoreByIdIncludingDeleted(id: Long): StoreOption? = readableDatabase.rawQuery(
-        "SELECT id,name,address,latitude,longitude FROM store WHERE id=? LIMIT 1",
+        "SELECT id,name,address,latitude,longitude,sync_id,default_start_time,default_end_time FROM store WHERE id=? LIMIT 1",
         arrayOf(id.toString())
     ).use { c ->
         if (c.moveToFirst()) storeFromCursor(c) else null
@@ -4264,7 +4391,9 @@ class AppDatabase(
         name: String,
         address: String,
         latitude: Double? = null,
-        longitude: Double? = null
+        longitude: Double? = null,
+        defaultStartTime: String = "16:00",
+        defaultEndTime: String = "24:00"
     ): Long {
         val clean =
             name.trim()
@@ -4297,6 +4426,8 @@ class AppDatabase(
                 )
                 if (latitude != null) put("latitude", latitude) else putNull("latitude")
                 if (longitude != null) put("longitude", longitude) else putNull("longitude")
+                put("default_start_time", normalizeStoreTime(defaultStartTime, "16:00"))
+                put("default_end_time", normalizeStoreTime(defaultEndTime, "24:00"))
                 put("enabled", 1)
                 put("deleted", 0)
                 put(
@@ -4313,7 +4444,9 @@ class AppDatabase(
         name: String,
         address: String,
         latitude: Double?,
-        longitude: Double?
+        longitude: Double?,
+        defaultStartTime: String = "16:00",
+        defaultEndTime: String = "24:00"
     ): Boolean {
         val clean = name.trim()
         if (clean.isBlank()) return false
@@ -4324,6 +4457,8 @@ class AppDatabase(
                 put("address", address.trim())
                 if (latitude != null) put("latitude", latitude) else putNull("latitude")
                 if (longitude != null) put("longitude", longitude) else putNull("longitude")
+                put("default_start_time", normalizeStoreTime(defaultStartTime, "16:00"))
+                put("default_end_time", normalizeStoreTime(defaultEndTime, "24:00"))
                 put("sync_status", 2)
                 put("updated_at", System.currentTimeMillis())
             },
@@ -4332,10 +4467,64 @@ class AppDatabase(
         ) > 0
     }
 
+    private fun normalizeStoreTime(value: String, fallback: String): String {
+        val clean = value.trim()
+        if (clean == "24:00") return clean
+        val parts = clean.split(':')
+        if (parts.size != 2) return fallback
+        val hour = parts[0].toIntOrNull() ?: return fallback
+        val minute = parts[1].toIntOrNull() ?: return fallback
+        if (hour !in 0..23 || minute !in 0..59) return fallback
+        return String.format(Locale.CHINA, "%02d:%02d", hour, minute)
+    }
+
+    fun setWeekdayWeatherStore(weekday: Int, storeId: Long?) {
+        if (weekday !in 1..7) return
+        val syncId = storeId?.let { getStoreById(it)?.syncId }.orEmpty()
+        writableDatabase.insertWithOnConflict(
+            "weather_weekday_plan",
+            null,
+            ContentValues().apply {
+                put("weekday", weekday)
+                put("store_sync_id", syncId)
+                put("updated_at", System.currentTimeMillis())
+            },
+            SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    fun getWeekdayWeatherStore(weekday: Int): StoreOption? {
+        if (weekday !in 1..7 || !tableExists(readableDatabase, "weather_weekday_plan")) return null
+        val syncId = readableDatabase.rawQuery(
+            "SELECT store_sync_id FROM weather_weekday_plan WHERE weekday=? LIMIT 1",
+            arrayOf(weekday.toString())
+        ).use { c -> if (c.moveToFirst()) c.str("store_sync_id") else "" }
+        if (syncId.isBlank()) return null
+        return readableDatabase.rawQuery(
+            "SELECT id,name,address,latitude,longitude,sync_id,default_start_time,default_end_time FROM store WHERE sync_id=? AND enabled=1 AND deleted=0 LIMIT 1",
+            arrayOf(syncId)
+        ).use { c -> if (c.moveToFirst()) storeFromCursor(c) else null }
+    }
+
+    fun getBusinessStoresForDate(date: String): List<StoreOption> = readableDatabase.rawQuery(
+        """
+        SELECT s.id,s.name,s.address,s.latitude,s.longitude,s.sync_id,s.default_start_time,s.default_end_time,
+               MIN(r.id) AS first_record_id
+        FROM store_daily_record r
+        JOIN store s ON s.id=r.store_id
+        WHERE r.date=? AND r.deleted=0 AND s.enabled=1 AND s.deleted=0
+        GROUP BY s.id,s.name,s.address,s.latitude,s.longitude,s.sync_id,s.default_start_time,s.default_end_time
+        ORDER BY first_record_id ASC
+        """.trimIndent(),
+        arrayOf(date)
+    ).use { c ->
+        buildList { while (c.moveToNext()) add(storeFromCursor(c)) }
+    }
+
     fun resolveWeatherStore(date: String): WeatherStoreResolution {
         val exact = readableDatabase.rawQuery(
             """
-            SELECT s.id,s.name,s.address,s.latitude,s.longitude
+            SELECT s.id,s.name,s.address,s.latitude,s.longitude,s.sync_id,s.default_start_time,s.default_end_time
             FROM store_daily_record r
             JOIN store s ON s.id=r.store_id
             WHERE r.date=? AND r.deleted=0 AND s.deleted=0 AND s.enabled=1
@@ -4350,6 +4539,12 @@ class AppDatabase(
 
         val target = runCatching { LocalDate.parse(date) }.getOrElse { LocalDate.now() }
         val weekday = target.dayOfWeek.value
+
+        val fixed = getWeekdayWeatherStore(weekday)
+        if (fixed != null) {
+            return WeatherStoreResolution(fixed, "WEEKDAY_FIXED", 1.0, 0)
+        }
+
         val from = target.minusWeeks(10).toString()
         val candidates = readableDatabase.rawQuery(
             """
@@ -4378,6 +4573,21 @@ class AppDatabase(
                 if (total > 0) best.third.toDouble() / total.toDouble() else 0.0,
                 total
             )
+        }
+
+        val recentStoreId = readableDatabase.rawQuery(
+            """
+            SELECT store_id
+            FROM store_daily_record
+            WHERE deleted=0 AND date<?
+            ORDER BY date DESC,id DESC
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(date)
+        ).use { c -> if (c.moveToFirst()) c.long("store_id") else 0L }
+        val recent = recentStoreId.takeIf { it > 0L }?.let { getStoreById(it) }
+        if (recent != null) {
+            return WeatherStoreResolution(recent, "RECENT_BUSINESS", 0.0, 1)
         }
 
         val fallback = getStores().firstOrNull { it.latitude != null && it.longitude != null }
@@ -8794,6 +9004,7 @@ class AppDatabase(
             val values = ContentValues().apply {
                 put("date", date)
                 put("store_id", freshStore.id)
+                put("store_sync_id", freshStore.syncId.ifBlank { getStoreSyncId(freshStore.id) })
                 put("store_name", freshStore.name)
 
                 put("wechat_income", wechat)
@@ -12207,7 +12418,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 26
+        const val DB_VERSION = 28
     }
 }
 
