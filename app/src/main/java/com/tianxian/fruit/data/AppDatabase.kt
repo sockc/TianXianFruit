@@ -3524,6 +3524,97 @@ class AppDatabase(
                         values.put("store_sync_id", getStoreSyncId(localStoreId))
                     }
                 }
+
+                // V1.4.7.50: older builds generated a random sync_id for each
+                // device. Two devices could therefore create different cloud
+                // identities for the same logical business row (same date +
+                // same store), even though SQLite correctly keeps that pair
+                // unique. Merge that remote alias into the existing logical
+                // row instead of attempting another INSERT.
+                if (existingId == null) {
+                    val localStoreId =
+                        values.getAsLong("store_id") ?: 0L
+                    val logicalState =
+                        if (
+                            recordDate.isNotBlank() &&
+                            localStoreId > 0L
+                        ) {
+                            db.rawQuery(
+                                "SELECT id,sync_id,updated_at " +
+                                    "FROM store_daily_record " +
+                                    "WHERE date=? AND store_id=? LIMIT 1",
+                                arrayOf(
+                                    recordDate,
+                                    localStoreId.toString()
+                                )
+                            ).use { c ->
+                                if (c.moveToFirst()) {
+                                    Triple(
+                                        c.long("id"),
+                                        c.str("sync_id"),
+                                        c.long("updated_at")
+                                    )
+                                } else {
+                                    null
+                                }
+                            }
+                        } else {
+                            null
+                        }
+
+                    if (logicalState != null) {
+                        val logicalId = logicalState.first
+                        val logicalSyncId = logicalState.second
+                        val localUpdatedAt = logicalState.third
+
+                        if (logicalSyncId != syncId) {
+                            // A tombstone for only one historical alias must
+                            // not delete the surviving logical business row.
+                            if (operation == "DELETE") {
+                                return
+                            }
+
+                            val remoteUpdatedAt =
+                                values.getAsLong("updated_at") ?: 0L
+
+                            // Never overwrite an actually pending local edit
+                            // with an unrelated legacy alias. sync_status is a
+                            // legacy dirty marker and is not cleared for every
+                            // accepted upload, so the authoritative check is the
+                            // pending change log itself.
+                            val hasPendingLocalChange =
+                                db.rawQuery(
+                                    "SELECT 1 FROM sync_change_log " +
+                                        "WHERE table_name='store_daily_record' " +
+                                        "AND record_sync_id=? AND uploaded=0 LIMIT 1",
+                                    arrayOf(logicalSyncId)
+                                ).use { it.moveToFirst() }
+
+                            // When both aliases are already synced, updated_at is
+                            // the only comparable ordering signal: row_version is
+                            // scoped to each sync_id and must not be compared.
+                            if (
+                                hasPendingLocalChange ||
+                                (
+                                    remoteUpdatedAt > 0L &&
+                                    localUpdatedAt > remoteUpdatedAt
+                                )
+                            ) {
+                                return
+                            }
+
+                            existingId = logicalId
+
+                            // Keep this device's surviving cloud identity and
+                            // its version metadata. Only merge business fields
+                            // from the legacy alias payload.
+                            values.remove("sync_id")
+                            values.remove("row_version")
+                            values.remove("modified_by")
+                            values.remove("sync_status")
+                        }
+                    }
+                }
             }
 
             if (tableName == "weather_snapshot") {
@@ -9000,12 +9091,27 @@ class AppDatabase(
             encodeReceiptSplits(oldRecord.receiptSplits) != receiptSplitsJson ||
             oldRecord.expensePayerId != (freshExpensePayer?.id ?: 0L)
 
+        val stableStoreSyncId =
+            freshStore.syncId.ifBlank {
+                getStoreSyncId(freshStore.id)
+            }
+        val deterministicRecordSyncId =
+            UUID.nameUUIDFromBytes(
+                (
+                    "store_daily_record|" +
+                        date + "|" +
+                        stableStoreSyncId.ifBlank {
+                            freshStore.name.trim()
+                        }
+                ).toByteArray(Charsets.UTF_8)
+            ).toString()
+
         db.beginTransaction()
         try {
             val values = ContentValues().apply {
                 put("date", date)
                 put("store_id", freshStore.id)
-                put("store_sync_id", freshStore.syncId.ifBlank { getStoreSyncId(freshStore.id) })
+                put("store_sync_id", stableStoreSyncId)
                 put("store_name", freshStore.name)
 
                 put("wechat_income", wechat)
@@ -9040,7 +9146,9 @@ class AppDatabase(
 
             val savedId: Long
             if (targetId == null) {
-                values.put("sync_id", UUID.randomUUID().toString())
+                // V1.4.7.50: same date + same stable store must have the same
+                // cloud identity on every device, preventing logical duplicates.
+                values.put("sync_id", deterministicRecordSyncId)
                 values.put("created_at", now)
                 savedId = db.insert("store_daily_record", null, values)
                 if (savedId <= 0) {
