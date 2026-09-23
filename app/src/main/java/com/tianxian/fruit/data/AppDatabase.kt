@@ -2397,6 +2397,49 @@ class AppDatabase(
         return null
     }
 
+    private fun resolveRemotePurchaseOrderId(
+        db: SQLiteDatabase,
+        remoteId: Long,
+        modifiedBy: String
+    ): Long? {
+        if (remoteId <= 0L) return null
+
+        ensureSyncRemoteIdMap(db)
+
+        if (modifiedBy.isNotBlank()) {
+            db.rawQuery(
+                "SELECT local_id FROM sync_remote_id_map " +
+                    "WHERE parent_table='purchase_order' " +
+                    "AND remote_id=? AND modified_by=? " +
+                    "ORDER BY updated_at DESC LIMIT 1",
+                arrayOf(remoteId.toString(), modifiedBy)
+            ).use { c ->
+                if (c.moveToFirst()) return c.getLong(0)
+            }
+        }
+
+        db.rawQuery(
+            "SELECT local_id FROM sync_remote_id_map " +
+                "WHERE parent_table='purchase_order' AND remote_id=? " +
+                "ORDER BY updated_at DESC LIMIT 1",
+            arrayOf(remoteId.toString())
+        ).use { c ->
+            if (c.moveToFirst()) return c.getLong(0)
+        }
+
+        // No remap has been needed yet: the numeric id can still already be
+        // the correct local parent id. This is only a fallback; future remote
+        // purchase_order events always populate the map before child items.
+        db.rawQuery(
+            "SELECT id FROM purchase_order WHERE id=? LIMIT 1",
+            arrayOf(remoteId.toString())
+        ).use { c ->
+            if (c.moveToFirst()) return c.getLong(0)
+        }
+
+        return null
+    }
+
     private fun ensureSyncContext(
         db: SQLiteDatabase
     ) {
@@ -3660,6 +3703,25 @@ class AppDatabase(
                 }
             }
 
+            // purchase_item.order_id is also a device-local numeric parent
+            // reference. A cloud purchase_order may keep a different local id
+            // on this device when the same sync_id already existed here. Always
+            // translate the remote order_id through the parent map before the
+            // child row is written, otherwise the item can become orphaned and
+            // disappear from inventory/purchase queries that JOIN its order.
+            if (tableName == "purchase_item") {
+                val remoteOrderId =
+                    values.getAsLong("order_id") ?: 0L
+
+                resolveRemotePurchaseOrderId(
+                    db = db,
+                    remoteId = remoteOrderId,
+                    modifiedBy = modifiedBy
+                )?.let { localOrderId ->
+                    values.put("order_id", localOrderId)
+                }
+            }
+
             // daily_cash_settlement is a parent table whose local numeric id is
             // referenced by settlement_partner / settlement_transfer. The cloud
             // identity is sync_id, so the parent itself must use a local id when
@@ -3697,7 +3759,7 @@ class AppDatabase(
                     )
                 )
 
-                if (tableName == "daily_cash_settlement") {
+                if (tableName == "daily_cash_settlement" || tableName == "purchase_order") {
                     rememberRemoteLocalId(
                         db = db,
                         parentTable = tableName,
@@ -3717,6 +3779,8 @@ class AppDatabase(
                 // devices. For settlement child rows, settlement_id is remapped
                 // above so their parent/child relationship remains intact.
                 if (
+                    tableName == "purchase_order" ||
+                    tableName == "purchase_item" ||
                     tableName == "store_daily_record" ||
                     tableName == "profit_distribution" ||
                     tableName == "daily_cash_settlement" ||
@@ -3743,7 +3807,7 @@ class AppDatabase(
                     )
                 }
 
-                if (tableName == "daily_cash_settlement") {
+                if (tableName == "daily_cash_settlement" || tableName == "purchase_order") {
                     rememberRemoteLocalId(
                         db = db,
                         parentTable = tableName,
@@ -8093,6 +8157,81 @@ class AppDatabase(
         ))
     } }
 
+    /**
+     * Repairs historical device-local purchase_item.order_id references without
+     * producing new cloud changes. V1.4.7.50 and earlier could overwrite the
+     * local parent id with another device's numeric id during sync. Collaborative
+     * purchase rows have deterministic sync ids, so they can always be restored;
+     * generic rows can also be restored when a remote-id map is available.
+     */
+    private fun repairPurchaseItemOrderLinks() {
+        val db = writableDatabase
+        runCatching {
+            ensureSyncRemoteIdMap(db)
+            setRemoteApply(db, true)
+            try {
+                db.execSQL(
+                    """
+                    UPDATE purchase_item
+                    SET order_id=(
+                        SELECT po.id
+                        FROM purchase_order po
+                        WHERE po.sync_id=
+                            'collab-order-' ||
+                            substr(purchase_item.sync_id, length('collab-item-') + 1)
+                        LIMIT 1
+                    )
+                    WHERE deleted=0
+                      AND sync_id LIKE 'collab-item-%'
+                      AND EXISTS(
+                          SELECT 1
+                          FROM purchase_order po
+                          WHERE po.sync_id=
+                              'collab-order-' ||
+                              substr(purchase_item.sync_id, length('collab-item-') + 1)
+                            AND po.deleted=0
+                      )
+                      AND order_id<>(
+                          SELECT po.id
+                          FROM purchase_order po
+                          WHERE po.sync_id=
+                              'collab-order-' ||
+                              substr(purchase_item.sync_id, length('collab-item-') + 1)
+                          LIMIT 1
+                      )
+                    """.trimIndent()
+                )
+
+                db.execSQL(
+                    """
+                    UPDATE purchase_item
+                    SET order_id=(
+                        SELECT m.local_id
+                        FROM sync_remote_id_map m
+                        WHERE m.parent_table='purchase_order'
+                          AND m.remote_id=purchase_item.order_id
+                        ORDER BY m.updated_at DESC
+                        LIMIT 1
+                    )
+                    WHERE deleted=0
+                      AND NOT EXISTS(
+                          SELECT 1 FROM purchase_order po
+                          WHERE po.id=purchase_item.order_id
+                      )
+                      AND EXISTS(
+                          SELECT 1
+                          FROM sync_remote_id_map m
+                          WHERE m.parent_table='purchase_order'
+                            AND m.remote_id=purchase_item.order_id
+                      )
+                    """.trimIndent()
+                )
+            } finally {
+                setRemoteApply(db, false)
+            }
+        }
+    }
+
     private fun inventorySyncId(
         date: String,
         fruitId: Long,
@@ -8104,6 +8243,8 @@ class AppDatabase(
         ).toString()
 
     fun getInventoryDayItems(date: String): List<InventoryDayItemRecord> {
+        repairPurchaseItemOrderLinks()
+
         data class InventoryKey(
             val fruitId: Long,
             val unit: String
@@ -8125,7 +8266,23 @@ class AppDatabase(
                     pi.unit,
                     COALESCE(SUM(pi.quantity),0) AS quantity
                 FROM purchase_item pi
-                JOIN purchase_order po ON po.id=pi.order_id
+                JOIN purchase_order po ON po.id=(
+                    CASE
+                        WHEN pi.sync_id LIKE 'collab-item-%' THEN
+                            COALESCE(
+                                (
+                                    SELECT p2.id
+                                    FROM purchase_order p2
+                                    WHERE p2.sync_id=
+                                        'collab-order-' ||
+                                        substr(pi.sync_id, length('collab-item-') + 1)
+                                    LIMIT 1
+                                ),
+                                pi.order_id
+                            )
+                        ELSE pi.order_id
+                    END
+                )
                 WHERE po.date=?
                   AND po.deleted=0
                   AND pi.deleted=0

@@ -311,6 +311,7 @@ private data class PurchaseHistoryEditDraft(
     val fruitName: String,
     val unit: String,
     val quantity: String,
+    val unitPrice: String,
     val totalCost: String
 )
 
@@ -5984,6 +5985,16 @@ private fun PurchaseHistoryEditDialog(
                                         cleanNumber(
                                             item.quantity
                                         ),
+                                    unitPrice =
+                                        cleanNumber(
+                                            if (item.unitPrice > 0.0 || item.totalCost <= 0.0) {
+                                                item.unitPrice.coerceAtLeast(0.0)
+                                            } else if (item.quantity > 0.0) {
+                                                item.totalCost / item.quantity
+                                            } else {
+                                                0.0
+                                            }
+                                        ),
                                     totalCost =
                                         cleanNumber(
                                             item.totalCost
@@ -6194,6 +6205,12 @@ private fun PurchaseHistoryEditDialog(
                     style =
                         MaterialTheme.typography.bodySmall,
                     color = Color.Gray
+                )
+
+                Text(
+                    "价格联动：输入单价自动计算总价；输入总价自动反算单价。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = BrandGreen
                 )
 
                 LazyColumn(
@@ -6414,6 +6431,20 @@ private fun HistoryPurchaseItemEditor(
         activeFruit?.name
             ?: row.fruitName
 
+    fun totalFrom(quantityText: String, unitPriceText: String): String? {
+        val quantity = quantityText.toDoubleOrNull() ?: return null
+        val unitPrice = unitPriceText.toDoubleOrNull() ?: return null
+        if (quantity < 0.0 || unitPrice < 0.0) return null
+        return cleanNumber(quantity * unitPrice)
+    }
+
+    fun unitPriceFrom(quantityText: String, totalText: String): String? {
+        val quantity = quantityText.toDoubleOrNull() ?: return null
+        val total = totalText.toDoubleOrNull() ?: return null
+        if (quantity <= 0.0 || total < 0.0) return null
+        return cleanNumber(total / quantity)
+    }
+
     Card(
         Modifier.fillMaxWidth(),
         colors =
@@ -6425,7 +6456,7 @@ private fun HistoryPurchaseItemEditor(
         Column(
             Modifier.padding(9.dp),
             verticalArrangement =
-                Arrangement.spacedBy(6.dp)
+                Arrangement.spacedBy(7.dp)
         ) {
             Box(Modifier.fillMaxWidth()) {
                 CompactSelectButton(
@@ -6486,6 +6517,7 @@ private fun HistoryPurchaseItemEditor(
                 }
             }
 
+            // 数量与单位单独一行，避免小屏幕把价格字段挤得过窄。
             Row(
                 horizontalArrangement =
                     Arrangement.spacedBy(6.dp)
@@ -6493,10 +6525,18 @@ private fun HistoryPurchaseItemEditor(
                 NumberField(
                     "数量",
                     row.quantity,
-                    {
+                    { text ->
+                        val recalculated =
+                            totalFrom(
+                                text,
+                                row.unitPrice
+                            )
                         onChange(
                             row.copy(
-                                quantity = it
+                                quantity = text,
+                                totalCost =
+                                    recalculated
+                                        ?: row.totalCost
                             )
                         )
                     },
@@ -6542,14 +6582,49 @@ private fun HistoryPurchaseItemEditor(
                         }
                     }
                 }
+            }
+
+            // V1.4.7.51: 单价/总价双向联动。
+            Row(
+                horizontalArrangement =
+                    Arrangement.spacedBy(6.dp)
+            ) {
+                NumberField(
+                    "单价",
+                    row.unitPrice,
+                    { text ->
+                        val recalculated =
+                            totalFrom(
+                                row.quantity,
+                                text
+                            )
+                        onChange(
+                            row.copy(
+                                unitPrice = text,
+                                totalCost =
+                                    recalculated
+                                        ?: row.totalCost
+                            )
+                        )
+                    },
+                    Modifier.weight(1f)
+                )
 
                 NumberField(
                     "总价",
                     row.totalCost,
-                    {
+                    { text ->
+                        val recalculated =
+                            unitPriceFrom(
+                                row.quantity,
+                                text
+                            )
                         onChange(
                             row.copy(
-                                totalCost = it
+                                totalCost = text,
+                                unitPrice =
+                                    recalculated
+                                        ?: row.unitPrice
                             )
                         )
                     },
@@ -6560,16 +6635,20 @@ private fun HistoryPurchaseItemEditor(
             val quantity =
                 row.quantity.toDoubleOrNull()
                     ?: 0.0
+            val unitPrice =
+                row.unitPrice.toDoubleOrNull()
+                    ?: 0.0
             val total =
                 row.totalCost.toDoubleOrNull()
                     ?: 0.0
 
             if (
                 quantity > 0 &&
+                unitPrice >= 0 &&
                 total >= 0
             ) {
                 Text(
-                    "单价 ${money(total / quantity)}/${row.unit}",
+                    "${cleanNumber(quantity)}${row.unit} × ${money(unitPrice)}/${row.unit} = ${money(total)}",
                     style =
                         MaterialTheme.typography.labelSmall,
                     color = Color.Gray
