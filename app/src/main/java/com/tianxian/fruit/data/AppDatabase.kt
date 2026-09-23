@@ -83,14 +83,15 @@ data class PurchaseItemRecord(
     val unitPrice: Double
 )
 
-// V1.4.7.29 inventory trial module. This data is intentionally kept out of
-// profit/settlement/report calculations until the workflow is formally enabled.
+// Inventory snapshot data. V1.4.7.52 adds explicit loss quantity so operating
+// analysis can separate sales usage from spoilage while settlement remains unchanged.
 data class InventoryDayItemRecord(
     val fruitId: Long,
     val fruitName: String,
     val unit: String,
     val openingQuantity: Double,
     val purchasedQuantity: Double,
+    val lossQuantity: Double,
     val remainingQuantity: Double,
     val saved: Boolean
 )
@@ -99,6 +100,7 @@ data class InventorySaveInput(
     val fruitId: Long,
     val fruitName: String,
     val unit: String,
+    val lossQuantity: Double,
     val remainingQuantity: Double
 )
 
@@ -125,6 +127,8 @@ data class OperatingAnalysisItemRecord(
     val purchaseCost: Double,
     val availableQuantity: Double,
     val averageUnitCost: Double?,
+    val lossQuantity: Double,
+    val lossCost: Double?,
     val remainingQuantity: Double,
     val closingCost: Double?,
     val consumedQuantity: Double,
@@ -143,6 +147,7 @@ data class OperatingAnalysisRecord(
     val openingInventoryCost: Double?,
     val closingInventoryCost: Double?,
     val consumedCost: Double?,
+    val lossCost: Double?,
     val grossProfit: Double?,
     val grossMargin: Double?,
     val operatingProfit: Double?,
@@ -702,6 +707,7 @@ class AppDatabase(
         )
         createV27StoreWeatherSettings(db)
         createV28ServerWeatherArchive(db)
+        createV29InventoryLoss(db)
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -820,6 +826,22 @@ class AppDatabase(
         }
         if (oldVersion < 28) {
             createV28ServerWeatherArchive(db)
+        }
+        if (oldVersion < 29) {
+            createV29InventoryLoss(db)
+        }
+    }
+
+    private fun createV29InventoryLoss(
+        db: SQLiteDatabase
+    ) {
+        if (!tableExists(db, "inventory_snapshot")) {
+            createV23InventoryTrial(db)
+        }
+        if (!columnExists(db, "inventory_snapshot", "loss_quantity")) {
+            db.execSQL(
+                "ALTER TABLE inventory_snapshot ADD COLUMN loss_quantity REAL NOT NULL DEFAULT 0"
+            )
         }
     }
 
@@ -1081,6 +1103,7 @@ class AppDatabase(
                 fruit_name TEXT NOT NULL,
                 unit TEXT NOT NULL DEFAULT '件',
                 remaining_quantity REAL NOT NULL DEFAULT 0,
+                loss_quantity REAL NOT NULL DEFAULT 0,
                 deleted INTEGER NOT NULL DEFAULT 0,
                 sync_id TEXT NOT NULL DEFAULT '',
                 sync_status INTEGER NOT NULL DEFAULT 0,
@@ -8254,7 +8277,8 @@ class AppDatabase(
             val fruitId: Long,
             val fruitName: String,
             val unit: String,
-            val quantity: Double
+            val quantity: Double,
+            val lossQuantity: Double = 0.0
         )
 
         val purchased =
@@ -8333,7 +8357,7 @@ class AppDatabase(
         val current = linkedMapOf<InventoryKey, InventorySource>()
         readableDatabase.rawQuery(
             """
-            SELECT fruit_id,fruit_name,unit,remaining_quantity
+            SELECT fruit_id,fruit_name,unit,remaining_quantity,loss_quantity
             FROM inventory_snapshot
             WHERE date=? AND deleted=0
             ORDER BY id
@@ -8347,7 +8371,8 @@ class AppDatabase(
                         fruitId = c.long("fruit_id"),
                         fruitName = c.str("fruit_name"),
                         unit = c.str("unit"),
-                        quantity = c.dbl("remaining_quantity")
+                        quantity = c.dbl("remaining_quantity"),
+                        lossQuantity = c.dbl("loss_quantity").coerceAtLeast(0.0)
                     )
             }
         }
@@ -8384,6 +8409,7 @@ class AppDatabase(
                 unit = key.unit,
                 openingQuantity = opening,
                 purchasedQuantity = purchasedQuantity,
+                lossQuantity = saved?.lossQuantity?.coerceAtLeast(0.0) ?: 0.0,
                 remainingQuantity = remaining,
                 saved = saved != null
             )
@@ -8457,7 +8483,13 @@ class AppDatabase(
 
         return readableDatabase.rawQuery(
             """
-            SELECT pi.unit_price
+            SELECT
+                CASE
+                    WHEN pi.unit_price>0.000001 THEN pi.unit_price
+                    WHEN pi.quantity>0.000001 AND pi.total_cost>0.000001
+                        THEN pi.total_cost/pi.quantity
+                    ELSE NULL
+                END AS effective_unit_price
             FROM purchase_item pi
             JOIN purchase_order po ON po.id=pi.order_id
             WHERE pi.fruit_id=?
@@ -8465,6 +8497,11 @@ class AppDatabase(
               AND po.date<=?
               AND pi.deleted=0
               AND po.deleted=0
+              AND TRIM(pi.fruit_name)<>'总价'
+              AND (
+                    pi.unit_price>0.000001
+                    OR (pi.quantity>0.000001 AND pi.total_cost>0.000001)
+                  )
             ORDER BY po.date DESC,po.created_at DESC,pi.id DESC
             LIMIT 1
             """.trimIndent(),
@@ -8474,7 +8511,11 @@ class AppDatabase(
                 onOrBeforeDate
             )
         ).use { c ->
-            if (c.moveToFirst()) c.dbl("unit_price").coerceAtLeast(0.0) else null
+            if (c.moveToFirst()) {
+                c.dbl("effective_unit_price").takeIf { it > 0.000001 }
+            } else {
+                null
+            }
         }
     }
 
@@ -8513,8 +8554,9 @@ class AppDatabase(
         readableDatabase.rawQuery(
             """
             SELECT po.date,
-                   COALESCE(SUM(pi.quantity),0) AS quantity,
-                   COALESCE(SUM(pi.total_cost),0) AS total_cost
+                   pi.quantity,
+                   pi.total_cost,
+                   pi.unit_price
             FROM purchase_item pi
             JOIN purchase_order po ON po.id=pi.order_id
             WHERE pi.fruit_id=?
@@ -8523,16 +8565,38 @@ class AppDatabase(
               AND po.deleted=0
               AND pi.deleted=0
               AND TRIM(pi.fruit_name)<>'总价'
-            GROUP BY po.date
-            ORDER BY po.date
+            ORDER BY po.date,po.created_at,pi.id
             """.trimIndent(),
             arrayOf(fruitId.toString(), unit, snapshotDate)
         ).use { c ->
             while (c.moveToNext()) {
-                purchases[c.str("date")] =
+                val day = c.str("date")
+                val quantity = c.dbl("quantity").coerceAtLeast(0.0)
+                val recordedUnitPrice = c.dbl("unit_price").coerceAtLeast(0.0)
+                val recordedTotal = c.dbl("total_cost").coerceAtLeast(0.0)
+                val effectiveUnitPrice =
+                    when {
+                        recordedUnitPrice > 0.000001 -> recordedUnitPrice
+                        quantity > 0.000001 && recordedTotal > 0.000001 ->
+                            recordedTotal / quantity
+                        else ->
+                            getLatestPurchaseUnitPrice(
+                                fruitId = fruitId,
+                                unit = unit,
+                                onOrBeforeDate = day
+                            ) ?: 0.0
+                    }
+                val effectiveCost =
+                    if (quantity > 0.000001 && effectiveUnitPrice > 0.000001) {
+                        quantity * effectiveUnitPrice
+                    } else {
+                        0.0
+                    }
+                val existing = purchases[day]
+                purchases[day] =
                     PurchaseAgg(
-                        c.dbl("quantity").coerceAtLeast(0.0),
-                        c.dbl("total_cost").coerceAtLeast(0.0)
+                        quantity = (existing?.quantity ?: 0.0) + quantity,
+                        cost = (existing?.cost ?: 0.0) + effectiveCost
                     )
             }
         }
@@ -8567,8 +8631,11 @@ class AppDatabase(
             purchases[day]?.let { purchase ->
                 runningQuantity += purchase.quantity
                 runningCost += purchase.cost
-                if (runningQuantity > 0.000001) {
+                if (runningQuantity > 0.000001 && runningCost > 0.000001) {
                     lastUnitCost = runningCost / runningQuantity
+                }
+                if (purchase.quantity > 0.000001 && purchase.cost <= 0.000001 && lastUnitCost == null) {
+                    costAvailable = false
                 }
             }
 
@@ -8582,7 +8649,8 @@ class AppDatabase(
                 } else {
                     val unitCost =
                         when {
-                            runningQuantity > 0.000001 -> runningCost / runningQuantity
+                            runningQuantity > 0.000001 && runningCost > 0.000001 ->
+                                runningCost / runningQuantity
                             lastUnitCost != null -> lastUnitCost
                             else -> null
                         }
@@ -8618,38 +8686,68 @@ class AppDatabase(
             val fruitName: String,
             val unit: String,
             val quantity: Double,
-            val cost: Double
+            val cost: Double,
+            val costAvailable: Boolean
         )
 
         val purchaseByKey = linkedMapOf<Pair<Long, String>, PurchaseAgg>()
         readableDatabase.rawQuery(
             """
             SELECT pi.fruit_id,
-                   MAX(pi.fruit_name) AS fruit_name,
+                   pi.fruit_name,
                    pi.unit,
-                   COALESCE(SUM(pi.quantity),0) AS quantity,
-                   COALESCE(SUM(pi.total_cost),0) AS total_cost
+                   pi.quantity,
+                   pi.total_cost,
+                   pi.unit_price
             FROM purchase_item pi
             JOIN purchase_order po ON po.id=pi.order_id
             WHERE po.date=?
               AND po.deleted=0
               AND pi.deleted=0
               AND TRIM(pi.fruit_name)<>'总价'
-            GROUP BY pi.fruit_id,pi.unit
-            ORDER BY MIN(pi.id)
+            ORDER BY pi.id
             """.trimIndent(),
             arrayOf(date)
         ).use { c ->
             while (c.moveToNext()) {
-                val row =
+                val fruitId = c.long("fruit_id")
+                val fruitName = c.str("fruit_name")
+                val unit = c.str("unit")
+                val quantity = c.dbl("quantity").coerceAtLeast(0.0)
+                val recordedUnitPrice = c.dbl("unit_price").coerceAtLeast(0.0)
+                val recordedTotal = c.dbl("total_cost").coerceAtLeast(0.0)
+                val effectiveUnitPrice =
+                    when {
+                        recordedUnitPrice > 0.000001 -> recordedUnitPrice
+                        quantity > 0.000001 && recordedTotal > 0.000001 ->
+                            recordedTotal / quantity
+                        else ->
+                            getLatestPurchaseUnitPrice(
+                                fruitId = fruitId,
+                                unit = unit,
+                                onOrBeforeDate = date
+                            )
+                    }
+                val rowCostAvailable =
+                    quantity <= 0.000001 || (effectiveUnitPrice != null && effectiveUnitPrice > 0.000001)
+                val rowCost =
+                    if (quantity > 0.000001 && effectiveUnitPrice != null) {
+                        quantity * effectiveUnitPrice
+                    } else {
+                        0.0
+                    }
+
+                val key = fruitId to unit
+                val existing = purchaseByKey[key]
+                purchaseByKey[key] =
                     PurchaseAgg(
-                        fruitId = c.long("fruit_id"),
-                        fruitName = c.str("fruit_name"),
-                        unit = c.str("unit"),
-                        quantity = c.dbl("quantity").coerceAtLeast(0.0),
-                        cost = c.dbl("total_cost").coerceAtLeast(0.0)
+                        fruitId = fruitId,
+                        fruitName = fruitName.ifBlank { existing?.fruitName.orEmpty() },
+                        unit = unit,
+                        quantity = (existing?.quantity ?: 0.0) + quantity,
+                        cost = (existing?.cost ?: 0.0) + rowCost,
+                        costAvailable = (existing?.costAvailable ?: true) && rowCostAvailable
                     )
-                purchaseByKey[row.fruitId to row.unit] = row
             }
         }
 
@@ -8681,28 +8779,46 @@ class AppDatabase(
             val purchasedQuantity = purchase?.quantity ?: item.purchasedQuantity
             val purchaseCost = roundMoney(purchase?.cost ?: 0.0)
             val availableQuantity = item.openingQuantity + purchasedQuantity
-            val costAvailable = openingCost != null
-            val availableCost = openingCost?.plus(purchaseCost)
+            val costAvailable =
+                openingCost != null &&
+                    (purchase?.costAvailable ?: true)
+            val availableCost =
+                if (costAvailable) {
+                    (openingCost ?: 0.0) + purchaseCost
+                } else {
+                    null
+                }
             val averageUnitCost =
                 when {
                     !costAvailable -> null
                     availableQuantity > 0.000001 -> (availableCost ?: 0.0) / availableQuantity
                     else -> openingBasis.unitCost ?: 0.0
                 }
+            val loss = item.lossQuantity.coerceAtLeast(0.0)
             val remaining = item.remainingQuantity.coerceAtLeast(0.0)
-            val quantityAnomaly = remaining > availableQuantity + 0.000001
+            val quantityAnomaly =
+                remaining + loss > availableQuantity + 0.000001
+            val soldQuantity =
+                (availableQuantity - remaining - loss).coerceAtLeast(0.0)
             val closingCost =
                 if (averageUnitCost != null) {
                     roundMoney(remaining * averageUnitCost)
                 } else {
                     null
                 }
-            val consumedCost =
-                if (availableCost != null && closingCost != null) {
-                    roundMoney(availableCost - closingCost)
+            val lossCost =
+                if (averageUnitCost != null) {
+                    roundMoney(loss * averageUnitCost)
                 } else {
                     null
                 }
+            val consumedCost =
+                if (averageUnitCost != null) {
+                    roundMoney(soldQuantity * averageUnitCost)
+                } else {
+                    null
+                }
+
             OperatingAnalysisItemRecord(
                 fruitId = item.fruitId,
                 fruitName = item.fruitName,
@@ -8714,9 +8830,11 @@ class AppDatabase(
                 purchaseCost = purchaseCost,
                 availableQuantity = availableQuantity,
                 averageUnitCost = averageUnitCost,
+                lossQuantity = loss,
+                lossCost = lossCost,
                 remainingQuantity = remaining,
                 closingCost = closingCost,
-                consumedQuantity = availableQuantity - remaining,
+                consumedQuantity = soldQuantity,
                 consumedCost = consumedCost,
                 inventorySaved = item.saved,
                 previousSnapshotDate = previousSnapshotDate,
@@ -8727,7 +8845,10 @@ class AppDatabase(
 
         val purchaseCost = roundMoney(purchaseByKey.values.sumOf { it.cost })
         val hasBusinessData =
-            revenue > 0.000001 || expense > 0.000001 || purchaseCost > 0.000001 || inventoryItems.isNotEmpty()
+            revenue > 0.000001 ||
+                expense > 0.000001 ||
+                purchaseCost > 0.000001 ||
+                inventoryItems.isNotEmpty()
         val inventoryComplete =
             if (!hasBusinessData) {
                 true
@@ -8749,8 +8870,15 @@ class AppDatabase(
             if (costComplete) roundMoney(analysisItems.sumOf { it.closingCost ?: 0.0 }) else null
         val consumedCost =
             if (costComplete) roundMoney(analysisItems.sumOf { it.consumedCost ?: 0.0 }) else null
+        val lossCost =
+            if (costComplete) roundMoney(analysisItems.sumOf { it.lossCost ?: 0.0 }) else null
         val grossProfit = consumedCost?.let { roundMoney(revenue - it) }
-        val operatingProfit = grossProfit?.let { roundMoney(it - expense) }
+        val operatingProfit =
+            if (grossProfit != null && lossCost != null) {
+                roundMoney(grossProfit - lossCost - expense)
+            } else {
+                null
+            }
         val grossMargin =
             if (grossProfit != null && revenue > 0.000001) grossProfit / revenue else null
         val operatingMargin =
@@ -8764,6 +8892,7 @@ class AppDatabase(
             openingInventoryCost = openingInventoryCost,
             closingInventoryCost = closingInventoryCost,
             consumedCost = consumedCost,
+            lossCost = lossCost,
             grossProfit = grossProfit,
             grossMargin = grossMargin,
             operatingProfit = operatingProfit,
@@ -8787,6 +8916,8 @@ class AppDatabase(
                     it.fruitName.isBlank() ||
                     it.fruitName.trim() == "总价" ||
                     it.unit.isBlank() ||
+                    !it.lossQuantity.isFinite() ||
+                    it.lossQuantity < 0 ||
                     !it.remainingQuantity.isFinite() ||
                     it.remainingQuantity < 0
             }
@@ -8805,6 +8936,7 @@ class AppDatabase(
                     ContentValues().apply {
                         put("fruit_name", cleanName)
                         put("remaining_quantity", item.remainingQuantity)
+                        put("loss_quantity", item.lossQuantity)
                         put("deleted", 0)
                         put("updated_at", now)
                     }
@@ -12684,7 +12816,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 28
+        const val DB_VERSION = 29
     }
 }
 

@@ -162,76 +162,100 @@ class LedgerUiSettingsManager(
         source: Uri
     ): Result<String> =
         runCatching {
-            val resolver =
-                appContext
-                    .contentResolver
-
             val original =
-                resolver.openInputStream(
-                    source
-                )?.use {
-                    stream ->
-                    BitmapFactory
-                        .decodeStream(
+                decodeSampledBitmap(
+                    source = source,
+                    maxWidth = MAX_IMAGE_WIDTH,
+                    maxHeight = MAX_IMAGE_HEIGHT
+                ) ?: throw IllegalArgumentException("无法读取所选图片")
+
+            var scaled: Bitmap? = null
+            try {
+                val processed =
+                    scaleDown(
+                        original,
+                        MAX_IMAGE_WIDTH,
+                        MAX_IMAGE_HEIGHT
+                    )
+                scaled = processed
+
+                val output =
+                    File(
+                        imageDir,
+                        "header_" +
+                            safeId(ledgerId) +
+                            ".jpg"
+                    )
+
+                FileOutputStream(output).use { stream ->
+                    if (
+                        !processed.compress(
+                            Bitmap.CompressFormat.JPEG,
+                            JPEG_QUALITY,
                             stream
                         )
+                    ) {
+                        throw IllegalStateException("保存背景图片失败")
+                    }
                 }
-                    ?: throw IllegalArgumentException(
-                        "无法读取所选图片"
-                    )
 
-            val scaled =
-                scaleDown(
-                    original,
-                    MAX_IMAGE_WIDTH,
-                    MAX_IMAGE_HEIGHT
+                val current = load(ledgerId)
+                save(
+                    ledgerId,
+                    current.copy(
+                        backgroundImagePath = output.absolutePath
+                    )
                 )
-
-            val output =
-                File(
-                    imageDir,
-                    "header_" +
-                        safeId(ledgerId) +
-                        ".jpg"
-                )
-
-            FileOutputStream(
-                output
-            ).use {
-                stream ->
-                if (
-                    !scaled.compress(
-                        Bitmap.CompressFormat.JPEG,
-                        JPEG_QUALITY,
-                        stream
-                    )
-                ) {
-                    throw IllegalStateException(
-                        "保存背景图片失败"
-                    )
+                output.absolutePath
+            } finally {
+                scaled?.let { bitmap ->
+                    if (bitmap !== original && !bitmap.isRecycled) {
+                        bitmap.recycle()
+                    }
+                }
+                if (!original.isRecycled) {
+                    original.recycle()
                 }
             }
-
-            if (
-                scaled !== original
-            ) {
-                original.recycle()
-            }
-            scaled.recycle()
-
-            val current =
-                load(ledgerId)
-
-            save(
-                ledgerId,
-                current.copy(
-                    backgroundImagePath =
-                        output.absolutePath
-                )
-            )
-
-            output.absolutePath
         }
+
+    private fun decodeSampledBitmap(
+        source: Uri,
+        maxWidth: Int,
+        maxHeight: Int
+    ): Bitmap? {
+        val resolver = appContext.contentResolver
+        val bounds =
+            BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+
+        resolver.openInputStream(source)?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, bounds)
+        }
+
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            return null
+        }
+
+        var sampleSize = 1
+        while (
+            bounds.outWidth / sampleSize > maxWidth * 2 ||
+            bounds.outHeight / sampleSize > maxHeight * 2
+        ) {
+            sampleSize *= 2
+        }
+
+        val options =
+            BitmapFactory.Options().apply {
+                inSampleSize = sampleSize.coerceAtLeast(1)
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+
+        return resolver.openInputStream(source)?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, options)
+        }
+    }
 
     fun removeBackgroundImage(
         ledgerId: String

@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -73,6 +74,7 @@ import com.tianxian.fruit.update.AppUpdateInfo
 import com.tianxian.fruit.update.AppUpdateManager
 import org.json.JSONObject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.LocalDate
@@ -3046,7 +3048,7 @@ private fun HomeScreen(
                                     if (operatingAnalysis.inventoryComplete && operatingAnalysis.costComplete) {
                                         operatingAnalysis.operatingProfit?.let { money(it) } ?: "—"
                                     } else {
-                                        "待库存盘点"
+                                        "待盘点"
                                     },
                                     SoftPurple,
                                     Modifier.weight(1f),
@@ -3513,6 +3515,7 @@ private fun InventoryScreen(
     var message by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
     val remainingInputs = remember { mutableStateMapOf<String, String>() }
+    val lossInputs = remember { mutableStateMapOf<String, String>() }
 
     val inventoryItems = remember(dataVersion, date) {
         db.getInventoryDayItems(date)
@@ -3524,8 +3527,10 @@ private fun InventoryScreen(
     LaunchedEffect(dataVersion, date) {
         val latest = db.getInventoryDayItems(date)
         remainingInputs.clear()
+        lossInputs.clear()
         latest.forEach { item ->
             remainingInputs[itemKey(item)] = cleanNumber(item.remainingQuantity)
+            lossInputs[itemKey(item)] = cleanNumber(item.lossQuantity)
         }
         message = ""
         isError = false
@@ -3613,9 +3618,16 @@ private fun InventoryScreen(
             ) { item ->
                 val key = itemKey(item)
                 val input = remainingInputs[key].orEmpty()
+                val lossInput = lossInputs[key].orEmpty()
                 val remaining = input.toDoubleOrNull()
+                val loss = lossInput.toDoubleOrNull()
                 val available = item.openingQuantity + item.purchasedQuantity
-                val delta = if (remaining != null) available - remaining else null
+                val sold =
+                    if (remaining != null && loss != null) {
+                        available - remaining - loss
+                    } else {
+                        null
+                    }
 
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -3660,7 +3672,7 @@ private fun InventoryScreen(
                             )
                         }
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                             CompactReadOnlyField(
                                 "结转库存",
                                 "${fmt(item.openingQuantity)}${item.unit}",
@@ -3677,6 +3689,12 @@ private fun InventoryScreen(
                                 Modifier.weight(1f)
                             )
                             CompactNumberField(
+                                "损耗",
+                                lossInput,
+                                { lossInputs[key] = it },
+                                Modifier.weight(1f)
+                            )
+                            CompactNumberField(
                                 "剩余库存",
                                 input,
                                 { remainingInputs[key] = it },
@@ -3684,9 +3702,9 @@ private fun InventoryScreen(
                             )
                         }
 
-                        if (delta != null && delta < -0.000001) {
+                        if (sold != null && sold < -0.000001) {
                             Text(
-                                "盘点比可售合计多 ${fmt(-delta)}${item.unit}，请核对采购或结转记录",
+                                "损耗＋剩余库存超过可售合计 ${fmt(-sold)}${item.unit}，请核对数据",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.error,
                                 maxLines = 1
@@ -3700,11 +3718,17 @@ private fun InventoryScreen(
                 Button(
                     onClick = {
                         val invalid = inventoryItems.firstOrNull { item ->
-                            val value = remainingInputs[itemKey(item)]?.toDoubleOrNull()
-                            value == null || value < 0
+                            val remaining = remainingInputs[itemKey(item)]?.toDoubleOrNull()
+                            val loss = lossInputs[itemKey(item)]?.toDoubleOrNull()
+                            val available = item.openingQuantity + item.purchasedQuantity
+                            remaining == null ||
+                                remaining < 0 ||
+                                loss == null ||
+                                loss < 0 ||
+                                remaining + loss > available + 0.000001
                         }
                         if (invalid != null) {
-                            message = "${invalid.fruitName} 的剩余库存必须填写0或正数"
+                            message = "${invalid.fruitName} 的损耗和剩余库存不能为负数，且合计不能超过可售库存"
                             isError = true
                         } else {
                             val saved =
@@ -3715,6 +3739,7 @@ private fun InventoryScreen(
                                             fruitId = item.fruitId,
                                             fruitName = item.fruitName,
                                             unit = item.unit,
+                                            lossQuantity = lossInputs[itemKey(item)]!!.toDouble(),
                                             remainingQuantity = remainingInputs[itemKey(item)]!!.toDouble()
                                         )
                                     }
@@ -3748,7 +3773,7 @@ private fun InventoryScreen(
 
         item {
             Text(
-                "说明：库存是独立清单，不参与经营利润、资金轧差、最少转账方案、经营统计或报表，也不会回写采购表下一日库存。",
+                "说明：库存盘点会把损耗与销售耗用分开记录；损耗会进入经营分析，但不会参与资金轧差、最少转账方案，也不会回写采购表。",
                 color = Color.Gray,
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(vertical = 6.dp)
@@ -5006,9 +5031,17 @@ private fun PurchaseScreen(
         val pendingGroupFirstItemIds =
             groupedPendingItems.values.mapNotNull { group -> group.firstOrNull()?.id }.toSet()
 
-        items(rows, key = { row -> "purchase_draft_${row.rowId}" }) { row ->
+        val visiblePurchaseRows =
+            rows.filterNot { row ->
+                editingOrderId == null &&
+                    collaborationItemFor(row)?.status == 1
+            }
+
+        items(
+            visiblePurchaseRows,
+            key = { row -> "purchase_draft_${row.rowId}" }
+        ) { row ->
             val collaborationItem = collaborationItemFor(row)
-            val completed = editingOrderId == null && collaborationItem?.status == 1
             val savedPending =
                 editingOrderId == null &&
                     collaborationItem?.status == 0 &&
@@ -5017,10 +5050,6 @@ private fun PurchaseScreen(
                 savedPending && editingPlanItemId == collaborationItem?.id
 
             when {
-                completed -> {
-                    // 已完成项目统一放到操作按钮下方，避免和待采购混在一起。
-                }
-
                 savedPending && !editingSavedPending -> {
                     val planItem = collaborationItem!!
                     val groupKey = planItem.buyerId to planItem.buyerName.ifBlank { "未指定采购人" }
@@ -11521,7 +11550,7 @@ private fun OperatingAnalysisContent(
                     SoftGreen
                 )
                 MetricCard(
-                    "货品消耗成本",
+                    "销售耗用成本",
                     analysis.consumedCost?.let { money(it) } ?: "—",
                     Modifier.weight(1f),
                     SoftOrange
@@ -11535,16 +11564,36 @@ private fun OperatingAnalysisContent(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 MetricCard(
-                    "今日采购",
+                    "今日入库估值",
                     money(analysis.purchaseCost),
                     Modifier.weight(1f),
                     Color(0xFFFFF7EA)
                 )
                 MetricCard(
+                    "损耗成本",
+                    analysis.lossCost?.let { money(it) } ?: "—",
+                    Modifier.weight(1f),
+                    Color(0xFFFFECEC)
+                )
+            }
+        }
+
+        item {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                MetricCard(
                     "日常开销",
                     money(analysis.expense),
                     Modifier.weight(1f),
                     Color(0xFFF6F0FF)
+                )
+                MetricCard(
+                    "损耗商品",
+                    "${analysis.items.count { it.lossQuantity > 0.000001 }}种",
+                    Modifier.weight(1f),
+                    Color(0xFFF7F8FA)
                 )
             }
         }
@@ -11591,12 +11640,17 @@ private fun OperatingAnalysisContent(
                     }
                     if (showCalculation) {
                         AnalysisFormulaRow("结转库存成本", analysis.openingInventoryCost?.let { money(it) } ?: "—")
-                        AnalysisFormulaRow("＋ 今日实际采购", money(analysis.purchaseCost))
+                        AnalysisFormulaRow("＋ 今日入库估值", money(analysis.purchaseCost))
                         AnalysisFormulaRow("－ 今日剩余库存", analysis.closingInventoryCost?.let { money(it) } ?: "—")
+                        AnalysisFormulaRow("－ 损耗成本", analysis.lossCost?.let { money(it) } ?: "—")
                         HorizontalDivider(color = Color(0xFFEAEAEA))
-                        AnalysisFormulaRow("＝ 货品消耗成本", analysis.consumedCost?.let { money(it) } ?: "—", true)
-                        AnalysisFormulaRow("营业额 － 货品消耗", analysis.grossProfit?.let { money(it) } ?: "—", true)
-                        AnalysisFormulaRow("预估毛利 － 日常开销", analysis.operatingProfit?.let { money(it) } ?: "—", true)
+                        AnalysisFormulaRow("＝ 销售耗用成本", analysis.consumedCost?.let { money(it) } ?: "—", true)
+                        AnalysisFormulaRow("营业额 － 销售耗用", analysis.grossProfit?.let { money(it) } ?: "—", true)
+                        AnalysisFormulaRow(
+                            "预估毛利 － 损耗成本 － 日常开销",
+                            analysis.operatingProfit?.let { money(it) } ?: "—",
+                            true
+                        )
                     }
                 }
             }
@@ -11658,11 +11712,11 @@ private fun OperatingAnalysisContent(
                             )
                         }
                         Text(
-                            "结转 ${fmt(item.openingQuantity)}${item.unit}  ＋ 采购 ${fmt(item.purchasedQuantity)}${item.unit}  － 剩余 ${fmt(item.remainingQuantity)}${item.unit}  ＝ 消耗 ${fmt(item.consumedQuantity)}${item.unit}",
+                            "结转 ${fmt(item.openingQuantity)}${item.unit}  ＋ 采购 ${fmt(item.purchasedQuantity)}${item.unit}  － 损耗 ${fmt(item.lossQuantity)}${item.unit}  － 剩余 ${fmt(item.remainingQuantity)}${item.unit}  ＝ 销售耗用 ${fmt(item.consumedQuantity)}${item.unit}",
                             style = MaterialTheme.typography.bodySmall
                         )
                         Text(
-                            "加权成本 ${item.averageUnitCost?.let { money(it) + "/" + item.unit } ?: "—"}  ·  消耗成本 ${item.consumedCost?.let { money(it) } ?: "—"}  ·  剩余成本 ${item.closingCost?.let { money(it) } ?: "—"}",
+                            "加权成本 ${item.averageUnitCost?.let { money(it) + "/" + item.unit } ?: "—"}  ·  销售成本 ${item.consumedCost?.let { money(it) } ?: "—"}  ·  损耗成本 ${item.lossCost?.let { money(it) } ?: "—"}  ·  剩余成本 ${item.closingCost?.let { money(it) } ?: "—"}",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.DarkGray
                         )
@@ -11680,7 +11734,7 @@ private fun OperatingAnalysisContent(
 
         item {
             Text(
-                "说明：本页使用库存成本估算经营利润。库存按商品＋单位采用移动加权成本；计划采购不计入成本，只统计已完成采购。正常损耗已经包含在库存减少中，不会重复扣除。若今日库存未完整盘点或结转成本缺失，结果会标记为参考值。",
+                "说明：本页使用库存成本估算经营利润。库存按商品＋单位采用移动加权成本；单品本次价格为0时，会回退到最近一次有效非零采购价作为参考成本。损耗与销售耗用分开计算：预估经营利润＝营业额－销售耗用成本－损耗成本－日常开销。若今日库存未完整盘点或缺少有效成本，结果会标记为参考值。",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.Gray,
                 modifier = Modifier.padding(bottom = 12.dp)
@@ -15845,8 +15899,7 @@ private fun HomeHeaderSettingsContent(
     uiSettingsVersion: Int,
     onChanged: () -> Unit
 ) {
-    val context =
-        LocalContext.current
+    val scope = rememberCoroutineScope()
 
     val loaded =
         remember(
@@ -15910,33 +15963,30 @@ private fun HomeHeaderSettingsContent(
 
     val imageLauncher =
         rememberLauncherForActivityResult(
-            ActivityResultContracts
-                .GetContent()
-        ) {
-            uri ->
+            ActivityResultContracts.PickVisualMedia()
+        ) { uri ->
             if (uri != null) {
-                ledgerUiSettingsManager
-                    .saveBackgroundImage(
-                        currentBook.id,
-                        uri
-                    )
-                    .onSuccess {
-                        path ->
-                        backgroundPath =
-                            path
-                        message =
-                            "背景图片已更换"
-                        onChanged()
-                    }
-                    .onFailure {
-                        error ->
-                        message =
-                            "图片设置失败：" +
-                                (
-                                    error.message
-                                        ?: "未知错误"
-                                    )
-                    }
+                message = "正在处理图片…"
+                scope.launch {
+                    val result =
+                        withContext(Dispatchers.IO) {
+                            ledgerUiSettingsManager.saveBackgroundImage(
+                                currentBook.id,
+                                uri
+                            )
+                        }
+                    result
+                        .onSuccess { path ->
+                            backgroundPath = path
+                            message = "背景图片已更换"
+                            onChanged()
+                        }
+                        .onFailure { error ->
+                            message =
+                                "图片设置失败：" +
+                                    (error.message ?: "无法读取该图片")
+                        }
+                }
             }
         }
 
@@ -16298,10 +16348,17 @@ private fun HomeHeaderSettingsContent(
                     ) {
                         Button(
                             onClick = {
-                                imageLauncher
-                                    .launch(
-                                        "image/*"
+                                runCatching {
+                                    imageLauncher.launch(
+                                        PickVisualMediaRequest(
+                                            ActivityResultContracts.PickVisualMedia.ImageOnly
+                                        )
                                     )
+                                }.onFailure { error ->
+                                    message =
+                                        "无法打开图片选择器：" +
+                                            (error.message ?: "系统图片选择器不可用")
+                                }
                             },
                             modifier =
                                 Modifier.weight(
