@@ -276,7 +276,10 @@ class WeatherClient(
                 val detail = runCatching {
                     (JSONTokener(text).nextValue() as? JSONObject)?.optString("detail")
                 }.getOrNull().orEmpty()
-                throw IllegalStateException(detail.ifBlank { "天气服务请求失败：HTTP $code" })
+                throw CloudApiException(
+                    code,
+                    detail.ifBlank { "天气服务请求失败：HTTP $code" }
+                )
             }
             return (JSONTokener(text).nextValue() as? JSONObject)
                 ?: throw IllegalStateException("天气服务返回格式错误")

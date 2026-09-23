@@ -2058,8 +2058,28 @@ private fun WeatherDetailContent(
                     val parsed = cached?.let {
                         runCatching { WeatherClient.parseOverview(it.payloadJson, true) }.getOrNull()
                     }
-                    if (parsed != null) WeatherUiState(parsed, snapshotType = "ARCHIVE_CACHE", updatedAtMillis = cached.fetchedAt)
-                    else WeatherUiState(error = error.message ?: "该日期暂无服务器历史天气档案")
+                    if (parsed != null) {
+                        WeatherUiState(
+                            parsed,
+                            snapshotType = "ARCHIVE_CACHE",
+                            updatedAtMillis = cached.fetchedAt
+                        )
+                    } else {
+                        val message = when {
+                            error is CloudApiException &&
+                                error.statusCode == 404 &&
+                                error.message.orEmpty().equals("Not Found", ignoreCase = true) ->
+                                "服务器历史天气接口未启用，请确认 Server V1.0.11 已部署"
+
+                            error is CloudApiException &&
+                                error.statusCode == 404 ->
+                                error.message.orEmpty().ifBlank { "该营业日暂无服务器逐小时天气档案" }
+
+                            else ->
+                                error.message ?: "该日期暂无服务器历史天气档案"
+                        }
+                        WeatherUiState(error = message)
+                    }
                 }
             )
             return@LaunchedEffect
@@ -2113,7 +2133,7 @@ private fun WeatherDetailContent(
         }
     }
     val business = storeBusinessHours(ov?.hourly.orEmpty(), dateString, store)
-    val trendTemps = hourly24.mapNotNull { it.temperature }
+    val trendHours = hourly24.filter { it.temperature != null }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().pointerInput(selectedDate) {
@@ -2270,19 +2290,97 @@ private fun WeatherDetailContent(
                 }
             }
 
-            if (trendTemps.size >= 2) {
+            if (trendHours.size >= 2) {
                 item {
                     Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
                         Column(Modifier.padding(12.dp)) {
                             Text("温度趋势", fontWeight = FontWeight.Bold)
-                            Canvas(Modifier.fillMaxWidth().height(120.dp).padding(top = 8.dp)) {
-                                val minT = trendTemps.minOrNull() ?: 0.0
-                                val maxT = trendTemps.maxOrNull() ?: minT + 1.0
-                                val range = (maxT - minT).coerceAtLeast(1.0)
-                                val stepX = if (trendTemps.size <= 1) size.width else size.width / (trendTemps.size - 1)
-                                val pts = trendTemps.mapIndexed { i, t -> Offset(i * stepX, size.height - (((t - minT) / range).toFloat() * (size.height * 0.75f)) - size.height * 0.1f) }
-                                for (i in 0 until pts.lastIndex) drawLine(Color(0xFF3A86C8), pts[i], pts[i + 1], strokeWidth = 4f)
-                                pts.forEach { drawCircle(Color(0xFF3A86C8), radius = 5f, center = it) }
+                            Text(
+                                "每个点显示温度和时间，可左右滑动查看完整24小时",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.Gray
+                            )
+                            val chartWidth = maxOf(
+                                620.dp,
+                                (trendHours.size * 58).dp
+                            )
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                            ) {
+                                Canvas(
+                                    Modifier
+                                        .width(chartWidth)
+                                        .height(168.dp)
+                                        .padding(horizontal = 18.dp, vertical = 8.dp)
+                                ) {
+                                    val temperatures = trendHours.mapNotNull { it.temperature }
+                                    val minT = temperatures.minOrNull() ?: 0.0
+                                    val maxT = temperatures.maxOrNull() ?: minT + 1.0
+                                    val range = (maxT - minT).coerceAtLeast(1.0)
+                                    val top = 28f
+                                    val bottom = size.height - 34f
+                                    val stepX = if (trendHours.size <= 1) {
+                                        0f
+                                    } else {
+                                        size.width / (trendHours.size - 1)
+                                    }
+                                    repeat(3) { index ->
+                                        val y = top + (bottom - top) * index / 2f
+                                        drawLine(
+                                            Color(0xFFE7E9ED),
+                                            Offset(0f, y),
+                                            Offset(size.width, y),
+                                            strokeWidth = 1.2f
+                                        )
+                                    }
+                                    val points = trendHours.mapIndexed { index, hour ->
+                                        val temperature = hour.temperature ?: minT
+                                        val x = if (trendHours.size == 1) size.width / 2f else stepX * index
+                                        val y = bottom -
+                                            (((temperature - minT) / range).toFloat() * (bottom - top))
+                                        Offset(x, y)
+                                    }
+                                    points.zipWithNext().forEach { (a, b) ->
+                                        drawLine(
+                                            Color(0xFF3A86C8),
+                                            a,
+                                            b,
+                                            strokeWidth = 4f
+                                        )
+                                    }
+                                    val valuePaint = AndroidPaint().apply {
+                                        isAntiAlias = true
+                                        color = Color(0xFF276C9E).toArgb()
+                                        textAlign = AndroidPaint.Align.CENTER
+                                        textSize = 11.sp.toPx()
+                                        typeface = android.graphics.Typeface.DEFAULT_BOLD
+                                    }
+                                    val timePaint = AndroidPaint().apply {
+                                        isAntiAlias = true
+                                        color = Color.Gray.toArgb()
+                                        textAlign = AndroidPaint.Align.CENTER
+                                        textSize = 10.sp.toPx()
+                                    }
+                                    points.forEachIndexed { index, point ->
+                                        drawCircle(Color.White, radius = 7f, center = point)
+                                        drawCircle(Color(0xFF3A86C8), radius = 4.5f, center = point)
+                                        val temperature = trendHours[index].temperature ?: return@forEachIndexed
+                                        drawContext.canvas.nativeCanvas.drawText(
+                                            String.format(Locale.getDefault(), "%.0f°", temperature),
+                                            point.x,
+                                            (point.y - 10f).coerceAtLeast(valuePaint.textSize),
+                                            valuePaint
+                                        )
+                                        drawContext.canvas.nativeCanvas.drawText(
+                                            weatherHourLabel(trendHours[index].time),
+                                            point.x,
+                                            size.height - 4f,
+                                            timePaint
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -2602,9 +2700,9 @@ private fun HomeScreen(
                         )
                 ) {
                     Box(
-                        Modifier.align(
-                            Alignment.TopStart
-                        )
+                        Modifier
+                            .align(Alignment.TopStart)
+                            .offset(y = (-6).dp)
                     ) {
                         TextButton(
                             onClick = {

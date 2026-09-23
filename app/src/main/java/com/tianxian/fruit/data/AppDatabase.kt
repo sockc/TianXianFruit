@@ -3626,6 +3626,7 @@ class AppDatabase(
                 // devices. For settlement child rows, settlement_id is remapped
                 // above so their parent/child relationship remains intact.
                 if (
+                    tableName == "store_daily_record" ||
                     tableName == "profit_distribution" ||
                     tableName == "daily_cash_settlement" ||
                     tableName == "settlement_partner" ||
