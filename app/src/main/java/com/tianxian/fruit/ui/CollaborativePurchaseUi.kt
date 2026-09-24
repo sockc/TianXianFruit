@@ -1415,6 +1415,15 @@ internal fun CollaborationCompleteDialog(
         )
     }
 
+    var unitWeightInput by remember(
+        item.id,
+        editingCompleted
+    ) {
+        mutableStateOf(
+            collaborationNumber(item.unitWeightJin.coerceAtLeast(0.0))
+        )
+    }
+
     var unitPriceInput by remember(
         item.id,
         editingCompleted
@@ -1446,6 +1455,12 @@ internal fun CollaborationCompleteDialog(
     val quantityNumber =
         quantity.toDoubleOrNull()
             ?: 0.0
+
+    val unitWeightParsed =
+        unitWeightInput.toDoubleOrNull()
+
+    val unitWeightNumber =
+        unitWeightParsed ?: 0.0
 
     val amountParsed =
         amount.toDoubleOrNull()
@@ -1497,13 +1512,10 @@ internal fun CollaborationCompleteDialog(
                 )
 
                 Row(
-                    horizontalArrangement =
-                        Arrangement.spacedBy(
-                            7.dp
-                        )
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)
                 ) {
                     CollaborationNumberField(
-                        "实际数量",
+                        "实际数量(${item.unit})",
                         quantity,
                         { value ->
                             quantity = value
@@ -1516,6 +1528,17 @@ internal fun CollaborationCompleteDialog(
                         Modifier.weight(1f)
                     )
 
+                    CollaborationNumberField(
+                        "每件重量(斤/${item.unit})",
+                        unitWeightInput,
+                        { value -> unitWeightInput = value },
+                        Modifier.weight(1f)
+                    )
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
                     CollaborationNumberField(
                         "实际单价",
                         unitPriceInput,
@@ -1603,9 +1626,9 @@ internal fun CollaborationCompleteDialog(
 
                 Text(
                     if (editingCompleted) {
-                        "修改实际单价会自动计算总价；修改实际总价会自动反算单价。保存后同步更新当天进货金额。"
+                        "可修改当前批次的数量、每件重量、单价和总价；价格双向联动。保存后同步更新当天采购与商品历史。"
                     } else {
-                        "实际总价默认使用计划总价。价格不同时可修改实际单价或实际总价，两者会自动换算。"
+                        "每件重量会跟随当前批次保存；实际单价和总价双向联动，不会反向修改其它历史批次。"
                     },
                     style =
                         MaterialTheme
@@ -1644,13 +1667,15 @@ internal fun CollaborationCompleteDialog(
                             "请选择采购人"
                     } else if (
                         quantityNumber <= 0 ||
+                        unitWeightParsed == null ||
+                        unitWeightNumber < 0 ||
                         unitPriceParsed == null ||
                         unitPrice < 0 ||
                         amountParsed == null ||
                         amountNumber < 0
                     ) {
                         error =
-                            "实际数量必须大于0，实际单价和总价可为0但不能留空"
+                            "实际数量必须大于0；每件重量、实际单价和总价可为0但不能留空"
                     } else {
                         val result =
                             if (editingCompleted) {
@@ -1659,6 +1684,7 @@ internal fun CollaborationCompleteDialog(
                                     buyer = selectedBuyer,
                                     actualQuantity = quantityNumber,
                                     actualAmount = amountNumber,
+                                    actualUnitWeightJin = unitWeightNumber,
                                     recorderUsername = recorderUsername,
                                     recorderDisplayName = recorderDisplayName
                                 )
@@ -1668,6 +1694,7 @@ internal fun CollaborationCompleteDialog(
                                     buyer = selectedBuyer,
                                     actualQuantity = quantityNumber,
                                     actualAmount = amountNumber,
+                                    actualUnitWeightJin = unitWeightNumber,
                                     recorderUsername = recorderUsername,
                                     recorderDisplayName = recorderDisplayName
                                 )

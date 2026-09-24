@@ -200,6 +200,7 @@ private enum class HistoryTimeFilter(val label: String) {
 private enum class HistorySection(val label: String) {
     BUSINESS("营业历史"),
     PURCHASE("采购历史"),
+    PRODUCT("商品历史"),
     PROFIT("利润历史"),
     PLAN("采购计划")
 }
@@ -322,7 +323,7 @@ private data class PurchaseHistoryEditDraft(
     val quantity: String,
     val unitPrice: String,
     val totalCost: String,
-    val unitWeightJin: Double = 0.0
+    val unitWeightJin: String = "0"
 )
 
 private data class PageSyncUiContext(
@@ -3729,10 +3730,20 @@ private fun HomeScreen(
                                 DashboardTile(
                                     "🧮",
                                     "预估经营利润",
-                                    if (operatingAnalysis.inventoryComplete && operatingAnalysis.costComplete) {
-                                        operatingAnalysis.operatingProfit?.let { money(it) } ?: "—"
-                                    } else {
-                                        "待盘点"
+                                    when {
+                                        !operatingAnalysis.inventoryComplete -> "待盘点"
+                                        !operatingAnalysis.costComplete -> {
+                                            val missing = operatingAnalysis.items.count { row ->
+                                                !row.costAvailable && (
+                                                    row.availableQuantity > 0.000001 ||
+                                                        row.lossQuantity > 0.000001 ||
+                                                        row.remainingQuantity > 0.000001 ||
+                                                        row.consumedQuantity > 0.000001
+                                                )
+                                            }
+                                            "缺成本${missing}种"
+                                        }
+                                        else -> operatingAnalysis.operatingProfit?.let { money(it) } ?: "—"
                                     },
                                     SoftPurple,
                                     Modifier.weight(1f),
@@ -6779,7 +6790,7 @@ private fun PurchaseHistoryEditDialog(
                                         cleanNumber(
                                             item.totalCost
                                         ),
-                                    unitWeightJin = item.unitWeightJin
+                                    unitWeightJin = cleanNumber(item.unitWeightJin)
                                 )
                             )
                         }
@@ -6887,7 +6898,7 @@ private fun PurchaseHistoryEditDialog(
                         unit = row.unit,
                         quantity = quantity,
                         totalCost = total,
-                        unitWeightJin = row.unitWeightJin
+                        unitWeightJin = row.unitWeightJin.toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
                     )
             }
 
@@ -6990,7 +7001,7 @@ private fun PurchaseHistoryEditDialog(
                 )
 
                 Text(
-                    "价格联动：输入单价自动计算总价；输入总价自动反算单价。",
+                    "可修改当前批次每件重量；输入单价自动计算总价，输入总价自动反算单价。",
                     style = MaterialTheme.typography.labelSmall,
                     color = BrandGreen
                 )
@@ -7366,11 +7377,25 @@ private fun HistoryPurchaseItemEditor(
                 }
             }
 
-            // V1.4.7.51: 单价/总价双向联动。
+            // V1.4.7.57：历史已完成采购可以补录/修改该批次自己的每件重量。
+            // 重量、单价、总价同排，历史规格只作用于当前采购明细，不反向改其它批次。
             Row(
                 horizontalArrangement =
                     Arrangement.spacedBy(6.dp)
             ) {
+                NumberField(
+                    "重量(斤/${row.unit})",
+                    row.unitWeightJin,
+                    { text ->
+                        onChange(
+                            row.copy(
+                                unitWeightJin = text
+                            )
+                        )
+                    },
+                    Modifier.weight(1.1f)
+                )
+
                 NumberField(
                     "单价",
                     row.unitPrice,
@@ -7389,7 +7414,7 @@ private fun HistoryPurchaseItemEditor(
                             )
                         )
                     },
-                    Modifier.weight(1f)
+                    Modifier.weight(0.9f)
                 )
 
                 NumberField(
@@ -7822,7 +7847,7 @@ private fun PurchaseDraftRowEditor(
             }
 
             Row(
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
                 Column(modifier = Modifier.weight(15f)) {
@@ -7861,12 +7886,12 @@ private fun PurchaseDraftRowEditor(
                     label = "重量", value = row.unitWeight, defaultValue = "0",
                     stateKey = "${row.rowId}:unitWeight",
                     onValue = { onChange(row.copy(unitWeight = it)) },
-                    modifier = Modifier.weight(20f)
+                    modifier = Modifier.weight(18f)
                 )
                 PurchaseDefaultNumberField(
                     label = "单价", value = row.unitPrice, defaultValue = "0",
                     stateKey = "${row.rowId}:unitPrice", onValue = { updateUnitPrice(it) },
-                    modifier = Modifier.weight(15f)
+                    modifier = Modifier.weight(17f)
                 )
                 CompactNumberField(
                     label = "总价", value = row.totalCost, onValue = { updateTotal(it) },
@@ -12218,11 +12243,23 @@ private fun OperatingAnalysisContent(
     fun percent(value: Double?): String =
         value?.let { String.format(Locale.CHINA, "%.1f%%", it * 100.0) } ?: "—"
 
+    val relevantCostItems =
+        analysis.items.filter {
+            it.availableQuantity > 0.000001 ||
+                it.lossQuantity > 0.000001 ||
+                it.remainingQuantity > 0.000001 ||
+                it.consumedQuantity > 0.000001
+        }
+    val missingCostItems = relevantCostItems.filter { !it.costAvailable }
+    val knownCostCount = relevantCostItems.size - missingCostItems.size
     val statusText =
         when {
             !analysis.hasBusinessData -> "暂无经营数据"
             !analysis.inventoryComplete -> "库存未完整盘点 · 当前结果仅供参考"
-            !analysis.costComplete -> "部分结转库存缺少成本依据"
+            !analysis.costComplete ->
+                "成本覆盖 $knownCostCount/${relevantCostItems.size} · 缺：" +
+                    missingCostItems.take(3).joinToString("、") { "${it.fruitName}(${it.unit})" } +
+                    if (missingCostItems.size > 3) " 等${missingCostItems.size}种" else ""
             !analysis.previousDayAligned -> "结转库存不是昨日盘点 · 按最近库存估算"
             else -> "数据完整 · 可用于当日经营复盘"
         }
@@ -12272,6 +12309,33 @@ private fun OperatingAnalysisContent(
             }
         }
 
+        if (missingCostItems.isNotEmpty()) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF7EA)),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text("待补成本", fontWeight = FontWeight.Bold, color = Color(0xFFB26A00))
+                        missingCostItems.forEach { row ->
+                            Text(
+                                "• ${row.fruitName} · ${row.unit} · 结转 ${fmt(row.openingQuantity)} · 今日采购 ${fmt(row.purchasedQuantity)}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        Text(
+                            "已知成本商品继续参与计算；补齐后本页会自动恢复完整利润口径。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.Gray
+                        )
+                    }
+                }
+            }
+        }
+
         item {
             OperatingAnalysisWeatherCard(
                 db = db,
@@ -12288,18 +12352,22 @@ private fun OperatingAnalysisContent(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 MetricCard(
-                    title = "预估经营利润",
+                    title = if (analysis.costComplete) "预估经营利润" else "已知成本口径利润",
                     value = analysis.operatingProfit?.let { money(it) } ?: "—",
                     modifier = Modifier.weight(1f),
                     color = if ((analysis.operatingProfit ?: 0.0) >= 0) SoftGreen else Color(0xFFFFECEC),
-                    sub = "利润率 ${percent(analysis.operatingMargin)}"
+                    sub = if (analysis.costComplete) {
+                        "利润率 ${percent(analysis.operatingMargin)}"
+                    } else {
+                        "成本覆盖 $knownCostCount/${relevantCostItems.size}"
+                    }
                 )
                 MetricCard(
-                    title = "预估毛利",
+                    title = if (analysis.costComplete) "预估毛利" else "已知成本口径毛利",
                     value = analysis.grossProfit?.let { money(it) } ?: "—",
                     modifier = Modifier.weight(1f),
                     color = SoftBlue,
-                    sub = "毛利率 ${percent(analysis.grossMargin)}"
+                    sub = if (analysis.costComplete) "毛利率 ${percent(analysis.grossMargin)}" else "缺成本 ${missingCostItems.size}种"
                 )
             }
         }
@@ -12410,8 +12478,16 @@ private fun OperatingAnalysisContent(
                         AnalysisFormulaRow("－ 今日剩余库存", analysis.closingInventoryCost?.let { money(it) } ?: "—")
                         AnalysisFormulaRow("－ 损耗成本", analysis.lossCost?.let { money(it) } ?: "—")
                         HorizontalDivider(color = Color(0xFFEAEAEA))
-                        AnalysisFormulaRow("＝ 销售耗用成本", analysis.consumedCost?.let { money(it) } ?: "—", true)
-                        AnalysisFormulaRow("营业额 － 销售耗用", analysis.grossProfit?.let { money(it) } ?: "—", true)
+                        AnalysisFormulaRow(
+                            if (analysis.costComplete) "＝ 销售耗用成本" else "＝ 已知销售耗用成本",
+                            analysis.consumedCost?.let { money(it) } ?: "—",
+                            true
+                        )
+                        AnalysisFormulaRow(
+                            if (analysis.costComplete) "营业额 － 销售耗用" else "营业额 － 已知销售耗用",
+                            analysis.grossProfit?.let { money(it) } ?: "—",
+                            true
+                        )
                         AnalysisFormulaRow(
                             "预估毛利 － 损耗成本 － 日常开销",
                             analysis.operatingProfit?.let { money(it) } ?: "—",
@@ -12505,7 +12581,7 @@ private fun OperatingAnalysisContent(
 
         item {
             Text(
-                "说明：成本按真实非零采购价优先、人工参考成本兜底；库存仍以箱/筐/件/袋为主单位。每件重量只用于估算换算，因此销售重量、按零售价推算的单品收入与单品利润统一标记为“估算”。损耗与销售耗用分开计算。",
+                "说明：成本按真实非零采购价优先、人工参考成本兜底；缺少个别商品成本时，已知商品继续计算并明确标记“已知成本口径”。库存仍以箱/筐/件/袋为主单位。每件重量只用于估算换算，因此销售重量、按零售价推算的单品收入与单品利润统一标记为“估算”。损耗与销售耗用分开计算。",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.Gray,
                 modifier = Modifier.padding(bottom = 12.dp)
@@ -17830,6 +17906,8 @@ private fun HistoryContent(
     var section by remember(initialSection) {
         mutableStateOf(initialSection)
     }
+    var selectedProductId by remember { mutableStateOf<Long?>(null) }
+    var productSearch by remember { mutableStateOf("") }
     var timeFilter by remember {
         mutableStateOf(HistoryTimeFilter.LAST_30)
     }
@@ -17878,6 +17956,10 @@ private fun HistoryContent(
     val queryEnd =
         if (invalidCustomRange) "0000-01-01" else range.second
 
+    BackHandler(enabled = section == HistorySection.PRODUCT && selectedProductId != null) {
+        selectedProductId = null
+    }
+
     val purchases = remember(dataVersion, queryStart, queryEnd) {
         db.getPurchaseOrdersBetween(queryStart, queryEnd)
     }
@@ -17886,6 +17968,17 @@ private fun HistoryContent(
     }
     val purchasePlans = remember(dataVersion, queryStart, queryEnd) {
         db.getPurchasePlansBetween(queryStart, queryEnd)
+    }
+    val productHistorySummaries = remember(dataVersion, queryStart, queryEnd) {
+        db.getProductHistorySummaries(queryStart, queryEnd)
+    }
+    val filteredProductHistory = remember(productHistorySummaries, productSearch) {
+        val keyword = productSearch.trim()
+        if (keyword.isBlank()) productHistorySummaries
+        else productHistorySummaries.filter { it.fruitName.contains(keyword, ignoreCase = true) }
+    }
+    val selectedProductHistory = remember(dataVersion, queryStart, queryEnd, selectedProductId) {
+        selectedProductId?.let { db.getProductHistoryDetail(it, queryStart, queryEnd) }
     }
     val profitHistoryDates = remember(sessions, purchases) {
         (
@@ -17955,7 +18048,10 @@ private fun HistoryContent(
                 HistorySection.entries.forEach { option ->
                     FilterChip(
                         selected = section == option,
-                        onClick = { section = option },
+                        onClick = {
+                            section = option
+                            if (option != HistorySection.PRODUCT) selectedProductId = null
+                        },
                         label = { Text(option.label) }
                     )
                 }
@@ -18038,6 +18134,7 @@ private fun HistoryContent(
                         "${businessHistoryByDate.size} 个营业日 · ${sessions.size} 条记录"
                     HistorySection.PURCHASE ->
                         "${purchaseHistoryByDate.size} 个采购日 · ${purchases.size} 张采购单"
+                    HistorySection.PRODUCT -> "${productHistorySummaries.size} 种商品"
                     HistorySection.PROFIT -> "${profitHistoryByDate.size} 天利润记录"
                     HistorySection.PLAN -> "${purchasePlans.size} 张采购计划"
                 }
@@ -18261,7 +18358,9 @@ private fun HistoryContent(
 
                                     buyerItems.forEach { item ->
                                         Text(
-                                            "• ${item.fruitName} ${fmt(item.quantity)}${item.unit} ${money(item.totalCost)}",
+                                            "• ${item.fruitName} ${fmt(item.quantity)}${item.unit}" +
+                                                (item.unitWeightJin.takeIf { it > 0.000001 }?.let { " · ${fmt(it)}斤/${item.unit}" } ?: "") +
+                                                " · ${money(item.totalCost)}",
                                             style = MaterialTheme.typography.bodySmall
                                         )
                                     }
@@ -18295,6 +18394,342 @@ private fun HistoryContent(
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            HistorySection.PRODUCT -> {
+                if (selectedProductId == null) {
+                    item {
+                        OutlinedTextField(
+                            value = productSearch,
+                            onValueChange = { productSearch = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            label = { Text("搜索商品") },
+                            placeholder = { Text("例如：无子红提") }
+                        )
+                    }
+
+                    if (filteredProductHistory.isEmpty()) {
+                        item {
+                            Text(
+                                if (productSearch.isBlank()) "当前时间范围暂无商品历史" else "没有匹配的商品",
+                                color = Color.Gray
+                            )
+                        }
+                    } else {
+                        items(
+                            filteredProductHistory,
+                            key = { "product-history-${it.fruitId}" }
+                        ) { summary ->
+                            val quantityText =
+                                summary.unitSummaries
+                                    .filter { it.quantity > 0.000001 }
+                                    .joinToString(" · ") { "${fmt(it.quantity)}${it.unit}" }
+                                    .ifBlank { "无采购数量" }
+                            val latestPurchaseText =
+                                if (summary.latestPurchaseUnitPrice != null && summary.latestPurchaseUnit.isNotBlank()) {
+                                    "${money(summary.latestPurchaseUnitPrice)}/${summary.latestPurchaseUnit}"
+                                } else {
+                                    "暂无采购价"
+                                }
+                            val latestRetailText =
+                                summary.latestRetailPricePerJin?.let { "${money(it)}/斤" }
+                                    ?: "暂无零售价"
+
+                            Card(
+                                onClick = { selectedProductId = summary.fruitId },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color.White)
+                            ) {
+                                Column(
+                                    Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            summary.fruitName,
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Text("查看详情 ›", color = BrandGreen, style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    Text(
+                                        "采购 ${summary.purchaseCount}次 · ${summary.purchaseDayCount}个采购日 · 合计 ${money(summary.totalPurchaseAmount)}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color.DarkGray
+                                    )
+                                    Text(
+                                        "本期数量 $quantityText" +
+                                            if (summary.totalKnownWeightJin > 0.000001) " · 按已录规格约 ${fmt(summary.totalKnownWeightJin)}斤" else "",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color.DarkGray
+                                    )
+                                    Text(
+                                        "最近采购 $latestPurchaseText · 最近零售 $latestRetailText",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = BrandGreen
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    item {
+                        TextButton(onClick = { selectedProductId = null }) {
+                            Text("← 返回商品列表")
+                        }
+                    }
+
+                    val detail = selectedProductHistory
+                    if (detail == null) {
+                        item {
+                            Text("当前时间范围没有该商品记录", color = Color.Gray)
+                        }
+                    } else {
+                        val summary = detail.summary
+                        item {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFFF7FBF8)),
+                                shape = RoundedCornerShape(14.dp)
+                            ) {
+                                Column(
+                                    Modifier.padding(13.dp),
+                                    verticalArrangement = Arrangement.spacedBy(7.dp)
+                                ) {
+                                    Text(
+                                        summary.fruitName,
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.titleLarge
+                                    )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        MiniSummaryCard(
+                                            "采购次数",
+                                            "${summary.purchaseCount}次",
+                                            Modifier.weight(1f),
+                                            SoftOrange
+                                        )
+                                        MiniSummaryCard(
+                                            "采购金额",
+                                            money(summary.totalPurchaseAmount),
+                                            Modifier.weight(1f),
+                                            SoftBlue
+                                        )
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        MiniSummaryCard(
+                                            "规格折合",
+                                            if (summary.totalKnownWeightJin > 0.000001) "约${fmt(summary.totalKnownWeightJin)}斤" else "暂无",
+                                            Modifier.weight(1f),
+                                            SoftGreen
+                                        )
+                                        MiniSummaryCard(
+                                            "零售价记录",
+                                            "${summary.retailDayCount}天",
+                                            Modifier.weight(1f),
+                                            SoftPurple
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        item {
+                            Text("采购汇总", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        }
+
+                        item {
+                            Card(
+                                Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = Color.White)
+                            ) {
+                                Column(
+                                    Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    if (summary.unitSummaries.isEmpty()) {
+                                        Text("本期没有采购记录", color = Color.Gray)
+                                    } else {
+                                        summary.unitSummaries.forEachIndexed { index, unit ->
+                                            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                                Row(Modifier.fillMaxWidth()) {
+                                                    Text(
+                                                        "${fmt(unit.quantity)}${unit.unit} · ${unit.purchaseCount}次",
+                                                        modifier = Modifier.weight(1f),
+                                                        fontWeight = FontWeight.SemiBold
+                                                    )
+                                                    Text(money(unit.totalCost), fontWeight = FontWeight.SemiBold)
+                                                }
+                                                Text(
+                                                    "加权采购价 ${unit.weightedAverageUnitPrice?.let { money(it) + "/" + unit.unit } ?: "—"} · " +
+                                                        "最低 ${unit.minUnitPrice?.let { money(it) } ?: "—"} · 最高 ${unit.maxUnitPrice?.let { money(it) } ?: "—"}",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = Color.DarkGray
+                                                )
+                                                Text(
+                                                    "最近 ${unit.latestUnitPrice?.let { money(it) + "/" + unit.unit } ?: "—"}" +
+                                                        (unit.latestUnitWeightJin?.let { " · 最近规格 ${fmt(it)}斤/${unit.unit}" } ?: "") +
+                                                        if (unit.estimatedWeightJin > 0.000001) " · 本期按已录规格约 ${fmt(unit.estimatedWeightJin)}斤" else "",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = Color(0xFF7A5A00)
+                                                )
+                                            }
+                                            if (index < summary.unitSummaries.lastIndex) HorizontalDivider()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        item {
+                            Text("零售价历史", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        }
+
+                        item {
+                            Card(
+                                Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = Color.White)
+                            ) {
+                                Column(
+                                    Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Row(Modifier.fillMaxWidth()) {
+                                        Text(
+                                            "最近 ${summary.latestRetailPricePerJin?.let { money(it) + "/斤" } ?: "—"}",
+                                            modifier = Modifier.weight(1f),
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = BrandGreen
+                                        )
+                                        Text("记录 ${summary.retailDayCount}天", color = Color.Gray)
+                                    }
+                                    Text(
+                                        "最低 ${summary.minRetailPricePerJin?.let { money(it) + "/斤" } ?: "—"} · " +
+                                            "最高 ${summary.maxRetailPricePerJin?.let { money(it) + "/斤" } ?: "—"}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color.DarkGray
+                                    )
+                                    if (detail.retailPrices.isEmpty()) {
+                                        Text("本期没有零售价记录", color = Color.Gray)
+                                    } else {
+                                        HorizontalDivider()
+                                        detail.retailPrices.take(60).forEach { row ->
+                                            Row(Modifier.fillMaxWidth()) {
+                                                Text(row.date, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                                                Text("${money(row.pricePerJin)}/斤", style = MaterialTheme.typography.bodySmall)
+                                            }
+                                        }
+                                        if (detail.retailPrices.size > 60) {
+                                            Text("仅显示最近60条，共 ${detail.retailPrices.size} 条", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        item {
+                            Text("采购明细", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        }
+
+                        if (detail.purchases.isEmpty()) {
+                            item { Text("本期没有采购明细", color = Color.Gray) }
+                        } else {
+                            items(
+                                detail.purchases.take(100),
+                                key = { "product-purchase-${it.itemId}" }
+                            ) { row ->
+                                Card(
+                                    Modifier.fillMaxWidth(),
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFAFBFC))
+                                ) {
+                                    Column(
+                                        Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
+                                        Row(Modifier.fillMaxWidth()) {
+                                            Text(row.date, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                                            Text(money(row.totalCost), fontWeight = FontWeight.Bold)
+                                        }
+                                        Text(
+                                            "${fmt(row.quantity)}${row.unit} · 单价 ${row.unitPrice?.let { money(it) + "/" + row.unit } ?: "—"}" +
+                                                (row.unitWeightJin?.let { " · ${fmt(it)}斤/${row.unit}" } ?: ""),
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                        Text(
+                                            listOfNotNull(
+                                                row.estimatedWeightJin?.let { "折合约 ${fmt(it)}斤" },
+                                                row.buyerName.takeIf { it.isNotBlank() }?.let { "采购人 $it" },
+                                                row.storeName.takeIf { it.isNotBlank() }?.let { "${it}" }
+                                            ).joinToString(" · "),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color.Gray
+                                        )
+                                    }
+                                }
+                            }
+                            if (detail.purchases.size > 100) {
+                                item {
+                                    Text("采购明细仅显示最近100条，共 ${detail.purchases.size} 条", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+
+                        item {
+                            Text("库存与损耗", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        }
+
+                        item {
+                            Card(
+                                Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = Color.White)
+                            ) {
+                                Column(
+                                    Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    val lossText = summary.lossByUnit
+                                        .filter { it.quantity > 0.000001 }
+                                        .joinToString(" · ") { "${fmt(it.quantity)}${it.unit}" }
+                                        .ifBlank { "0" }
+                                    val remainingText = summary.latestRemainingByUnit
+                                        .joinToString(" · ") { "${fmt(it.quantity)}${it.unit}" }
+                                        .ifBlank { "暂无" }
+                                    Text("本期累计损耗：$lossText")
+                                    Text("本期最后一次盘点剩余：$remainingText")
+                                    if (detail.inventory.isNotEmpty()) {
+                                        HorizontalDivider()
+                                        detail.inventory.take(60).forEach { row ->
+                                            Row(Modifier.fillMaxWidth()) {
+                                                Text(row.date, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                                                Text(
+                                                    "损耗 ${fmt(row.lossQuantity)}${row.unit} · 剩余 ${fmt(row.remainingQuantity)}${row.unit}",
+                                                    style = MaterialTheme.typography.bodySmall
+                                                )
+                                            }
+                                        }
+                                        if (detail.inventory.size > 60) {
+                                            Text("库存记录仅显示最近60条，共 ${detail.inventory.size} 条", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        item {
+                            Text(
+                                "说明：采购次数按包含该商品的正式采购单计算；采购均价按数量加权。箱/件/筐等只有录入每件重量时才能折合为斤，未录规格的历史数量仍按原单位保留。零售价为每日主零售价，不等同于实际成交均价。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
                         }
                     }
                 }
@@ -22786,7 +23221,7 @@ private fun PurchaseDefaultNumberField(
                 .clip(RoundedCornerShape(8.dp))
                 .border(1.dp, Color(0xFFB8BDC5), RoundedCornerShape(8.dp))
                 .background(Color.White)
-                .padding(horizontal = 8.dp),
+                .padding(horizontal = 4.dp),
             contentAlignment = Alignment.CenterStart
         ) {
             BasicTextField(

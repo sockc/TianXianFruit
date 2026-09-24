@@ -366,6 +366,79 @@ data class PriceHistoryRecord(
     val storeName: String
 )
 
+// V1.4.7.57 商品历史：所有统计均直接来自采购、零售价和库存正式表，
+// 不复制第二份业务事实，避免历史修改后统计失真。
+data class ProductHistoryQuantitySummary(
+    val unit: String,
+    val quantity: Double
+)
+
+data class ProductHistoryUnitSummary(
+    val unit: String,
+    val purchaseCount: Int,
+    val quantity: Double,
+    val totalCost: Double,
+    val weightedAverageUnitPrice: Double?,
+    val minUnitPrice: Double?,
+    val maxUnitPrice: Double?,
+    val latestUnitPrice: Double?,
+    val latestUnitWeightJin: Double?,
+    val estimatedWeightJin: Double
+)
+
+data class ProductHistorySummary(
+    val fruitId: Long,
+    val fruitName: String,
+    val purchaseCount: Int,
+    val purchaseDayCount: Int,
+    val totalPurchaseAmount: Double,
+    val totalKnownWeightJin: Double,
+    val unitSummaries: List<ProductHistoryUnitSummary>,
+    val latestPurchaseDate: String,
+    val latestPurchaseUnit: String,
+    val latestPurchaseUnitPrice: Double?,
+    val retailDayCount: Int,
+    val latestRetailDate: String,
+    val latestRetailPricePerJin: Double?,
+    val minRetailPricePerJin: Double?,
+    val maxRetailPricePerJin: Double?,
+    val lossByUnit: List<ProductHistoryQuantitySummary>,
+    val latestRemainingByUnit: List<ProductHistoryQuantitySummary>
+)
+
+data class ProductHistoryPurchaseEntry(
+    val itemId: Long,
+    val date: String,
+    val orderId: Long,
+    val buyerName: String,
+    val storeName: String,
+    val unit: String,
+    val quantity: Double,
+    val totalCost: Double,
+    val unitPrice: Double?,
+    val unitWeightJin: Double?,
+    val estimatedWeightJin: Double?
+)
+
+data class ProductHistoryRetailEntry(
+    val date: String,
+    val pricePerJin: Double
+)
+
+data class ProductHistoryInventoryEntry(
+    val date: String,
+    val unit: String,
+    val lossQuantity: Double,
+    val remainingQuantity: Double
+)
+
+data class ProductHistoryDetail(
+    val summary: ProductHistorySummary,
+    val purchases: List<ProductHistoryPurchaseEntry>,
+    val retailPrices: List<ProductHistoryRetailEntry>,
+    val inventory: List<ProductHistoryInventoryEntry>
+)
+
 data class ReceiptSplitRecord(
     val partnerId: Long,
     val partnerName: String,
@@ -6894,6 +6967,7 @@ class AppDatabase(
         buyer: PartnerOption,
         actualQuantity: Double,
         actualAmount: Double,
+        actualUnitWeightJin: Double? = null,
         recorderUsername: String = "",
         recorderDisplayName: String = ""
     ): CollaborationCompleteResult {
@@ -6979,7 +7053,7 @@ class AppDatabase(
             val unit =
                 row[3] as String
             val unitWeightJin =
-                row[4] as Double
+                (actualUnitWeightJin ?: (row[4] as Double)).coerceAtLeast(0.0)
             val status =
                 row[5] as Int
             val planItemSyncId =
@@ -7366,6 +7440,10 @@ class AppDatabase(
                         1
                     )
                     put(
+                        "unit_weight_jin",
+                        unitWeightJin
+                    )
+                    put(
                         "sync_status",
                         2
                     )
@@ -7580,6 +7658,7 @@ class AppDatabase(
         buyer: PartnerOption,
         actualQuantity: Double,
         actualAmount: Double,
+        actualUnitWeightJin: Double = 0.0,
         recorderUsername: String = "",
         recorderDisplayName: String = ""
     ): CollaborationCompleteResult {
@@ -7599,7 +7678,7 @@ class AppDatabase(
 
         val row =
             readableDatabase.rawQuery(
-                "SELECT ppi.plan_id,ppi.fruit_id,ppi.fruit_name,ppi.unit," +
+                "SELECT ppi.plan_id,ppi.fruit_id,ppi.fruit_name,ppi.unit,ppi.unit_weight_jin," +
                     "ppi.status,ppi.sync_id," +
                     "COALESCE(pc.purchase_order_sync_id,'') AS order_sync_id " +
                     "FROM purchase_plan_item ppi " +
@@ -7614,6 +7693,7 @@ class AppDatabase(
                         c.long("fruit_id"),
                         c.str("fruit_name"),
                         c.str("unit"),
+                        c.dbl("unit_weight_jin"),
                         c.int("status"),
                         c.str("sync_id"),
                         c.str("order_sync_id")
@@ -7623,12 +7703,12 @@ class AppDatabase(
                 }
             } ?: return CollaborationCompleteResult(false, "协作采购记录不存在")
 
-        if ((row[4] as Int) != 1) {
+        if ((row[5] as Int) != 1) {
             return CollaborationCompleteResult(false, "只有已完成采购才能修改")
         }
 
         val fruitId = row[1] as Long
-        val orderSyncId = row[6] as String
+        val orderSyncId = row[7] as String
         if (orderSyncId.isBlank()) {
             return CollaborationCompleteResult(false, "未找到对应正式采购记录")
         }
@@ -7685,6 +7765,7 @@ class AppDatabase(
                     put("quantity", actualQuantity)
                     put("total_cost", roundMoney(actualAmount))
                     put("unit_price", roundMoney(unitPrice))
+                    put("unit_weight_jin", actualUnitWeightJin.coerceAtLeast(0.0))
                     put("sync_status", 2)
                     put("updated_at", now)
                 },
@@ -7715,6 +7796,17 @@ class AppDatabase(
             )
 
             db.update(
+                "purchase_plan_item",
+                ContentValues().apply {
+                    put("unit_weight_jin", actualUnitWeightJin.coerceAtLeast(0.0))
+                    put("sync_status", 2)
+                    put("updated_at", now)
+                },
+                "id=?",
+                arrayOf(itemId.toString())
+            )
+
+            db.update(
                 "purchase_collaboration",
                 ContentValues().apply {
                     put("actual_quantity", actualQuantity)
@@ -7731,7 +7823,7 @@ class AppDatabase(
                     put("updated_at", now)
                 },
                 "plan_item_sync_id=? AND deleted=0",
-                arrayOf(row[5] as String)
+                arrayOf(row[6] as String)
             )
 
             db.setTransactionSuccessful()
@@ -9429,6 +9521,399 @@ class AppDatabase(
         ).use { c -> if (c.moveToFirst()) c.dbl("unit_weight_jin").takeIf { it > 0.000001 } else null }
     }
 
+    fun getProductHistorySummaries(
+        startDate: String? = null,
+        endDate: String? = null
+    ): List<ProductHistorySummary> {
+        data class UnitAcc(
+            val unit: String,
+            var purchaseCount: Int = 0,
+            var quantity: Double = 0.0,
+            var totalCost: Double = 0.0,
+            var weightedPrice: Double? = null,
+            var minPrice: Double? = null,
+            var maxPrice: Double? = null,
+            var latestPrice: Double? = null,
+            var latestWeight: Double? = null,
+            var estimatedWeight: Double = 0.0
+        )
+
+        data class ProductAcc(
+            val fruitId: Long,
+            var fruitName: String,
+            var purchaseCount: Int = 0,
+            var purchaseDayCount: Int = 0,
+            var totalPurchaseAmount: Double = 0.0,
+            var totalKnownWeightJin: Double = 0.0,
+            val units: LinkedHashMap<String, UnitAcc> = linkedMapOf(),
+            var latestPurchaseDate: String = "",
+            var latestPurchaseUnit: String = "",
+            var latestPurchasePrice: Double? = null,
+            var retailDayCount: Int = 0,
+            var latestRetailDate: String = "",
+            var latestRetailPrice: Double? = null,
+            var minRetailPrice: Double? = null,
+            var maxRetailPrice: Double? = null,
+            val lossByUnit: LinkedHashMap<String, Double> = linkedMapOf(),
+            val latestRemainingByUnit: LinkedHashMap<String, Double> = linkedMapOf()
+        )
+
+        val products = linkedMapOf<Long, ProductAcc>()
+        fun product(id: Long, name: String): ProductAcc {
+            val row = products.getOrPut(id) { ProductAcc(id, name.ifBlank { "商品$id" }) }
+            if (name.isNotBlank()) row.fruitName = name
+            return row
+        }
+
+        fun rangeSql(column: String): Pair<String, Array<String>> {
+            val clauses = mutableListOf<String>()
+            val args = mutableListOf<String>()
+            startDate?.let { clauses += "$column>=?"; args += it }
+            endDate?.let { clauses += "$column<=?"; args += it }
+            return (if (clauses.isEmpty()) "" else " AND " + clauses.joinToString(" AND ")) to args.toTypedArray()
+        }
+
+        val (purchaseRange, purchaseArgs) = rangeSql("po.date")
+        val priceExpr = "CASE WHEN pi.unit_price>0.000001 THEN pi.unit_price WHEN pi.quantity>0.000001 AND pi.total_cost>0.000001 THEN pi.total_cost/pi.quantity ELSE NULL END"
+        val costExpr = "CASE WHEN pi.total_cost>0.000001 THEN pi.total_cost WHEN pi.quantity>0.000001 AND pi.unit_price>0.000001 THEN pi.quantity*pi.unit_price ELSE 0 END"
+        readableDatabase.rawQuery(
+            """
+            SELECT pi.fruit_id,
+                   MAX(pi.fruit_name) AS fruit_name,
+                   pi.unit,
+                   COUNT(DISTINCT pi.order_id) AS purchase_count,
+                   COUNT(DISTINCT po.date) AS purchase_day_count,
+                   COALESCE(SUM(pi.quantity),0) AS quantity,
+                   COALESCE(SUM($costExpr),0) AS total_cost,
+                   CASE
+                       WHEN SUM(CASE WHEN ($priceExpr) IS NOT NULL THEN pi.quantity ELSE 0 END)>0.000001
+                       THEN SUM(CASE WHEN ($priceExpr) IS NOT NULL THEN ($priceExpr)*pi.quantity ELSE 0 END)
+                            / SUM(CASE WHEN ($priceExpr) IS NOT NULL THEN pi.quantity ELSE 0 END)
+                       ELSE NULL
+                   END AS weighted_price,
+                   MIN($priceExpr) AS min_price,
+                   MAX($priceExpr) AS max_price,
+                   COALESCE(SUM(
+                       CASE
+                           WHEN pi.unit='斤' THEN pi.quantity
+                           WHEN pi.unit_weight_jin>0.000001 THEN pi.quantity*pi.unit_weight_jin
+                           ELSE 0
+                       END
+                   ),0) AS known_weight
+            FROM purchase_item pi
+            JOIN purchase_order po ON po.id=pi.order_id
+            WHERE pi.deleted=0
+              AND po.deleted=0
+              AND TRIM(pi.fruit_name)<>'总价'
+              $purchaseRange
+            GROUP BY pi.fruit_id,pi.unit
+            ORDER BY MAX(po.date) DESC,pi.fruit_id
+            """.trimIndent(),
+            purchaseArgs
+        ).use { c ->
+            while (c.moveToNext()) {
+                val fruitId = c.long("fruit_id")
+                val fruitName = c.str("fruit_name")
+                val unit = c.str("unit").ifBlank { "件" }
+                val acc = product(fruitId, fruitName)
+                val unitAcc = UnitAcc(
+                    unit = unit,
+                    purchaseCount = c.int("purchase_count"),
+                    quantity = c.dbl("quantity"),
+                    totalCost = c.dbl("total_cost"),
+                    weightedPrice = if (c.isNull(c.getColumnIndexOrThrow("weighted_price"))) null else c.dbl("weighted_price"),
+                    minPrice = if (c.isNull(c.getColumnIndexOrThrow("min_price"))) null else c.dbl("min_price"),
+                    maxPrice = if (c.isNull(c.getColumnIndexOrThrow("max_price"))) null else c.dbl("max_price"),
+                    estimatedWeight = c.dbl("known_weight")
+                )
+                acc.units[unit] = unitAcc
+                acc.totalPurchaseAmount += unitAcc.totalCost
+                acc.totalKnownWeightJin += unitAcc.estimatedWeight
+            }
+        }
+
+        // 商品总采购次数/采购日不能简单把各单位相加，否则同一采购单多单位会重复。
+        readableDatabase.rawQuery(
+            """
+            SELECT pi.fruit_id,MAX(pi.fruit_name) AS fruit_name,
+                   COUNT(DISTINCT pi.order_id) AS purchase_count,
+                   COUNT(DISTINCT po.date) AS purchase_day_count
+            FROM purchase_item pi
+            JOIN purchase_order po ON po.id=pi.order_id
+            WHERE pi.deleted=0 AND po.deleted=0 AND TRIM(pi.fruit_name)<>'总价'
+              $purchaseRange
+            GROUP BY pi.fruit_id
+            """.trimIndent(),
+            purchaseArgs
+        ).use { c ->
+            while (c.moveToNext()) {
+                val acc = product(c.long("fruit_id"), c.str("fruit_name"))
+                acc.purchaseCount = c.int("purchase_count")
+                acc.purchaseDayCount = c.int("purchase_day_count")
+            }
+        }
+
+        // 最近一次采购价与规格重量，按日期/创建时间/明细 id 倒序，只取每商品/单位第一条。
+        val latestSeen = mutableSetOf<Pair<Long, String>>()
+        val latestProductSeen = mutableSetOf<Long>()
+        readableDatabase.rawQuery(
+            """
+            SELECT pi.fruit_id,pi.fruit_name,pi.unit,po.date,pi.unit_weight_jin,
+                   $priceExpr AS effective_price
+            FROM purchase_item pi
+            JOIN purchase_order po ON po.id=pi.order_id
+            WHERE pi.deleted=0 AND po.deleted=0 AND TRIM(pi.fruit_name)<>'总价'
+              $purchaseRange
+            ORDER BY po.date DESC,po.created_at DESC,pi.id DESC
+            """.trimIndent(),
+            purchaseArgs
+        ).use { c ->
+            while (c.moveToNext()) {
+                val fruitId = c.long("fruit_id")
+                val unit = c.str("unit").ifBlank { "件" }
+                val acc = product(fruitId, c.str("fruit_name"))
+                val price = if (c.isNull(c.getColumnIndexOrThrow("effective_price"))) null else c.dbl("effective_price")
+                val weight = c.dbl("unit_weight_jin").takeIf { it > 0.000001 }
+                val key = fruitId to unit
+                if (latestSeen.add(key)) {
+                    acc.units[unit]?.let {
+                        it.latestPrice = price
+                        it.latestWeight = weight
+                    }
+                }
+                if (latestProductSeen.add(fruitId)) {
+                    acc.latestPurchaseDate = c.str("date")
+                    acc.latestPurchaseUnit = unit
+                    acc.latestPurchasePrice = price
+                }
+            }
+        }
+
+        val (retailRange, retailArgs) = rangeSql("date")
+        readableDatabase.rawQuery(
+            """
+            SELECT fruit_id,MAX(fruit_name) AS fruit_name,
+                   COUNT(DISTINCT date) AS retail_days,
+                   MIN(CASE WHEN price_per_jin>0.000001 THEN price_per_jin END) AS min_price,
+                   MAX(CASE WHEN price_per_jin>0.000001 THEN price_per_jin END) AS max_price
+            FROM daily_retail_price
+            WHERE deleted=0 AND price_per_jin>0.000001
+              $retailRange
+            GROUP BY fruit_id
+            """.trimIndent(),
+            retailArgs
+        ).use { c ->
+            while (c.moveToNext()) {
+                val acc = product(c.long("fruit_id"), c.str("fruit_name"))
+                acc.retailDayCount = c.int("retail_days")
+                acc.minRetailPrice = if (c.isNull(c.getColumnIndexOrThrow("min_price"))) null else c.dbl("min_price")
+                acc.maxRetailPrice = if (c.isNull(c.getColumnIndexOrThrow("max_price"))) null else c.dbl("max_price")
+            }
+        }
+
+        val retailLatestSeen = mutableSetOf<Long>()
+        readableDatabase.rawQuery(
+            """
+            SELECT fruit_id,fruit_name,date,price_per_jin
+            FROM daily_retail_price
+            WHERE deleted=0 AND price_per_jin>0.000001
+              $retailRange
+            ORDER BY date DESC,id DESC
+            """.trimIndent(),
+            retailArgs
+        ).use { c ->
+            while (c.moveToNext()) {
+                val fruitId = c.long("fruit_id")
+                if (!retailLatestSeen.add(fruitId)) continue
+                val acc = product(fruitId, c.str("fruit_name"))
+                acc.latestRetailDate = c.str("date")
+                acc.latestRetailPrice = c.dbl("price_per_jin")
+            }
+        }
+
+        val (inventoryRange, inventoryArgs) = rangeSql("date")
+        readableDatabase.rawQuery(
+            """
+            SELECT fruit_id,MAX(fruit_name) AS fruit_name,unit,
+                   COALESCE(SUM(loss_quantity),0) AS loss_quantity
+            FROM inventory_snapshot
+            WHERE deleted=0 $inventoryRange
+            GROUP BY fruit_id,unit
+            """.trimIndent(),
+            inventoryArgs
+        ).use { c ->
+            while (c.moveToNext()) {
+                val acc = product(c.long("fruit_id"), c.str("fruit_name"))
+                val unit = c.str("unit").ifBlank { "件" }
+                acc.lossByUnit[unit] = c.dbl("loss_quantity").coerceAtLeast(0.0)
+            }
+        }
+
+        val remainingSeen = mutableSetOf<Pair<Long, String>>()
+        readableDatabase.rawQuery(
+            """
+            SELECT fruit_id,fruit_name,unit,date,remaining_quantity
+            FROM inventory_snapshot
+            WHERE deleted=0 $inventoryRange
+            ORDER BY date DESC,id DESC
+            """.trimIndent(),
+            inventoryArgs
+        ).use { c ->
+            while (c.moveToNext()) {
+                val fruitId = c.long("fruit_id")
+                val unit = c.str("unit").ifBlank { "件" }
+                val key = fruitId to unit
+                if (!remainingSeen.add(key)) continue
+                val acc = product(fruitId, c.str("fruit_name"))
+                acc.latestRemainingByUnit[unit] = c.dbl("remaining_quantity").coerceAtLeast(0.0)
+            }
+        }
+
+        return products.values
+            .map { acc ->
+                ProductHistorySummary(
+                    fruitId = acc.fruitId,
+                    fruitName = acc.fruitName,
+                    purchaseCount = acc.purchaseCount,
+                    purchaseDayCount = acc.purchaseDayCount,
+                    totalPurchaseAmount = roundMoney(acc.totalPurchaseAmount),
+                    totalKnownWeightJin = roundMoney(acc.totalKnownWeightJin),
+                    unitSummaries = acc.units.values.map { u ->
+                        ProductHistoryUnitSummary(
+                            unit = u.unit,
+                            purchaseCount = u.purchaseCount,
+                            quantity = roundMoney(u.quantity),
+                            totalCost = roundMoney(u.totalCost),
+                            weightedAverageUnitPrice = u.weightedPrice?.let(::roundMoney),
+                            minUnitPrice = u.minPrice?.let(::roundMoney),
+                            maxUnitPrice = u.maxPrice?.let(::roundMoney),
+                            latestUnitPrice = u.latestPrice?.let(::roundMoney),
+                            latestUnitWeightJin = u.latestWeight?.let(::roundMoney),
+                            estimatedWeightJin = roundMoney(u.estimatedWeight)
+                        )
+                    }.sortedBy { it.unit },
+                    latestPurchaseDate = acc.latestPurchaseDate,
+                    latestPurchaseUnit = acc.latestPurchaseUnit,
+                    latestPurchaseUnitPrice = acc.latestPurchasePrice?.let(::roundMoney),
+                    retailDayCount = acc.retailDayCount,
+                    latestRetailDate = acc.latestRetailDate,
+                    latestRetailPricePerJin = acc.latestRetailPrice?.let(::roundMoney),
+                    minRetailPricePerJin = acc.minRetailPrice?.let(::roundMoney),
+                    maxRetailPricePerJin = acc.maxRetailPrice?.let(::roundMoney),
+                    lossByUnit = acc.lossByUnit.map { ProductHistoryQuantitySummary(it.key, roundMoney(it.value)) },
+                    latestRemainingByUnit = acc.latestRemainingByUnit.map { ProductHistoryQuantitySummary(it.key, roundMoney(it.value)) }
+                )
+            }
+            .filter { it.purchaseCount > 0 || it.retailDayCount > 0 || it.lossByUnit.any { q -> q.quantity > 0.000001 } || it.latestRemainingByUnit.isNotEmpty() }
+            .sortedWith(compareByDescending<ProductHistorySummary> { it.latestPurchaseDate }.thenBy { it.fruitName })
+    }
+
+    fun getProductHistoryDetail(
+        fruitId: Long,
+        startDate: String? = null,
+        endDate: String? = null
+    ): ProductHistoryDetail? {
+        val summary = getProductHistorySummaries(startDate, endDate).firstOrNull { it.fruitId == fruitId } ?: return null
+
+        fun rangeSql(column: String): Pair<String, Array<String>> {
+            val clauses = mutableListOf<String>()
+            val args = mutableListOf<String>()
+            startDate?.let { clauses += "$column>=?"; args += it }
+            endDate?.let { clauses += "$column<=?"; args += it }
+            return (if (clauses.isEmpty()) "" else " AND " + clauses.joinToString(" AND ")) to args.toTypedArray()
+        }
+
+        val (purchaseRange, purchaseRangeArgs) = rangeSql("po.date")
+        val priceExpr = "CASE WHEN pi.unit_price>0.000001 THEN pi.unit_price WHEN pi.quantity>0.000001 AND pi.total_cost>0.000001 THEN pi.total_cost/pi.quantity ELSE NULL END"
+        val purchaseArgs = arrayOf(fruitId.toString(), *purchaseRangeArgs)
+        val purchases = readableDatabase.rawQuery(
+            """
+            SELECT pi.id AS item_id,po.date,po.id AS order_id,po.buyer_name,po.store_name,
+                   pi.unit,pi.quantity,pi.total_cost,pi.unit_weight_jin,
+                   $priceExpr AS effective_price
+            FROM purchase_item pi
+            JOIN purchase_order po ON po.id=pi.order_id
+            WHERE pi.fruit_id=? AND pi.deleted=0 AND po.deleted=0
+              AND TRIM(pi.fruit_name)<>'总价'
+              $purchaseRange
+            ORDER BY po.date DESC,po.created_at DESC,pi.id DESC
+            """.trimIndent(),
+            purchaseArgs
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    val unit = c.str("unit").ifBlank { "件" }
+                    val quantity = c.dbl("quantity").coerceAtLeast(0.0)
+                    val unitWeight = c.dbl("unit_weight_jin").takeIf { it > 0.000001 }
+                    val estimatedWeight = when {
+                        unit == "斤" -> quantity
+                        unitWeight != null -> quantity * unitWeight
+                        else -> null
+                    }
+                    add(
+                        ProductHistoryPurchaseEntry(
+                            itemId = c.long("item_id"),
+                            date = c.str("date"),
+                            orderId = c.long("order_id"),
+                            buyerName = c.str("buyer_name"),
+                            storeName = c.str("store_name"),
+                            unit = unit,
+                            quantity = roundMoney(quantity),
+                            totalCost = roundMoney(c.dbl("total_cost").coerceAtLeast(0.0)),
+                            unitPrice = if (c.isNull(c.getColumnIndexOrThrow("effective_price"))) null else roundMoney(c.dbl("effective_price")),
+                            unitWeightJin = unitWeight?.let(::roundMoney),
+                            estimatedWeightJin = estimatedWeight?.let(::roundMoney)
+                        )
+                    )
+                }
+            }
+        }
+
+        val (retailRange, retailRangeArgs) = rangeSql("date")
+        val retailArgs = arrayOf(fruitId.toString(), *retailRangeArgs)
+        val retail = readableDatabase.rawQuery(
+            """
+            SELECT date,price_per_jin
+            FROM daily_retail_price
+            WHERE fruit_id=? AND deleted=0 AND price_per_jin>0.000001
+              $retailRange
+            ORDER BY date DESC,id DESC
+            """.trimIndent(),
+            retailArgs
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) add(ProductHistoryRetailEntry(c.str("date"), roundMoney(c.dbl("price_per_jin"))))
+            }
+        }
+
+        val (inventoryRange, inventoryRangeArgs) = rangeSql("date")
+        val inventoryArgs = arrayOf(fruitId.toString(), *inventoryRangeArgs)
+        val inventory = readableDatabase.rawQuery(
+            """
+            SELECT date,unit,loss_quantity,remaining_quantity
+            FROM inventory_snapshot
+            WHERE fruit_id=? AND deleted=0 $inventoryRange
+            ORDER BY date DESC,id DESC
+            """.trimIndent(),
+            inventoryArgs
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    add(
+                        ProductHistoryInventoryEntry(
+                            date = c.str("date"),
+                            unit = c.str("unit").ifBlank { "件" },
+                            lossQuantity = roundMoney(c.dbl("loss_quantity").coerceAtLeast(0.0)),
+                            remainingQuantity = roundMoney(c.dbl("remaining_quantity").coerceAtLeast(0.0))
+                        )
+                    )
+                }
+            }
+        }
+
+        return ProductHistoryDetail(summary, purchases, retail, inventory)
+    }
+
     fun getBusinessWeatherHistory(date: String, storeId: Long): BusinessWeatherHistoryRecord? =
         readableDatabase.rawQuery(
             "SELECT * FROM business_weather_history WHERE date=? AND store_id=? AND deleted=0 ORDER BY updated_at DESC LIMIT 1",
@@ -10079,28 +10564,32 @@ class AppDatabase(
                     inventoryItems.all { it.saved } &&
                     analysisItems.none { it.quantityAnomaly }
             }
-        val costComplete = analysisItems.all { it.costAvailable }
+        val costRelevantItems =
+            analysisItems.filter {
+                it.availableQuantity > 0.000001 ||
+                    it.lossQuantity > 0.000001 ||
+                    it.remainingQuantity > 0.000001 ||
+                    it.consumedQuantity > 0.000001
+            }
+        val costComplete = costRelevantItems.all { it.costAvailable }
         val expectedPreviousDate = parsedDate.minusDays(1).toString()
         val previousDayAligned =
             analysisItems
                 .filter { it.openingQuantity > 0.000001 }
                 .all { it.previousSnapshotDate == expectedPreviousDate }
 
+        // V1.4.7.57：缺少个别商品成本时，已知商品继续计算，不再整页全部变成“—”。
+        // costComplete=false 时这些总额属于“已知成本口径”，UI 必须明确提示，避免误当成完整利润。
         val openingInventoryCost =
-            if (costComplete) roundMoney(analysisItems.sumOf { it.openingCost ?: 0.0 }) else null
+            roundMoney(analysisItems.sumOf { it.openingCost ?: 0.0 })
         val closingInventoryCost =
-            if (costComplete) roundMoney(analysisItems.sumOf { it.closingCost ?: 0.0 }) else null
+            roundMoney(analysisItems.sumOf { it.closingCost ?: 0.0 })
         val consumedCost =
-            if (costComplete) roundMoney(analysisItems.sumOf { it.consumedCost ?: 0.0 }) else null
+            roundMoney(analysisItems.sumOf { it.consumedCost ?: 0.0 })
         val lossCost =
-            if (costComplete) roundMoney(analysisItems.sumOf { it.lossCost ?: 0.0 }) else null
-        val grossProfit = consumedCost?.let { roundMoney(revenue - it) }
-        val operatingProfit =
-            if (grossProfit != null && lossCost != null) {
-                roundMoney(grossProfit - lossCost - expense)
-            } else {
-                null
-            }
+            roundMoney(analysisItems.sumOf { it.lossCost ?: 0.0 })
+        val grossProfit = roundMoney(revenue - consumedCost)
+        val operatingProfit = roundMoney(grossProfit - lossCost - expense)
         val grossMargin =
             if (grossProfit != null && revenue > 0.000001) grossProfit / revenue else null
         val operatingMargin =
