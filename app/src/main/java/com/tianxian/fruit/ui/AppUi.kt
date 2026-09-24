@@ -49,6 +49,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -84,6 +85,7 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.roundToInt
 
 private val BrandGreen = Color(0xFF13A868)
 private val SoftGreen = Color(0xFFE9F8F0)
@@ -2013,71 +2015,76 @@ private fun HomeBusinessAdviceCard(
         )
     }
 
+    val openDetail = state.score
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 2.dp),
+            .padding(horizontal = 12.dp, vertical = 1.dp)
+            .clickable(enabled = openDetail != null) {
+                openDetail?.let { onOpenDetail(dateString, it.storeId) }
+            },
         colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEE)),
-        shape = RoundedCornerShape(18.dp)
+        shape = RoundedCornerShape(14.dp)
     ) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp)
+                .padding(horizontal = 12.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("今日经营建议", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                Text("今日经营建议", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                state.score?.storeName?.takeIf { it.isNotBlank() }?.let { name ->
+                    Text(" · $name", style = MaterialTheme.typography.labelSmall, color = Color.Gray, maxLines = 1)
+                }
                 Spacer(Modifier.weight(1f))
-                state.score?.let {
-                    Text(it.storeName, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                if (state.loading && state.score != null) {
+                    CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.6.dp)
+                    Spacer(Modifier.width(5.dp))
+                }
+                state.score?.let { score ->
+                    Text(
+                        "${score.totalScore}%  ›",
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = BrandGreen
+                    )
                 }
             }
 
             when {
                 state.score != null -> {
                     val score = state.score!!
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "${score.totalScore}%",
-                            fontSize = 27.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = BrandGreen
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            score.weatherSummary.ifBlank { "天气条件待更新" },
-                            modifier = Modifier.weight(1f),
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 2
-                        )
-                    }
+                    val compact = listOf(
+                        score.weatherSummary.takeIf { it.isNotBlank() },
+                        score.historySummary.takeIf { it.isNotBlank() },
+                        score.trendSummary.takeIf { it.contains("偏弱") || it.contains("偏强") }
+                    ).filterNotNull().distinct().joinToString(" · ")
                     Text(
-                        score.historySummary.ifBlank { "历史同期数据正在积累" },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.DarkGray
+                        compact.ifBlank { "正在积累同位置历史数据" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.DarkGray,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (state.loading) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                strokeWidth = 2.dp
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text("正在更新", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                        }
-                        Spacer(Modifier.weight(1f))
-                        TextButton(onClick = { onOpenDetail(dateString, score.storeId) }) {
-                            Text("查看详细分析 ›")
-                        }
-                    }
                 }
                 state.loading -> {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                    Text("正在生成今日经营建议…", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    Text(
+                        "正在根据当前位置、天气和历史营业数据分析…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
                 else -> {
-                    Text(state.error.ifBlank { "经营建议暂不可用" }, color = Color.Gray)
+                    Text(
+                        state.error.ifBlank { "经营建议暂不可用" },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         }
@@ -2117,6 +2124,25 @@ private fun businessReasonList(detailsJson: String, key: String): List<String> =
             }
         }
     }.getOrDefault(emptyList())
+
+private data class BusinessScoreModelUi(
+    val version: String = "V1",
+    val evidenceStrength: Double = 0.0,
+    val calibrationCount: Int = 0,
+    val calibrationAdjustment: Double = 0.0
+)
+
+private fun businessScoreModelUi(detailsJson: String): BusinessScoreModelUi =
+    runCatching {
+        val root = JSONObject(detailsJson.ifBlank { "{}" })
+        val calibration = root.optJSONObject("calibration")
+        BusinessScoreModelUi(
+            version = root.optString("score_version", "V1"),
+            evidenceStrength = root.optDouble("evidence_strength", 0.0),
+            calibrationCount = calibration?.optInt("sample_count", 0) ?: 0,
+            calibrationAdjustment = calibration?.optDouble("adjustment_points", 0.0) ?: 0.0
+        )
+    }.getOrDefault(BusinessScoreModelUi())
 
 private data class BusinessScoreSnapshotUi(
     val at: Long,
@@ -2251,13 +2277,27 @@ private fun BusinessAdviceDetailContent(
         }
 
         state.score?.let { score ->
+            val modelMeta = remember(score.detailsJson) { businessScoreModelUi(score.detailsJson) }
+            val isV2 = modelMeta.version.startsWith("V2")
             Card(shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("指数构成", fontWeight = FontWeight.Bold, fontSize = 17.sp)
-                    BusinessScoreBreakdownRow("天气指数", score.weatherScore, 35, score.weatherSummary)
-                    BusinessScoreBreakdownRow("历史同期", score.historyScore, 30, score.historySummary)
-                    BusinessScoreBreakdownRow("日期环境", score.calendarScore, 20, score.calendarSummary)
-                    BusinessScoreBreakdownRow("近期趋势", score.trendScore, 15, score.trendSummary)
+                    Text(if (isV2) "参考维度" else "指数构成", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    if (isV2) {
+                        BusinessScoreBreakdownRow("天气条件", score.weatherScore, 100, score.weatherSummary)
+                        BusinessScoreBreakdownRow("相似历史", score.historyScore, 100, score.historySummary)
+                        BusinessScoreBreakdownRow("日期环境", score.calendarScore, 100, score.calendarSummary)
+                        BusinessScoreBreakdownRow("近期趋势", score.trendScore, 100, score.trendSummary)
+                        Text(
+                            "V2 以同位置相似历史日为核心，四个维度采用动态证据权重；样本不足时总分自动向中性 70 回归，不再把固定权重直接相加。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.Gray
+                        )
+                    } else {
+                        BusinessScoreBreakdownRow("天气指数", score.weatherScore, 35, score.weatherSummary)
+                        BusinessScoreBreakdownRow("历史同期", score.historyScore, 30, score.historySummary)
+                        BusinessScoreBreakdownRow("日期环境", score.calendarScore, 20, score.calendarSummary)
+                        BusinessScoreBreakdownRow("近期趋势", score.trendScore, 15, score.trendSummary)
+                    }
                     Text(
                         "库存与备货不计入经营指数，避免把外部经营环境和自身备货状态混在一起。",
                         style = MaterialTheme.typography.labelSmall,
@@ -2280,6 +2320,35 @@ private fun BusinessAdviceDetailContent(
                             Text(money(score.similarRevenue), fontWeight = FontWeight.Bold)
                             Text("客流 ${String.format(Locale.CHINA, "%.0f", score.similarCustomers)} · 客单 ${money(score.similarTicket)}", style = MaterialTheme.typography.bodySmall)
                         }
+                    }
+                }
+            }
+
+            if (isV2) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F8FA)),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("样本与自动校准", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                        Text(
+                            "有效证据强度 ${(modelMeta.evidenceStrength * 100).roundToInt()}% · 同位置相似样本 ${score.sampleCount} 个",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            if (modelMeta.calibrationCount >= 6) {
+                                "已使用 ${modelMeta.calibrationCount} 个历史经营结果校准，本次修正 ${if (modelMeta.calibrationAdjustment >= 0) "+" else ""}${String.format(Locale.CHINA, "%.1f", modelMeta.calibrationAdjustment)} 分"
+                            } else {
+                                "已有 ${modelMeta.calibrationCount} 个 V2 经营结果复盘；累计到 6 个后自动启用位置级校准"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.DarkGray
+                        )
+                        Text(
+                            "其它位置的数据只在本位置样本不足时作为资料提示，不进入本位置正式评分。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.Gray
+                        )
                     }
                 }
             }
@@ -2311,6 +2380,14 @@ private fun BusinessAdviceDetailContent(
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("经营结果复盘", fontWeight = FontWeight.Bold)
                         Text("实际营业额 ${money(score.actualRevenue)}")
+                        if (score.baselineRevenue > 0.0) {
+                            val revenueDelta = (score.actualRevenue / score.baselineRevenue - 1.0) * 100.0
+                            Text(
+                                "较该位置基准 ${if (revenueDelta >= 0) "+" else ""}${String.format(Locale.CHINA, "%.1f", revenueDelta)}%",
+                                color = if (revenueDelta >= 0) BrandGreen else MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
                         Text("实际客流 ${score.actualCustomers} · 实际客单 ${money(score.actualTicket)}")
                         Text("实际利润 ${money(score.actualProfit)}")
                         Text(
@@ -2383,7 +2460,7 @@ private fun BusinessAdviceDetailContent(
             }
 
             Text(
-                "经营指数表示当前营业环境的有利程度，不是营业额预测值，也不是预测准确率。",
+                "经营指数表示当前条件相对本位置历史基准的有利程度，不是营业额预测值，也不是预测准确率。",
                 style = MaterialTheme.typography.labelSmall,
                 color = Color.Gray,
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
@@ -4130,8 +4207,9 @@ private fun InventoryScreen(
         remainingInputs.clear()
         lossInputs.clear()
         latest.forEach { item ->
-            remainingInputs[itemKey(item)] = cleanNumber(item.remainingQuantity)
-            lossInputs[itemKey(item)] = cleanNumber(item.lossQuantity)
+            // 库存盘点的两个可编辑字段必须明确显示 0，而不是空白占位。
+            remainingInputs[itemKey(item)] = if (item.remainingQuantity == 0.0) "0" else fmt(item.remainingQuantity)
+            lossInputs[itemKey(item)] = if (item.lossQuantity == 0.0) "0" else fmt(item.lossQuantity)
         }
         message = ""
         isError = false
@@ -4220,15 +4298,11 @@ private fun InventoryScreen(
                 val key = itemKey(item)
                 val input = remainingInputs[key].orEmpty()
                 val lossInput = lossInputs[key].orEmpty()
-                val remaining = input.toDoubleOrNull()
-                val loss = lossInput.toDoubleOrNull()
+                // 空白也按默认 0 处理；界面正常情况下会直接显示 0。
+                val remaining = input.toDoubleOrNull() ?: 0.0
+                val loss = lossInput.toDoubleOrNull() ?: 0.0
                 val available = item.openingQuantity + item.purchasedQuantity
-                val sold =
-                    if (remaining != null && loss != null) {
-                        available - remaining - loss
-                    } else {
-                        null
-                    }
+                val sold = available - remaining - loss
 
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -4311,21 +4385,25 @@ private fun InventoryScreen(
                                 "${fmt(available)}${item.unit}",
                                 Modifier.weight(1f)
                             )
-                            CompactNumberField(
-                                "损耗",
-                                lossInput,
-                                { lossInputs[key] = it },
-                                Modifier.weight(1f)
+                            PurchaseDefaultNumberField(
+                                label = "损耗",
+                                value = lossInput,
+                                defaultValue = "0",
+                                stateKey = "inventory-loss-$date-$key",
+                                onValue = { lossInputs[key] = it },
+                                modifier = Modifier.weight(1f)
                             )
-                            CompactNumberField(
-                                "剩余库存",
-                                input,
-                                { remainingInputs[key] = it },
-                                Modifier.weight(1f)
+                            PurchaseDefaultNumberField(
+                                label = "剩余库存",
+                                value = input,
+                                defaultValue = "0",
+                                stateKey = "inventory-remaining-$date-$key",
+                                onValue = { remainingInputs[key] = it },
+                                modifier = Modifier.weight(1f)
                             )
                         }
 
-                        if (sold != null && sold < -0.000001) {
+                        if (sold < -0.000001) {
                             Text(
                                 "损耗＋剩余库存超过可售合计 ${fmt(-sold)}${item.unit}，请核对数据",
                                 style = MaterialTheme.typography.labelSmall,
@@ -4341,12 +4419,10 @@ private fun InventoryScreen(
                 Button(
                     onClick = {
                         val invalid = inventoryItems.firstOrNull { item ->
-                            val remaining = remainingInputs[itemKey(item)]?.toDoubleOrNull()
-                            val loss = lossInputs[itemKey(item)]?.toDoubleOrNull()
+                            val remaining = remainingInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0
+                            val loss = lossInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0
                             val available = item.openingQuantity + item.purchasedQuantity
-                            remaining == null ||
-                                remaining < 0 ||
-                                loss == null ||
+                            remaining < 0 ||
                                 loss < 0 ||
                                 remaining + loss > available + 0.000001
                         }
@@ -4362,8 +4438,8 @@ private fun InventoryScreen(
                                             fruitId = item.fruitId,
                                             fruitName = item.fruitName,
                                             unit = item.unit,
-                                            lossQuantity = lossInputs[itemKey(item)]!!.toDouble(),
-                                            remainingQuantity = remainingInputs[itemKey(item)]!!.toDouble()
+                                            lossQuantity = lossInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0,
+                                            remainingQuantity = remainingInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0
                                         )
                                     }
                                 )

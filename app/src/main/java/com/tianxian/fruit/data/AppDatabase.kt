@@ -9039,10 +9039,11 @@ class AppDatabase(
 
             val opening = (prior?.quantity ?: 0.0).coerceAtLeast(0.0)
             val purchasedQuantity = (purchase?.quantity ?: 0.0).coerceAtLeast(0.0)
-            val availableQuantity = opening + purchasedQuantity
+            // V1.4.7.56：未盘点时“剩余库存”默认 0。
+            // 不再默认成可售合计，避免每天都要手动清零；已保存历史值仍原样读取。
             val remaining =
                 saved?.quantity?.coerceAtLeast(0.0)
-                    ?: if (availableQuantity <= 0.000001) 0.0 else availableQuantity
+                    ?: 0.0
             val cost = getEffectiveUnitCost(key.fruitId, fruitName, key.unit, date)
             val retail = getDailyRetailPrice(date, key.fruitId, fruitName)
             val unitWeight = getLatestUnitWeightJin(key.fruitId, key.unit, date)
@@ -9499,6 +9500,23 @@ class AppDatabase(
             arrayOf(date, storeId.toString())
         ).use { c -> if (c.moveToFirst()) businessScoreFromCursor(c) else null }
 
+    fun getBusinessScoresBefore(
+        storeId: Long,
+        date: String,
+        limit: Int = 30
+    ): List<BusinessScoreRecord> {
+        if (storeId <= 0L || runCatching { LocalDate.parse(date) }.isFailure) return emptyList()
+        val safeLimit = limit.coerceIn(1, 180)
+        return readableDatabase.rawQuery(
+            "SELECT * FROM daily_business_score WHERE store_id=? AND date<? AND deleted=0 ORDER BY date DESC,updated_at DESC LIMIT $safeLimit",
+            arrayOf(storeId.toString(), date)
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) add(businessScoreFromCursor(c))
+            }
+        }
+    }
+
     fun saveBusinessScore(score: BusinessScoreRecord): BusinessScoreRecord? {
         val store = getStoreById(score.storeId) ?: return null
         val stableStoreSyncId = store.syncId.trim().ifBlank { score.storeSyncId.trim() }
@@ -9516,7 +9534,14 @@ class AppDatabase(
         val snapshots = runCatching {
             JSONArray(existing?.snapshotsJson?.ifBlank { "[]" } ?: "[]")
         }.getOrElse { JSONArray() }
+        val existingScoreVersion = runCatching {
+            JSONObject(existing?.detailsJson?.ifBlank { "{}" } ?: "{}").optString("score_version", "V1")
+        }.getOrDefault("V1")
+        val newScoreVersion = runCatching {
+            JSONObject(score.detailsJson.ifBlank { "{}" }).optString("score_version", "V1")
+        }.getOrDefault("V1")
         val materiallyChanged = existing == null ||
+            existingScoreVersion != newScoreVersion ||
             existing.totalScore != score.totalScore ||
             existing.weatherSummary != score.weatherSummary ||
             existing.historySummary != score.historySummary ||
