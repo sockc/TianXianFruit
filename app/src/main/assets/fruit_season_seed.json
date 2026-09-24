@@ -1,0 +1,1928 @@
+{
+  "version": 1,
+  "generated_at": "2026-09-25",
+  "source_note": "内置资料用于建立第一版水果季节库。上市期受具体产区、品种、设施栽培和当年气候影响，通常可能前后浮动2-4周；默认可信度为参考级（MEDIUM），支持后续人工校准。",
+  "fruits": [
+    {
+      "name": "巨峰葡萄",
+      "category": "葡萄",
+      "variety": "巨峰",
+      "aliases": [
+        "巨峰",
+        "巨峰葡萄"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "中",
+        "room_days": 2,
+        "cold_days": 10,
+        "damage_level": "中",
+        "transport_level": "中",
+        "common_unit": "箱",
+        "package_spec": "常见周转筐/纸箱",
+        "weight_range": "约10-30斤/箱",
+        "sweetness_note": "甜度较高",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "云南",
+          "region": "宾川/弥勒等",
+          "cultivation": "露天/常规",
+          "early_start": "05-20",
+          "peak_start": "06-15",
+          "high_start": "07-01",
+          "high_end": "07-31",
+          "peak_end": "08-20",
+          "late_end": "09-15",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        },
+        {
+          "country": "中国",
+          "province": "辽宁",
+          "region": "辽西/大连等",
+          "cultivation": "露天/常规",
+          "early_start": "07-20",
+          "peak_start": "08-10",
+          "high_start": "08-25",
+          "high_end": "09-30",
+          "peak_end": "10-15",
+          "late_end": "11-05",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "阳光玫瑰",
+      "category": "葡萄",
+      "variety": "阳光玫瑰",
+      "aliases": [
+        "阳光玫瑰",
+        "晴王"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "中",
+        "room_days": 2,
+        "cold_days": 14,
+        "damage_level": "中",
+        "transport_level": "中",
+        "common_unit": "箱",
+        "package_spec": "精品箱/周转筐",
+        "weight_range": "约8-20斤/箱",
+        "sweetness_note": "高糖、香味明显",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "云南",
+          "region": "宾川等",
+          "cultivation": "露天/常规",
+          "early_start": "05-10",
+          "peak_start": "06-01",
+          "high_start": "06-20",
+          "high_end": "08-10",
+          "peak_end": "09-10",
+          "late_end": "10-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        },
+        {
+          "country": "中国",
+          "province": "四川/陕西",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "07-10",
+          "peak_start": "08-01",
+          "high_start": "08-20",
+          "high_end": "09-30",
+          "peak_end": "10-20",
+          "late_end": "11-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "无子红提",
+      "category": "葡萄",
+      "variety": "红提",
+      "aliases": [
+        "红提",
+        "无籽红提",
+        "无子红提"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "中",
+        "room_days": 2,
+        "cold_days": 12,
+        "damage_level": "中",
+        "transport_level": "中",
+        "common_unit": "箱",
+        "package_spec": "纸箱/泡沫箱",
+        "weight_range": "约15-30斤/箱",
+        "sweetness_note": "甜脆",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "云南",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "04-20",
+          "peak_start": "05-20",
+          "high_start": "06-10",
+          "high_end": "07-20",
+          "peak_end": "08-20",
+          "late_end": "09-20",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        },
+        {
+          "country": "中国",
+          "province": "新疆",
+          "region": "吐鲁番等",
+          "cultivation": "露天/常规",
+          "early_start": "07-20",
+          "peak_start": "08-10",
+          "high_start": "08-25",
+          "high_end": "09-30",
+          "peak_end": "10-15",
+          "late_end": "11-01",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "夏黑葡萄",
+      "category": "葡萄",
+      "variety": "夏黑",
+      "aliases": [
+        "夏黑",
+        "夏黑葡萄"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "中",
+        "room_days": 2,
+        "cold_days": 10,
+        "damage_level": "中",
+        "transport_level": "中",
+        "common_unit": "箱",
+        "package_spec": "周转筐/纸箱",
+        "weight_range": "约10-25斤/箱",
+        "sweetness_note": "甜、无核",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "云南",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "04-20",
+          "peak_start": "05-20",
+          "high_start": "06-01",
+          "high_end": "07-10",
+          "peak_end": "08-01",
+          "late_end": "08-25",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        },
+        {
+          "country": "中国",
+          "province": "江苏/浙江",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "06-10",
+          "peak_start": "07-01",
+          "high_start": "07-15",
+          "high_end": "08-15",
+          "peak_end": "09-01",
+          "late_end": "09-20",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "砂糖橘",
+      "category": "柑橘",
+      "variety": "砂糖橘",
+      "aliases": [
+        "沙糖桔",
+        "砂糖桔",
+        "砂糖橘"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "中",
+        "room_days": 5,
+        "cold_days": 20,
+        "damage_level": "中",
+        "transport_level": "高",
+        "common_unit": "筐",
+        "package_spec": "筐/箱",
+        "weight_range": "约20-45斤/件",
+        "sweetness_note": "甜度高",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "广东",
+          "region": "四会/清远等",
+          "cultivation": "露天/常规",
+          "early_start": "10-20",
+          "peak_start": "11-15",
+          "high_start": "12-01",
+          "high_end": "01-31",
+          "peak_end": "02-20",
+          "late_end": "03-15",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "沃柑",
+      "category": "柑橘",
+      "variety": "沃柑",
+      "aliases": [
+        "沃柑"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "高",
+        "room_days": 7,
+        "cold_days": 30,
+        "damage_level": "低",
+        "transport_level": "高",
+        "common_unit": "筐",
+        "package_spec": "筐/箱",
+        "weight_range": "约25-50斤/件",
+        "sweetness_note": "甜酸平衡",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "广西",
+          "region": "武鸣等",
+          "cultivation": "露天/常规",
+          "early_start": "11-20",
+          "peak_start": "12-20",
+          "high_start": "01-10",
+          "high_end": "03-10",
+          "peak_end": "04-10",
+          "late_end": "05-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "脐橙",
+      "category": "柑橘",
+      "variety": "脐橙",
+      "aliases": [
+        "脐橙",
+        "赣南脐橙"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "高",
+        "room_days": 7,
+        "cold_days": 40,
+        "damage_level": "低",
+        "transport_level": "高",
+        "common_unit": "箱",
+        "package_spec": "纸箱",
+        "weight_range": "约20-40斤/箱",
+        "sweetness_note": "甜酸适中",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "江西",
+          "region": "赣南",
+          "cultivation": "露天/常规",
+          "early_start": "10-20",
+          "peak_start": "11-10",
+          "high_start": "11-20",
+          "high_end": "01-20",
+          "peak_end": "02-10",
+          "late_end": "03-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "柚子",
+      "category": "柑橘",
+      "variety": "柚",
+      "aliases": [
+        "蜜柚",
+        "红心柚",
+        "柚子"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "高",
+        "room_days": 10,
+        "cold_days": 45,
+        "damage_level": "低",
+        "transport_level": "高",
+        "common_unit": "箱",
+        "package_spec": "散装/箱",
+        "weight_range": "约20-40斤/件",
+        "sweetness_note": "清甜微酸",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "福建",
+          "region": "平和等",
+          "cultivation": "露天/常规",
+          "early_start": "08-10",
+          "peak_start": "09-01",
+          "high_start": "09-10",
+          "high_end": "10-20",
+          "peak_end": "11-10",
+          "late_end": "12-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "柠檬",
+      "category": "柑橘",
+      "variety": "柠檬",
+      "aliases": [
+        "黄柠檬",
+        "柠檬"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "高",
+        "room_days": 7,
+        "cold_days": 30,
+        "damage_level": "低",
+        "transport_level": "高",
+        "common_unit": "箱",
+        "package_spec": "纸箱",
+        "weight_range": "约15-30斤/箱",
+        "sweetness_note": "酸香",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "四川",
+          "region": "安岳等",
+          "cultivation": "露天/常规",
+          "early_start": "08-10",
+          "peak_start": "09-01",
+          "high_start": "09-15",
+          "high_end": "11-30",
+          "peak_end": "12-31",
+          "late_end": "02-28",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "红富士苹果",
+      "category": "苹果梨",
+      "variety": "红富士",
+      "aliases": [
+        "苹果",
+        "红富士",
+        "红富士苹果"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "高",
+        "room_days": 10,
+        "cold_days": 90,
+        "damage_level": "低",
+        "transport_level": "高",
+        "common_unit": "箱",
+        "package_spec": "纸箱/托盘",
+        "weight_range": "约20-40斤/箱",
+        "sweetness_note": "脆甜",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "山东/陕西",
+          "region": "主产区",
+          "cultivation": "露天/常规",
+          "early_start": "08-20",
+          "peak_start": "09-20",
+          "high_start": "10-01",
+          "high_end": "11-15",
+          "peak_end": "12-10",
+          "late_end": "01-15",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "皇冠梨",
+      "category": "苹果梨",
+      "variety": "皇冠梨",
+      "aliases": [
+        "皇冠梨",
+        "雪梨"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "高",
+        "room_days": 7,
+        "cold_days": 60,
+        "damage_level": "低",
+        "transport_level": "高",
+        "common_unit": "箱",
+        "package_spec": "纸箱",
+        "weight_range": "约20-40斤/箱",
+        "sweetness_note": "清甜多汁",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "河北",
+          "region": "石家庄/赵县等",
+          "cultivation": "露天/常规",
+          "early_start": "06-25",
+          "peak_start": "07-15",
+          "high_start": "07-25",
+          "high_end": "09-10",
+          "peak_end": "09-30",
+          "late_end": "10-20",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "库尔勒香梨",
+      "category": "苹果梨",
+      "variety": "香梨",
+      "aliases": [
+        "香梨",
+        "库尔勒香梨"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "高",
+        "room_days": 7,
+        "cold_days": 60,
+        "damage_level": "低",
+        "transport_level": "高",
+        "common_unit": "箱",
+        "package_spec": "纸箱",
+        "weight_range": "约15-30斤/箱",
+        "sweetness_note": "香甜",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "新疆",
+          "region": "库尔勒",
+          "cultivation": "露天/常规",
+          "early_start": "08-20",
+          "peak_start": "09-05",
+          "high_start": "09-15",
+          "high_end": "10-20",
+          "peak_end": "11-10",
+          "late_end": "12-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "西瓜",
+      "category": "瓜类",
+      "variety": "西瓜",
+      "aliases": [
+        "西瓜"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "低",
+        "room_days": 2,
+        "cold_days": 7,
+        "damage_level": "中",
+        "transport_level": "中",
+        "common_unit": "件",
+        "package_spec": "散装/筐",
+        "weight_range": "单果约4-20斤",
+        "sweetness_note": "清甜多汁",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "海南",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "11-15",
+          "peak_start": "12-15",
+          "high_start": "01-15",
+          "high_end": "03-31",
+          "peak_end": "04-20",
+          "late_end": "05-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        },
+        {
+          "country": "中国",
+          "province": "广东/广西",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "03-20",
+          "peak_start": "04-20",
+          "high_start": "05-01",
+          "high_end": "06-30",
+          "peak_end": "07-20",
+          "late_end": "08-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        },
+        {
+          "country": "中国",
+          "province": "宁夏/甘肃",
+          "region": "硒砂瓜等",
+          "cultivation": "露天/常规",
+          "early_start": "06-20",
+          "peak_start": "07-10",
+          "high_start": "07-20",
+          "high_end": "08-31",
+          "peak_end": "09-15",
+          "late_end": "10-01",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "哈密瓜",
+      "category": "瓜类",
+      "variety": "甜瓜",
+      "aliases": [
+        "哈密瓜",
+        "甜瓜"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "中",
+        "room_days": 4,
+        "cold_days": 14,
+        "damage_level": "中",
+        "transport_level": "中",
+        "common_unit": "箱",
+        "package_spec": "纸箱",
+        "weight_range": "约15-35斤/箱",
+        "sweetness_note": "香甜",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "海南",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "11-20",
+          "peak_start": "12-20",
+          "high_start": "01-10",
+          "high_end": "03-20",
+          "peak_end": "04-15",
+          "late_end": "05-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        },
+        {
+          "country": "中国",
+          "province": "新疆",
+          "region": "哈密等",
+          "cultivation": "露天/常规",
+          "early_start": "06-20",
+          "peak_start": "07-10",
+          "high_start": "07-20",
+          "high_end": "09-10",
+          "peak_end": "09-30",
+          "late_end": "10-20",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "香瓜",
+      "category": "瓜类",
+      "variety": "香瓜",
+      "aliases": [
+        "香瓜",
+        "甜瓜"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "低",
+        "room_days": 2,
+        "cold_days": 7,
+        "damage_level": "高",
+        "transport_level": "低",
+        "common_unit": "箱",
+        "package_spec": "筐/箱",
+        "weight_range": "约10-25斤/件",
+        "sweetness_note": "香甜",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "山东/河北",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "03-20",
+          "peak_start": "04-20",
+          "high_start": "05-01",
+          "high_end": "06-20",
+          "peak_end": "07-10",
+          "late_end": "08-01",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "水蜜桃",
+      "category": "桃李",
+      "variety": "水蜜桃",
+      "aliases": [
+        "水蜜桃",
+        "桃子"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "低",
+        "room_days": 1,
+        "cold_days": 5,
+        "damage_level": "高",
+        "transport_level": "低",
+        "common_unit": "箱",
+        "package_spec": "泡沫网套箱",
+        "weight_range": "约8-20斤/箱",
+        "sweetness_note": "香甜多汁",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "江苏/浙江",
+          "region": "无锡/奉化等",
+          "cultivation": "露天/常规",
+          "early_start": "05-20",
+          "peak_start": "06-15",
+          "high_start": "07-01",
+          "high_end": "08-10",
+          "peak_end": "08-25",
+          "late_end": "09-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "油桃",
+      "category": "桃李",
+      "variety": "油桃",
+      "aliases": [
+        "油桃"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "低",
+        "room_days": 2,
+        "cold_days": 7,
+        "damage_level": "中",
+        "transport_level": "中",
+        "common_unit": "箱",
+        "package_spec": "纸箱",
+        "weight_range": "约10-25斤/箱",
+        "sweetness_note": "甜脆",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "山东/河北",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "04-20",
+          "peak_start": "05-15",
+          "high_start": "05-25",
+          "high_end": "07-10",
+          "peak_end": "07-31",
+          "late_end": "08-20",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "黄桃",
+      "category": "桃李",
+      "variety": "黄桃",
+      "aliases": [
+        "黄桃"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "低",
+        "room_days": 1,
+        "cold_days": 5,
+        "damage_level": "高",
+        "transport_level": "低",
+        "common_unit": "箱",
+        "package_spec": "纸箱",
+        "weight_range": "约10-25斤/箱",
+        "sweetness_note": "甜香",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "湖南/山东",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "06-10",
+          "peak_start": "07-01",
+          "high_start": "07-15",
+          "high_end": "08-20",
+          "peak_end": "09-01",
+          "late_end": "09-20",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "李子",
+      "category": "桃李",
+      "variety": "李",
+      "aliases": [
+        "李子",
+        "三华李"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "低",
+        "room_days": 2,
+        "cold_days": 7,
+        "damage_level": "中",
+        "transport_level": "中",
+        "common_unit": "箱",
+        "package_spec": "筐/箱",
+        "weight_range": "约10-25斤/件",
+        "sweetness_note": "酸甜",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "广东",
+          "region": "翁源等",
+          "cultivation": "露天/常规",
+          "early_start": "04-20",
+          "peak_start": "05-15",
+          "high_start": "05-25",
+          "high_end": "06-30",
+          "peak_end": "07-15",
+          "late_end": "08-01",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        },
+        {
+          "country": "中国",
+          "province": "四川/贵州",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "06-01",
+          "peak_start": "06-20",
+          "high_start": "07-01",
+          "high_end": "08-10",
+          "peak_end": "08-25",
+          "late_end": "09-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "冬枣",
+      "category": "枣类",
+      "variety": "冬枣",
+      "aliases": [
+        "冬枣",
+        "鲜枣"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "低",
+        "room_days": 2,
+        "cold_days": 10,
+        "damage_level": "中",
+        "transport_level": "中",
+        "common_unit": "箱",
+        "package_spec": "纸箱/筐",
+        "weight_range": "约10-25斤/件",
+        "sweetness_note": "脆甜",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "山东/陕西",
+          "region": "主产区",
+          "cultivation": "露天/常规",
+          "early_start": "08-10",
+          "peak_start": "09-01",
+          "high_start": "09-15",
+          "high_end": "10-15",
+          "peak_end": "10-31",
+          "late_end": "11-15",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "香蕉",
+      "category": "热带水果",
+      "variety": "香蕉",
+      "aliases": [
+        "香蕉"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "低",
+        "room_days": 3,
+        "cold_days": 7,
+        "damage_level": "高",
+        "transport_level": "中",
+        "common_unit": "箱",
+        "package_spec": "纸箱",
+        "weight_range": "约20-40斤/箱",
+        "sweetness_note": "甜软",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "广东/广西/云南",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "01-01",
+          "peak_start": "01-01",
+          "high_start": "",
+          "high_end": "",
+          "peak_end": "12-31",
+          "late_end": "12-31",
+          "note": "全年均有供应，产区轮换明显",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "菠萝",
+      "category": "热带水果",
+      "variety": "菠萝",
+      "aliases": [
+        "菠萝",
+        "凤梨"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "中",
+        "room_days": 3,
+        "cold_days": 10,
+        "damage_level": "中",
+        "transport_level": "中",
+        "common_unit": "筐",
+        "package_spec": "筐/箱",
+        "weight_range": "约20-40斤/件",
+        "sweetness_note": "酸甜芳香",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "广东",
+          "region": "徐闻等",
+          "cultivation": "露天/常规",
+          "early_start": "01-20",
+          "peak_start": "02-20",
+          "high_start": "03-01",
+          "high_end": "05-20",
+          "peak_end": "06-10",
+          "late_end": "07-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "芒果",
+      "category": "热带水果",
+      "variety": "芒果",
+      "aliases": [
+        "芒果"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "低",
+        "room_days": 2,
+        "cold_days": 8,
+        "damage_level": "高",
+        "transport_level": "中",
+        "common_unit": "箱",
+        "package_spec": "纸箱",
+        "weight_range": "约10-30斤/箱",
+        "sweetness_note": "香甜",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "海南",
+          "region": "三亚/昌江等",
+          "cultivation": "露天/常规",
+          "early_start": "02-10",
+          "peak_start": "03-10",
+          "high_start": "04-01",
+          "high_end": "05-31",
+          "peak_end": "06-20",
+          "late_end": "07-20",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        },
+        {
+          "country": "中国",
+          "province": "广西/四川",
+          "region": "百色/攀枝花等",
+          "cultivation": "露天/常规",
+          "early_start": "05-20",
+          "peak_start": "06-20",
+          "high_start": "07-10",
+          "high_end": "09-10",
+          "peak_end": "09-30",
+          "late_end": "10-20",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "荔枝",
+      "category": "热带水果",
+      "variety": "荔枝",
+      "aliases": [
+        "荔枝"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "极低",
+        "room_days": 1,
+        "cold_days": 4,
+        "damage_level": "极高",
+        "transport_level": "低",
+        "common_unit": "筐",
+        "package_spec": "泡沫箱/筐",
+        "weight_range": "约10-30斤/件",
+        "sweetness_note": "高糖多汁",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "海南",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "04-10",
+          "peak_start": "05-01",
+          "high_start": "05-10",
+          "high_end": "05-31",
+          "peak_end": "06-10",
+          "late_end": "06-20",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        },
+        {
+          "country": "中国",
+          "province": "广东",
+          "region": "茂名/增城等",
+          "cultivation": "露天/常规",
+          "early_start": "05-10",
+          "peak_start": "05-25",
+          "high_start": "06-01",
+          "high_end": "06-25",
+          "peak_end": "07-05",
+          "late_end": "07-15",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "龙眼",
+      "category": "热带水果",
+      "variety": "龙眼",
+      "aliases": [
+        "龙眼",
+        "桂圆鲜果"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "低",
+        "room_days": 1,
+        "cold_days": 5,
+        "damage_level": "高",
+        "transport_level": "中",
+        "common_unit": "筐",
+        "package_spec": "筐/泡沫箱",
+        "weight_range": "约10-30斤/件",
+        "sweetness_note": "甜香",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "广东/广西",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "06-20",
+          "peak_start": "07-10",
+          "high_start": "07-20",
+          "high_end": "08-31",
+          "peak_end": "09-15",
+          "late_end": "10-01",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "火龙果",
+      "category": "热带水果",
+      "variety": "火龙果",
+      "aliases": [
+        "火龙果",
+        "红心火龙果"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "中",
+        "room_days": 4,
+        "cold_days": 14,
+        "damage_level": "中",
+        "transport_level": "高",
+        "common_unit": "箱",
+        "package_spec": "纸箱",
+        "weight_range": "约15-30斤/箱",
+        "sweetness_note": "清甜",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "广西/广东",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "04-20",
+          "peak_start": "05-20",
+          "high_start": "06-01",
+          "high_end": "10-20",
+          "peak_end": "11-10",
+          "late_end": "12-01",
+          "note": "多批次开花结果，5-11月供应集中",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "百香果",
+      "category": "热带水果",
+      "variety": "百香果",
+      "aliases": [
+        "百香果"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "中",
+        "room_days": 4,
+        "cold_days": 14,
+        "damage_level": "中",
+        "transport_level": "高",
+        "common_unit": "箱",
+        "package_spec": "纸箱",
+        "weight_range": "约10-25斤/箱",
+        "sweetness_note": "酸甜浓香",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "广西/福建",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "05-10",
+          "peak_start": "06-10",
+          "high_start": "07-01",
+          "high_end": "10-20",
+          "peak_end": "11-10",
+          "late_end": "12-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "木瓜",
+      "category": "热带水果",
+      "variety": "木瓜",
+      "aliases": [
+        "木瓜"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "低",
+        "room_days": 3,
+        "cold_days": 8,
+        "damage_level": "高",
+        "transport_level": "中",
+        "common_unit": "箱",
+        "package_spec": "纸箱",
+        "weight_range": "约15-35斤/箱",
+        "sweetness_note": "成熟后甜软",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "海南/广东",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "01-01",
+          "peak_start": "01-01",
+          "high_start": "",
+          "high_end": "",
+          "peak_end": "12-31",
+          "late_end": "12-31",
+          "note": "全年供应，春夏和秋冬批次交替",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "草莓",
+      "category": "浆果",
+      "variety": "草莓",
+      "aliases": [
+        "草莓"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "极低",
+        "room_days": 1,
+        "cold_days": 3,
+        "damage_level": "极高",
+        "transport_level": "低",
+        "common_unit": "盒",
+        "package_spec": "盒装/筐",
+        "weight_range": "约1-10斤/件",
+        "sweetness_note": "酸甜芳香",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "广东/云南",
+          "region": "设施栽培",
+          "cultivation": "大棚/设施",
+          "early_start": "10-20",
+          "peak_start": "11-20",
+          "high_start": "12-01",
+          "high_end": "02-28",
+          "peak_end": "03-20",
+          "late_end": "04-20",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        },
+        {
+          "country": "中国",
+          "province": "江苏/安徽",
+          "region": "设施栽培",
+          "cultivation": "大棚/设施",
+          "early_start": "11-10",
+          "peak_start": "12-10",
+          "high_start": "01-01",
+          "high_end": "03-31",
+          "peak_end": "04-15",
+          "late_end": "05-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "蓝莓",
+      "category": "浆果",
+      "variety": "蓝莓",
+      "aliases": [
+        "蓝莓"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "低",
+        "room_days": 2,
+        "cold_days": 10,
+        "damage_level": "高",
+        "transport_level": "中",
+        "common_unit": "盒",
+        "package_spec": "盒装/箱",
+        "weight_range": "约1-10斤/件",
+        "sweetness_note": "酸甜",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "云南",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "10-20",
+          "peak_start": "11-20",
+          "high_start": "12-15",
+          "high_end": "03-31",
+          "peak_end": "04-20",
+          "late_end": "05-20",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        },
+        {
+          "country": "中国",
+          "province": "辽宁/山东",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "04-20",
+          "peak_start": "05-20",
+          "high_start": "06-01",
+          "high_end": "07-31",
+          "peak_end": "08-20",
+          "late_end": "09-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "车厘子",
+      "category": "浆果",
+      "variety": "甜樱桃",
+      "aliases": [
+        "车厘子",
+        "樱桃"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "低",
+        "room_days": 2,
+        "cold_days": 14,
+        "damage_level": "高",
+        "transport_level": "中",
+        "common_unit": "箱",
+        "package_spec": "盒/箱",
+        "weight_range": "约5-15斤/箱",
+        "sweetness_note": "甜脆",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "山东/辽宁",
+          "region": "国产樱桃",
+          "cultivation": "露天/常规",
+          "early_start": "04-20",
+          "peak_start": "05-10",
+          "high_start": "05-20",
+          "high_end": "06-20",
+          "peak_end": "06-30",
+          "late_end": "07-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        },
+        {
+          "country": "智利",
+          "province": "",
+          "region": "智利",
+          "cultivation": "露天/常规",
+          "early_start": "11-01",
+          "peak_start": "11-20",
+          "high_start": "12-01",
+          "high_end": "02-10",
+          "peak_end": "02-20",
+          "late_end": "03-05",
+          "note": "中国市场冬季进口供应为主",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "猕猴桃",
+      "category": "其他",
+      "variety": "猕猴桃",
+      "aliases": [
+        "猕猴桃",
+        "奇异果"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "高",
+        "room_days": 7,
+        "cold_days": 45,
+        "damage_level": "中",
+        "transport_level": "高",
+        "common_unit": "箱",
+        "package_spec": "纸箱",
+        "weight_range": "约15-30斤/箱",
+        "sweetness_note": "酸甜",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "陕西/四川",
+          "region": "主产区",
+          "cultivation": "露天/常规",
+          "early_start": "08-20",
+          "peak_start": "09-10",
+          "high_start": "09-20",
+          "high_end": "11-10",
+          "peak_end": "12-01",
+          "late_end": "01-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "石榴",
+      "category": "其他",
+      "variety": "石榴",
+      "aliases": [
+        "石榴",
+        "软籽石榴"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "高",
+        "room_days": 7,
+        "cold_days": 30,
+        "damage_level": "低",
+        "transport_level": "高",
+        "common_unit": "箱",
+        "package_spec": "纸箱",
+        "weight_range": "约15-30斤/箱",
+        "sweetness_note": "甜酸、多汁",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "四川/云南",
+          "region": "会理/蒙自等",
+          "cultivation": "露天/常规",
+          "early_start": "07-20",
+          "peak_start": "08-10",
+          "high_start": "08-20",
+          "high_end": "10-10",
+          "peak_end": "10-31",
+          "late_end": "11-20",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "柿子",
+      "category": "其他",
+      "variety": "柿",
+      "aliases": [
+        "柿子",
+        "脆柿"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "中",
+        "room_days": 4,
+        "cold_days": 20,
+        "damage_level": "中",
+        "transport_level": "中",
+        "common_unit": "箱",
+        "package_spec": "纸箱",
+        "weight_range": "约15-30斤/箱",
+        "sweetness_note": "甜",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "广西/陕西",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "08-20",
+          "peak_start": "09-10",
+          "high_start": "09-20",
+          "high_end": "11-10",
+          "peak_end": "11-30",
+          "late_end": "12-20",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "山竹",
+      "category": "热带水果",
+      "variety": "山竹",
+      "aliases": [
+        "山竹"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "低",
+        "room_days": 3,
+        "cold_days": 10,
+        "damage_level": "高",
+        "transport_level": "低",
+        "common_unit": "筐",
+        "package_spec": "泡沫箱/筐",
+        "weight_range": "约10-25斤/件",
+        "sweetness_note": "清甜",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "泰国",
+          "province": "",
+          "region": "泰国",
+          "cultivation": "露天/常规",
+          "early_start": "04-01",
+          "peak_start": "05-01",
+          "high_start": "05-20",
+          "high_end": "08-20",
+          "peak_end": "09-20",
+          "late_end": "10-20",
+          "note": "中国市场以进口供应为主",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "榴莲",
+      "category": "热带水果",
+      "variety": "榴莲",
+      "aliases": [
+        "榴莲",
+        "金枕榴莲"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "低",
+        "room_days": 2,
+        "cold_days": 7,
+        "damage_level": "高",
+        "transport_level": "低",
+        "common_unit": "箱",
+        "package_spec": "整果/箱",
+        "weight_range": "约20-50斤/件",
+        "sweetness_note": "浓郁甜香",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "泰国",
+          "province": "",
+          "region": "泰国",
+          "cultivation": "露天/常规",
+          "early_start": "03-20",
+          "peak_start": "04-20",
+          "high_start": "05-10",
+          "high_end": "08-31",
+          "peak_end": "09-30",
+          "late_end": "10-31",
+          "note": "不同产区和品种批次差异明显",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        },
+        {
+          "country": "马来西亚",
+          "province": "",
+          "region": "马来西亚",
+          "cultivation": "露天/常规",
+          "early_start": "05-20",
+          "peak_start": "06-20",
+          "high_start": "07-01",
+          "high_end": "08-31",
+          "peak_end": "09-20",
+          "late_end": "10-10",
+          "note": "猫山王等品种产季因产区不同而变化",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "椰子",
+      "category": "热带水果",
+      "variety": "椰子",
+      "aliases": [
+        "椰青",
+        "椰子"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "中",
+        "room_days": 7,
+        "cold_days": 30,
+        "damage_level": "低",
+        "transport_level": "高",
+        "common_unit": "件",
+        "package_spec": "整果/袋",
+        "weight_range": "单果约2-5斤",
+        "sweetness_note": "清甜",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "海南",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "01-01",
+          "peak_start": "01-01",
+          "high_start": "",
+          "high_end": "",
+          "peak_end": "12-31",
+          "late_end": "12-31",
+          "note": "全年供应",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "杨梅",
+      "category": "其他",
+      "variety": "杨梅",
+      "aliases": [
+        "杨梅"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "极低",
+        "room_days": 1,
+        "cold_days": 3,
+        "damage_level": "极高",
+        "transport_level": "低",
+        "common_unit": "筐",
+        "package_spec": "小筐/泡沫箱",
+        "weight_range": "约5-15斤/件",
+        "sweetness_note": "酸甜多汁",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "浙江/福建",
+          "region": "仙居等",
+          "cultivation": "露天/常规",
+          "early_start": "05-10",
+          "peak_start": "05-25",
+          "high_start": "06-01",
+          "high_end": "06-25",
+          "peak_end": "07-05",
+          "late_end": "07-15",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "枇杷",
+      "category": "其他",
+      "variety": "枇杷",
+      "aliases": [
+        "枇杷"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "低",
+        "room_days": 1,
+        "cold_days": 5,
+        "damage_level": "高",
+        "transport_level": "低",
+        "common_unit": "箱",
+        "package_spec": "泡沫网套箱",
+        "weight_range": "约5-15斤/箱",
+        "sweetness_note": "清甜",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "福建/四川",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "02-20",
+          "peak_start": "03-20",
+          "high_start": "04-01",
+          "high_end": "05-10",
+          "peak_end": "05-25",
+          "late_end": "06-10",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    },
+    {
+      "name": "甘蔗",
+      "category": "其他",
+      "variety": "甘蔗",
+      "aliases": [
+        "甘蔗"
+      ],
+      "description": "",
+      "profile": {
+        "storage_level": "中",
+        "room_days": 5,
+        "cold_days": 20,
+        "damage_level": "低",
+        "transport_level": "高",
+        "common_unit": "捆",
+        "package_spec": "散装/捆",
+        "weight_range": "按捆/根",
+        "sweetness_note": "清甜",
+        "note": ""
+      },
+      "regions": [
+        {
+          "country": "中国",
+          "province": "广东/广西",
+          "region": "多产区",
+          "cultivation": "露天/常规",
+          "early_start": "09-20",
+          "peak_start": "10-20",
+          "high_start": "11-01",
+          "high_end": "02-28",
+          "peak_end": "03-20",
+          "late_end": "04-20",
+          "note": "",
+          "source_name": "天鲜内置参考库 V1",
+          "source_url": "",
+          "confidence": "MEDIUM",
+          "manual_override": false,
+          "verified_at": "2026-09-25"
+        }
+      ]
+    }
+  ]
+}

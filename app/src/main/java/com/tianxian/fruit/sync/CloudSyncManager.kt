@@ -1194,7 +1194,11 @@ class CloudSyncManager(
 
                 "fruit",
                 "store",
-                "partner" ->
+                "partner",
+                "fruit_season_catalog",
+                "fruit_alias",
+                "fruit_season_region",
+                "fruit_profile" ->
                     setOf(
                         BookPermissions
                             .BASIC_EDIT

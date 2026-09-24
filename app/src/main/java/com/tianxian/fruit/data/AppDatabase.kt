@@ -168,6 +168,63 @@ data class BusinessScoreRecord(
     val updatedAt: Long = 0L
 )
 
+data class FruitSeasonCatalogRecord(
+    val id: Long,
+    val syncId: String,
+    val standardName: String,
+    val category: String,
+    val variety: String,
+    val description: String,
+    val seedVersion: Int,
+    val enabled: Boolean
+)
+
+data class FruitSeasonRegionRecord(
+    val id: Long,
+    val syncId: String,
+    val catalogSyncId: String,
+    val catalogName: String,
+    val country: String,
+    val province: String,
+    val region: String,
+    val cultivation: String,
+    val earlyStart: String,
+    val peakStart: String,
+    val highStart: String,
+    val highEnd: String,
+    val peakEnd: String,
+    val lateEnd: String,
+    val note: String,
+    val sourceName: String,
+    val sourceUrl: String,
+    val confidence: String,
+    val manualOverride: Boolean,
+    val verifiedAt: String
+)
+
+data class FruitProfileRecord(
+    val catalogSyncId: String,
+    val catalogName: String,
+    val storageLevel: String,
+    val roomDays: Int,
+    val coldDays: Int,
+    val damageLevel: String,
+    val transportLevel: String,
+    val commonUnit: String,
+    val packageSpec: String,
+    val weightRange: String,
+    val sweetnessNote: String,
+    val note: String
+)
+
+data class FruitSeasonOverviewRecord(
+    val catalog: FruitSeasonCatalogRecord,
+    val aliases: List<String>,
+    val regions: List<FruitSeasonRegionRecord>,
+    val profile: FruitProfileRecord?,
+    val linkedFruits: List<FruitOption>
+)
+
 data class InventorySaveInput(
     val fruitId: Long,
     val fruitName: String,
@@ -723,6 +780,8 @@ class AppDatabase(
     null,
     DB_VERSION
 ) {
+    private val appContext: Context = context.applicationContext
+
     override fun onConfigure(
         db: SQLiteDatabase
     ) {
@@ -792,6 +851,7 @@ class AppDatabase(
         createV29InventoryLoss(db)
         createV30AnalysisFoundation(db)
         createV31BusinessScore(db)
+        createV32FruitSeasonLibrary(db)
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -805,6 +865,7 @@ class AppDatabase(
         if (seedDefaults) {
             seedFruits(db)
             seedPartners(db)
+            autoLinkFruitSeasonCatalog(db)
         }
     }
 
@@ -919,6 +980,9 @@ class AppDatabase(
         }
         if (oldVersion < 31) {
             createV31BusinessScore(db)
+        }
+        if (oldVersion < 32) {
+            createV32FruitSeasonLibrary(db)
         }
     }
 
@@ -1093,6 +1157,231 @@ class AppDatabase(
         if (tableExists(db, "sync_context")) {
             createSyncTriggers(db)
         }
+    }
+
+
+    private fun createV32FruitSeasonLibrary(
+        db: SQLiteDatabase
+    ) {
+        if (!columnExists(db, "fruit", "season_catalog_sync_id")) {
+            db.execSQL("ALTER TABLE fruit ADD COLUMN season_catalog_sync_id TEXT NOT NULL DEFAULT ''")
+        }
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS fruit_season_catalog(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                standard_name TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT '其他',
+                variety TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                seed_version INTEGER NOT NULL DEFAULT 1,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                row_version INTEGER NOT NULL DEFAULT 1,
+                modified_by TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(standard_name)
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS fruit_alias(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                catalog_sync_id TEXT NOT NULL,
+                catalog_name TEXT NOT NULL DEFAULT '',
+                alias TEXT NOT NULL,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                row_version INTEGER NOT NULL DEFAULT 1,
+                modified_by TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(catalog_sync_id,alias)
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS fruit_season_region(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                catalog_sync_id TEXT NOT NULL,
+                catalog_name TEXT NOT NULL DEFAULT '',
+                country TEXT NOT NULL DEFAULT '中国',
+                province TEXT NOT NULL DEFAULT '',
+                region TEXT NOT NULL DEFAULT '',
+                cultivation TEXT NOT NULL DEFAULT '露天/常规',
+                early_start TEXT NOT NULL DEFAULT '',
+                peak_start TEXT NOT NULL DEFAULT '',
+                high_start TEXT NOT NULL DEFAULT '',
+                high_end TEXT NOT NULL DEFAULT '',
+                peak_end TEXT NOT NULL DEFAULT '',
+                late_end TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                source_name TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '',
+                confidence TEXT NOT NULL DEFAULT 'MEDIUM',
+                manual_override INTEGER NOT NULL DEFAULT 0,
+                verified_at TEXT NOT NULL DEFAULT '',
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                row_version INTEGER NOT NULL DEFAULT 1,
+                modified_by TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(catalog_sync_id,country,province,region,cultivation)
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS fruit_profile(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                catalog_sync_id TEXT NOT NULL,
+                catalog_name TEXT NOT NULL DEFAULT '',
+                storage_level TEXT NOT NULL DEFAULT '',
+                room_days INTEGER NOT NULL DEFAULT 0,
+                cold_days INTEGER NOT NULL DEFAULT 0,
+                damage_level TEXT NOT NULL DEFAULT '',
+                transport_level TEXT NOT NULL DEFAULT '',
+                common_unit TEXT NOT NULL DEFAULT '箱',
+                package_spec TEXT NOT NULL DEFAULT '',
+                weight_range TEXT NOT NULL DEFAULT '',
+                sweetness_note TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                row_version INTEGER NOT NULL DEFAULT 1,
+                modified_by TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(catalog_sync_id)
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_fruit_season_catalog_category ON fruit_season_catalog(category,enabled,deleted)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_fruit_alias_alias ON fruit_alias(alias,deleted)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_fruit_season_region_catalog ON fruit_season_region(catalog_sync_id,deleted)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_fruit_profile_catalog ON fruit_profile(catalog_sync_id,deleted)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_fruit_catalog_link ON fruit(season_catalog_sync_id)")
+
+        if (tableExists(db, "sync_context")) {
+            createSyncTriggers(db)
+        }
+        seedFruitSeasonLibrary(db)
+        autoLinkFruitSeasonCatalog(db)
+    }
+
+    private fun globalFruitLibrarySyncId(kind: String, key: String): String =
+        UUID.nameUUIDFromBytes(("tianxian-fruit-library-v1|" + kind + "|" + key).toByteArray(Charsets.UTF_8)).toString()
+
+    private fun seedFruitSeasonLibrary(db: SQLiteDatabase) {
+        val root = runCatching {
+            appContext.assets.open("fruit_season_seed.json").bufferedReader(Charsets.UTF_8).use { JSONObject(it.readText()) }
+        }.getOrNull() ?: return
+        val version = root.optInt("version", 1)
+        val fruits = root.optJSONArray("fruits") ?: return
+        val now = 1790280000000L // fixed seed timestamp: 2026-09-25 UTC-ish; avoids device-to-device seed drift
+
+        val syncWasPresent = tableExists(db, "sync_context")
+        if (syncWasPresent) db.execSQL("UPDATE sync_context SET remote_apply=1 WHERE id=1")
+        try {
+            for (i in 0 until fruits.length()) {
+                val item = fruits.optJSONObject(i) ?: continue
+                val name = item.optString("name").trim()
+                if (name.isBlank()) continue
+                val catalogSyncId = globalFruitLibrarySyncId("catalog", name)
+                val catalogValues = ContentValues().apply {
+                    put("standard_name", name)
+                    put("category", item.optString("category", "其他"))
+                    put("variety", item.optString("variety", ""))
+                    put("description", item.optString("description", ""))
+                    put("seed_version", version)
+                    put("enabled", 1); put("deleted", 0)
+                    put("sync_id", catalogSyncId); put("sync_status", 0); put("row_version", 1)
+                    put("modified_by", "builtin-v$version"); put("created_at", now); put("updated_at", now)
+                }
+                db.insertWithOnConflict("fruit_season_catalog", null, catalogValues, SQLiteDatabase.CONFLICT_IGNORE)
+
+                val aliases = item.optJSONArray("aliases") ?: JSONArray()
+                for (a in 0 until aliases.length()) {
+                    val alias = aliases.optString(a).trim()
+                    if (alias.isBlank()) continue
+                    val values = ContentValues().apply {
+                        put("catalog_sync_id", catalogSyncId); put("catalog_name", name); put("alias", alias)
+                        put("deleted", 0); put("sync_id", globalFruitLibrarySyncId("alias", "$name|$alias"))
+                        put("sync_status", 0); put("row_version", 1); put("modified_by", "builtin-v$version")
+                        put("created_at", now); put("updated_at", now)
+                    }
+                    db.insertWithOnConflict("fruit_alias", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+                }
+
+                item.optJSONObject("profile")?.let { p ->
+                    val values = ContentValues().apply {
+                        put("catalog_sync_id", catalogSyncId); put("catalog_name", name)
+                        put("storage_level", p.optString("storage_level", "")); put("room_days", p.optInt("room_days", 0))
+                        put("cold_days", p.optInt("cold_days", 0)); put("damage_level", p.optString("damage_level", ""))
+                        put("transport_level", p.optString("transport_level", "")); put("common_unit", p.optString("common_unit", "箱"))
+                        put("package_spec", p.optString("package_spec", "")); put("weight_range", p.optString("weight_range", ""))
+                        put("sweetness_note", p.optString("sweetness_note", "")); put("note", p.optString("note", ""))
+                        put("deleted", 0); put("sync_id", globalFruitLibrarySyncId("profile", name))
+                        put("sync_status", 0); put("row_version", 1); put("modified_by", "builtin-v$version")
+                        put("created_at", now); put("updated_at", now)
+                    }
+                    db.insertWithOnConflict("fruit_profile", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+                }
+
+                val regions = item.optJSONArray("regions") ?: JSONArray()
+                for (r in 0 until regions.length()) {
+                    val x = regions.optJSONObject(r) ?: continue
+                    val country = x.optString("country", "中国")
+                    val province = x.optString("province", "")
+                    val region = x.optString("region", "")
+                    val cultivation = x.optString("cultivation", "露天/常规")
+                    val key = "$name|$country|$province|$region|$cultivation"
+                    val values = ContentValues().apply {
+                        put("catalog_sync_id", catalogSyncId); put("catalog_name", name)
+                        put("country", country); put("province", province); put("region", region); put("cultivation", cultivation)
+                        put("early_start", x.optString("early_start", "")); put("peak_start", x.optString("peak_start", ""))
+                        put("high_start", x.optString("high_start", "")); put("high_end", x.optString("high_end", ""))
+                        put("peak_end", x.optString("peak_end", "")); put("late_end", x.optString("late_end", ""))
+                        put("note", x.optString("note", "")); put("source_name", x.optString("source_name", ""))
+                        put("source_url", x.optString("source_url", "")); put("confidence", x.optString("confidence", "MEDIUM"))
+                        put("manual_override", if (x.optBoolean("manual_override", false)) 1 else 0)
+                        put("verified_at", x.optString("verified_at", "")); put("deleted", 0)
+                        put("sync_id", globalFruitLibrarySyncId("region", key)); put("sync_status", 0); put("row_version", 1)
+                        put("modified_by", "builtin-v$version"); put("created_at", now); put("updated_at", now)
+                    }
+                    db.insertWithOnConflict("fruit_season_region", null, values, SQLiteDatabase.CONFLICT_IGNORE)
+                }
+            }
+        } finally {
+            if (syncWasPresent) db.execSQL("UPDATE sync_context SET remote_apply=0 WHERE id=1")
+        }
+    }
+
+    private fun autoLinkFruitSeasonCatalog(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            UPDATE fruit
+            SET season_catalog_sync_id=COALESCE(
+                (SELECT c.sync_id FROM fruit_season_catalog c
+                 WHERE c.deleted=0 AND c.enabled=1 AND c.standard_name=fruit.name LIMIT 1),
+                (SELECT a.catalog_sync_id FROM fruit_alias a
+                 WHERE a.deleted=0 AND a.alias=fruit.name LIMIT 1),
+                season_catalog_sync_id
+            )
+            WHERE COALESCE(season_catalog_sync_id,'')=''
+              AND name<>'总价'
+            """.trimIndent()
+        )
     }
 
     private fun createV25Weather(
@@ -3064,7 +3353,11 @@ class AppDatabase(
             "product_cost_reference",
             "daily_retail_price",
             "business_weather_history",
-            "daily_business_score"
+            "daily_business_score",
+            "fruit_season_catalog",
+            "fruit_alias",
+            "fruit_season_region",
+            "fruit_profile"
         )
 
     fun getSyncFoundationStatus():
@@ -4118,6 +4411,10 @@ class AppDatabase(
                     tableName == "daily_retail_price" ||
                     tableName == "business_weather_history" ||
                     tableName == "daily_business_score" ||
+                    tableName == "fruit_season_catalog" ||
+                    tableName == "fruit_alias" ||
+                    tableName == "fruit_season_region" ||
+                    tableName == "fruit_profile" ||
                     tableName == "weather_snapshot"
                 ) {
                     values.remove("id")
@@ -8870,6 +9167,154 @@ class AppDatabase(
         }
     }
 
+
+    fun getFruitSeasonCategories(): List<String> =
+        readableDatabase.rawQuery(
+            "SELECT DISTINCT category FROM fruit_season_catalog WHERE deleted=0 AND enabled=1 ORDER BY category",
+            null
+        ).use { c -> buildList { while (c.moveToNext()) add(c.str("category")) } }
+
+    fun getFruitSeasonOverviews(
+        search: String = "",
+        category: String = ""
+    ): List<FruitSeasonOverviewRecord> {
+        val cleanSearch = search.trim()
+        val cleanCategory = category.trim()
+        val args = mutableListOf<String>()
+        val where = StringBuilder(" WHERE c.deleted=0 AND c.enabled=1 ")
+        if (cleanCategory.isNotBlank()) {
+            where.append(" AND c.category=? ")
+            args += cleanCategory
+        }
+        if (cleanSearch.isNotBlank()) {
+            where.append(" AND (c.standard_name LIKE ? OR c.variety LIKE ? OR EXISTS(SELECT 1 FROM fruit_alias a WHERE a.catalog_sync_id=c.sync_id AND a.deleted=0 AND a.alias LIKE ?)) ")
+            repeat(3) { args += "%$cleanSearch%" }
+        }
+        val catalogs = readableDatabase.rawQuery(
+            "SELECT c.id,c.sync_id,c.standard_name,c.category,c.variety,c.description,c.seed_version,c.enabled FROM fruit_season_catalog c" + where + " ORDER BY c.category,c.standard_name",
+            args.toTypedArray()
+        ).use { c -> buildList {
+            while (c.moveToNext()) add(FruitSeasonCatalogRecord(
+                c.long("id"), c.str("sync_id"), c.str("standard_name"), c.str("category"),
+                c.str("variety"), c.str("description"), c.int("seed_version"), c.int("enabled") == 1
+            ))
+        }}
+        if (catalogs.isEmpty()) return emptyList()
+        val ids = catalogs.map { it.syncId }.toSet()
+        val aliases = mutableMapOf<String, MutableList<String>>()
+        readableDatabase.rawQuery("SELECT catalog_sync_id,alias FROM fruit_alias WHERE deleted=0 ORDER BY alias", null).use { c ->
+            while (c.moveToNext()) if (c.str("catalog_sync_id") in ids) aliases.getOrPut(c.str("catalog_sync_id")) { mutableListOf() }.add(c.str("alias"))
+        }
+        val regions = mutableMapOf<String, MutableList<FruitSeasonRegionRecord>>()
+        readableDatabase.rawQuery("SELECT * FROM fruit_season_region WHERE deleted=0 ORDER BY country,province,region", null).use { c ->
+            while (c.moveToNext()) {
+                val cid = c.str("catalog_sync_id"); if (cid !in ids) continue
+                regions.getOrPut(cid) { mutableListOf() }.add(fruitSeasonRegionFromCursor(c))
+            }
+        }
+        val profiles = mutableMapOf<String, FruitProfileRecord>()
+        readableDatabase.rawQuery("SELECT * FROM fruit_profile WHERE deleted=0", null).use { c ->
+            while (c.moveToNext()) { val cid=c.str("catalog_sync_id"); if (cid in ids) profiles[cid]=fruitProfileFromCursor(c) }
+        }
+        val links = mutableMapOf<String, MutableList<FruitOption>>()
+        readableDatabase.rawQuery("SELECT id,name,default_unit,season_catalog_sync_id FROM fruit WHERE enabled=1 AND COALESCE(season_catalog_sync_id,'')<>'' ORDER BY sort_order,id", null).use { c ->
+            while (c.moveToNext()) { val cid=c.str("season_catalog_sync_id"); if (cid in ids) links.getOrPut(cid){mutableListOf()}.add(FruitOption(c.long("id"),c.str("name"),c.str("default_unit"))) }
+        }
+        return catalogs.map { FruitSeasonOverviewRecord(it, aliases[it.syncId].orEmpty(), regions[it.syncId].orEmpty(), profiles[it.syncId], links[it.syncId].orEmpty()) }
+    }
+
+    fun getFruitSeasonOverview(catalogSyncId: String): FruitSeasonOverviewRecord? =
+        getFruitSeasonOverviews().firstOrNull { it.catalog.syncId == catalogSyncId }
+
+    fun updateFruitSeasonRegion(
+        id: Long,
+        country: String,
+        province: String,
+        region: String,
+        cultivation: String,
+        earlyStart: String,
+        peakStart: String,
+        highStart: String,
+        highEnd: String,
+        peakEnd: String,
+        lateEnd: String,
+        sourceName: String,
+        sourceUrl: String,
+        confidence: String,
+        note: String
+    ): Boolean = writableDatabase.update(
+        "fruit_season_region",
+        ContentValues().apply {
+            put("country", country.trim()); put("province", province.trim()); put("region", region.trim())
+            put("cultivation", cultivation.trim()); put("early_start", earlyStart.trim()); put("peak_start", peakStart.trim())
+            put("high_start", highStart.trim()); put("high_end", highEnd.trim()); put("peak_end", peakEnd.trim()); put("late_end", lateEnd.trim())
+            put("source_name", sourceName.trim()); put("source_url", sourceUrl.trim()); put("confidence", confidence.trim().ifBlank { "MEDIUM" })
+            put("note", note.trim()); put("manual_override", 1); put("verified_at", LocalDate.now().toString())
+            put("sync_status", 2); put("updated_at", System.currentTimeMillis())
+        },
+        "id=? AND deleted=0", arrayOf(id.toString())
+    ) > 0
+
+    fun setFruitSeasonLink(fruitId: Long, catalogSyncId: String): Boolean =
+        writableDatabase.update(
+            "fruit",
+            ContentValues().apply {
+                put("season_catalog_sync_id", catalogSyncId.trim())
+                put("sync_status", 2); put("updated_at", System.currentTimeMillis())
+            },
+            "id=?", arrayOf(fruitId.toString())
+        ) > 0
+
+    fun addFruitSeasonCatalog(
+        standardName: String,
+        category: String,
+        variety: String,
+        description: String = ""
+    ): String? {
+        val clean = standardName.trim(); if (clean.isBlank()) return null
+        val syncId = UUID.randomUUID().toString()
+        val id = writableDatabase.insertWithOnConflict(
+            "fruit_season_catalog", null,
+            baseSyncValues().apply {
+                put("standard_name", clean); put("category", category.trim().ifBlank { "其他" })
+                put("variety", variety.trim()); put("description", description.trim()); put("seed_version", 0)
+                put("enabled", 1); put("deleted", 0); put("sync_id", syncId)
+            }, SQLiteDatabase.CONFLICT_IGNORE
+        )
+        return if (id > 0) syncId else null
+    }
+
+    fun addFruitSeasonRegion(
+        catalogSyncId: String,
+        catalogName: String,
+        country: String = "中国",
+        province: String = "",
+        region: String = ""
+    ): Long = writableDatabase.insertWithOnConflict(
+        "fruit_season_region", null,
+        baseSyncValues().apply {
+            put("catalog_sync_id", catalogSyncId); put("catalog_name", catalogName)
+            put("country", country); put("province", province); put("region", region); put("cultivation", "露天/常规")
+            put("early_start", ""); put("peak_start", ""); put("high_start", ""); put("high_end", ""); put("peak_end", ""); put("late_end", "")
+            put("note", ""); put("source_name", "人工补录"); put("source_url", ""); put("confidence", "MEDIUM")
+            put("manual_override", 1); put("verified_at", LocalDate.now().toString()); put("deleted", 0)
+        }, SQLiteDatabase.CONFLICT_IGNORE
+    )
+
+    private fun fruitSeasonRegionFromCursor(c: Cursor) = FruitSeasonRegionRecord(
+        c.long("id"), c.str("sync_id"), c.str("catalog_sync_id"), c.str("catalog_name"),
+        c.str("country"), c.str("province"), c.str("region"), c.str("cultivation"),
+        c.str("early_start"), c.str("peak_start"), c.str("high_start"), c.str("high_end"),
+        c.str("peak_end"), c.str("late_end"), c.str("note"), c.str("source_name"), c.str("source_url"),
+        c.str("confidence"), c.int("manual_override") == 1, c.str("verified_at")
+    )
+
+    private fun fruitProfileFromCursor(c: Cursor) = FruitProfileRecord(
+        c.str("catalog_sync_id"), c.str("catalog_name"), c.str("storage_level"), c.int("room_days"),
+        c.int("cold_days"), c.str("damage_level"), c.str("transport_level"), c.str("common_unit"),
+        c.str("package_spec"), c.str("weight_range"), c.str("sweetness_note"), c.str("note")
+    )
+
     private fun deterministicSyncId(kind: String, key: String): String =
         UUID.nameUUIDFromBytes((ledgerId + "|" + kind + "|" + key).toByteArray(Charsets.UTF_8)).toString()
 
@@ -13338,7 +13783,7 @@ class AppDatabase(
             getSyncFoundationStatus()
                 .pendingChanges
         )
-        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot", "product_cost_reference", "daily_retail_price", "business_weather_history", "daily_business_score", "weather_snapshot").forEach { table ->
+        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot", "product_cost_reference", "daily_retail_price", "business_weather_history", "daily_business_score", "fruit_season_catalog", "fruit_alias", "fruit_season_region", "fruit_profile", "weather_snapshot").forEach { table ->
             root.put(table, tableAsJson(table))
         }
         return root.toString(2)
@@ -13580,7 +14025,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 31
+        const val DB_VERSION = 32
     }
 }
 

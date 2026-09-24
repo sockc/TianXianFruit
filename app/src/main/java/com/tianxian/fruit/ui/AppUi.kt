@@ -121,6 +121,7 @@ private enum class MorePage {
     STORES,
     PROFIT,
     FRUITS,
+    FRUIT_LIBRARY,
     REPORT
 }
 
@@ -338,6 +339,9 @@ private fun syncTablesForPageTitle(
     title: String
 ): Set<String> =
     when {
+        title.contains("水果季节库") ->
+            setOf("fruit_season_catalog", "fruit_alias", "fruit_season_region", "fruit_profile", "fruit")
+
         title.contains("库存") ->
             setOf("inventory_snapshot", "product_cost_reference", "daily_retail_price")
 
@@ -11553,6 +11557,19 @@ private fun MoreScreen(
 
                 item {
                     SettingsSection(
+                        "水果资料"
+                    ) {
+                        SettingsRow(
+                            "🍉",
+                            "水果季节库"
+                        ) {
+                            sub = MorePage.FRUIT_LIBRARY
+                        }
+                    }
+                }
+
+                item {
+                    SettingsSection(
                         "云端与协作"
                     ) {
                         SettingsRow(
@@ -12046,6 +12063,20 @@ private fun MoreScreen(
                     db,
                     dataVersion,
                     onChanged
+                )
+            }
+        }
+
+        MorePage.FRUIT_LIBRARY -> {
+            SubPage(
+                "水果季节库",
+                { sub = MorePage.MENU }
+            ) {
+                FruitSeasonLibraryContent(
+                    db = db,
+                    dataVersion = dataVersion,
+                    canEdit = BookPermissions.has(currentBook, systemRole, BookPermissions.BASIC_EDIT),
+                    onChanged = onChanged
                 )
             }
         }
@@ -16173,6 +16204,10 @@ private fun syncTableLabel(
             "利润结算明细"
         "inventory_snapshot" ->
             "库存"
+        "fruit_season_catalog" -> "水果资料"
+        "fruit_alias" -> "水果别名"
+        "fruit_season_region" -> "产区季节"
+        "fruit_profile" -> "水果属性"
         else -> tableName
     }
 
