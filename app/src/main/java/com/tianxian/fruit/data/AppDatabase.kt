@@ -57,7 +57,8 @@ data class PurchaseLineInput(
     val fruit: FruitOption,
     val unit: String,
     val quantity: Double,
-    val totalCost: Double
+    val totalCost: Double,
+    val unitWeightJin: Double = 0.0
 )
 
 data class PurchaseOrderRecord(
@@ -80,7 +81,8 @@ data class PurchaseItemRecord(
     val unit: String,
     val quantity: Double,
     val totalCost: Double,
-    val unitPrice: Double
+    val unitPrice: Double,
+    val unitWeightJin: Double = 0.0
 )
 
 // Inventory snapshot data. V1.4.7.52 adds explicit loss quantity so operating
@@ -93,7 +95,42 @@ data class InventoryDayItemRecord(
     val purchasedQuantity: Double,
     val lossQuantity: Double,
     val remainingQuantity: Double,
-    val saved: Boolean
+    val saved: Boolean,
+    val effectiveUnitCost: Double? = null,
+    val costSource: String = "NONE",
+    val retailPricePerJin: Double? = null,
+    val unitWeightJin: Double? = null
+)
+
+data class EffectiveCostRecord(
+    val unitCost: Double?,
+    val source: String,
+    val sourceDate: String? = null
+)
+
+data class DailyRetailPriceRecord(
+    val date: String,
+    val fruitId: Long,
+    val fruitName: String,
+    val pricePerJin: Double,
+    val inherited: Boolean = false
+)
+
+data class BusinessWeatherHistoryRecord(
+    val date: String,
+    val storeId: Long,
+    val storeSyncId: String,
+    val storeName: String,
+    val latitude: Double,
+    val longitude: Double,
+    val actualStartTime: String,
+    val actualEndTime: String,
+    val windowStartTime: String,
+    val windowEndTime: String,
+    val payloadJson: String,
+    val source: String,
+    val observedAt: Long,
+    val updatedAt: Long
 )
 
 data class InventorySaveInput(
@@ -136,7 +173,13 @@ data class OperatingAnalysisItemRecord(
     val inventorySaved: Boolean,
     val previousSnapshotDate: String?,
     val quantityAnomaly: Boolean,
-    val costAvailable: Boolean
+    val costAvailable: Boolean,
+    val unitWeightJin: Double? = null,
+    val retailPricePerJin: Double? = null,
+    val estimatedSoldWeightJin: Double? = null,
+    val estimatedSalesRevenue: Double? = null,
+    val estimatedProductGrossProfit: Double? = null,
+    val costSource: String = "NONE"
 )
 
 data class OperatingAnalysisRecord(
@@ -264,7 +307,9 @@ data class StoreDailyRecord(
     val purchaseCost: Double,
     val profit: Double,
     val newCustomer: Int,
-    val oldCustomer: Int
+    val oldCustomer: Int,
+    val actualStartTime: String = "",
+    val actualEndTime: String = ""
 ) {
     val customerTotal: Int get() = newCustomer + oldCustomer
 }
@@ -542,7 +587,8 @@ data class PurchasePlanLineInput(
     val unit: String,
     val remark: String = "",
     val status: Int = 0,
-    val estimatedAmount: Double = 0.0
+    val estimatedAmount: Double = 0.0,
+    val unitWeightJin: Double = 0.0
 )
 
 data class PurchasePlanRecord(
@@ -570,7 +616,8 @@ data class PurchasePlanItemRecord(
     val completedByUsername: String = "",
     val completedByDisplayName: String = "",
     val completedAt: Long = 0L,
-    val purchaseOrderSyncId: String = ""
+    val purchaseOrderSyncId: String = "",
+    val unitWeightJin: Double = 0.0
 )
 
 data class PurchasePlanDetail(
@@ -708,6 +755,7 @@ class AppDatabase(
         createV27StoreWeatherSettings(db)
         createV28ServerWeatherArchive(db)
         createV29InventoryLoss(db)
+        createV30AnalysisFoundation(db)
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -830,6 +878,9 @@ class AppDatabase(
         if (oldVersion < 29) {
             createV29InventoryLoss(db)
         }
+        if (oldVersion < 30) {
+            createV30AnalysisFoundation(db)
+        }
     }
 
     private fun createV29InventoryLoss(
@@ -842,6 +893,109 @@ class AppDatabase(
             db.execSQL(
                 "ALTER TABLE inventory_snapshot ADD COLUMN loss_quantity REAL NOT NULL DEFAULT 0"
             )
+        }
+    }
+
+    private fun createV30AnalysisFoundation(
+        db: SQLiteDatabase
+    ) {
+        if (!columnExists(db, "purchase_item", "unit_weight_jin")) {
+            db.execSQL("ALTER TABLE purchase_item ADD COLUMN unit_weight_jin REAL NOT NULL DEFAULT 0")
+        }
+        if (!columnExists(db, "purchase_plan_item", "unit_weight_jin")) {
+            db.execSQL("ALTER TABLE purchase_plan_item ADD COLUMN unit_weight_jin REAL NOT NULL DEFAULT 0")
+        }
+        if (!columnExists(db, "store_daily_record", "actual_start_time")) {
+            db.execSQL("ALTER TABLE store_daily_record ADD COLUMN actual_start_time TEXT NOT NULL DEFAULT ''")
+        }
+        if (!columnExists(db, "store_daily_record", "actual_end_time")) {
+            db.execSQL("ALTER TABLE store_daily_record ADD COLUMN actual_end_time TEXT NOT NULL DEFAULT ''")
+        }
+
+        db.execSQL(
+            """
+            UPDATE store_daily_record
+            SET actual_start_time=COALESCE(NULLIF(actual_start_time,''),
+                (SELECT default_start_time FROM store s WHERE s.id=store_daily_record.store_id LIMIT 1),'16:00'),
+                actual_end_time=COALESCE(NULLIF(actual_end_time,''),
+                (SELECT default_end_time FROM store s WHERE s.id=store_daily_record.store_id LIMIT 1),'24:00')
+            WHERE COALESCE(actual_start_time,'')='' OR COALESCE(actual_end_time,'')=''
+            """.trimIndent()
+        )
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS product_cost_reference(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fruit_id INTEGER NOT NULL,
+                fruit_name TEXT NOT NULL DEFAULT '',
+                unit TEXT NOT NULL DEFAULT '件',
+                manual_unit_cost REAL NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                row_version INTEGER NOT NULL DEFAULT 1,
+                modified_by TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(fruit_id,unit)
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS daily_retail_price(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                fruit_id INTEGER NOT NULL,
+                fruit_name TEXT NOT NULL DEFAULT '',
+                price_per_jin REAL NOT NULL DEFAULT 0,
+                price_unit TEXT NOT NULL DEFAULT '斤',
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                row_version INTEGER NOT NULL DEFAULT 1,
+                modified_by TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(date,fruit_id)
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS business_weather_history(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                store_id INTEGER NOT NULL DEFAULT 0,
+                store_sync_id TEXT NOT NULL DEFAULT '',
+                store_name TEXT NOT NULL DEFAULT '',
+                latitude REAL NOT NULL DEFAULT 0,
+                longitude REAL NOT NULL DEFAULT 0,
+                actual_start_time TEXT NOT NULL DEFAULT '',
+                actual_end_time TEXT NOT NULL DEFAULT '',
+                window_start_time TEXT NOT NULL DEFAULT '',
+                window_end_time TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                source TEXT NOT NULL DEFAULT 'ARCHIVE',
+                observed_at INTEGER NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                row_version INTEGER NOT NULL DEFAULT 1,
+                modified_by TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(date,store_sync_id)
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_retail_date_fruit ON daily_retail_price(date,fruit_id)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_weather_history_date_store ON business_weather_history(date,store_sync_id)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_cost_reference_fruit_unit ON product_cost_reference(fruit_id,unit)")
+
+        if (tableExists(db, "sync_context")) {
+            createSyncTriggers(db)
         }
     }
 
@@ -1682,6 +1836,7 @@ class AppDatabase(
                 quantity REAL NOT NULL,
                 total_cost REAL NOT NULL,
                 unit_price REAL NOT NULL,
+                unit_weight_jin REAL NOT NULL DEFAULT 0,
                 deleted INTEGER NOT NULL DEFAULT 0,
                 sync_id TEXT NOT NULL,
                 sync_status INTEGER NOT NULL DEFAULT 0,
@@ -1718,6 +1873,8 @@ class AppDatabase(
                 profit REAL NOT NULL DEFAULT 0,
                 new_customer INTEGER NOT NULL DEFAULT 0,
                 old_customer INTEGER NOT NULL DEFAULT 0,
+                actual_start_time TEXT NOT NULL DEFAULT '',
+                actual_end_time TEXT NOT NULL DEFAULT '',
                 deleted INTEGER NOT NULL DEFAULT 0,
                 sync_id TEXT NOT NULL,
                 sync_status INTEGER NOT NULL DEFAULT 0,
@@ -1881,6 +2038,7 @@ class AppDatabase(
                 fruit_name TEXT NOT NULL,
                 quantity REAL NOT NULL DEFAULT 0,
                 unit TEXT NOT NULL DEFAULT '件',
+                unit_weight_jin REAL NOT NULL DEFAULT 0,
                 remark TEXT NOT NULL DEFAULT '',
                 deleted INTEGER NOT NULL DEFAULT 0,
                 sync_id TEXT NOT NULL,
@@ -2806,7 +2964,10 @@ class AppDatabase(
             "settlement_transfer",
             "profit_settlement_batch",
             "profit_settlement_item",
-            "inventory_snapshot"
+            "inventory_snapshot",
+            "product_cost_reference",
+            "daily_retail_price",
+            "business_weather_history"
         )
 
     fun getSyncFoundationStatus():
@@ -3683,6 +3844,29 @@ class AppDatabase(
                 }
             }
 
+            if (tableName == "business_weather_history") {
+                val stableStoreSyncId = values.getAsString("store_sync_id")?.trim().orEmpty()
+                val remoteStoreId = values.getAsLong("store_id") ?: 0L
+                val storeName = values.getAsString("store_name")?.trim().orEmpty()
+                resolveLocalWeatherStoreId(db, stableStoreSyncId, remoteStoreId, storeName)?.let {
+                    values.put("store_id", it)
+                }
+                if (existingId == null) {
+                    val localStoreId = values.getAsLong("store_id") ?: 0L
+                    if (recordDate.isNotBlank() && stableStoreSyncId.isNotBlank()) {
+                        existingId = db.rawQuery(
+                            "SELECT id FROM business_weather_history WHERE date=? AND store_sync_id=? LIMIT 1",
+                            arrayOf(recordDate, stableStoreSyncId)
+                        ).use { c -> if (c.moveToFirst()) c.long("id") else null }
+                    } else if (recordDate.isNotBlank() && localStoreId > 0) {
+                        existingId = db.rawQuery(
+                            "SELECT id FROM business_weather_history WHERE date=? AND store_id=? LIMIT 1",
+                            arrayOf(recordDate, localStoreId.toString())
+                        ).use { c -> if (c.moveToFirst()) c.long("id") else null }
+                    }
+                }
+            }
+
             if (tableName == "weather_snapshot") {
                 val stableStoreSyncId =
                     values.getAsString("store_sync_id")
@@ -3810,6 +3994,9 @@ class AppDatabase(
                     tableName == "settlement_partner" ||
                     tableName == "settlement_transfer" ||
                     tableName == "inventory_snapshot" ||
+                    tableName == "product_cost_reference" ||
+                    tableName == "daily_retail_price" ||
+                    tableName == "business_weather_history" ||
                     tableName == "weather_snapshot"
                 ) {
                     values.remove("id")
@@ -5129,6 +5316,10 @@ class AppDatabase(
                             price
                         )
                         put(
+                            "unit_weight_jin",
+                            line.unitWeightJin.coerceAtLeast(0.0)
+                        )
+                        put(
                             "deleted",
                             0
                         )
@@ -5341,6 +5532,10 @@ class AppDatabase(
                         put(
                             "unit_price",
                             price
+                        )
+                        put(
+                            "unit_weight_jin",
+                            line.unitWeightJin.coerceAtLeast(0.0)
                         )
                         put(
                             "deleted",
@@ -5587,7 +5782,9 @@ class AppDatabase(
                                 completedAt =
                                     c.long("completed_at"),
                                 purchaseOrderSyncId =
-                                    c.str("purchase_order_sync_id")
+                                    c.str("purchase_order_sync_id"),
+                                unitWeightJin =
+                                    c.dbl("unit_weight_jin")
                             )
                         )
                     }
@@ -5607,6 +5804,7 @@ class AppDatabase(
         quantity: Double,
         unit: String,
         estimatedAmount: Double,
+        unitWeightJin: Double = 0.0,
         remark: String = "",
         mergePendingSameProduct: Boolean = true
     ): Long {
@@ -5753,6 +5951,10 @@ class AppDatabase(
                                     unit
                                 )
                                 put(
+                                    "unit_weight_jin",
+                                    unitWeightJin.coerceAtLeast(0.0)
+                                )
+                                put(
                                     "remark",
                                     remark.trim()
                                 )
@@ -5821,6 +6023,10 @@ class AppDatabase(
                                     quantity
                                 )
                                 put(
+                                    "unit_weight_jin",
+                                    unitWeightJin.coerceAtLeast(0.0)
+                                )
+                                put(
                                     "remark",
                                     remark.trim()
                                 )
@@ -5863,6 +6069,10 @@ class AppDatabase(
                                 put(
                                     "unit",
                                     unit
+                                )
+                                put(
+                                    "unit_weight_jin",
+                                    unitWeightJin.coerceAtLeast(0.0)
                                 )
                                 put(
                                     "remark",
@@ -6042,6 +6252,7 @@ class AppDatabase(
         quantity: Double,
         unit: String,
         estimatedAmount: Double,
+        unitWeightJin: Double = 0.0,
         buyer: PartnerOption? = null,
         mergePendingSameProduct: Boolean = true
     ): Long {
@@ -6099,6 +6310,7 @@ class AppDatabase(
                 quantity = quantity,
                 unit = unit,
                 estimatedAmount = estimatedAmount,
+                unitWeightJin = unitWeightJin,
                 remark = existing?.second.orEmpty(),
                 mergePendingSameProduct = mergePendingSameProduct
             )
@@ -6300,6 +6512,7 @@ class AppDatabase(
                         ppi.fruit_id,
                         ppi.fruit_name,
                         ppi.unit,
+                        ppi.unit_weight_jin,
                         ppi.status,
                         ppi.sync_id,
                         pp.plan_date
@@ -6325,6 +6538,7 @@ class AppDatabase(
                             c.long("fruit_id"),
                             c.str("fruit_name"),
                             c.str("unit"),
+                            c.dbl("unit_weight_jin"),
                             c.int("status"),
                             c.str("sync_id"),
                             c.str("plan_date")
@@ -6346,12 +6560,14 @@ class AppDatabase(
                 row[2] as String
             val unit =
                 row[3] as String
+            val unitWeightJin =
+                row[4] as Double
             val status =
-                row[4] as Int
+                row[5] as Int
             val planItemSyncId =
-                row[5] as String
-            val date =
                 row[6] as String
+            val date =
+                row[7] as String
 
             if (
                 status == 1
@@ -6544,6 +6760,10 @@ class AppDatabase(
                                 )
                             )
                             put(
+                                "unit_weight_jin",
+                                unitWeightJin.coerceAtLeast(0.0)
+                            )
+                            put(
                                 "deleted",
                                 0
                             )
@@ -6569,6 +6789,7 @@ class AppDatabase(
                         put("quantity", actualQuantity)
                         put("total_cost", roundMoney(actualAmount))
                         put("unit_price", roundMoney(unitPrice))
+                        put("unit_weight_jin", unitWeightJin.coerceAtLeast(0.0))
                         put("deleted", 0)
                         put("sync_status", 2)
                         put("updated_at", now)
@@ -7379,6 +7600,7 @@ class AppDatabase(
                     put("fruit_name", line.fruit.name)
                     put("quantity", line.quantity)
                     put("unit", line.unit)
+                    put("unit_weight_jin", line.unitWeightJin.coerceAtLeast(0.0))
                     put("remark", line.remark.trim())
                     put("status", line.status.coerceIn(0, 2))
                     put("deleted", 0)
@@ -8176,7 +8398,7 @@ class AppDatabase(
     ).use { c -> buildList {
         while (c.moveToNext()) add(PurchaseItemRecord(
             c.long("id"), c.long("order_id"), c.long("fruit_id"), c.str("fruit_name"), c.str("unit"),
-            c.dbl("quantity"), c.dbl("total_cost"), c.dbl("unit_price")
+            c.dbl("quantity"), c.dbl("total_cost"), c.dbl("unit_price"), c.dbl("unit_weight_jin")
         ))
     } }
 
@@ -8399,9 +8621,13 @@ class AppDatabase(
 
             val opening = (prior?.quantity ?: 0.0).coerceAtLeast(0.0)
             val purchasedQuantity = (purchase?.quantity ?: 0.0).coerceAtLeast(0.0)
+            val availableQuantity = opening + purchasedQuantity
             val remaining =
                 saved?.quantity?.coerceAtLeast(0.0)
-                    ?: (opening + purchasedQuantity)
+                    ?: if (availableQuantity <= 0.000001) 0.0 else availableQuantity
+            val cost = getEffectiveUnitCost(key.fruitId, fruitName, key.unit, date)
+            val retail = getDailyRetailPrice(date, key.fruitId, fruitName)
+            val unitWeight = getLatestUnitWeightJin(key.fruitId, key.unit, date)
 
             InventoryDayItemRecord(
                 fruitId = key.fruitId,
@@ -8411,7 +8637,11 @@ class AppDatabase(
                 purchasedQuantity = purchasedQuantity,
                 lossQuantity = saved?.lossQuantity?.coerceAtLeast(0.0) ?: 0.0,
                 remainingQuantity = remaining,
-                saved = saved != null
+                saved = saved != null,
+                effectiveUnitCost = cost.unitCost,
+                costSource = cost.source,
+                retailPricePerJin = retail?.pricePerJin,
+                unitWeightJin = unitWeight
             )
         }.sortedWith(
             compareByDescending<InventoryDayItemRecord> { it.purchasedQuantity > 0.000001 }
@@ -8519,6 +8749,164 @@ class AppDatabase(
         }
     }
 
+    private fun deterministicSyncId(kind: String, key: String): String =
+        UUID.nameUUIDFromBytes((ledgerId + "|" + kind + "|" + key).toByteArray(Charsets.UTF_8)).toString()
+
+    fun getEffectiveUnitCost(
+        fruitId: Long,
+        fruitName: String,
+        unit: String,
+        onOrBeforeDate: String
+    ): EffectiveCostRecord {
+        val purchasePrice = getLatestPurchaseUnitPrice(fruitId, unit, onOrBeforeDate)
+        if (purchasePrice != null && purchasePrice > 0.000001) {
+            val sourceDate = readableDatabase.rawQuery(
+                """
+                SELECT po.date FROM purchase_item pi
+                JOIN purchase_order po ON po.id=pi.order_id
+                WHERE pi.fruit_id=? AND pi.unit=? AND po.date<=?
+                  AND pi.deleted=0 AND po.deleted=0
+                  AND (pi.unit_price>0.000001 OR (pi.quantity>0.000001 AND pi.total_cost>0.000001))
+                ORDER BY po.date DESC,po.created_at DESC,pi.id DESC LIMIT 1
+                """.trimIndent(),
+                arrayOf(fruitId.toString(), unit.trim(), onOrBeforeDate)
+            ).use { c -> if (c.moveToFirst()) c.str("date") else "" }
+            return EffectiveCostRecord(purchasePrice, "PURCHASE", sourceDate.takeIf { it.isNotBlank() })
+        }
+        val manual = readableDatabase.rawQuery(
+            "SELECT manual_unit_cost FROM product_cost_reference WHERE fruit_id=? AND unit=? AND deleted=0 LIMIT 1",
+            arrayOf(fruitId.toString(), unit.trim())
+        ).use { c -> if (c.moveToFirst()) c.dbl("manual_unit_cost").takeIf { it > 0.000001 } else null }
+        return if (manual != null) EffectiveCostRecord(manual, "MANUAL", null)
+        else EffectiveCostRecord(null, "NONE", null)
+    }
+
+    fun saveManualCostReference(fruitId: Long, fruitName: String, unit: String, unitCost: Double): Boolean {
+        if (fruitId <= 0L || unit.isBlank() || !unitCost.isFinite() || unitCost < 0) return false
+        val db = writableDatabase
+        val cleanUnit = unit.trim()
+        val now = System.currentTimeMillis()
+        val values = ContentValues().apply {
+            put("fruit_name", fruitName.trim())
+            put("manual_unit_cost", unitCost.coerceAtLeast(0.0))
+            put("deleted", 0)
+            put("sync_status", 2)
+            put("updated_at", now)
+        }
+        val changed = db.update("product_cost_reference", values, "fruit_id=? AND unit=?", arrayOf(fruitId.toString(), cleanUnit))
+        if (changed > 0) return true
+        return db.insert("product_cost_reference", null, ContentValues(values).apply {
+            put("fruit_id", fruitId)
+            put("unit", cleanUnit)
+            put("sync_id", deterministicSyncId("product_cost_reference", "$fruitId|$cleanUnit"))
+            put("sync_status", 0)
+            put("row_version", 1)
+            put("modified_by", deviceId)
+            put("created_at", now)
+        }) > 0
+    }
+
+    fun getDailyRetailPrice(date: String, fruitId: Long, fruitName: String = ""): DailyRetailPriceRecord? {
+        if (fruitId <= 0L) return null
+        val exact = readableDatabase.rawQuery(
+            "SELECT date,fruit_name,price_per_jin FROM daily_retail_price WHERE date=? AND fruit_id=? AND deleted=0 LIMIT 1",
+            arrayOf(date, fruitId.toString())
+        ).use { c ->
+            if (c.moveToFirst()) DailyRetailPriceRecord(c.str("date"), fruitId, c.str("fruit_name").ifBlank { fruitName }, c.dbl("price_per_jin"), false) else null
+        }
+        if (exact != null) return exact
+        return readableDatabase.rawQuery(
+            "SELECT date,fruit_name,price_per_jin FROM daily_retail_price WHERE date<? AND fruit_id=? AND deleted=0 AND price_per_jin>0 ORDER BY date DESC,id DESC LIMIT 1",
+            arrayOf(date, fruitId.toString())
+        ).use { c ->
+            if (c.moveToFirst()) DailyRetailPriceRecord(date, fruitId, c.str("fruit_name").ifBlank { fruitName }, c.dbl("price_per_jin"), true) else null
+        }
+    }
+
+    fun saveDailyRetailPrice(date: String, fruitId: Long, fruitName: String, pricePerJin: Double): Boolean {
+        if (runCatching { LocalDate.parse(date) }.isFailure || fruitId <= 0L || !pricePerJin.isFinite() || pricePerJin < 0) return false
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        val values = ContentValues().apply {
+            put("fruit_name", fruitName.trim())
+            put("price_per_jin", pricePerJin.coerceAtLeast(0.0))
+            put("price_unit", "斤")
+            put("deleted", 0)
+            put("sync_status", 2)
+            put("updated_at", now)
+        }
+        val changed = db.update("daily_retail_price", values, "date=? AND fruit_id=?", arrayOf(date, fruitId.toString()))
+        if (changed > 0) return true
+        return db.insert("daily_retail_price", null, ContentValues(values).apply {
+            put("date", date)
+            put("fruit_id", fruitId)
+            put("sync_id", deterministicSyncId("daily_retail_price", "$date|$fruitId"))
+            put("sync_status", 0)
+            put("row_version", 1)
+            put("modified_by", deviceId)
+            put("created_at", now)
+        }) > 0
+    }
+
+    fun getLatestUnitWeightJin(fruitId: Long, unit: String, onOrBeforeDate: String): Double? {
+        if (fruitId <= 0L || unit.isBlank()) return null
+        return readableDatabase.rawQuery(
+            """
+            SELECT pi.unit_weight_jin FROM purchase_item pi
+            JOIN purchase_order po ON po.id=pi.order_id
+            WHERE pi.fruit_id=? AND pi.unit=? AND po.date<=?
+              AND pi.deleted=0 AND po.deleted=0 AND pi.unit_weight_jin>0.000001
+            ORDER BY po.date DESC,po.created_at DESC,pi.id DESC LIMIT 1
+            """.trimIndent(),
+            arrayOf(fruitId.toString(), unit.trim(), onOrBeforeDate)
+        ).use { c -> if (c.moveToFirst()) c.dbl("unit_weight_jin").takeIf { it > 0.000001 } else null }
+    }
+
+    fun getBusinessWeatherHistory(date: String, storeId: Long): BusinessWeatherHistoryRecord? =
+        readableDatabase.rawQuery(
+            "SELECT * FROM business_weather_history WHERE date=? AND store_id=? AND deleted=0 ORDER BY updated_at DESC LIMIT 1",
+            arrayOf(date, storeId.toString())
+        ).use { c ->
+            if (!c.moveToFirst()) null else BusinessWeatherHistoryRecord(
+                date=c.str("date"), storeId=c.long("store_id"), storeSyncId=c.str("store_sync_id"), storeName=c.str("store_name"),
+                latitude=c.dbl("latitude"), longitude=c.dbl("longitude"), actualStartTime=c.str("actual_start_time"), actualEndTime=c.str("actual_end_time"),
+                windowStartTime=c.str("window_start_time"), windowEndTime=c.str("window_end_time"), payloadJson=c.str("payload_json"),
+                source=c.str("source"), observedAt=c.long("observed_at"), updatedAt=c.long("updated_at")
+            )
+        }
+
+    fun cacheBusinessWeatherHistory(
+        date: String, store: StoreOption, actualStartTime: String, actualEndTime: String,
+        payloadJson: String, source: String = "SERVER_ARCHIVE", observedAt: Long = System.currentTimeMillis()
+    ): Boolean {
+        val storeSyncId = store.syncId.trim()
+        if (storeSyncId.isBlank() || payloadJson.isBlank()) return false
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        val syncId = deterministicSyncId("business_weather_history", "$date|$storeSyncId")
+        val windowStart = runCatching {
+            val h = actualStartTime.substringBefore(':').toInt().coerceIn(0, 24)
+            val m = actualStartTime.substringAfter(':', "00").toInt().coerceIn(0, 59)
+            val totalMinutes = (h * 60 + m - 180).coerceAtLeast(0)
+            "%02d:%02d".format(totalMinutes / 60, totalMinutes % 60)
+        }.getOrDefault("")
+        setRemoteApply(db, true)
+        return try {
+            val values = ContentValues().apply {
+                put("date", date); put("store_id", store.id); put("store_sync_id", storeSyncId); put("store_name", store.name)
+                put("latitude", store.latitude ?: 0.0); put("longitude", store.longitude ?: 0.0)
+                put("actual_start_time", actualStartTime); put("actual_end_time", actualEndTime); put("window_start_time", windowStart); put("window_end_time", actualEndTime)
+                put("payload_json", payloadJson); put("source", source); put("observed_at", observedAt); put("deleted", 0); put("sync_status", 0); put("updated_at", now)
+            }
+            val changed = db.update("business_weather_history", values, "date=? AND store_sync_id=?", arrayOf(date, storeSyncId))
+            if (changed > 0) true else db.insert("business_weather_history", null, ContentValues(values).apply {
+                put("sync_id", syncId); put("row_version", 1); put("modified_by", "server-weather"); put("created_at", now)
+            }) > 0
+        } finally {
+            setRemoteApply(db, false)
+        }
+    }
+
     private data class InventoryCostBasis(
         val unitCost: Double?,
         val costAvailable: Boolean
@@ -8556,7 +8944,8 @@ class AppDatabase(
             SELECT po.date,
                    pi.quantity,
                    pi.total_cost,
-                   pi.unit_price
+                   pi.unit_price,
+                   pi.unit_weight_jin
             FROM purchase_item pi
             JOIN purchase_order po ON po.id=pi.order_id
             WHERE pi.fruit_id=?
@@ -8580,11 +8969,12 @@ class AppDatabase(
                         quantity > 0.000001 && recordedTotal > 0.000001 ->
                             recordedTotal / quantity
                         else ->
-                            getLatestPurchaseUnitPrice(
+                            getEffectiveUnitCost(
                                 fruitId = fruitId,
+                                fruitName = "",
                                 unit = unit,
                                 onOrBeforeDate = day
-                            ) ?: 0.0
+                            ).unitCost ?: 0.0
                     }
                 val effectiveCost =
                     if (quantity > 0.000001 && effectiveUnitPrice > 0.000001) {
@@ -8620,7 +9010,10 @@ class AppDatabase(
         }
 
         val dates = (purchases.keys + snapshots.keys).toSortedSet()
-        if (dates.isEmpty()) return InventoryCostBasis(null, false)
+        if (dates.isEmpty()) {
+            val effective = getEffectiveUnitCost(fruitId, "", unit, snapshotDate)
+            return InventoryCostBasis(effective.unitCost, effective.unitCost != null)
+        }
 
         var runningQuantity = 0.0
         var runningCost = 0.0
@@ -8671,7 +9064,8 @@ class AppDatabase(
                 lastUnitCost != null -> lastUnitCost
                 else -> null
             }
-        return InventoryCostBasis(finalUnitCost, costAvailable && finalUnitCost != null)
+        val fallback = finalUnitCost ?: getEffectiveUnitCost(fruitId, "", unit, snapshotDate).unitCost
+        return InventoryCostBasis(fallback, (costAvailable && fallback != null) || fallback != null)
     }
 
     fun getOperatingAnalysis(date: String): OperatingAnalysisRecord {
@@ -8722,11 +9116,12 @@ class AppDatabase(
                         quantity > 0.000001 && recordedTotal > 0.000001 ->
                             recordedTotal / quantity
                         else ->
-                            getLatestPurchaseUnitPrice(
+                            getEffectiveUnitCost(
                                 fruitId = fruitId,
+                                fruitName = fruitName,
                                 unit = unit,
                                 onOrBeforeDate = date
-                            )
+                            ).unitCost
                     }
                 val rowCostAvailable =
                     quantity <= 0.000001 || (effectiveUnitPrice != null && effectiveUnitPrice > 0.000001)
@@ -8818,6 +9213,14 @@ class AppDatabase(
                 } else {
                     null
                 }
+            val unitWeightJin = getLatestUnitWeightJin(item.fruitId, item.unit, date)
+            val retailPrice = getDailyRetailPrice(date, item.fruitId, item.fruitName)?.pricePerJin
+            val estimatedSoldWeightJin = unitWeightJin?.let { roundMoney(soldQuantity * it) }
+            val estimatedSalesRevenue =
+                if (estimatedSoldWeightJin != null && retailPrice != null) roundMoney(estimatedSoldWeightJin * retailPrice) else null
+            val estimatedProductGrossProfit =
+                if (estimatedSalesRevenue != null && consumedCost != null) roundMoney(estimatedSalesRevenue - consumedCost) else null
+            val effectiveCost = getEffectiveUnitCost(item.fruitId, item.fruitName, item.unit, date)
 
             OperatingAnalysisItemRecord(
                 fruitId = item.fruitId,
@@ -8839,7 +9242,13 @@ class AppDatabase(
                 inventorySaved = item.saved,
                 previousSnapshotDate = previousSnapshotDate,
                 quantityAnomaly = quantityAnomaly,
-                costAvailable = costAvailable
+                costAvailable = costAvailable,
+                unitWeightJin = unitWeightJin,
+                retailPricePerJin = retailPrice,
+                estimatedSoldWeightJin = estimatedSoldWeightJin,
+                estimatedSalesRevenue = estimatedSalesRevenue,
+                estimatedProductGrossProfit = estimatedProductGrossProfit,
+                costSource = effectiveCost.source
             )
         }
 
@@ -9146,7 +9555,9 @@ class AppDatabase(
         openingStock: Double,
         closingStock: Double,
         newCustomer: Int,
-        oldCustomer: Int
+        oldCustomer: Int,
+        actualStartTime: String = store.defaultStartTime,
+        actualEndTime: String = store.defaultEndTime
     ): StoreDailySaveResult {
         val editingOld = recordId?.let { getStoreDailyRecordById(it) }
 
@@ -9427,6 +9838,8 @@ class AppDatabase(
                 put("profit", profit)
                 put("new_customer", newCustomer)
                 put("old_customer", oldCustomer)
+                put("actual_start_time", actualStartTime.trim().ifBlank { freshStore.defaultStartTime })
+                put("actual_end_time", actualEndTime.trim().ifBlank { freshStore.defaultEndTime })
 
                 put("deleted", 0)
                 put("sync_status", if (targetId == null) 0 else 2)
@@ -12575,7 +12988,7 @@ class AppDatabase(
             getSyncFoundationStatus()
                 .pendingChanges
         )
-        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot", "weather_snapshot").forEach { table ->
+        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot", "product_cost_reference", "daily_retail_price", "business_weather_history", "weather_snapshot").forEach { table ->
             root.put(table, tableAsJson(table))
         }
         return root.toString(2)
@@ -12766,7 +13179,8 @@ class AppDatabase(
         receiptSplitsFromCursor(c),
         c.dbl("revenue"), c.dbl("expense"), c.long("expense_payer_id"), c.str("expense_payer_name"),
         c.dbl("opening_stock_value"), c.dbl("stock_left_value"),
-        c.dbl("purchase_cost"), c.dbl("profit"), c.int("new_customer"), c.int("old_customer")
+        c.dbl("purchase_cost"), c.dbl("profit"), c.int("new_customer"), c.int("old_customer"),
+        c.str("actual_start_time"), c.str("actual_end_time")
     )
 
     private fun baseSyncValues(): ContentValues {
@@ -12816,7 +13230,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 29
+        const val DB_VERSION = 30
     }
 }
 

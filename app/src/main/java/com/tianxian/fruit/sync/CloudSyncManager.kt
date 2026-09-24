@@ -1161,9 +1161,16 @@ class CloudSyncManager(
                             .BUSINESS_EDIT
                     )
 
-                "inventory_snapshot" ->
+                "inventory_snapshot",
+                "product_cost_reference",
+                "daily_retail_price" ->
                     setOf(
                         BookPermissions.PURCHASE_EDIT,
+                        BookPermissions.BUSINESS_EDIT
+                    )
+
+                "business_weather_history" ->
+                    setOf(
                         BookPermissions.BUSINESS_EDIT
                     )
 

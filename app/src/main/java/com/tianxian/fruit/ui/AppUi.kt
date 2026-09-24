@@ -265,6 +265,7 @@ private data class PurchaseDraftRow(
     val fruitNameSnapshot: String = "",
     val unit: String = "件",
     val quantity: String = "",
+    val unitWeight: String = "",
     val unitPrice: String = "",
     val totalCost: String = "",
     val buyerId: Long? = null,
@@ -276,6 +277,7 @@ private data class PurchaseDraftRow(
         get() =
             fruitId == null &&
             quantity.isBlank() &&
+            unitWeight.isBlank() &&
             unitPrice.isBlank() &&
             totalCost.isBlank()
 }
@@ -314,7 +316,8 @@ private data class PurchaseHistoryEditDraft(
     val unit: String,
     val quantity: String,
     val unitPrice: String,
-    val totalCost: String
+    val totalCost: String,
+    val unitWeightJin: Double = 0.0
 )
 
 private data class PageSyncUiContext(
@@ -334,7 +337,7 @@ private fun syncTablesForPageTitle(
 ): Set<String> =
     when {
         title.contains("库存") ->
-            setOf("inventory_snapshot")
+            setOf("inventory_snapshot", "product_cost_reference", "daily_retail_price")
 
         title.contains("采购计划") ->
             setOf(
@@ -352,14 +355,17 @@ private fun syncTablesForPageTitle(
             )
 
         title.contains("营业") ->
-            setOf("store_daily_record")
+            setOf("store_daily_record", "business_weather_history")
 
         title.contains("经营分析") ->
             setOf(
                 "store_daily_record",
                 "purchase_order",
                 "purchase_item",
-                "inventory_snapshot"
+                "inventory_snapshot",
+                "product_cost_reference",
+                "daily_retail_price",
+                "business_weather_history"
             )
 
         title.contains("结算") ||
@@ -1964,9 +1970,20 @@ private fun OperatingAnalysisWeatherCard(
         }
         val result = withContext(Dispatchers.IO) {
             runCatching {
+                db.getBusinessWeatherHistory(date, selectedStore.id)?.let { local ->
+                    return@runCatching WeatherClient.parseOverview(local.payloadJson, true)
+                }
                 val bookId = weatherBookId(currentBook)
                 if (bookId.isBlank()) throw IllegalStateException("当前账本尚未连接云端天气服务")
-                WeatherClient(cloudSyncManager).fetchArchive(bookId, selectedStore, selectedDate)
+                val overview = WeatherClient(cloudSyncManager).fetchArchive(bookId, selectedStore, selectedDate)
+                val business = db.getDailyRecords(date).firstOrNull { it.storeId == selectedStore.id }
+                db.cacheBusinessWeatherHistory(
+                    date, selectedStore,
+                    business?.actualStartTime?.ifBlank { selectedStore.defaultStartTime } ?: selectedStore.defaultStartTime,
+                    business?.actualEndTime?.ifBlank { selectedStore.defaultEndTime } ?: selectedStore.defaultEndTime,
+                    overview.rawJson
+                )
+                overview
             }
         }
         state = result.fold(
@@ -2000,7 +2017,7 @@ private fun OperatingAnalysisWeatherCard(
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Text(
-                        "服务器逐小时营业天气档案 · 实际天气与当时预报分开保存，用于营业额、利润和库存消耗分析",
+                        "历史营业天气已进入本地＋服务器同步档案；优先读本地，缺失时才向服务器补齐",
                         style = MaterialTheme.typography.labelSmall,
                         color = Color.Gray
                     )
@@ -2042,6 +2059,19 @@ private fun WeatherDetailContent(
         val date = selectedDate.toString()
         val past = selectedDate.isBefore(LocalDate.now())
         if (past) {
+            val localHistory = withContext(Dispatchers.IO) { db.getBusinessWeatherHistory(date, s.id) }
+            val localOverview = localHistory?.let { history ->
+                runCatching { WeatherClient.parseOverview(history.payloadJson, true) }.getOrNull()
+            }
+            if (localOverview != null) {
+                state = WeatherUiState(
+                    localOverview,
+                    snapshotType = "LOCAL_HISTORY",
+                    updatedAtMillis = localHistory.updatedAt
+                )
+                return@LaunchedEffect
+            }
+
             val archived = withContext(Dispatchers.IO) {
                 runCatching {
                     val bookId = weatherBookId(currentBook)
@@ -2052,6 +2082,14 @@ private fun WeatherDetailContent(
             state = archived.fold(
                 onSuccess = { overview ->
                     withContext(Dispatchers.IO) {
+                        val business = db.getStoreDailyRecord(date, s.id)
+                        db.cacheBusinessWeatherHistory(
+                            date = date,
+                            store = s,
+                            actualStartTime = business?.actualStartTime?.ifBlank { s.defaultStartTime } ?: s.defaultStartTime,
+                            actualEndTime = business?.actualEndTime?.ifBlank { s.defaultEndTime } ?: s.defaultEndTime,
+                            payloadJson = overview.rawJson
+                        )
                         db.saveWeatherCache(date, s.id, overview.rawJson, WEATHER_CACHE_ARCHIVE_MS)
                     }
                     WeatherUiState(overview, snapshotType = "SERVER_ARCHIVE", updatedAtMillis = System.currentTimeMillis())
@@ -2072,7 +2110,7 @@ private fun WeatherDetailContent(
                             error is CloudApiException &&
                                 error.statusCode == 404 &&
                                 error.message.orEmpty().equals("Not Found", ignoreCase = true) ->
-                                "服务器历史天气接口未启用，请确认 Server V1.0.11 已部署"
+                                "服务器历史天气接口未启用，请确认 Server V1.0.12-Lucky 已部署"
 
                             error is CloudApiException &&
                                 error.statusCode == 404 ->
@@ -3516,6 +3554,10 @@ private fun InventoryScreen(
     var isError by remember { mutableStateOf(false) }
     val remainingInputs = remember { mutableStateMapOf<String, String>() }
     val lossInputs = remember { mutableStateMapOf<String, String>() }
+    var costEditItem by remember { mutableStateOf<InventoryDayItemRecord?>(null) }
+    var costEditValue by remember { mutableStateOf("") }
+    var retailEditItem by remember { mutableStateOf<InventoryDayItemRecord?>(null) }
+    var retailEditValue by remember { mutableStateOf("") }
 
     val inventoryItems = remember(dataVersion, date) {
         db.getInventoryDayItems(date)
@@ -3650,6 +3692,28 @@ private fun InventoryScreen(
                                 maxLines = 1
                             )
                             Text(
+                                item.effectiveUnitCost?.let { "成本 ${money(it)}/${item.unit}" } ?: "暂无单价",
+                                modifier = Modifier.clickable {
+                                    costEditItem = item
+                                    costEditValue = cleanNumber(item.effectiveUnitCost ?: 0.0)
+                                }.padding(horizontal = 5.dp),
+                                color = if (item.effectiveUnitCost != null) Color.DarkGray else Color(0xFFB26A00),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1
+                            )
+                            Text(
+                                item.retailPricePerJin?.let { "今日零售 ${money(it)}/斤" } ?: "今日零售 暂无",
+                                modifier = Modifier.clickable {
+                                    retailEditItem = item
+                                    retailEditValue = cleanNumber(item.retailPricePerJin ?: 0.0)
+                                }.padding(horizontal = 5.dp),
+                                color = BrandGreen,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1
+                            )
+                            Text(
                                 buildString {
                                     append(
                                         if (item.purchasedQuantity > 0.000001) {
@@ -3773,13 +3837,52 @@ private fun InventoryScreen(
 
         item {
             Text(
-                "说明：库存盘点会把损耗与销售耗用分开记录；损耗会进入经营分析，但不会参与资金轧差、最少转账方案，也不会回写采购表。",
+                "说明：损耗默认0；无库存时剩余库存默认0。成本优先读取真实非零采购价，没有真实价格才使用人工参考成本；今日零售价按商品＋日期独立保存。",
                 color = Color.Gray,
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(vertical = 6.dp)
             )
         }
     }
+
+    costEditItem?.let { item ->
+        AlertDialog(
+            onDismissRequest = { costEditItem = null },
+            title = { Text("参考成本 · ${item.fruitName}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("真实非零采购价优先；这里保存的是人工参考成本，不修改历史采购记录。", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    CompactNumberField("成本（元/${item.unit}）", costEditValue, { costEditValue = it }, Modifier.fillMaxWidth())
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val value = costEditValue.toDoubleOrNull() ?: 0.0
+                    if (db.saveManualCostReference(item.fruitId, item.fruitName, item.unit, value)) {
+                        costEditItem = null; onChanged()
+                    }
+                }) { Text("保存") }
+            },
+            dismissButton = { TextButton(onClick = { costEditItem = null }) { Text("取消") } }
+        )
+    }
+    retailEditItem?.let { item ->
+        AlertDialog(
+            onDismissRequest = { retailEditItem = null },
+            title = { Text("今日零售价 · ${item.fruitName}") },
+            text = { CompactNumberField("零售价（元/斤）", retailEditValue, { retailEditValue = it }, Modifier.fillMaxWidth()) },
+            confirmButton = {
+                TextButton(onClick = {
+                    val value = retailEditValue.toDoubleOrNull() ?: 0.0
+                    if (db.saveDailyRetailPrice(date, item.fruitId, item.fruitName, value)) {
+                        retailEditItem = null; onChanged()
+                    }
+                }) { Text("保存") }
+            },
+            dismissButton = { TextButton(onClick = { retailEditItem = null }) { Text("取消") } }
+        )
+    }
+
 }
 
 @Composable
@@ -3816,7 +3919,8 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
                         quantity = item.quantity,
                         unit = item.unit,
                         remark = item.remark,
-                        status = item.status
+                        status = item.status,
+                        unitWeightJin = item.unitWeightJin
                     )
                 )
             }
@@ -3897,7 +4001,7 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
                 Box(Modifier.width(82.dp)) {
                     CompactSelectButton("单位", unit, Modifier.fillMaxWidth()) { unitMenu = true }
                     DropdownMenu(expanded = unitMenu, onDismissRequest = { unitMenu = false }) {
-                        listOf("斤", "筐", "箱", "件").forEach { u ->
+                        listOf("箱", "筐", "件", "袋").forEach { u ->
                             DropdownMenuItem(
                                 text = { Text(u) },
                                 onClick = {
@@ -3933,7 +4037,8 @@ private fun PurchasePlanScreen(db: AppDatabase, dataVersion: Int, onChanged: () 
                             quantity = q,
                             unit = unit,
                             remark = itemRemark.trim(),
-                            status = oldStatus
+                            status = oldStatus,
+                            unitWeightJin = db.getLatestUnitWeightJin(fruit.id, unit, date) ?: 0.0
                         )
                         if (existingIndex >= 0) {
                             draft[existingIndex] = newLine
@@ -4329,6 +4434,7 @@ private fun PurchaseScreen(
             row.fruitId?.toString().orEmpty(),
             row.quantity,
             row.unit,
+            row.unitWeight,
             row.unitPrice,
             row.totalCost,
             row.buyerId?.toString().orEmpty()
@@ -4394,6 +4500,7 @@ private fun PurchaseScreen(
                     fruitNameSnapshot = item.fruitName,
                     unit = item.unit,
                     quantity = purchaseNumber(quantityValue),
+                    unitWeight = purchaseNumber(item.unitWeightJin),
                     unitPrice = purchaseNumber(rememberedPrice),
                     totalCost =
                         if (item.status == 1) {
@@ -4480,6 +4587,7 @@ private fun PurchaseScreen(
                     fruitNameSnapshot = stock.fruitName,
                     unit = stock.unit,
                     quantity = "1",
+                    unitWeight = purchaseNumber(db.getLatestUnitWeightJin(stock.fruitId, stock.unit, date) ?: 0.0),
                     unitPrice = purchaseNumber(rememberedPrice),
                     totalCost = purchaseNumber(rememberedPrice),
                     buyerId = defaultBuyerId(),
@@ -4541,6 +4649,7 @@ private fun PurchaseScreen(
                     fruitNameSnapshot = item.fruitName,
                     unit = item.unit,
                     quantity = purchaseNumber(item.quantity),
+                    unitWeight = purchaseNumber(item.unitWeightJin),
                     unitPrice = purchaseNumber(item.unitPrice),
                     totalCost = purchaseNumber(item.totalCost),
                     buyerId = detail.order.buyerId,
@@ -4651,6 +4760,7 @@ private fun PurchaseScreen(
                     fruit = fruit,
                     quantity = row.quantity.toDouble(),
                     unit = row.unit,
+                    unitWeightJin = row.unitWeight.toDoubleOrNull() ?: 0.0,
                     estimatedAmount =
                         row.totalCost
                             .toDoubleOrNull()
@@ -4733,6 +4843,7 @@ private fun PurchaseScreen(
                 quantity = quantity,
                 unit = row.unit,
                 estimatedAmount = amount,
+                unitWeightJin = row.unitWeight.toDoubleOrNull() ?: 0.0,
                 buyer = buyer
             )
 
@@ -4837,6 +4948,7 @@ private fun PurchaseScreen(
                     fruit = fruit,
                     quantity = row.quantity.toDouble(),
                     unit = row.unit,
+                    unitWeightJin = row.unitWeight.toDoubleOrNull() ?: 0.0,
                     estimatedAmount = row.totalCost.toDouble(),
                     buyer = buyer,
                     mergePendingSameProduct = row.planItemId != null
@@ -5120,6 +5232,9 @@ private fun PurchaseScreen(
                                     onOrBeforeDate = date
                                 )
                             },
+                            lookupUnitWeight = { fruitId, unit ->
+                                db.getLatestUnitWeightJin(fruitId, unit, date)
+                            },
                             showImportInventory =
                                 editingOrderId == null &&
                                     row.rowId == importInventoryRowId,
@@ -5332,7 +5447,8 @@ private fun PurchaseScreen(
                                                 fruit = f,
                                                 unit = r.unit,
                                                 quantity = r.quantity.toDouble(),
-                                                totalCost = r.totalCost.toDouble()
+                                                totalCost = r.totalCost.toDouble(),
+                                                unitWeightJin = r.unitWeight.toDoubleOrNull() ?: 0.0
                                             )
                                         }
                                     }
@@ -6027,7 +6143,8 @@ private fun PurchaseHistoryEditDialog(
                                     totalCost =
                                         cleanNumber(
                                             item.totalCost
-                                        )
+                                        ),
+                                    unitWeightJin = item.unitWeightJin
                                 )
                             )
                         }
@@ -6134,7 +6251,8 @@ private fun PurchaseHistoryEditDialog(
                         fruit = fruit,
                         unit = row.unit,
                         quantity = quantity,
-                        totalCost = total
+                        totalCost = total,
+                        unitWeightJin = row.unitWeightJin
                     )
             }
 
@@ -6788,6 +6906,7 @@ private fun PurchaseDraftRowEditor(
     canDelete: Boolean,
     inventoryQuantity: Double?,
     lookupUnitPrice: (Long, String) -> Double?,
+    lookupUnitWeight: (Long, String) -> Double?,
     showImportInventory: Boolean,
     onImportInventory: () -> Unit,
     onChange: (PurchaseDraftRow) -> Unit,
@@ -6946,11 +7065,18 @@ private fun PurchaseDraftRowEditor(
                 verticalAlignment = Alignment.Bottom
             ) {
                 Box(Modifier.weight(1.5f)) {
-                    CompactSelectButton(
-                        "商品",
-                        fruitDisplay,
-                        Modifier.fillMaxWidth()
-                    ) { fruitMenu = true }
+                    OutlinedButton(
+                        onClick = { fruitMenu = true },
+                        modifier = Modifier.fillMaxWidth().height(36.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                    ) {
+                        Text(
+                            fruitDisplay,
+                            color = Color(0xFFD99A00),
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                    }
 
                     DropdownMenu(
                         expanded = fruitMenu,
@@ -6972,6 +7098,7 @@ private fun PurchaseDraftRowEditor(
                                             fruitId = fruit.id,
                                             fruitNameSnapshot = fruit.name,
                                             unit = targetUnit,
+                                            unitWeight = purchaseNumber(lookupUnitWeight(fruit.id, targetUnit) ?: 0.0),
                                             unitPrice = purchaseNumber(remembered),
                                             totalCost =
                                                 calculatedTotal(
@@ -7060,101 +7187,55 @@ private fun PurchaseDraftRowEditor(
             }
 
             Row(
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
-                Column(
-                    modifier = Modifier.width(58.dp)
-                ) {
-                    Text(
-                        "库存",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.Gray,
-                        maxLines = 1
-                    )
+                Column(modifier = Modifier.weight(15f)) {
+                    Text("库存", style = MaterialTheme.typography.labelSmall, color = Color.Gray, maxLines = 1)
                     Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(36.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFFF0F3F5)),
+                        Modifier.fillMaxWidth().height(36.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xFFF0F3F5)),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            inventoryQuantity
-                                ?.let { cleanNumber(it) }
-                                ?: "—",
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1
-                        )
+                        Text(inventoryQuantity?.let { cleanNumber(it) } ?: "0", fontWeight = FontWeight.SemiBold, maxLines = 1)
                     }
                 }
-
                 PurchaseDefaultNumberField(
-                    label = "数量",
-                    value = row.quantity,
-                    defaultValue = "1",
-                    stateKey = "${row.rowId}:quantity",
-                    onValue = { updateQuantity(it) },
-                    modifier = Modifier.weight(0.75f)
+                    label = "数量", value = row.quantity, defaultValue = "1",
+                    stateKey = "${row.rowId}:quantity", onValue = { updateQuantity(it) },
+                    modifier = Modifier.weight(15f)
                 )
-
-                Box(Modifier.width(62.dp)) {
-                    CompactSelectButton(
-                        "单位",
-                        row.unit,
-                        Modifier.fillMaxWidth()
-                    ) { unitMenu = true }
-                    DropdownMenu(
-                        expanded = unitMenu,
-                        onDismissRequest = { unitMenu = false }
-                    ) {
-                        listOf("斤", "筐", "箱", "件").forEach { unit ->
-                            DropdownMenuItem(
-                                text = { Text(unit) },
-                                onClick = {
-                                    val remembered =
-                                        row.fruitId
-                                            ?.let {
-                                                lookupUnitPrice(
-                                                    it,
-                                                    unit
-                                                )
-                                            }
-                                            ?: 0.0
-                                    onChange(
-                                        row.copy(
-                                            unit = unit,
-                                            unitPrice = purchaseNumber(remembered),
-                                            totalCost =
-                                                calculatedTotal(
-                                                    row.quantity,
-                                                    purchaseNumber(remembered)
-                                                ),
-                                            priceSource = PurchasePriceSource.UNIT
-                                        )
-                                    )
-                                    unitMenu = false
-                                }
-                            )
+                Box(Modifier.weight(10f)) {
+                    CompactSelectButton("单位", row.unit, Modifier.fillMaxWidth()) { unitMenu = true }
+                    DropdownMenu(expanded = unitMenu, onDismissRequest = { unitMenu = false }) {
+                        listOf("箱", "筐", "件", "袋").forEach { unit ->
+                            DropdownMenuItem(text = { Text(unit) }, onClick = {
+                                val remembered = row.fruitId?.let { lookupUnitPrice(it, unit) } ?: 0.0
+                                onChange(row.copy(
+                                    unit = unit,
+                                    unitWeight = purchaseNumber(row.fruitId?.let { lookupUnitWeight(it, unit) } ?: 0.0),
+                                    unitPrice = purchaseNumber(remembered),
+                                    totalCost = calculatedTotal(row.quantity, purchaseNumber(remembered)),
+                                    priceSource = PurchasePriceSource.UNIT
+                                ))
+                                unitMenu = false
+                            })
                         }
                     }
                 }
-
                 PurchaseDefaultNumberField(
-                    label = "单价",
-                    value = row.unitPrice,
-                    defaultValue = "0",
-                    stateKey = "${row.rowId}:unitPrice",
-                    onValue = { updateUnitPrice(it) },
-                    modifier = Modifier.weight(0.9f)
+                    label = "重量", value = row.unitWeight, defaultValue = "0",
+                    stateKey = "${row.rowId}:unitWeight",
+                    onValue = { onChange(row.copy(unitWeight = it)) },
+                    modifier = Modifier.weight(20f)
                 )
-
+                PurchaseDefaultNumberField(
+                    label = "单价", value = row.unitPrice, defaultValue = "0",
+                    stateKey = "${row.rowId}:unitPrice", onValue = { updateUnitPrice(it) },
+                    modifier = Modifier.weight(15f)
+                )
                 CompactNumberField(
-                    label = "总价",
-                    value = row.totalCost,
-                    onValue = { updateTotal(it) },
-                    modifier = Modifier.weight(0.9f)
+                    label = "总价", value = row.totalCost, onValue = { updateTotal(it) },
+                    modifier = Modifier.weight(25f)
                 )
             }
         }
@@ -7204,6 +7285,8 @@ private fun SessionScreen(
     var closingStock by remember { mutableStateOf("") }
     var newCustomer by remember { mutableStateOf("") }
     var oldCustomer by remember { mutableStateOf("") }
+    var actualStartTime by remember { mutableStateOf("16:00") }
+    var actualEndTime by remember { mutableStateOf("24:00") }
 
     var editingRecordId by remember { mutableStateOf<Long?>(null) }
     var newBusinessFormExpanded by remember { mutableStateOf(false) }
@@ -7286,6 +7369,9 @@ private fun SessionScreen(
         expensePayerId = partners.firstOrNull()?.id
         openingStock = ""
         closingStock = ""
+        val defaultStore = stores.firstOrNull { it.id == storeId }
+        actualStartTime = defaultStore?.defaultStartTime ?: "16:00"
+        actualEndTime = defaultStore?.defaultEndTime ?: "24:00"
     }
 
     fun loadRecord(r: StoreDailyRecord) {
@@ -7400,6 +7486,9 @@ private fun SessionScreen(
         closingStock = cleanNumber(r.stockLeftValue)
         newCustomer = r.newCustomer.toString()
         oldCustomer = r.oldCustomer.toString()
+        val recordStore = stores.firstOrNull { it.id == r.storeId }
+        actualStartTime = r.actualStartTime.ifBlank { recordStore?.defaultStartTime ?: "16:00" }
+        actualEndTime = r.actualEndTime.ifBlank { recordStore?.defaultEndTime ?: "24:00" }
         val missingMultiReceipt =
             savedSplits.any { it.partnerName == "多人收款明细未同步" }
         message =
@@ -7675,6 +7764,8 @@ private fun SessionScreen(
                             onClick = {
                                 storeId = s.id
                                 historicalStoreName = ""
+                                actualStartTime = s.defaultStartTime
+                                actualEndTime = s.defaultEndTime
                                 storeMenu = false
                             }
                         )
@@ -7688,6 +7779,17 @@ private fun SessionScreen(
                     )
                 }
             }
+        }
+
+        item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StoreTimePickerField("实际开始", actualStartTime, false, Modifier.weight(1f)) { actualStartTime = it }
+                StoreTimePickerField("实际结束", actualEndTime, true, Modifier.weight(1f)) { actualEndTime = it }
+            }
+            Text(
+                "历史天气按实际开始前3小时 → 实际结束保存；当天多位置分别记录。",
+                style = MaterialTheme.typography.labelSmall, color = Color.Gray
+            )
         }
 
         if (receiptRows.size > 1) {
@@ -7948,7 +8050,9 @@ private fun SessionScreen(
                         openingStock = open,
                         closingStock = close,
                         newCustomer = n,
-                        oldCustomer = o
+                        oldCustomer = o,
+                        actualStartTime = actualStartTime,
+                        actualEndTime = actualEndTime
                     )
 
                     message = result.message
@@ -11720,6 +11824,11 @@ private fun OperatingAnalysisContent(
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.DarkGray
                         )
+                        Text(
+                            "估算重量 ${item.estimatedSoldWeightJin?.let { fmt(it) + "斤" } ?: "—"}  ·  今日零售 ${item.retailPricePerJin?.let { money(it) + "/斤" } ?: "—"}  ·  估算收入 ${item.estimatedSalesRevenue?.let { money(it) } ?: "—"}  ·  单品估算毛利 ${item.estimatedProductGrossProfit?.let { money(it) } ?: "—"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF7A5A00)
+                        )
                         if (item.openingQuantity > 0.000001 && item.previousSnapshotDate != null) {
                             Text(
                                 "结转来源：${item.previousSnapshotDate}",
@@ -11734,7 +11843,7 @@ private fun OperatingAnalysisContent(
 
         item {
             Text(
-                "说明：本页使用库存成本估算经营利润。库存按商品＋单位采用移动加权成本；单品本次价格为0时，会回退到最近一次有效非零采购价作为参考成本。损耗与销售耗用分开计算：预估经营利润＝营业额－销售耗用成本－损耗成本－日常开销。若今日库存未完整盘点或缺少有效成本，结果会标记为参考值。",
+                "说明：成本按真实非零采购价优先、人工参考成本兜底；库存仍以箱/筐/件/袋为主单位。每件重量只用于估算换算，因此销售重量、按零售价推算的单品收入与单品利润统一标记为“估算”。损耗与销售耗用分开计算。",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.Gray,
                 modifier = Modifier.padding(bottom = 12.dp)
@@ -22193,7 +22302,7 @@ private fun AddFruitDialog(onDismiss: () -> Unit, onSave: (String, String) -> Un
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(name, { name = it }, label = { Text("商品名称") }, singleLine = true)
                 Text("默认单位")
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("斤", "筐", "箱", "件").forEach { u -> FilterChip(selected = unit == u, onClick = { unit = u }, label = { Text(u) }) } }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("箱", "筐", "件", "袋").forEach { u -> FilterChip(selected = unit == u, onClick = { unit = u }, label = { Text(u) }) } }
             }
         },
         confirmButton = { Button(onClick = { if (name.isNotBlank()) onSave(name, unit) }) { Text("保存") } },
@@ -22223,7 +22332,7 @@ private fun FruitEditDialog(
                 )
                 Text("默认单位")
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("斤", "筐", "箱", "件").forEach { u ->
+                    listOf("箱", "筐", "件", "袋").forEach { u ->
                         FilterChip(
                             selected = unit == u,
                             onClick = { unit = u },
