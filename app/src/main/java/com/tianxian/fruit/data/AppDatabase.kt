@@ -133,6 +133,41 @@ data class BusinessWeatherHistoryRecord(
     val updatedAt: Long
 )
 
+
+data class BusinessScoreRecord(
+    val date: String,
+    val storeId: Long,
+    val storeSyncId: String,
+    val storeName: String,
+    val totalScore: Int,
+    val weatherScore: Double,
+    val historyScore: Double,
+    val calendarScore: Double,
+    val trendScore: Double,
+    val confidence: String,
+    val sampleCount: Int,
+    val weatherSummary: String,
+    val historySummary: String,
+    val calendarSummary: String,
+    val trendSummary: String,
+    val baselineRevenue: Double,
+    val baselineCustomers: Double,
+    val baselineTicket: Double,
+    val similarRevenue: Double,
+    val similarCustomers: Double,
+    val similarTicket: Double,
+    val detailsJson: String = "{}",
+    val specialTag: String = "",
+    val specialNote: String = "",
+    val snapshotsJson: String = "[]",
+    val actualRevenue: Double = 0.0,
+    val actualCustomers: Int = 0,
+    val actualTicket: Double = 0.0,
+    val actualProfit: Double = 0.0,
+    val generatedAt: Long = 0L,
+    val updatedAt: Long = 0L
+)
+
 data class InventorySaveInput(
     val fruitId: Long,
     val fruitName: String,
@@ -756,6 +791,7 @@ class AppDatabase(
         createV28ServerWeatherArchive(db)
         createV29InventoryLoss(db)
         createV30AnalysisFoundation(db)
+        createV31BusinessScore(db)
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -881,6 +917,9 @@ class AppDatabase(
         if (oldVersion < 30) {
             createV30AnalysisFoundation(db)
         }
+        if (oldVersion < 31) {
+            createV31BusinessScore(db)
+        }
     }
 
     private fun createV29InventoryLoss(
@@ -994,6 +1033,63 @@ class AppDatabase(
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_weather_history_date_store ON business_weather_history(date,store_sync_id)")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_cost_reference_fruit_unit ON product_cost_reference(fruit_id,unit)")
 
+        if (tableExists(db, "sync_context")) {
+            createSyncTriggers(db)
+        }
+    }
+
+    private fun createV31BusinessScore(
+        db: SQLiteDatabase
+    ) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS daily_business_score(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                store_id INTEGER NOT NULL DEFAULT 0,
+                store_sync_id TEXT NOT NULL DEFAULT '',
+                store_name TEXT NOT NULL DEFAULT '',
+                total_score INTEGER NOT NULL DEFAULT 0,
+                weather_score REAL NOT NULL DEFAULT 0,
+                history_score REAL NOT NULL DEFAULT 0,
+                calendar_score REAL NOT NULL DEFAULT 0,
+                trend_score REAL NOT NULL DEFAULT 0,
+                confidence TEXT NOT NULL DEFAULT 'LOW',
+                sample_count INTEGER NOT NULL DEFAULT 0,
+                weather_summary TEXT NOT NULL DEFAULT '',
+                history_summary TEXT NOT NULL DEFAULT '',
+                calendar_summary TEXT NOT NULL DEFAULT '',
+                trend_summary TEXT NOT NULL DEFAULT '',
+                baseline_revenue REAL NOT NULL DEFAULT 0,
+                baseline_customers REAL NOT NULL DEFAULT 0,
+                baseline_ticket REAL NOT NULL DEFAULT 0,
+                similar_revenue REAL NOT NULL DEFAULT 0,
+                similar_customers REAL NOT NULL DEFAULT 0,
+                similar_ticket REAL NOT NULL DEFAULT 0,
+                details_json TEXT NOT NULL DEFAULT '{}',
+                special_tag TEXT NOT NULL DEFAULT '',
+                special_note TEXT NOT NULL DEFAULT '',
+                snapshots_json TEXT NOT NULL DEFAULT '[]',
+                actual_revenue REAL NOT NULL DEFAULT 0,
+                actual_customers INTEGER NOT NULL DEFAULT 0,
+                actual_ticket REAL NOT NULL DEFAULT 0,
+                actual_profit REAL NOT NULL DEFAULT 0,
+                score_generated_at INTEGER NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                sync_id TEXT NOT NULL,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                row_version INTEGER NOT NULL DEFAULT 1,
+                modified_by TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(date,store_sync_id)
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_business_score_date_store " +
+                "ON daily_business_score(date,store_sync_id)"
+        )
         if (tableExists(db, "sync_context")) {
             createSyncTriggers(db)
         }
@@ -2967,7 +3063,8 @@ class AppDatabase(
             "inventory_snapshot",
             "product_cost_reference",
             "daily_retail_price",
-            "business_weather_history"
+            "business_weather_history",
+            "daily_business_score"
         )
 
     fun getSyncFoundationStatus():
@@ -3867,6 +3964,29 @@ class AppDatabase(
                 }
             }
 
+            if (tableName == "daily_business_score") {
+                val stableStoreSyncId = values.getAsString("store_sync_id")?.trim().orEmpty()
+                val remoteStoreId = values.getAsLong("store_id") ?: 0L
+                val storeName = values.getAsString("store_name")?.trim().orEmpty()
+                resolveLocalWeatherStoreId(db, stableStoreSyncId, remoteStoreId, storeName)?.let {
+                    values.put("store_id", it)
+                }
+                if (existingId == null) {
+                    val localStoreId = values.getAsLong("store_id") ?: 0L
+                    if (recordDate.isNotBlank() && stableStoreSyncId.isNotBlank()) {
+                        existingId = db.rawQuery(
+                            "SELECT id FROM daily_business_score WHERE date=? AND store_sync_id=? LIMIT 1",
+                            arrayOf(recordDate, stableStoreSyncId)
+                        ).use { c -> if (c.moveToFirst()) c.long("id") else null }
+                    } else if (recordDate.isNotBlank() && localStoreId > 0) {
+                        existingId = db.rawQuery(
+                            "SELECT id FROM daily_business_score WHERE date=? AND store_id=? LIMIT 1",
+                            arrayOf(recordDate, localStoreId.toString())
+                        ).use { c -> if (c.moveToFirst()) c.long("id") else null }
+                    }
+                }
+            }
+
             if (tableName == "weather_snapshot") {
                 val stableStoreSyncId =
                     values.getAsString("store_sync_id")
@@ -3997,6 +4117,7 @@ class AppDatabase(
                     tableName == "product_cost_reference" ||
                     tableName == "daily_retail_price" ||
                     tableName == "business_weather_history" ||
+                    tableName == "daily_business_score" ||
                     tableName == "weather_snapshot"
                 ) {
                     values.remove("id")
@@ -8875,6 +8996,228 @@ class AppDatabase(
             )
         }
 
+    fun getStoreDailyRecordsBefore(
+        storeId: Long,
+        beforeDateExclusive: String,
+        limit: Int = 180
+    ): List<StoreDailyRecord> {
+        if (storeId <= 0L || beforeDateExclusive.isBlank() || limit <= 0) return emptyList()
+        return readableDatabase.rawQuery(
+            """
+            SELECT * FROM store_daily_record
+            WHERE store_id=? AND date<? AND deleted=0
+            ORDER BY date DESC,id DESC
+            LIMIT ?
+            """.trimIndent(),
+            arrayOf(storeId.toString(), beforeDateExclusive, limit.toString())
+        ).use { c -> buildList { while (c.moveToNext()) add(dailyRecord(c)) } }
+    }
+
+    private fun businessScoreFromCursor(c: Cursor): BusinessScoreRecord =
+        BusinessScoreRecord(
+            date = c.str("date"),
+            storeId = c.long("store_id"),
+            storeSyncId = c.str("store_sync_id"),
+            storeName = c.str("store_name"),
+            totalScore = c.int("total_score"),
+            weatherScore = c.dbl("weather_score"),
+            historyScore = c.dbl("history_score"),
+            calendarScore = c.dbl("calendar_score"),
+            trendScore = c.dbl("trend_score"),
+            confidence = c.str("confidence"),
+            sampleCount = c.int("sample_count"),
+            weatherSummary = c.str("weather_summary"),
+            historySummary = c.str("history_summary"),
+            calendarSummary = c.str("calendar_summary"),
+            trendSummary = c.str("trend_summary"),
+            baselineRevenue = c.dbl("baseline_revenue"),
+            baselineCustomers = c.dbl("baseline_customers"),
+            baselineTicket = c.dbl("baseline_ticket"),
+            similarRevenue = c.dbl("similar_revenue"),
+            similarCustomers = c.dbl("similar_customers"),
+            similarTicket = c.dbl("similar_ticket"),
+            detailsJson = c.str("details_json"),
+            specialTag = c.str("special_tag"),
+            specialNote = c.str("special_note"),
+            snapshotsJson = c.str("snapshots_json"),
+            actualRevenue = c.dbl("actual_revenue"),
+            actualCustomers = c.int("actual_customers"),
+            actualTicket = c.dbl("actual_ticket"),
+            actualProfit = c.dbl("actual_profit"),
+            generatedAt = c.long("score_generated_at"),
+            updatedAt = c.long("updated_at")
+        )
+
+    fun getBusinessScore(date: String, storeId: Long): BusinessScoreRecord? =
+        readableDatabase.rawQuery(
+            "SELECT * FROM daily_business_score WHERE date=? AND store_id=? AND deleted=0 ORDER BY updated_at DESC LIMIT 1",
+            arrayOf(date, storeId.toString())
+        ).use { c -> if (c.moveToFirst()) businessScoreFromCursor(c) else null }
+
+    fun saveBusinessScore(score: BusinessScoreRecord): BusinessScoreRecord? {
+        val store = getStoreById(score.storeId) ?: return null
+        val stableStoreSyncId = store.syncId.trim().ifBlank { score.storeSyncId.trim() }
+        if (stableStoreSyncId.isBlank()) return null
+
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        val existing = getBusinessScore(score.date, store.id)
+        val actual = getStoreDailyRecord(score.date, store.id)
+        val actualRevenue = actual?.revenue ?: existing?.actualRevenue ?: 0.0
+        val actualCustomers = actual?.customerTotal ?: existing?.actualCustomers ?: 0
+        val actualTicket = if (actualCustomers > 0) actualRevenue / actualCustomers.toDouble() else 0.0
+        val actualProfit = actual?.profit ?: existing?.actualProfit ?: 0.0
+
+        val snapshots = runCatching {
+            JSONArray(existing?.snapshotsJson?.ifBlank { "[]" } ?: "[]")
+        }.getOrElse { JSONArray() }
+        val materiallyChanged = existing == null ||
+            existing.totalScore != score.totalScore ||
+            existing.weatherSummary != score.weatherSummary ||
+            existing.historySummary != score.historySummary ||
+            existing.calendarSummary != score.calendarSummary ||
+            existing.trendSummary != score.trendSummary
+        val staleSnapshot = existing == null || now - existing.generatedAt >= 30L * 60L * 1000L
+        val actualChanged = existing != null && (
+            kotlin.math.abs(existing.actualRevenue - actualRevenue) > 0.005 ||
+                existing.actualCustomers != actualCustomers ||
+                kotlin.math.abs(existing.actualTicket - actualTicket) > 0.005 ||
+                kotlin.math.abs(existing.actualProfit - actualProfit) > 0.005
+            )
+        // 首页会多次进入；评分和实绩都没有变化时直接复用，避免制造无意义同步记录。
+        if (existing != null && !materiallyChanged && !staleSnapshot && !actualChanged) {
+            return existing
+        }
+        if (materiallyChanged || staleSnapshot) {
+            snapshots.put(
+                JSONObject().apply {
+                    put("at", now)
+                    put("score", score.totalScore)
+                    put("weather_score", score.weatherScore)
+                    put("history_score", score.historyScore)
+                    put("calendar_score", score.calendarScore)
+                    put("trend_score", score.trendScore)
+                    put("weather_summary", score.weatherSummary)
+                    put("history_summary", score.historySummary)
+                    put("confidence", score.confidence)
+                }
+            )
+        }
+        val trimmedSnapshots = JSONArray().apply {
+            val start = (snapshots.length() - 24).coerceAtLeast(0)
+            for (i in start until snapshots.length()) put(snapshots.opt(i))
+        }
+
+        val values = ContentValues().apply {
+            put("date", score.date)
+            put("store_id", store.id)
+            put("store_sync_id", stableStoreSyncId)
+            put("store_name", store.name)
+            put("total_score", score.totalScore)
+            put("weather_score", score.weatherScore)
+            put("history_score", score.historyScore)
+            put("calendar_score", score.calendarScore)
+            put("trend_score", score.trendScore)
+            put("confidence", score.confidence)
+            put("sample_count", score.sampleCount)
+            put("weather_summary", score.weatherSummary)
+            put("history_summary", score.historySummary)
+            put("calendar_summary", score.calendarSummary)
+            put("trend_summary", score.trendSummary)
+            put("baseline_revenue", score.baselineRevenue)
+            put("baseline_customers", score.baselineCustomers)
+            put("baseline_ticket", score.baselineTicket)
+            put("similar_revenue", score.similarRevenue)
+            put("similar_customers", score.similarCustomers)
+            put("similar_ticket", score.similarTicket)
+            put("details_json", score.detailsJson)
+            put("special_tag", existing?.specialTag.orEmpty())
+            put("special_note", existing?.specialNote.orEmpty())
+            put("snapshots_json", trimmedSnapshots.toString())
+            put("actual_revenue", actualRevenue)
+            put("actual_customers", actualCustomers)
+            put("actual_ticket", actualTicket)
+            put("actual_profit", actualProfit)
+            put("score_generated_at", if (materiallyChanged || staleSnapshot) now else existing?.generatedAt ?: now)
+            put("deleted", 0)
+            put("sync_status", if (existing == null) 0 else 2)
+            put("updated_at", now)
+        }
+
+        if (existing == null) {
+            values.put("sync_id", deterministicSyncId("daily_business_score", "${score.date}|$stableStoreSyncId"))
+            values.put("row_version", 1)
+            values.put("modified_by", deviceId)
+            values.put("created_at", now)
+            if (db.insert("daily_business_score", null, values) <= 0) return null
+        } else {
+            if (db.update(
+                    "daily_business_score",
+                    values,
+                    "date=? AND store_sync_id=?",
+                    arrayOf(score.date, stableStoreSyncId)
+                ) <= 0
+            ) return null
+        }
+        return getBusinessScore(score.date, store.id)
+    }
+
+    fun updateBusinessScoreSpecialTag(
+        date: String,
+        storeId: Long,
+        tag: String,
+        note: String = ""
+    ): Boolean {
+        val current = getBusinessScore(date, storeId) ?: return false
+        val changed = writableDatabase.update(
+            "daily_business_score",
+            ContentValues().apply {
+                put("special_tag", tag.trim())
+                put("special_note", note.trim())
+                put("sync_status", 2)
+                put("updated_at", System.currentTimeMillis())
+            },
+            "date=? AND store_sync_id=?",
+            arrayOf(date, current.storeSyncId)
+        )
+        return changed > 0
+    }
+
+    private fun updateBusinessScoreActualOutcome(
+        db: SQLiteDatabase,
+        date: String,
+        storeId: Long
+    ) {
+        if (!tableExists(db, "daily_business_score")) return
+        val actual = db.rawQuery(
+            "SELECT revenue,profit,new_customer,old_customer FROM store_daily_record WHERE date=? AND store_id=? AND deleted=0 LIMIT 1",
+            arrayOf(date, storeId.toString())
+        ).use { c ->
+            if (!c.moveToFirst()) null else {
+                val revenue = c.dbl("revenue")
+                val customers = c.int("new_customer") + c.int("old_customer")
+                arrayOf(revenue, customers.toDouble(), c.dbl("profit"))
+            }
+        }
+        val revenue = actual?.get(0) ?: 0.0
+        val customers = actual?.get(1)?.toInt() ?: 0
+        val profit = actual?.get(2) ?: 0.0
+        val ticket = if (customers > 0) revenue / customers.toDouble() else 0.0
+        db.update(
+            "daily_business_score",
+            ContentValues().apply {
+                put("actual_revenue", revenue)
+                put("actual_customers", customers)
+                put("actual_ticket", ticket)
+                put("actual_profit", profit)
+                put("sync_status", 2)
+                put("updated_at", System.currentTimeMillis())
+            },
+            "date=? AND store_id=? AND deleted=0",
+            arrayOf(date, storeId.toString())
+        )
+    }
+
     fun cacheBusinessWeatherHistory(
         date: String, store: StoreOption, actualStartTime: String, actualEndTime: String,
         payloadJson: String, source: String = "SERVER_ARCHIVE", observedAt: Long = System.currentTimeMillis()
@@ -9888,6 +10231,12 @@ class AppDatabase(
                 oldDateCashInvalidated = invalidateCashSettlementForDate(db, editingOld.date)
             }
 
+            // V1.4.7.54：营业实绩只回填到复盘字段，不参与开摊前经营指数。
+            updateBusinessScoreActualOutcome(db, date, freshStore.id)
+            if (editingOld != null && (editingOld.date != date || editingOld.storeId != freshStore.id)) {
+                updateBusinessScoreActualOutcome(db, editingOld.date, editingOld.storeId)
+            }
+
             db.setTransactionSuccessful()
 
             val pInvalid = profitInvalidated || oldDateProfitInvalidated
@@ -9924,6 +10273,7 @@ class AppDatabase(
 
             invalidateProfitDistributionForDate(db, old.date)
             invalidateCashSettlementForDate(db, old.date)
+            updateBusinessScoreActualOutcome(db, old.date, old.storeId)
 
             db.setTransactionSuccessful()
             return true
@@ -12988,7 +13338,7 @@ class AppDatabase(
             getSyncFoundationStatus()
                 .pendingChanges
         )
-        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot", "product_cost_reference", "daily_retail_price", "business_weather_history", "weather_snapshot").forEach { table ->
+        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot", "product_cost_reference", "daily_retail_price", "business_weather_history", "daily_business_score", "weather_snapshot").forEach { table ->
             root.put(table, tableAsJson(table))
         }
         return root.toString(2)
@@ -13230,7 +13580,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 30
+        const val DB_VERSION = 31
     }
 }
 

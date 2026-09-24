@@ -1169,7 +1169,8 @@ class CloudSyncManager(
                         BookPermissions.BUSINESS_EDIT
                     )
 
-                "business_weather_history" ->
+                "business_weather_history",
+                "daily_business_score" ->
                     setOf(
                         BookPermissions.BUSINESS_EDIT
                     )

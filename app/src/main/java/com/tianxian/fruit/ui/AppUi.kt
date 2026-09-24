@@ -72,8 +72,10 @@ import com.tianxian.fruit.sync.WeatherHour
 import com.tianxian.fruit.update.AppUpdateCheckResult
 import com.tianxian.fruit.update.AppUpdateInfo
 import com.tianxian.fruit.update.AppUpdateManager
+import org.json.JSONArray
 import org.json.JSONObject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
@@ -354,8 +356,11 @@ private fun syncTablesForPageTitle(
                 "purchase_collaboration"
             )
 
+        title.contains("首页") || title.contains("经营建议") ->
+            setOf("store_daily_record", "business_weather_history", "daily_business_score")
+
         title.contains("营业") ->
-            setOf("store_daily_record", "business_weather_history")
+            setOf("store_daily_record", "business_weather_history", "daily_business_score")
 
         title.contains("经营分析") ->
             setOf(
@@ -365,7 +370,8 @@ private fun syncTablesForPageTitle(
                 "inventory_snapshot",
                 "product_cost_reference",
                 "daily_retail_price",
-                "business_weather_history"
+                "business_weather_history",
+                "daily_business_score"
             )
 
         title.contains("结算") ||
@@ -690,6 +696,10 @@ fun TianXianApp(
     var weatherDetailStoreId by remember(currentBook.id) { mutableStateOf<Long?>(null) }
     var weatherDetailVisible by remember(currentBook.id) { mutableStateOf(false) }
     var weatherReturnPage by remember(currentBook.id) { mutableStateOf(AppPage.HOME) }
+    var businessAdviceVisible by remember(currentBook.id) { mutableStateOf(false) }
+    var businessAdviceDate by remember(currentBook.id) { mutableStateOf(LocalDate.now().toString()) }
+    var businessAdviceStoreId by remember(currentBook.id) { mutableStateOf<Long?>(null) }
+    var businessAdviceReturnPage by remember(currentBook.id) { mutableStateOf(AppPage.HOME) }
     var dataVersion by remember {
         mutableIntStateOf(0)
     }
@@ -942,12 +952,17 @@ fun TianXianApp(
         }
     }
 
-    BackHandler(enabled = weatherDetailVisible || page != AppPage.HOME) {
-        if (weatherDetailVisible) {
-            weatherDetailVisible = false
-            page = weatherReturnPage
-        } else {
-            page = AppPage.HOME
+    BackHandler(enabled = weatherDetailVisible || businessAdviceVisible || page != AppPage.HOME) {
+        when {
+            weatherDetailVisible -> {
+                weatherDetailVisible = false
+                page = weatherReturnPage
+            }
+            businessAdviceVisible -> {
+                businessAdviceVisible = false
+                page = businessAdviceReturnPage
+            }
+            else -> page = AppPage.HOME
         }
     }
 
@@ -982,7 +997,7 @@ fun TianXianApp(
             Scaffold(
             contentWindowInsets = WindowInsets.safeDrawing,
             bottomBar = {
-                if (!weatherDetailVisible) NavigationBar {
+                if (!weatherDetailVisible && !businessAdviceVisible) NavigationBar {
                     AppPage.entries
                         .filter {
                             item ->
@@ -1043,6 +1058,24 @@ fun TianXianApp(
                             cloudSyncManager = cloudSyncManager,
                             initialDate = weatherDetailDate,
                             initialStoreId = weatherDetailStoreId
+                        )
+                    }
+                } else if (businessAdviceVisible) {
+                    SubPage(
+                        title = "经营建议详情",
+                        back = {
+                            businessAdviceVisible = false
+                            page = businessAdviceReturnPage
+                        }
+                    ) {
+                        BusinessAdviceDetailContent(
+                            db = db,
+                            dataVersion = dataVersion,
+                            currentBook = liveCurrentBook,
+                            cloudSyncManager = cloudSyncManager,
+                            initialDate = businessAdviceDate,
+                            initialStoreId = businessAdviceStoreId,
+                            onChanged = { notifyDataChanged() }
                         )
                     }
                 } else when (page) {
@@ -1164,6 +1197,12 @@ fun TianXianApp(
                             weatherDetailStoreId = storeId
                             weatherReturnPage = AppPage.HOME
                             weatherDetailVisible = true
+                        },
+                        onOpenBusinessAdvice = { date, storeId ->
+                            businessAdviceDate = date
+                            businessAdviceStoreId = storeId
+                            businessAdviceReturnPage = AppPage.HOME
+                            businessAdviceVisible = true
                         },
                         onMore = {
                             moreTarget =
@@ -1570,7 +1609,8 @@ private fun HomeWeatherCard(
     dataVersion: Int,
     currentBook: LedgerBook,
     cloudSyncManager: CloudSyncManager,
-    onOpenDetail: (String, Long?) -> Unit
+    onOpenDetail: (String, Long?) -> Unit,
+    onStoreResolved: (Long?) -> Unit = {}
 ) {
     val context = LocalContext.current
     val plannedPrefs = remember(currentBook.id) {
@@ -1606,6 +1646,10 @@ private fun HomeWeatherCard(
     }
     val manuallyPlanned = actualStores.isEmpty() &&
         (temporaryStoreId != null || persistedManualStoreId != null)
+
+    LaunchedEffect(selectedStore?.id) {
+        onStoreResolved(selectedStore?.id)
+    }
 
     var state by remember(selectedDate, selectedStore?.id) {
         mutableStateOf(WeatherUiState(loading = true))
@@ -1838,6 +1882,508 @@ private fun HomeWeatherCard(
                     }
                 }
             }
+        }
+    }
+}
+
+private data class BusinessAdviceUiState(
+    val score: BusinessScoreRecord? = null,
+    val loading: Boolean = false,
+    val error: String = ""
+)
+
+private fun businessConfidenceLabel(value: String): String =
+    when (value.uppercase(Locale.ROOT)) {
+        "HIGH" -> "较高"
+        "MEDIUM" -> "中"
+        else -> "低"
+    }
+
+private fun loadAndSaveBusinessScore(
+    db: AppDatabase,
+    currentBook: LedgerBook,
+    cloudSyncManager: CloudSyncManager,
+    date: LocalDate,
+    store: StoreOption
+): BusinessScoreRecord? {
+    val dateString = date.toString()
+    if (date.isBefore(LocalDate.now())) {
+        // 历史日只展示当时真正保存下来的评分，不用事后真实天气伪造“当日预测”。
+        return db.getBusinessScore(dateString, store.id)
+    }
+
+    var overview: WeatherOverview? = null
+    val cached = db.getWeatherCache(dateString, store.id)
+    if (cached != null) {
+        overview = runCatching {
+            WeatherClient.parseOverview(cached.payloadJson, historical = false)
+        }.getOrNull()
+    }
+
+    val cacheStale = cached == null || cached.expiresAt <= System.currentTimeMillis()
+    if (
+        cacheStale &&
+        store.latitude != null &&
+        store.longitude != null
+    ) {
+        val bookId = weatherBookId(currentBook)
+        if (bookId.isNotBlank()) {
+            runCatching {
+                WeatherClient(cloudSyncManager).fetchOverview(bookId, store, date, 120)
+            }.onSuccess { fresh ->
+                overview = fresh
+                db.saveWeatherCache(
+                    dateString,
+                    store.id,
+                    fresh.rawJson,
+                    weatherCacheTtl(date),
+                    System.currentTimeMillis()
+                )
+            }
+        }
+    }
+
+    val calculated = BusinessScoreEngine(db).calculate(date, store, overview)
+    return db.saveBusinessScore(calculated) ?: calculated
+}
+
+@Composable
+private fun HomeBusinessAdviceCard(
+    db: AppDatabase,
+    dataVersion: Int,
+    currentBook: LedgerBook,
+    cloudSyncManager: CloudSyncManager,
+    storeId: Long?,
+    onOpenDetail: (String, Long) -> Unit
+) {
+    val today = LocalDate.now()
+    val dateString = today.toString()
+    var state by remember(currentBook.id, storeId) {
+        mutableStateOf(BusinessAdviceUiState(loading = true))
+    }
+    var refreshTick by remember(currentBook.id, storeId) { mutableStateOf(0) }
+
+    // 首页停留时每 30 分钟重新评估一次；DB 层会对无变化结果去重。
+    LaunchedEffect(currentBook.id, storeId, dateString) {
+        while (true) {
+            delay(30L * 60L * 1000L)
+            refreshTick += 1
+        }
+    }
+
+    LaunchedEffect(dataVersion, currentBook.id, currentBook.cloudBookId, storeId, dateString, refreshTick) {
+        val store = storeId?.let { db.getStoreById(it) }
+        if (store == null) {
+            state = BusinessAdviceUiState(error = "还没有可分析的经营位置")
+            return@LaunchedEffect
+        }
+        state = BusinessAdviceUiState(
+            score = db.getBusinessScore(dateString, store.id),
+            loading = true
+        )
+        val result = withContext(Dispatchers.IO) {
+            runCatching {
+                loadAndSaveBusinessScore(
+                    db = db,
+                    currentBook = currentBook,
+                    cloudSyncManager = cloudSyncManager,
+                    date = today,
+                    store = store
+                )
+            }
+        }
+        state = result.fold(
+            onSuccess = { score ->
+                if (score != null) {
+                    cloudSyncManager.scheduleAutoSync(currentBook)
+                    BusinessAdviceUiState(score = score)
+                } else {
+                    BusinessAdviceUiState(error = "经营建议暂未生成")
+                }
+            },
+            onFailure = { error ->
+                val cached = db.getBusinessScore(dateString, store.id)
+                if (cached != null) BusinessAdviceUiState(score = cached)
+                else BusinessAdviceUiState(error = error.message ?: "经营建议生成失败")
+            }
+        )
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 2.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEE)),
+        shape = RoundedCornerShape(18.dp)
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("今日经营建议", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                Spacer(Modifier.weight(1f))
+                state.score?.let {
+                    Text(it.storeName, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                }
+            }
+
+            when {
+                state.score != null -> {
+                    val score = state.score!!
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "${score.totalScore}%",
+                            fontSize = 27.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = BrandGreen
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            score.weatherSummary.ifBlank { "天气条件待更新" },
+                            modifier = Modifier.weight(1f),
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 2
+                        )
+                    }
+                    Text(
+                        score.historySummary.ifBlank { "历史同期数据正在积累" },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.DarkGray
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (state.loading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text("正在更新", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        }
+                        Spacer(Modifier.weight(1f))
+                        TextButton(onClick = { onOpenDetail(dateString, score.storeId) }) {
+                            Text("查看详细分析 ›")
+                        }
+                    }
+                }
+                state.loading -> {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text("正在生成今日经营建议…", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                }
+                else -> {
+                    Text(state.error.ifBlank { "经营建议暂不可用" }, color = Color.Gray)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BusinessScoreBreakdownRow(
+    title: String,
+    score: Double,
+    maxScore: Int,
+    summary: String
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(title, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            Text(
+                "${String.format(Locale.CHINA, "%.1f", score)}/$maxScore",
+                fontWeight = FontWeight.Bold,
+                color = BrandGreen
+            )
+        }
+        LinearProgressIndicator(
+            progress = { (score / maxScore.toDouble()).toFloat().coerceIn(0f, 1f) },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text(summary, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+    }
+}
+
+private fun businessReasonList(detailsJson: String, key: String): List<String> =
+    runCatching {
+        val arr = JSONObject(detailsJson).optJSONObject("reasons")?.optJSONArray(key) ?: return@runCatching emptyList()
+        buildList {
+            for (i in 0 until arr.length()) {
+                arr.optString(i).takeIf { it.isNotBlank() }?.let(::add)
+            }
+        }
+    }.getOrDefault(emptyList())
+
+private data class BusinessScoreSnapshotUi(
+    val at: Long,
+    val score: Int,
+    val summary: String
+)
+
+private fun businessScoreSnapshots(raw: String): List<BusinessScoreSnapshotUi> =
+    runCatching {
+        val arr = JSONArray(raw.ifBlank { "[]" })
+        buildList {
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                add(
+                    BusinessScoreSnapshotUi(
+                        at = o.optLong("at"),
+                        score = o.optInt("score"),
+                        summary = o.optString("weather_summary")
+                    )
+                )
+            }
+        }
+    }.getOrDefault(emptyList())
+
+@Composable
+private fun BusinessAdviceDetailContent(
+    db: AppDatabase,
+    dataVersion: Int,
+    currentBook: LedgerBook,
+    cloudSyncManager: CloudSyncManager,
+    initialDate: String,
+    initialStoreId: Long?,
+    onChanged: () -> Unit
+) {
+    val date = remember(initialDate) {
+        runCatching { LocalDate.parse(initialDate) }.getOrElse { LocalDate.now() }
+    }
+    val stores = remember(dataVersion) { db.getStores() }
+    var selectedStoreId by remember(initialStoreId, stores) {
+        mutableStateOf(initialStoreId ?: stores.firstOrNull()?.id)
+    }
+    var storeMenu by remember { mutableStateOf(false) }
+    var state by remember(date, selectedStoreId) {
+        mutableStateOf(BusinessAdviceUiState(loading = true))
+    }
+    var tagDraft by remember { mutableStateOf("") }
+    var noteDraft by remember { mutableStateOf("") }
+
+    LaunchedEffect(dataVersion, date, selectedStoreId, currentBook.cloudBookId) {
+        val store = selectedStoreId?.let { db.getStoreById(it) }
+        if (store == null) {
+            state = BusinessAdviceUiState(error = "还没有可分析的经营位置")
+            return@LaunchedEffect
+        }
+        val existing = db.getBusinessScore(date.toString(), store.id)
+        state = BusinessAdviceUiState(score = existing, loading = !date.isBefore(LocalDate.now()))
+        val resolved = withContext(Dispatchers.IO) {
+            if (date.isBefore(LocalDate.now())) {
+                existing
+            } else {
+                runCatching {
+                    loadAndSaveBusinessScore(db, currentBook, cloudSyncManager, date, store)
+                }.getOrNull() ?: existing
+            }
+        }
+        state = if (resolved != null) BusinessAdviceUiState(score = resolved)
+        else BusinessAdviceUiState(error = if (date.isBefore(LocalDate.now())) "该日期没有当时保存的经营评分" else "经营评分生成失败")
+        tagDraft = resolved?.specialTag.orEmpty()
+        noteDraft = resolved?.specialNote.orEmpty()
+        if (resolved != null && !date.isBefore(LocalDate.now())) {
+            cloudSyncManager.scheduleAutoSync(currentBook)
+        }
+    }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEE)),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("位置", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+                    Spacer(Modifier.width(8.dp))
+                    Box {
+                        TextButton(onClick = { storeMenu = true }) {
+                            Text("${stores.firstOrNull { it.id == selectedStoreId }?.name ?: "选择位置"} ▾")
+                        }
+                        DropdownMenu(expanded = storeMenu, onDismissRequest = { storeMenu = false }) {
+                            stores.forEach { store ->
+                                DropdownMenuItem(
+                                    text = { Text(store.name) },
+                                    onClick = {
+                                        selectedStoreId = store.id
+                                        storeMenu = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Text(date.toString(), style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+                }
+
+                when {
+                    state.score != null -> {
+                        val score = state.score!!
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text("${score.totalScore}%", fontSize = 42.sp, fontWeight = FontWeight.Bold, color = BrandGreen)
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.padding(bottom = 5.dp)) {
+                                Text("经营指数", fontWeight = FontWeight.Bold)
+                                Text(
+                                    "可信度 ${businessConfidenceLabel(score.confidence)} · 相似样本 ${score.sampleCount} 个",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.Gray
+                                )
+                            }
+                        }
+                        Text(score.weatherSummary, fontWeight = FontWeight.SemiBold)
+                        Text(score.historySummary, color = Color.DarkGray)
+                    }
+                    state.loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                    else -> Text(state.error, color = Color.Gray)
+                }
+            }
+        }
+
+        state.score?.let { score ->
+            Card(shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text("指数构成", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    BusinessScoreBreakdownRow("天气指数", score.weatherScore, 35, score.weatherSummary)
+                    BusinessScoreBreakdownRow("历史同期", score.historyScore, 30, score.historySummary)
+                    BusinessScoreBreakdownRow("日期环境", score.calendarScore, 20, score.calendarSummary)
+                    BusinessScoreBreakdownRow("近期趋势", score.trendScore, 15, score.trendSummary)
+                    Text(
+                        "库存与备货不计入经营指数，避免把外部经营环境和自身备货状态混在一起。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Gray
+                    )
+                }
+            }
+
+            Card(shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("历史参考", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    Row(Modifier.fillMaxWidth()) {
+                        Column(Modifier.weight(1f)) {
+                            Text("位置基准", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+                            Text(money(score.baselineRevenue), fontWeight = FontWeight.Bold)
+                            Text("客流 ${String.format(Locale.CHINA, "%.0f", score.baselineCustomers)} · 客单 ${money(score.baselineTicket)}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Column(Modifier.weight(1f)) {
+                            Text("相似历史日", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+                            Text(money(score.similarRevenue), fontWeight = FontWeight.Bold)
+                            Text("客流 ${String.format(Locale.CHINA, "%.0f", score.similarCustomers)} · 客单 ${money(score.similarTicket)}", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+
+            Card(shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("为什么这样评分", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    listOf(
+                        "天气" to businessReasonList(score.detailsJson, "weather"),
+                        "历史同期" to businessReasonList(score.detailsJson, "history"),
+                        "日期环境" to businessReasonList(score.detailsJson, "calendar"),
+                        "近期趋势" to businessReasonList(score.detailsJson, "trend")
+                    ).forEach { (title, reasons) ->
+                        if (reasons.isNotEmpty()) {
+                            Text(title, fontWeight = FontWeight.SemiBold)
+                            reasons.forEach { reason ->
+                                Text("• $reason", style = MaterialTheme.typography.bodySmall, color = Color.DarkGray)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (score.actualRevenue > 0.0 || score.actualCustomers > 0) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = SoftGreen),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("经营结果复盘", fontWeight = FontWeight.Bold)
+                        Text("实际营业额 ${money(score.actualRevenue)}")
+                        Text("实际客流 ${score.actualCustomers} · 实际客单 ${money(score.actualTicket)}")
+                        Text("实际利润 ${money(score.actualProfit)}")
+                        Text(
+                            "这些实绩只用于复盘和以后校准权重，不会反向修改当天开摊前的评分。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.Gray
+                        )
+                    }
+                }
+            }
+
+            Card(shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("特殊因素标记", fontWeight = FontWeight.Bold)
+                    Text(
+                        "只作为历史标签保存，V1 暂不直接加减经营指数，避免主观判断污染模型。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Gray
+                    )
+                    val tags = listOf("", "工厂放假", "发薪日", "附近活动", "道路施工", "竞争促销", "临时换位", "其他")
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        tags.chunked(3).forEach { rowTags ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                rowTags.forEach { tag ->
+                                    FilterChip(
+                                        selected = tagDraft == tag,
+                                        onClick = { tagDraft = tag },
+                                        label = { Text(if (tag.isBlank()) "无" else tag) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    OutlinedTextField(
+                        value = noteDraft,
+                        onValueChange = { noteDraft = it.take(120) },
+                        label = { Text("备注（可选）") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2,
+                        maxLines = 3
+                    )
+                    Button(
+                        onClick = {
+                            if (db.updateBusinessScoreSpecialTag(score.date, score.storeId, tagDraft, noteDraft)) {
+                                state = BusinessAdviceUiState(score = db.getBusinessScore(score.date, score.storeId))
+                                cloudSyncManager.scheduleAutoSync(currentBook)
+                                onChanged()
+                            }
+                        }
+                    ) {
+                        Text("保存特殊因素")
+                    }
+                }
+            }
+
+            val snapshots = remember(score.snapshotsJson) { businessScoreSnapshots(score.snapshotsJson).takeLast(6).reversed() }
+            if (snapshots.isNotEmpty()) {
+                Card(shape = RoundedCornerShape(16.dp)) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Text("今日评分变化", fontWeight = FontWeight.Bold)
+                        snapshots.forEach { snap ->
+                            Row(Modifier.fillMaxWidth()) {
+                                Text(compactSyncTime(snap.at), modifier = Modifier.width(58.dp), color = Color.Gray)
+                                Text("${snap.score}%", modifier = Modifier.width(52.dp), fontWeight = FontWeight.Bold)
+                                Text(snap.summary, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Text(
+                "经营指数表示当前营业环境的有利程度，不是营业额预测值，也不是预测准确率。",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.Gray,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+            )
         }
     }
 }
@@ -2499,12 +3045,19 @@ private fun HomeScreen(
     onFruits: () -> Unit,
     onInventory: () -> Unit,
     onOpenWeather: (String, Long?) -> Unit,
+    onOpenBusinessAdvice: (String, Long) -> Unit,
     onMore: () -> Unit,
     onOpenMore: (MorePage) -> Unit
 ) {
     var selectedDate by remember {
         mutableStateOf(
             LocalDate.now()
+        )
+    }
+    var adviceStoreId by remember(currentBook.id) {
+        mutableStateOf(
+            db.resolveWeatherStore(LocalDate.now().toString()).store?.id
+                ?: db.getStores().firstOrNull()?.id
         )
     }
     var bookMenuExpanded by remember {
@@ -3006,7 +3559,19 @@ private fun HomeScreen(
                 dataVersion = dataVersion,
                 currentBook = currentBook,
                 cloudSyncManager = cloudSyncManager,
-                onOpenDetail = onOpenWeather
+                onOpenDetail = onOpenWeather,
+                onStoreResolved = { adviceStoreId = it }
+            )
+        }
+
+        item {
+            HomeBusinessAdviceCard(
+                db = db,
+                dataVersion = dataVersion,
+                currentBook = currentBook,
+                cloudSyncManager = cloudSyncManager,
+                storeId = adviceStoreId,
+                onOpenDetail = onOpenBusinessAdvice
             )
         }
 
@@ -3395,16 +3960,6 @@ private fun HomeScreen(
                                 }
                             }
     
-                            Card(
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F9FC)),
-                                shape = RoundedCornerShape(14.dp)
-                            ) {
-                                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Text("🔮 营业预测", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                                    Text("功能预留 · 本版暂未启用", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                                }
-                            }
-
                             if (rankings.isNotEmpty()) {
                                 Text(
                                     "${selectedDate.monthValue}月营业额前三",
