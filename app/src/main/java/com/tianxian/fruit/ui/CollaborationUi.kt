@@ -416,10 +416,17 @@ internal fun MemberPermissionContent(
         )
     }
 
-    val canManage =
-        isSuperAdmin ||
-            currentBook.permission ==
-            "OWNER"
+    val canManage = isSuperAdmin
+
+    if (!isSuperAdmin) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                "成员互访与跨账本权限仅由超级管理员配置。自己的账本功能不受影响。",
+                color = Color.Gray
+            )
+        }
+        return
+    }
 
     val displayedMembers =
         remember(

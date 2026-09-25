@@ -67,6 +67,7 @@ import com.tianxian.fruit.sync.CloudApiException
 import com.tianxian.fruit.sync.CloudAuditInfo
 import com.tianxian.fruit.sync.CloudBookInfo
 import com.tianxian.fruit.sync.CloudSyncManager
+import com.tianxian.fruit.sync.WeatherAlert
 import com.tianxian.fruit.sync.WeatherClient
 import com.tianxian.fruit.sync.WeatherOverview
 import com.tianxian.fruit.sync.WeatherHour
@@ -172,13 +173,14 @@ private fun homeQuickActionAllowed(
         HomeQuickAction.PROFIT -> allowed(BookPermissions.PROFIT_VIEW)
         HomeQuickAction.BACKUP ->
             currentBook.permission == "OWNER" || systemRole == "SUPERADMIN"
-        HomeQuickAction.MEMBER_PERMISSIONS -> currentBook.cloudEnabled
+        HomeQuickAction.MEMBER_PERMISSIONS -> false
         HomeQuickAction.PARTNERS,
         HomeQuickAction.STORES,
         HomeQuickAction.FRUITS -> allowed(BookPermissions.BASIC_EDIT)
-        HomeQuickAction.BOOKS,
-        HomeQuickAction.SYSTEM_ADMIN -> systemRole == "SUPERADMIN"
-        HomeQuickAction.CLOUD_BOOKS,
+        HomeQuickAction.BOOKS ->
+            currentBook.permission == "OWNER" || systemRole == "SUPERADMIN"
+        HomeQuickAction.SYSTEM_ADMIN,
+        HomeQuickAction.CLOUD_BOOKS -> systemRole == "SUPERADMIN"
         HomeQuickAction.SECURITY,
         HomeQuickAction.HOME_HEADER,
         HomeQuickAction.ABOUT -> true
@@ -1096,7 +1098,7 @@ fun TianXianApp(
                         cloudSyncManager =
                             cloudSyncManager,
                         books =
-                            ledgerManager.books(),
+                            ledgerManager.books().filter { it.permission != "REVOKED" },
                         ledgerUiSettingsManager =
                             ledgerUiSettingsManager,
                         uiSettingsVersion =
@@ -1610,6 +1612,24 @@ private data class WeatherUiState(
     val updatedAtMillis: Long = 0L
 )
 
+private fun weatherAlertLevel(alert: WeatherAlert): Int {
+    val text = (alert.severity + " " + alert.title + " " + alert.type).lowercase(Locale.ROOT)
+    return when {
+        text.contains("红") || text.contains("red") || text.contains("extreme") -> 4
+        text.contains("橙") || text.contains("orange") || text.contains("severe") -> 3
+        text.contains("黄") || text.contains("yellow") || text.contains("moderate") -> 2
+        text.contains("蓝") || text.contains("blue") || text.contains("minor") -> 1
+        else -> 0
+    }
+}
+
+private fun weatherAlertHomeColor(level: Int): Color =
+    when {
+        level >= 4 -> Color(0xFFFFE7E7)
+        level == 3 -> Color(0xFFFFF0DC)
+        else -> Color(0xFFFFF8D8)
+    }
+
 @Composable
 private fun HomeWeatherCard(
     db: AppDatabase,
@@ -1778,6 +1798,11 @@ private fun HomeWeatherCard(
     val temp = current?.temperature?.takeIf { selectedDate == LocalDate.now() }
         ?: businessHours.firstOrNull()?.temperature
         ?: day?.tempMax
+    val homeAlerts = remember(overview?.rawJson) {
+        overview?.alerts.orEmpty()
+            .filter { weatherAlertLevel(it) >= 2 }
+            .sortedByDescending(::weatherAlertLevel)
+    }
 
     Card(
         modifier = Modifier
@@ -1886,6 +1911,38 @@ private fun HomeWeatherCard(
                             style = MaterialTheme.typography.labelSmall,
                             color = BrandGreen
                         )
+                    }
+                    if (selectedDate == LocalDate.now() && homeAlerts.isNotEmpty()) {
+                        val alert = homeAlerts.first()
+                        val level = weatherAlertLevel(alert)
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            color = weatherAlertHomeColor(level)
+                        ) {
+                            Row(
+                                Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "⚠ ${alert.title.ifBlank { "天气黄色及以上预警" }}",
+                                    modifier = Modifier.weight(1f),
+                                    fontWeight = FontWeight.SemiBold,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (homeAlerts.size > 1) {
+                                    Text(
+                                        "另有${homeAlerts.size - 1}条 ›",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.DarkGray
+                                    )
+                                } else {
+                                    Text("详情 ›", style = MaterialTheme.typography.labelSmall, color = Color.DarkGray)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -3515,7 +3572,8 @@ private fun HomeScreen(
 
                             if (
                                 systemRole ==
-                                "SUPERADMIN"
+                                "SUPERADMIN" ||
+                                currentBook.permission == "OWNER"
                             ) {
                                 HorizontalDivider()
 
@@ -11532,7 +11590,8 @@ private fun MoreScreen(
                     ) {
                         if (
                             systemRole ==
-                            "SUPERADMIN"
+                            "SUPERADMIN" ||
+                            currentBook.permission == "OWNER"
                         ) {
                             SettingsRow(
                                 "📚",
@@ -11669,29 +11728,19 @@ private fun MoreScreen(
                     }
                 }
 
-                item {
-                    SettingsSection(
-                        "云端与协作"
-                    ) {
-                        SettingsRow(
-                            "☁️",
-                            "云端共享账本"
+                if (systemRole == "SUPERADMIN") {
+                    item {
+                        SettingsSection(
+                            "云端与协作"
                         ) {
-                            sub =
-                                MorePage.CLOUD_BOOKS
-                        }
-
-                        if (
-                            currentBook.cloudEnabled
-                        ) {
-                            SettingsDivider()
                             SettingsRow(
-                                "👥",
-                                "成员与权限"
+                                "☁️",
+                                "云端共享账本"
                             ) {
                                 sub =
-                                    MorePage.MEMBER_PERMISSIONS
+                                    MorePage.CLOUD_BOOKS
                             }
+
                         }
                     }
                 }
@@ -14685,6 +14734,16 @@ private fun LedgerManagementContent(
         mutableStateOf(false)
     }
 
+    val manageableCloudBooks = remember(cloudBooks, cloudSession?.systemRole) {
+        if (cloudSession?.systemRole == "SUPERADMIN") cloudBooks
+        else cloudBooks.filter { it.role == "OWNER" }
+    }
+
+    val manageableLocalBooks = remember(books, cloudSession?.systemRole) {
+        if (cloudSession?.systemRole == "SUPERADMIN") books
+        else books.filter { it.permission == "OWNER" }
+    }
+
     var cloudBusy by remember {
         mutableStateOf(false)
     }
@@ -15363,7 +15422,7 @@ private fun LedgerManagementContent(
                         Alignment.CenterVertically
                 ) {
                     Text(
-                        "云端共享账本",
+                        if (cloudSession?.systemRole == "SUPERADMIN") "云端共享账本" else "我的云端账本",
                         style =
                             MaterialTheme
                                 .typography
@@ -15388,7 +15447,7 @@ private fun LedgerManagementContent(
             }
 
             items(
-                cloudBooks,
+                manageableCloudBooks,
                 key = {
                     "cloud_book_${it.id}"
                 }
@@ -15529,14 +15588,16 @@ private fun LedgerManagementContent(
                                 Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                OutlinedButton(
-                                    onClick = {
-                                        cloudMessage =
-                                            "成员权限请从“更多 → 成员与权限”管理"
-                                    },
-                                    enabled = !cloudBusy,
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("成员") }
+                                if (cloudSession?.systemRole == "SUPERADMIN") {
+                                    OutlinedButton(
+                                        onClick = {
+                                            cloudMessage =
+                                                "请在“系统管理 → 用户 → 配置账本访问权限”中设置谁能查看或编辑该账本"
+                                        },
+                                        enabled = !cloudBusy,
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("访问权限") }
+                                }
                                 OutlinedButton(
                                     onClick = { renameCloudBook = info },
                                     enabled = !cloudBusy,
@@ -15591,7 +15652,7 @@ private fun LedgerManagementContent(
         }
 
         items(
-            books,
+            manageableLocalBooks,
             key = {
                 "ledger_${it.id}"
             }

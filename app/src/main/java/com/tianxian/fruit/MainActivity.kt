@@ -111,6 +111,26 @@ class MainActivity : FragmentActivity() {
             ::cloudSyncManager.isInitialized &&
             ::currentBook.isInitialized
         ) {
+            Thread {
+                val downloaded = runCatching {
+                    cloudSyncManager.refreshAuthorizedBooks()
+                }.getOrDefault(0)
+
+                val liveBook = ledgerManager.getBook(currentBook.id)
+                if (liveBook?.permission == "REVOKED") {
+                    val fallback = ledgerManager.books()
+                        .firstOrNull { it.permission != "REVOKED" }
+                    if (fallback != null) {
+                        ledgerManager.setCurrentBook(fallback.id)
+                    }
+                    runOnUiThread { recreate() }
+                } else if (downloaded > 0) {
+                    runOnUiThread {
+                        SyncUiRefreshBus.version.intValue++
+                    }
+                }
+            }.start()
+
             cloudSyncManager
                 .scheduleAutoSync(
                     currentBook

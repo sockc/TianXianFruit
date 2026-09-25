@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.tianxian.fruit.sync.CloudAdminBookAccessInfo
 import com.tianxian.fruit.sync.CloudAdminDeviceInfo
 import com.tianxian.fruit.sync.CloudAdminUserInfo
 import com.tianxian.fruit.sync.CloudSyncManager
@@ -34,6 +35,10 @@ fun SystemAdminContent(
     var createUserDialog by remember {
         mutableStateOf(false)
     }
+    var accessUser by remember { mutableStateOf<CloudAdminUserInfo?>(null) }
+    var accessRows by remember { mutableStateOf<List<CloudAdminBookAccessInfo>>(emptyList()) }
+    var accessLoading by remember { mutableStateOf(false) }
+    var accessMessage by remember { mutableStateOf("") }
 
     fun runAdminTask(
         busyText: String,
@@ -132,6 +137,33 @@ fun SystemAdminContent(
                                 color = Color.Gray
                             )
                             if (user.systemRole != "SUPERADMIN") {
+                                OutlinedButton(
+                                    onClick = {
+                                        if (loading || accessLoading) return@OutlinedButton
+                                        accessUser = user
+                                        accessRows = emptyList()
+                                        accessLoading = true
+                                        accessMessage = "正在读取访问权限…"
+                                        Thread {
+                                            val result = runCatching {
+                                                cloudSyncManager.listAdminBookAccess(user.id)
+                                            }
+                                            Handler(Looper.getMainLooper()).post {
+                                                accessLoading = false
+                                                result.onSuccess {
+                                                    accessRows = it
+                                                    accessMessage = "自己的账本完整可用；其他账本需超级管理员授权"
+                                                }.onFailure {
+                                                    accessMessage = it.message ?: "读取失败"
+                                                }
+                                            }
+                                        }.start()
+                                    },
+                                    enabled = !loading && !accessLoading,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("配置账本访问权限")
+                                }
                                 Row(
                                     Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.End
@@ -160,7 +192,7 @@ fun SystemAdminContent(
                                         enabled = !loading
                                     ) { Text("退出全部") }
                                     TextButton(onClick = { deleteUser = user }, enabled = !loading) {
-                                        Text("删除账号", color = MaterialTheme.colorScheme.error)
+                                        Text("删除", color = MaterialTheme.colorScheme.error)
                                     }
                                 }
                             }
@@ -286,7 +318,7 @@ fun SystemAdminContent(
                     )
 
                     Text(
-                        "创建账号后，再到“成员与权限”把账号加入指定云端账本。",
+                        "新账号默认只能使用自己的账本。需要查看其他成员账本时，由超级管理员在“访问权限”中授权。",
                         style =
                             MaterialTheme
                                 .typography
@@ -361,6 +393,104 @@ fun SystemAdminContent(
                 ) {
                     Text("取消")
                 }
+            }
+        )
+    }
+
+    accessUser?.let { user ->
+        AlertDialog(
+            onDismissRequest = { if (!accessLoading) accessUser = null },
+            title = { Text("${user.displayName} · 账本访问权限") },
+            text = {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 560.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        accessMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (accessMessage.contains("失败")) MaterialTheme.colorScheme.error else Color.Gray
+                    )
+                    if (accessLoading && accessRows.isEmpty()) {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                    LazyColumn(
+                        Modifier.fillMaxWidth().weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(accessRows, key = { it.bookId }) { row ->
+                            Card(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                    Text(row.bookName, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        "所有者：${row.ownerDisplayName}（${row.ownerUsername}）",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color.Gray
+                                    )
+                                    if (row.accessMode == "OWNER") {
+                                        Text(
+                                            "自己的账本 · 完整权限",
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    } else {
+                                        Row(
+                                            Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            listOf(
+                                                "NONE" to "不允许",
+                                                "VIEW" to "查看",
+                                                "EDIT" to "编辑"
+                                            ).forEach { (mode, label) ->
+                                                val selected = row.accessMode == mode
+                                                if (selected) {
+                                                    Button(
+                                                        onClick = {},
+                                                        enabled = false,
+                                                        modifier = Modifier.weight(1f)
+                                                    ) { Text(label) }
+                                                } else {
+                                                    OutlinedButton(
+                                                        onClick = {
+                                                            if (accessLoading) return@OutlinedButton
+                                                            accessLoading = true
+                                                            accessMessage = "正在保存 $label 权限…"
+                                                            Thread {
+                                                                val result = runCatching {
+                                                                    cloudSyncManager.setAdminBookAccess(
+                                                                        user.id, row.bookId, mode
+                                                                    )
+                                                                    cloudSyncManager.listAdminBookAccess(user.id)
+                                                                }
+                                                                Handler(Looper.getMainLooper()).post {
+                                                                    accessLoading = false
+                                                                    result.onSuccess {
+                                                                        accessRows = it
+                                                                        accessMessage = "权限已保存；目标账号下次刷新/启动后自动生效"
+                                                                    }.onFailure {
+                                                                        accessMessage = it.message ?: "保存失败"
+                                                                    }
+                                                                }
+                                                            }.start()
+                                                        },
+                                                        enabled = !accessLoading,
+                                                        modifier = Modifier.weight(1f)
+                                                    ) { Text(label) }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { accessUser = null }, enabled = !accessLoading) { Text("完成") }
             }
         )
     }
@@ -527,5 +657,6 @@ private fun adminActionLabel(action: String): String = when (action) {
     "USER_FORCE_LOGOUT_ALL" -> "强制退出全部设备"
     "USER_RESET_PASSWORD" -> "重置密码"
     "DEVICE_REVOKE" -> "删除设备"
+    "USER_BOOK_ACCESS_UPDATE" -> "修改账本访问权限"
     else -> action
 }

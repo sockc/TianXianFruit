@@ -65,6 +65,15 @@ data class CloudAdminDeviceInfo(
     val lastSeenAt: String
 )
 
+data class CloudAdminBookAccessInfo(
+    val bookId: String,
+    val bookName: String,
+    val ownerUserId: String,
+    val ownerUsername: String,
+    val ownerDisplayName: String,
+    val accessMode: String
+)
+
 data class CloudSystemAuditInfo(
     val id: Long,
     val actorUsername: String,
@@ -371,10 +380,11 @@ class CloudSyncManager(
             )
             .apply()
 
-        // Refresh local permissions immediately. If this fails,
-        // a switched account keeps previous cloud books read-only.
+        // Refresh local permissions immediately. V1.4.7.58 also materializes
+        // every cloud book the account is explicitly allowed to access, because
+        // normal members no longer see a manual “cloud shared books” screen.
         runCatching {
-            listCloudBooks()
+            refreshAuthorizedBooks()
         }
 
         return result
@@ -571,6 +581,21 @@ class CloudSyncManager(
         return result
     }
 
+    fun refreshAuthorizedBooks(): Int {
+        val current = session() ?: return 0
+        val cloudBooks = listCloudBooks()
+        if (current.systemRole == "SUPERADMIN") return 0
+
+        var downloaded = 0
+        cloudBooks.forEach { info ->
+            if (ledgerManager.getBook(info.id) == null) {
+                downloadCloudBook(info)
+                downloaded++
+            }
+        }
+        return downloaded
+    }
+
     fun listDeletedCloudBooks(): List<CloudBookInfo> {
         val current = requireSession()
         val array = requestJson(
@@ -749,6 +774,62 @@ class CloudSyncManager(
                 )
             }
         }
+    }
+
+    fun listAdminBookAccess(userId: String): List<CloudAdminBookAccessInfo> {
+        val current = requireSession()
+        val encodedUser = URLEncoder.encode(userId, "UTF-8")
+        val array = requestJson(
+            baseUrl = current.baseUrl,
+            method = "GET",
+            path = "/api/v1/admin/users/$encodedUser/book-access",
+            body = null,
+            token = current.token
+        ) as JSONArray
+
+        return buildList {
+            for (i in 0 until array.length()) {
+                val item = array.getJSONObject(i)
+                add(
+                    CloudAdminBookAccessInfo(
+                        bookId = item.getString("book_id"),
+                        bookName = item.getString("book_name"),
+                        ownerUserId = item.getString("owner_user_id"),
+                        ownerUsername = item.getString("owner_username"),
+                        ownerDisplayName = item.getString("owner_display_name"),
+                        accessMode = item.optString("access_mode", "NONE")
+                    )
+                )
+            }
+        }
+    }
+
+    fun setAdminBookAccess(
+        userId: String,
+        bookId: String,
+        accessMode: String
+    ): CloudAdminBookAccessInfo {
+        val current = requireSession()
+        val encodedUser = URLEncoder.encode(userId, "UTF-8")
+        val encodedBook = URLEncoder.encode(bookId, "UTF-8")
+        val item = requestJson(
+            baseUrl = current.baseUrl,
+            method = "PUT",
+            path = "/api/v1/admin/users/$encodedUser/book-access/$encodedBook",
+            body = JSONObject().apply {
+                put("access_mode", accessMode.uppercase())
+            },
+            token = current.token
+        ) as JSONObject
+
+        return CloudAdminBookAccessInfo(
+            bookId = item.getString("book_id"),
+            bookName = item.getString("book_name"),
+            ownerUserId = item.getString("owner_user_id"),
+            ownerUsername = item.getString("owner_username"),
+            ownerDisplayName = item.getString("owner_display_name"),
+            accessMode = item.optString("access_mode", "NONE")
+        )
     }
 
     fun addOrUpdateMember(
