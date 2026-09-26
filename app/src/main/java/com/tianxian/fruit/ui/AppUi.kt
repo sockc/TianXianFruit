@@ -9867,7 +9867,7 @@ private fun SettlementDayContent(
     }
     val cashSnapshotStale = bundle?.settlement?.let { old ->
         kotlin.math.abs(old.revenue - summary.revenue) > 0.005 ||
-            kotlin.math.abs(old.purchaseCost - summary.purchase) > 0.005 ||
+            kotlin.math.abs(old.purchaseCost - summary.purchaseCost) > 0.005 ||
             kotlin.math.abs(old.expense - summary.expense) > 0.005 ||
             kotlin.math.abs(old.profit - summary.profit) > 0.005
     } ?: false
@@ -10562,7 +10562,7 @@ private fun SettlementDayContent(
                         )
                         val current = db.getDailySummary(h.date)
                         val stale = kotlin.math.abs(current.revenue - h.revenue) > 0.005 ||
-                            kotlin.math.abs(current.purchase - h.purchaseCost) > 0.005 ||
+                            kotlin.math.abs(current.purchaseCost - h.purchaseCost) > 0.005 ||
                             kotlin.math.abs(current.expense - h.expense) > 0.005 ||
                             kotlin.math.abs(current.profit - h.profit) > 0.005
                         if (stale) {

@@ -10861,7 +10861,7 @@ class AppDatabase(
             val old = bundle.settlement
             val stale =
                 kotlin.math.abs(old.revenue - current.revenue) > 0.005 ||
-                    kotlin.math.abs(old.purchaseCost - current.purchase) > 0.005 ||
+                    kotlin.math.abs(old.purchaseCost - current.purchaseCost) > 0.005 ||
                     kotlin.math.abs(old.expense - current.expense) > 0.005 ||
                     kotlin.math.abs(old.profit - current.profit) > 0.005
             if (!stale) return@forEach
