@@ -72,6 +72,7 @@ import com.tianxian.fruit.sync.WeatherAlert
 import com.tianxian.fruit.sync.WeatherClient
 import com.tianxian.fruit.sync.WeatherOverview
 import com.tianxian.fruit.sync.WeatherHour
+import com.tianxian.fruit.sync.WeatherDay
 import com.tianxian.fruit.update.AppUpdateCheckResult
 import com.tianxian.fruit.update.AppUpdateInfo
 import com.tianxian.fruit.update.AppUpdateManager
@@ -179,7 +180,7 @@ private fun homeQuickActionAllowed(
         HomeQuickAction.STORES,
         HomeQuickAction.FRUITS -> allowed(BookPermissions.BASIC_EDIT)
         HomeQuickAction.BOOKS ->
-            currentBook.permission == "OWNER" || systemRole == "SUPERADMIN"
+            systemRole == "SUPERADMIN"
         HomeQuickAction.SYSTEM_ADMIN,
         HomeQuickAction.CLOUD_BOOKS -> systemRole == "SUPERADMIN"
         HomeQuickAction.SECURITY,
@@ -335,7 +336,8 @@ private data class PageSyncUiContext(
     val currentBook: LedgerBook,
     val refreshVersion: Int,
     val syncing: Boolean,
-    val requestSync: () -> Unit
+    val requestSync: () -> Unit,
+    val refreshUi: () -> Unit
 )
 
 private val LocalPageSyncUiContext =
@@ -473,6 +475,14 @@ private fun PageSyncStatus(
                 .getCloudSyncLocalStatus()
         }
 
+    val conflicts =
+        remember(
+            syncContext.refreshVersion
+        ) {
+            syncContext.db
+                .getSyncConflicts()
+        }
+
     val tableError =
         remember(
             syncContext.refreshVersion,
@@ -480,18 +490,14 @@ private fun PageSyncStatus(
         ) {
             scopeTables
                 .asSequence()
-                .mapNotNull {
-                    tableName ->
+                .mapNotNull { tableName ->
                     syncContext
                         .cloudSyncManager
                         .getTableSyncError(
-                            syncContext
-                                .currentBook.id,
+                            syncContext.currentBook.id,
                             tableName
                         )
-                        .takeIf {
-                            it.isNotBlank()
-                        }
+                        .takeIf { it.isNotBlank() }
                 }
                 .firstOrNull()
                 .orEmpty()
@@ -508,12 +514,15 @@ private fun PageSyncStatus(
 
     val statusText =
         when {
-            syncContext.syncing ->
-                "↻ 同步中"
-
             syncContext.currentBook.permission ==
                 "REVOKED" ->
                 "! 无云权限"
+
+            conflicts.isNotEmpty() ->
+                "⚠ 同步冲突 ${conflicts.size}"
+
+            syncContext.syncing ->
+                "↻ 同步中"
 
             effectiveError.isNotBlank() ->
                 "! 同步异常"
@@ -522,125 +531,103 @@ private fun PageSyncStatus(
                 "↑ 待同步 $pendingCount"
 
             syncContext.currentBook.cloudEnabled -> {
-                val time =
-                    compactSyncTime(
-                        cloudStatus.lastSyncAt
-                    )
-                if (time.isBlank()) {
-                    "✓ 已同步"
-                } else {
-                    "✓ 已同步 $time"
-                }
+                val time = compactSyncTime(cloudStatus.lastSyncAt)
+                if (time.isBlank()) "✓ 已同步" else "✓ 已同步 $time"
             }
 
-            else ->
-                "仅本机"
+            else -> "仅本机"
         }
 
     val statusColor =
         when {
-            effectiveError.isNotBlank() ||
-                syncContext.currentBook.permission ==
-                    "REVOKED" ->
+            conflicts.isNotEmpty() ||
+                effectiveError.isNotBlank() ||
+                syncContext.currentBook.permission == "REVOKED" ->
                 MaterialTheme.colorScheme.error
 
-            syncContext.syncing ->
-                BrandGreen
-
-            pendingCount > 0 ->
-                Color(0xFFC37B00)
-
-            syncContext.currentBook.cloudEnabled ->
-                BrandGreen
-
-            else ->
-                Color.Gray
+            syncContext.syncing -> BrandGreen
+            pendingCount > 0 -> Color(0xFFC37B00)
+            syncContext.currentBook.cloudEnabled -> BrandGreen
+            else -> Color.Gray
         }
 
-    var showDetails by remember {
-        mutableStateOf(false)
-    }
+    var showDetails by remember { mutableStateOf(false) }
+    var showConflictDialog by remember { mutableStateOf(false) }
+    var conflictBusy by remember { mutableStateOf(false) }
+    var conflictMessage by remember { mutableStateOf("") }
+    val coroutineScope = rememberCoroutineScope()
 
     Surface(
-        modifier =
-            Modifier
-                .clip(
-                    RoundedCornerShape(14.dp)
-                )
-                .clickable {
-                    showDetails = true
-                },
-        color =
-            statusColor.copy(
-                alpha = 0.09f
-            )
+        modifier = Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .clickable { showDetails = true },
+        color = statusColor.copy(alpha = 0.09f)
     ) {
         Text(
             statusText,
-            modifier =
-                Modifier.padding(
-                    horizontal = 9.dp,
-                    vertical = 5.dp
-                ),
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
             color = statusColor,
-            style =
-                MaterialTheme.typography
-                    .labelSmall,
-            fontWeight =
-                FontWeight.SemiBold,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
             maxLines = 1
         )
     }
 
     if (showDetails) {
         AlertDialog(
-            onDismissRequest = {
-                showDetails = false
-            },
-            title = {
-                Text("同步详情")
-            },
+            onDismissRequest = { showDetails = false },
+            title = { Text("同步详情") },
             text = {
-                Column(
-                    verticalArrangement =
-                        Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(
-                        "当前页面：$pageTitle"
-                    )
-                    Text(
-                        "最近同步：" +
-                            formatDateTime(
-                                cloudStatus.lastSyncAt
-                            )
-                    )
-                    Text(
-                        "当前页面待上传：" +
-                            "$pendingCount 条"
-                    )
-                    if (
-                        allPendingCount !=
-                        pendingCount
-                    ) {
+                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    if (conflicts.isNotEmpty()) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
+                        ) {
+                            Column(
+                                Modifier.fillMaxWidth().padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Text(
+                                    "⚠ 同步冲突 ${conflicts.size} 条",
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    "本机与云端存在不同版本，请逐条确认保留哪一份。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.DarkGray
+                                )
+                                Button(
+                                    onClick = {
+                                        showDetails = false
+                                        showConflictDialog = true
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("处理冲突 ›")
+                                }
+                            }
+                        }
+                    }
+                    Text("当前页面：$pageTitle")
+                    Text("最近同步：${formatDateTime(cloudStatus.lastSyncAt)}")
+                    Text("当前页面待上传：$pendingCount 条")
+                    if (allPendingCount != pendingCount) {
+                        Text("全账本待上传：$allPendingCount 条")
+                    }
+                    Text("同步序号：${cloudStatus.serverCursor}")
+                    if (effectiveError.isNotBlank()) {
                         Text(
-                            "全账本待上传：" +
-                                "$allPendingCount 条"
+                            "最近错误：$effectiveError",
+                            color = MaterialTheme.colorScheme.error
                         )
                     }
-                    Text(
-                        "同步序号：" +
-                            cloudStatus.serverCursor
-                    )
-                    if (
-                        effectiveError.isNotBlank()
-                    ) {
+                    if (conflictMessage.isNotBlank()) {
                         Text(
-                            "最近错误：" +
-                                effectiveError,
-                            color =
-                                MaterialTheme
-                                    .colorScheme
-                                    .error
+                            conflictMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
                         )
                     }
                 }
@@ -653,22 +640,68 @@ private fun PageSyncStatus(
                     },
                     enabled =
                         !syncContext.syncing &&
-                            syncContext.currentBook
-                                .permission !=
-                                "REVOKED"
+                            syncContext.currentBook.permission != "REVOKED"
                 ) {
                     Text("立即同步")
                 }
             },
             dismissButton = {
-                TextButton(
-                    onClick = {
-                        showDetails = false
-                    }
-                ) {
+                TextButton(onClick = { showDetails = false }) {
                     Text("关闭")
                 }
             }
+        )
+    }
+
+    fun resolveConflict(
+        conflict: SyncConflictRecord,
+        keepLocal: Boolean
+    ) {
+        if (conflictBusy) return
+        conflictBusy = true
+        conflictMessage = if (keepLocal) "正在保留本机版本…" else "正在采用云端版本…"
+        coroutineScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val syncResult =
+                        if (keepLocal) {
+                            syncContext.cloudSyncManager.resolveConflictUseLocal(
+                                db = syncContext.db,
+                                book = syncContext.currentBook,
+                                conflict = conflict
+                            )
+                        } else {
+                            syncContext.cloudSyncManager.resolveConflictUseCloud(
+                                db = syncContext.db,
+                                book = syncContext.currentBook,
+                                conflict = conflict
+                            )
+                        }
+                    syncResult.message to syncContext.db.getSyncConflictCount()
+                }
+            }
+            conflictBusy = false
+            result.fold(
+                onSuccess = { (message, remaining) ->
+                    conflictMessage = message
+                    syncContext.refreshUi()
+                    if (remaining == 0) showConflictDialog = false
+                },
+                onFailure = { error ->
+                    conflictMessage = "处理失败：${error.message ?: error.javaClass.simpleName}"
+                    syncContext.refreshUi()
+                }
+            )
+        }
+    }
+
+    if (showConflictDialog && conflicts.isNotEmpty()) {
+        SyncConflictDialog(
+            conflicts = conflicts,
+            busy = conflictBusy,
+            onDismiss = { showConflictDialog = false },
+            onUseCloud = { conflict -> resolveConflict(conflict, keepLocal = false) },
+            onUseLocal = { conflict -> resolveConflict(conflict, keepLocal = true) }
         )
     }
 }
@@ -1039,6 +1072,9 @@ fun TianXianApp(
                         .scheduleAutoSync(
                             liveCurrentBook
                         )
+                },
+                refreshUi = {
+                    dataVersion++
                 }
             )
 
@@ -1573,9 +1609,11 @@ private fun MetricCard(title: String, value: String, modifier: Modifier = Modifi
 }
 
 
-private fun weatherEmoji(code: String, text: String): String {
+private fun weatherEmoji(code: String, text: String, isNight: Boolean = false): String {
     val t = text.lowercase(Locale.CHINA)
     val c = code.toIntOrNull() ?: -1
+    val nightCode = c in 150..153 || c in 350..351
+    val night = isNight || nightCode
     return when {
         "雷" in t -> "⛈️"
         "暴雨" in t -> "🌧️"
@@ -1583,12 +1621,304 @@ private fun weatherEmoji(code: String, text: String): String {
         "雪" in t -> "🌨️"
         "雾" in t || "霾" in t -> "🌫️"
         "阴" in t -> "☁️"
-        "云" in t -> "⛅"
-        "晴" in t -> "☀️"
+        "云" in t -> if (night) "🌙☁️" else "⛅"
+        "晴" in t -> if (night) "🌙" else "☀️"
         c in 300..399 -> "🌧️"
         c in 400..499 -> "🌨️"
         c in 500..515 -> "🌫️"
-        else -> "🌤️"
+        c in 150..153 -> if (c == 150) "🌙" else "🌙☁️"
+        c in 100..104 -> if (night) "🌙☁️" else if (c == 100) "☀️" else "⛅"
+        else -> if (night) "🌙☁️" else "🌤️"
+    }
+}
+
+private fun weatherClockMinutes(value: String): Int? {
+    val raw = if ('T' in value) value.substringAfter('T') else value
+    val hhmm = raw.take(5)
+    val parts = hhmm.split(':')
+    if (parts.size != 2) return null
+    val hour = parts[0].toIntOrNull() ?: return null
+    val minute = parts[1].toIntOrNull() ?: return null
+    if (hour !in 0..24 || minute !in 0..59) return null
+    return hour * 60 + minute
+}
+
+private fun weatherHourIsNight(time: String, day: WeatherDay?, code: String): Boolean {
+    val c = code.toIntOrNull() ?: -1
+    if (c in 150..153 || c in 350..351) return true
+    val minute = weatherClockMinutes(time) ?: return false
+    val sunrise = weatherClockMinutes(day?.sunrise.orEmpty()) ?: 6 * 60
+    val sunset = weatherClockMinutes(day?.sunset.orEmpty()) ?: 18 * 60
+    return minute < sunrise || minute >= sunset
+}
+
+private fun weatherDominantText(hours: List<WeatherHour>): String =
+    hours
+        .map { it.text.trim() }
+        .filter { it.isNotBlank() }
+        .groupingBy { it }
+        .eachCount()
+        .maxByOrNull { it.value }
+        ?.key
+        .orEmpty()
+
+private fun weatherRainPeriodSummary(hours: List<WeatherHour>): String {
+    val minutes = hours
+        .filter { (it.precipitation ?: 0.0) > 0.05 || (it.precipitationProbability ?: 0.0) >= 40.0 }
+        .mapNotNull { weatherClockMinutes(it.time) }
+        .distinct()
+        .sorted()
+    if (minutes.isEmpty()) return ""
+
+    val ranges = mutableListOf<Pair<Int, Int>>()
+    var start = minutes.first()
+    var previous = start
+    minutes.drop(1).forEach { minute ->
+        if (minute - previous <= 60) {
+            previous = minute
+        } else {
+            ranges += start to previous
+            start = minute
+            previous = minute
+        }
+    }
+    ranges += start to previous
+
+    fun hhmm(value: Int): String {
+        val safe = value.coerceIn(0, 24 * 60)
+        return "%02d:%02d".format(Locale.CHINA, safe / 60, safe % 60)
+    }
+
+    return ranges.joinToString("、") { (from, to) ->
+        if (from == to) "${hhmm(from)}附近"
+        else "${hhmm(from)}–${hhmm((to + 60).coerceAtMost(24 * 60))}"
+    }
+}
+
+@Composable
+private fun DetailedWeatherSummaryCard(
+    selectedDate: LocalDate,
+    store: StoreOption?,
+    day: WeatherDay?,
+    dayHours: List<WeatherHour>,
+    businessHours: List<WeatherHour>,
+    historical: Boolean,
+    alerts: List<WeatherAlert>
+) {
+    var expanded by remember(selectedDate, store?.id) { mutableStateOf(false) }
+    val today = LocalDate.now()
+    val label = when {
+        historical || selectedDate.isBefore(today) -> "实际天气汇总"
+        selectedDate == today -> "今日天气汇总"
+        else -> "天气预报汇总"
+    }
+    val factPrefix = if (historical || selectedDate.isBefore(today)) "实际" else "预计"
+    val availableHours = dayHours.sortedBy { weatherClockMinutes(it.time) ?: Int.MAX_VALUE }
+    val temps = availableHours.mapNotNull { it.temperature }
+    val humidities = availableHours.mapNotNull { it.humidity }
+    val winds = availableHours.mapNotNull { it.windSpeed }
+    val peakHour = availableHours.maxByOrNull { it.temperature ?: Double.NEGATIVE_INFINITY }
+    val minTemp = day?.tempMin ?: temps.minOrNull()
+    val maxTemp = day?.tempMax ?: temps.maxOrNull()
+    val rainAmount = availableHours.sumOf { it.precipitation ?: 0.0 }
+    val maxPop = availableHours.mapNotNull { it.precipitationProbability }.maxOrNull()
+    val rainPeriods = weatherRainPeriodSummary(availableHours)
+    val businessRain = businessHours.sumOf { it.precipitation ?: 0.0 }
+    val businessPop = businessHours.mapNotNull { it.precipitationProbability }.maxOrNull()
+    val businessStart = storeTimeMinutes(store?.defaultStartTime.orEmpty(), 16 * 60)
+    val before3 = availableHours.filter {
+        val minute = weatherClockMinutes(it.time) ?: return@filter false
+        minute in maxOf(0, businessStart - 180) until businessStart
+    }
+    val before3Rain = before3.sumOf { it.precipitation ?: 0.0 }
+    val before3Pop = before3.mapNotNull { it.precipitationProbability }.maxOrNull()
+    val dayText = day?.textDay.orEmpty().ifBlank { weatherDominantText(availableHours.filter { !weatherHourIsNight(it.time, day, it.code) }) }
+    val nightText = day?.textNight.orEmpty().ifBlank { weatherDominantText(availableHours.filter { weatherHourIsNight(it.time, day, it.code) }) }
+    val generalText = when {
+        dayText.isNotBlank() && nightText.isNotBlank() && dayText != nightText -> "白天$dayText，夜间$nightText"
+        dayText.isNotBlank() -> dayText
+        nightText.isNotBlank() -> nightText
+        else -> weatherDominantText(availableHours).ifBlank { "天气数据正在完善" }
+    }
+    val opening = businessHours.firstOrNull()
+    val closing = businessHours.lastOrNull()
+    val rainyHours = availableHours.filter { (it.precipitation ?: 0.0) > 0.05 || (it.precipitationProbability ?: 0.0) >= 40.0 }
+    val firstRain = rainyHours.firstOrNull()?.time?.let(::weatherHourLabel).orEmpty()
+    val lastRain = rainyHours.lastOrNull()?.time?.let(::weatherHourLabel).orEmpty()
+    val peakTime = peakHour?.time?.let(::weatherHourLabel).orEmpty()
+    val tags = buildList {
+        if (before3Rain > 0.05 || (before3Pop ?: 0.0) >= 40.0) add("开摊前有雨")
+        if (businessRain > 0.05 || (businessPop ?: 0.0) >= 40.0) add("营业时段有雨")
+        else if (businessHours.isNotEmpty()) add("营业时段少雨")
+        if ((maxTemp ?: 0.0) >= 30.0) add("午后偏热")
+        if ((humidities.maxOrNull() ?: 0.0) >= 85.0) add("湿度偏高")
+        if (alerts.isNotEmpty()) add("有天气预警")
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F8FF)),
+        border = BorderStroke(1.dp, Color(0xFF9CC8E8)),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(13.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(label, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    Text(
+                        "${store?.name ?: "未选择位置"} · ${weatherDateLabel(selectedDate)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Gray
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(weatherEmoji(day?.codeDay.orEmpty(), dayText, false), fontSize = 24.sp)
+                    if (nightText.isNotBlank() || day?.codeNight.orEmpty().isNotBlank()) {
+                        Text("→", color = Color.Gray, fontSize = 12.sp)
+                        Text(weatherEmoji(day?.codeNight.orEmpty(), nightText, true), fontSize = 23.sp)
+                    }
+                }
+            }
+
+            if (tags.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    tags.forEach { tag ->
+                        Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = Color.White,
+                            border = BorderStroke(1.dp, Color(0xFFD5E5F2))
+                        ) {
+                            Text(
+                                tag,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF315E7A)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Text(generalText, fontWeight = FontWeight.SemiBold)
+            Text(
+                buildString {
+                    append("温度 ${weatherTemp(minTemp)} ～ ${weatherTemp(maxTemp)}")
+                    if (peakTime.isNotBlank() && peakHour?.temperature != null) {
+                        append("；最高约 ${weatherTemp(peakHour.temperature)} 出现在 $peakTime")
+                    }
+                },
+                style = MaterialTheme.typography.bodySmall
+            )
+
+            Text(
+                if (rainPeriods.isNotBlank()) {
+                    buildString {
+                        append("降雨：$factPrefix $rainPeriods 有明显降雨")
+                        if (rainAmount > 0.0) append("；可用逐小时累计约 ${weatherAmount(rainAmount)}")
+                        if (maxPop != null) append("；最高降雨概率 ${weatherPercent(maxPop)}")
+                    }
+                } else {
+                    buildString {
+                        append("降雨：${if (historical) "可用实况未见明显降雨" else "暂未见明显降雨信号"}")
+                        if (maxPop != null) append("；最高降雨概率 ${weatherPercent(maxPop)}")
+                    }
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF2C6E9B)
+            )
+
+            Text(
+                if (businessHours.isNotEmpty()) {
+                    buildString {
+                        append("营业时段 ${businessTimeLabel(store)}：")
+                        opening?.temperature?.let { append("开摊约 ${weatherTemp(it)}") }
+                        opening?.humidity?.let { append(" · 湿度 ${weatherPercent(it)}") }
+                        if (opening?.windDirection.orEmpty().isNotBlank() || opening?.windScale.orEmpty().isNotBlank()) {
+                            append(" · ${opening?.windDirection.orEmpty()}${opening?.windScale.orEmpty()}级")
+                        }
+                        if (closing?.temperature != null && closing !== opening) append("；后段约 ${weatherTemp(closing.temperature)}")
+                        append("；${if (historical) "实况" else "预计"}降雨 ${weatherAmount(businessRain)}")
+                    }
+                } else {
+                    "营业时段 ${businessTimeLabel(store)}：逐小时数据不足，暂无法形成完整时段汇总"
+                },
+                style = MaterialTheme.typography.bodySmall
+            )
+
+            TextButton(
+                onClick = { expanded = !expanded },
+                contentPadding = PaddingValues(0.dp)
+            ) {
+                Text(if (expanded) "收起详细天气 ▲" else "展开详细天气 ▼")
+            }
+
+            if (expanded) {
+                HorizontalDivider(color = Color(0xFFD8E6F0))
+                Text("降雨过程", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    buildString {
+                        if (rainPeriods.isBlank()) {
+                            append("当前可用数据没有明显降雨时段。")
+                        } else {
+                            append("$factPrefix $rainPeriods 出现降雨信号。")
+                            if (firstRain.isNotBlank()) append(" 首次约 $firstRain")
+                            if (lastRain.isNotBlank()) append("，最后约 $lastRain。")
+                        }
+                        if (before3.isNotEmpty()) {
+                            append(" 开摊前3小时${if (historical) "实况" else "预计"}雨量 ${weatherAmount(before3Rain)}")
+                            if (before3Pop != null) append("，最高概率 ${weatherPercent(before3Pop)}")
+                            append("。")
+                        }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.DarkGray
+                )
+
+                Text("温度、湿度与风", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    buildString {
+                        if (humidities.isNotEmpty()) {
+                            append("湿度约 ${weatherPercent(humidities.minOrNull())}～${weatherPercent(humidities.maxOrNull())}")
+                        } else append("湿度暂无完整数据")
+                        if (winds.isNotEmpty()) {
+                            append("；最大风速 ${windSpeedText(winds.maxOrNull())}")
+                        }
+                        val firstWind = availableHours.firstOrNull { it.windDirection.isNotBlank() || it.windScale.isNotBlank() }
+                        if (firstWind != null) append("，主要为 ${firstWind.windDirection}${firstWind.windScale}级")
+                        append("。")
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.DarkGray
+                )
+
+                Text("昼夜与关键时间", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    buildString {
+                        if (day?.sunrise.orEmpty().isNotBlank()) append("日出 ${weatherHourLabel(day!!.sunrise)}")
+                        if (day?.sunset.orEmpty().isNotBlank()) {
+                            if (isNotEmpty()) append(" · ")
+                            append("日落 ${weatherHourLabel(day!!.sunset)}")
+                        }
+                        if (peakTime.isNotBlank()) {
+                            if (isNotEmpty()) append(" · ")
+                            append("最高温 $peakTime")
+                        }
+                        if (lastRain.isNotBlank()) {
+                            if (isNotEmpty()) append(" · ")
+                            append("最后降雨 $lastRain")
+                        }
+                        if (isEmpty()) append("暂无完整日出、日落或关键时点数据")
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.DarkGray
+                )
+            }
+        }
     }
 }
 
@@ -3072,7 +3402,14 @@ private fun WeatherDetailContent(
                             val firstHour = hourly24.firstOrNull() ?: hoursForDate.firstOrNull()
                             val text = c?.text ?: day?.textDay.orEmpty().ifBlank { firstHour?.text.orEmpty() }
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(weatherEmoji(c?.code ?: day?.codeDay.orEmpty(), text), fontSize = 46.sp)
+                                Text(
+                                    weatherEmoji(
+                                        c?.code ?: day?.codeDay.orEmpty(),
+                                        text,
+                                        c?.let { weatherHourIsNight(it.time, day, it.code) } ?: false
+                                    ),
+                                    fontSize = 46.sp
+                                )
                                 Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text(text.ifBlank { "天气" }, fontSize = 20.sp, fontWeight = FontWeight.Bold)
@@ -3097,6 +3434,18 @@ private fun WeatherDetailContent(
         }
 
         if (ov != null) {
+            item {
+                DetailedWeatherSummaryCard(
+                    selectedDate = selectedDate,
+                    store = store,
+                    day = day,
+                    dayHours = hoursForDate,
+                    businessHours = business,
+                    historical = ov.historical,
+                    alerts = ov.alerts
+                )
+            }
+
             if (ov.alerts.isNotEmpty()) {
                 item {
                     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFEEEE))) {
@@ -3151,7 +3500,14 @@ private fun WeatherDetailContent(
                                     verticalArrangement = Arrangement.spacedBy(3.dp)
                                 ) {
                                     Text(weatherHourLabel(h.time), fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelMedium)
-                                    Text(weatherEmoji(h.code, h.text), fontSize = 24.sp)
+                                    Text(
+                                        weatherEmoji(
+                                            h.code,
+                                            h.text,
+                                            weatherHourIsNight(h.time, day, h.code)
+                                        ),
+                                        fontSize = 24.sp
+                                    )
                                     Text(h.text.ifBlank { "—" }, style = MaterialTheme.typography.labelSmall, maxLines = 1)
                                     Text(weatherTemp(h.temperature), fontSize = 18.sp, fontWeight = FontWeight.Bold)
                                     if (ov.historical) {
@@ -3231,36 +3587,96 @@ private fun WeatherDetailContent(
 
             item {
                 Text("未来15天天气", fontWeight = FontWeight.Bold)
-                Text("8–15天为远期趋势参考；逐小时预报以天气服务实际覆盖时段为准", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Text(
+                    "一行一天；点击任意日期查看该日逐小时预报。8–15天为趋势参考。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.Gray
+                )
                 val futureDays = forecast15?.daily.orEmpty().take(15)
                 if (futureDays.isEmpty()) {
                     Text("暂无15天预报数据", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
                 } else {
-                    Row(
-                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(7.dp)
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        shape = RoundedCornerShape(12.dp)
                     ) {
-                        futureDays.forEachIndexed { index, d ->
-                            val parsedDate = runCatching { LocalDate.parse(d.date) }.getOrNull()
-                            val selected = parsedDate == selectedDate
-                            Surface(
-                                modifier = Modifier.width(96.dp).clickable(enabled = parsedDate != null) { parsedDate?.let { selectedDate = it } },
-                                shape = RoundedCornerShape(11.dp),
-                                color = if (selected) Color(0xFFE7F6ED) else Color.White,
-                                border = BorderStroke(1.dp, if (selected) BrandGreen else Color(0xFFE2E4E8))
-                            ) {
-                                Column(
-                                    Modifier.padding(horizontal = 7.dp, vertical = 8.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                        Column {
+                            futureDays.forEachIndexed { index, d ->
+                                val parsedDate = runCatching { LocalDate.parse(d.date) }.getOrNull()
+                                val selected = parsedDate == selectedDate
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(if (selected) Color(0xFFE7F6ED) else Color.Transparent)
+                                        .clickable(enabled = parsedDate != null) { parsedDate?.let { selectedDate = it } }
+                                        .padding(horizontal = 10.dp, vertical = 9.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(7.dp)
                                 ) {
-                                    Text(parsedDate?.let { "${it.monthValue}/${it.dayOfMonth}" } ?: d.date, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelMedium)
-                                    if (index >= 7) Text("趋势", style = MaterialTheme.typography.labelSmall, color = Color(0xFF8A6D00))
-                                    else Text(parsedDate?.let { chineseWeekday(it).removePrefix("星期") } ?: "", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                                    Text(weatherEmoji(d.codeDay, d.textDay), fontSize = 20.sp)
-                                    Text(d.textDay.ifBlank { "—" }, style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                                    Text("${weatherTemp(d.tempMin)}/${weatherTemp(d.tempMax)}", style = MaterialTheme.typography.labelSmall)
-                                    Text(weatherPercent(d.precipitationProbability), style = MaterialTheme.typography.labelSmall, color = Color(0xFF2C6E9B))
+                                    Column(Modifier.width(66.dp)) {
+                                        Text(
+                                            parsedDate?.let { "${it.monthValue}/${it.dayOfMonth}" } ?: d.date,
+                                            fontWeight = FontWeight.SemiBold,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                        Text(
+                                            if (index >= 7) "趋势" else parsedDate?.let { chineseWeekday(it).removePrefix("星期") }.orEmpty(),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (index >= 7) Color(0xFF8A6D00) else Color.Gray
+                                        )
+                                    }
+
+                                    Row(
+                                        modifier = Modifier.width(64.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.Center
+                                    ) {
+                                        Text(weatherEmoji(d.codeDay, d.textDay, false), fontSize = 18.sp)
+                                        Text("→", fontSize = 10.sp, color = Color.Gray)
+                                        Text(weatherEmoji(d.codeNight, d.textNight, true), fontSize = 18.sp)
+                                    }
+
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            buildString {
+                                                append(d.textDay.ifBlank { "—" })
+                                                if (d.textNight.isNotBlank() && d.textNight != d.textDay) {
+                                                    append(" / ")
+                                                    append(d.textNight)
+                                                }
+                                            },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        if (selected) {
+                                            Text(
+                                                "已选中，点击上方查看详细汇总与逐小时",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = BrandGreen,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+
+                                    Text(
+                                        "${weatherTemp(d.tempMin)}～${weatherTemp(d.tempMax)}",
+                                        modifier = Modifier.width(68.dp),
+                                        textAlign = TextAlign.End,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        weatherPercent(d.precipitationProbability),
+                                        modifier = Modifier.width(44.dp),
+                                        textAlign = TextAlign.End,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(0xFF2C6E9B)
+                                    )
+                                }
+                                if (index != futureDays.lastIndex) {
+                                    HorizontalDivider(color = Color(0xFFF0F1F3))
                                 }
                             }
                         }
@@ -3385,23 +3801,6 @@ private fun WeatherDetailContent(
                 }
             }
 
-            item {
-                Text(if (ov.historical) "营业日天气汇总" else "所选日期天气汇总", fontWeight = FontWeight.Bold)
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ov.daily.filter { it.date == selectedDate.toString() }.ifEmpty { ov.daily.take(1) }.forEach { d ->
-                        Row(
-                            Modifier.fillMaxWidth().background(Color.White, RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(runCatching { LocalDate.parse(d.date) }.getOrNull()?.let { weatherDateLabel(it) } ?: d.date, Modifier.width(118.dp), style = MaterialTheme.typography.bodySmall)
-                            Text(weatherEmoji(d.codeDay, d.textDay), modifier = Modifier.width(34.dp), fontSize = 18.sp)
-                            Text(d.textDay.ifBlank { "—" }, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                            Text("${weatherTemp(d.tempMin)} / ${weatherTemp(d.tempMax)}", modifier = Modifier.width(72.dp), textAlign = TextAlign.End, style = MaterialTheme.typography.bodySmall)
-                            Text(weatherPercent(d.precipitationProbability), modifier = Modifier.width(52.dp), textAlign = TextAlign.End, color = Color(0xFF2C6E9B), style = MaterialTheme.typography.labelSmall)
-                        }
-                    }
-                }
-            }
             item {
                 Text("数据来源：${ov.attribution} · 左右滑动切换日期", style = MaterialTheme.typography.labelSmall, color = Color.Gray, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
             }
@@ -3824,8 +4223,7 @@ private fun HomeScreen(
 
                             if (
                                 systemRole ==
-                                "SUPERADMIN" ||
-                                currentBook.permission == "OWNER"
+                                "SUPERADMIN"
                             ) {
                                 HorizontalDivider()
 
@@ -9138,15 +9536,6 @@ private fun SessionScreen(
         }
 
         item {
-            CompactNumberField(
-                "日常开销",
-                expense,
-                { expense = it },
-                Modifier.fillMaxWidth()
-            )
-        }
-
-        item {
             receiptRows.forEachIndexed { index, row ->
                 ReceiptSplitDraftRow(
                     row = row,
@@ -9171,13 +9560,21 @@ private fun SessionScreen(
                     .fillMaxWidth()
                     .padding(top = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.Top
             ) {
+                CompactNumberField(
+                    "日常开销",
+                    expense,
+                    { expense = it },
+                    Modifier.weight(1f)
+                )
+
                 Box(Modifier.weight(1f)) {
                     CompactSelectButton(
                         "费用付款人",
                         expensePayerDisplayName,
-                        Modifier.fillMaxWidth()
+                        Modifier.fillMaxWidth(),
+                        controlHeightDp = 36
                     ) { expensePayerMenu = true }
                     DropdownMenu(
                         expanded = expensePayerMenu,
@@ -9203,28 +9600,38 @@ private fun SessionScreen(
                         )
                     }
                 }
-                OutlinedButton(
-                    onClick = {
-                        val unused =
-                            partners.firstOrNull { p ->
-                                receiptRows.none { it.partnerId == p.id }
-                            }
-                        receiptRows.add(
-                            ReceiptDraftRow(
-                                rowId = nextReceiptRowId++,
-                                partnerId = unused?.id,
-                                partnerNameSnapshot = unused?.name.orEmpty()
-                            )
-                        )
-                    },
-                    modifier = Modifier.weight(0.72f).height(34.dp),
-                    contentPadding = PaddingValues(horizontal = 7.dp, vertical = 0.dp),
-                    enabled = partners.isNotEmpty()
-                ) {
+
+                Column(Modifier.weight(0.92f)) {
                     Text(
-                        if (receiptRows.size > 1) "＋ 再添加" else "＋ 添加收款人",
-                        fontSize = 12.sp
+                        "添加收款人",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Gray,
+                        maxLines = 1
                     )
+                    OutlinedButton(
+                        onClick = {
+                            val unused =
+                                partners.firstOrNull { p ->
+                                    receiptRows.none { it.partnerId == p.id }
+                                }
+                            receiptRows.add(
+                                ReceiptDraftRow(
+                                    rowId = nextReceiptRowId++,
+                                    partnerId = unused?.id,
+                                    partnerNameSnapshot = unused?.name.orEmpty()
+                                )
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth().height(36.dp),
+                        contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp),
+                        enabled = partners.isNotEmpty()
+                    ) {
+                        Text(
+                            if (receiptRows.size > 1) "＋ 再添加" else "＋ 添加",
+                            fontSize = 12.sp,
+                            maxLines = 1
+                        )
+                    }
                 }
             }
         }
@@ -12110,8 +12517,7 @@ private fun MoreScreen(
                     ) {
                         if (
                             systemRole ==
-                            "SUPERADMIN" ||
-                            currentBook.permission == "OWNER"
+                            "SUPERADMIN"
                         ) {
                             SettingsRow(
                                 "📚",
@@ -23372,12 +23778,18 @@ private fun CollectorSelector(partners: List<PartnerOption>, selectedId: Long?, 
 }
 
 @Composable
-private fun CompactSelectButton(label: String, value: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun CompactSelectButton(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    controlHeightDp: Int = 40,
+    onClick: () -> Unit
+) {
     Column(modifier) {
         Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
         OutlinedButton(
             onClick = onClick,
-            modifier = Modifier.fillMaxWidth().height(40.dp),
+            modifier = Modifier.fillMaxWidth().height(controlHeightDp.dp),
             contentPadding = PaddingValues(horizontal = 9.dp, vertical = 2.dp)
         ) {
             Text(value, modifier = Modifier.weight(1f), maxLines = 1, fontSize = 13.sp)
