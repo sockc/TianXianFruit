@@ -13,6 +13,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -139,7 +140,7 @@ private enum class HomeQuickAction(
     OPERATING_ANALYSIS("🧮", "经营分析", MorePage.OPERATING_ANALYSIS),
     PERSONAL_SUMMARY("👤", "个人汇总", MorePage.PERSONAL_SUMMARY),
     REPORT("📄", "生成报表", MorePage.REPORT),
-    PROFIT("💰", "利润分配", MorePage.PROFIT),
+    PROFIT("💰", "合伙人与利润", MorePage.PROFIT),
     BACKUP("💾", "数据备份", MorePage.BACKUP),
     CLOUD_BOOKS("☁️", "云端账本", MorePage.CLOUD_BOOKS),
     MEMBER_PERMISSIONS("👥", "成员权限", MorePage.MEMBER_PERMISSIONS),
@@ -716,6 +717,46 @@ fun TianXianApp(
         mutableStateOf(false)
     }
 
+    // V1.4.7.59 全局未保存编辑保护：业务页把当前 dirty/save/discard
+    // 注册到这里，切日期、切导航、返回时统一拦截。
+    var editGuardDirty by remember { mutableStateOf(false) }
+    var editGuardLabel by remember { mutableStateOf("当前修改") }
+    var editGuardSave by remember { mutableStateOf<(() -> Boolean)?>(null) }
+    var editGuardDiscard by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var pendingLeaveAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var showUnsavedDialog by remember { mutableStateOf(false) }
+
+    fun registerEditGuard(
+        dirty: Boolean,
+        label: String,
+        save: (() -> Boolean)?,
+        discard: (() -> Unit)?
+    ) {
+        editGuardDirty = dirty
+        editGuardLabel = label
+        editGuardSave = save
+        editGuardDiscard = discard
+    }
+
+    fun requestLeave(action: () -> Unit) {
+        if (editGuardDirty) {
+            pendingLeaveAction = action
+            showUnsavedDialog = true
+        } else {
+            action()
+        }
+    }
+
+    fun finishPendingLeave() {
+        val action = pendingLeaveAction
+        pendingLeaveAction = null
+        showUnsavedDialog = false
+        editGuardDirty = false
+        editGuardSave = null
+        editGuardDiscard = null
+        action?.invoke()
+    }
+
     val syncRefreshVersion =
         SyncUiRefreshBus.version.intValue
 
@@ -962,16 +1003,18 @@ fun TianXianApp(
     }
 
     BackHandler(enabled = weatherDetailVisible || businessAdviceVisible || page != AppPage.HOME) {
-        when {
-            weatherDetailVisible -> {
-                weatherDetailVisible = false
-                page = weatherReturnPage
+        requestLeave {
+            when {
+                weatherDetailVisible -> {
+                    weatherDetailVisible = false
+                    page = weatherReturnPage
+                }
+                businessAdviceVisible -> {
+                    businessAdviceVisible = false
+                    page = businessAdviceReturnPage
+                }
+                else -> page = AppPage.HOME
             }
-            businessAdviceVisible -> {
-                businessAdviceVisible = false
-                page = businessAdviceReturnPage
-            }
-            else -> page = AppPage.HOME
         }
     }
 
@@ -1031,14 +1074,12 @@ fun TianXianApp(
                             selected = page == item,
                             enabled = true,
                             onClick = {
-                                if (
-                                    item ==
-                                    AppPage.MORE
-                                ) {
-                                    moreTarget =
-                                        MorePage.MENU
+                                requestLeave {
+                                    if (item == AppPage.MORE) {
+                                        moreTarget = MorePage.MENU
+                                    }
+                                    page = item
                                 }
-                                page = item
                             },
                             icon = {
                                 Text(item.emoji)
@@ -1229,8 +1270,9 @@ fun TianXianApp(
                             db = db,
                             dataVersion = dataVersion,
                             workDate = workDate,
-                            onWorkDateChange = { workDate = it },
-                            onChanged = { notifyDataChanged() }
+                            onWorkDateChange = { newDate -> requestLeave { workDate = newDate } },
+                            onChanged = { notifyDataChanged() },
+                            onEditGuardChange = { dirty, label, save, discard -> registerEditGuard(dirty, label, save, discard) }
                         )
                     AppPage.PURCHASE ->
                         PurchaseScreen(
@@ -1238,19 +1280,20 @@ fun TianXianApp(
                             dataVersion =
                                 dataVersion,
                             workDate = workDate,
-                            onWorkDateChange = { workDate = it },
+                            onWorkDateChange = { newDate -> requestLeave { workDate = newDate } },
                             onChanged = {
                                 notifyDataChanged()
                             },
+                            onEditGuardChange = { dirty, label, save, discard -> registerEditGuard(dirty, label, save, discard) },
+                            onRequestLeave = { action -> requestLeave(action) },
                             protectHistoricalAction =
                                 protectHistoricalAction,
                             onOpenHistory = {
-                                historyTarget =
-                                    HistorySection.PURCHASE
-                                moreTarget =
-                                    MorePage.HISTORY
-                                page =
-                                    AppPage.MORE
+                                requestLeave {
+                                    historyTarget = HistorySection.PURCHASE
+                                    moreTarget = MorePage.HISTORY
+                                    page = AppPage.MORE
+                                }
                             }
                         )
                     AppPage.PLAN ->
@@ -1273,17 +1316,18 @@ fun TianXianApp(
                             cloudSyncManager = cloudSyncManager,
                             currentBook = liveCurrentBook,
                             workDate = workDate,
-                            onWorkDateChange = { workDate = it },
+                            onWorkDateChange = { newDate -> requestLeave { workDate = newDate } },
                             onChanged = { notifyDataChanged() },
+                            onEditGuardChange = { dirty, label, save, discard -> registerEditGuard(dirty, label, save, discard) },
+                            onRequestLeave = { action -> requestLeave(action) },
                             protectHistoricalAction =
                                 protectHistoricalAction,
                             onOpenHistory = {
-                                historyTarget =
-                                    HistorySection.BUSINESS
-                                moreTarget =
-                                    MorePage.HISTORY
-                                page =
-                                    AppPage.MORE
+                                requestLeave {
+                                    historyTarget = HistorySection.BUSINESS
+                                    moreTarget = MorePage.HISTORY
+                                    page = AppPage.MORE
+                                }
                             },
                             onOpenWeather = { date, storeId ->
                                 weatherDetailDate = date
@@ -1297,7 +1341,7 @@ fun TianXianApp(
                             db = db,
                             dataVersion = dataVersion,
                             workDate = workDate,
-                            onWorkDateChange = { workDate = it },
+                            onWorkDateChange = { newDate -> requestLeave { workDate = newDate } },
                             protectHistoricalAction = protectHistoricalAction,
                             onChanged = { notifyDataChanged() }
                         )
@@ -1360,6 +1404,37 @@ fun TianXianApp(
             }
         }
         }
+    }
+
+    if (showUnsavedDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showUnsavedDialog = false
+                pendingLeaveAction = null
+            },
+            title = { Text("有未保存的修改") },
+            text = { Text("${editGuardLabel}尚未保存。是否保存后离开？") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val ok = editGuardSave?.invoke() ?: true
+                        if (ok) finishPendingLeave()
+                    }
+                ) { Text("保存并离开") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        editGuardDiscard?.invoke()
+                        finishPendingLeave()
+                    }) { Text("不保存") }
+                    TextButton(onClick = {
+                        showUnsavedDialog = false
+                        pendingLeaveAction = null
+                    }) { Text("继续编辑") }
+                }
+            }
+        )
     }
 
     HistorySecurityHost(
@@ -2022,21 +2097,29 @@ private fun HomeBusinessAdviceCard(
 ) {
     val today = LocalDate.now()
     val dateString = today.toString()
-    var state by remember(currentBook.id, storeId) {
+    val stores = remember(dataVersion, currentBook.id) { db.getStores() }
+    var selectedStoreId by remember(currentBook.id, storeId) {
+        mutableStateOf(storeId ?: stores.firstOrNull()?.id)
+    }
+    LaunchedEffect(stores.map { it.id }, selectedStoreId) {
+        if (selectedStoreId == null || stores.none { it.id == selectedStoreId }) {
+            selectedStoreId = stores.firstOrNull()?.id
+        }
+    }
+    var state by remember(currentBook.id, selectedStoreId) {
         mutableStateOf(BusinessAdviceUiState(loading = true))
     }
-    var refreshTick by remember(currentBook.id, storeId) { mutableStateOf(0) }
+    var refreshTick by remember(currentBook.id, selectedStoreId) { mutableStateOf(0) }
 
-    // 首页停留时每 30 分钟重新评估一次；DB 层会对无变化结果去重。
-    LaunchedEffect(currentBook.id, storeId, dateString) {
+    LaunchedEffect(currentBook.id, selectedStoreId, dateString) {
         while (true) {
             delay(30L * 60L * 1000L)
             refreshTick += 1
         }
     }
 
-    LaunchedEffect(dataVersion, currentBook.id, currentBook.cloudBookId, storeId, dateString, refreshTick) {
-        val store = storeId?.let { db.getStoreById(it) }
+    LaunchedEffect(dataVersion, currentBook.id, currentBook.cloudBookId, selectedStoreId, dateString, refreshTick) {
+        val store = selectedStoreId?.let { db.getStoreById(it) }
         if (store == null) {
             state = BusinessAdviceUiState(error = "还没有可分析的经营位置")
             return@LaunchedEffect
@@ -2061,9 +2144,7 @@ private fun HomeBusinessAdviceCard(
                 if (score != null) {
                     cloudSyncManager.scheduleAutoSync(currentBook)
                     BusinessAdviceUiState(score = score)
-                } else {
-                    BusinessAdviceUiState(error = "经营建议暂未生成")
-                }
+                } else BusinessAdviceUiState(error = "经营建议暂未生成")
             },
             onFailure = { error ->
                 val cached = db.getBusinessScore(dateString, store.id)
@@ -2077,73 +2158,92 @@ private fun HomeBusinessAdviceCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 1.dp)
-            .clickable(enabled = openDetail != null) {
-                openDetail?.let { onOpenDetail(dateString, it.storeId) }
-            },
+            .padding(horizontal = 12.dp, vertical = 1.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEE)),
         shape = RoundedCornerShape(14.dp)
     ) {
         Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 7.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("今日经营建议", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                state.score?.storeName?.takeIf { it.isNotBlank() }?.let { name ->
-                    Text(" · $name", style = MaterialTheme.typography.labelSmall, color = Color.Gray, maxLines = 1)
-                }
+                Text("经营建议", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 Spacer(Modifier.weight(1f))
-                if (state.loading && state.score != null) {
-                    CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.6.dp)
-                    Spacer(Modifier.width(5.dp))
-                }
-                state.score?.let { score ->
-                    Text(
-                        "${score.totalScore}%  ›",
-                        fontSize = 19.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = BrandGreen
-                    )
+                Text(
+                    "${today.monthValue}月${today.dayOfMonth}日 ${chineseWeekday(today)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.Gray
+                )
+            }
+
+            if (stores.isNotEmpty()) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    stores.forEach { store ->
+                        val storedScore = if (store.id == selectedStoreId) state.score else db.getBusinessScore(dateString, store.id)
+                        val selected = store.id == selectedStoreId
+                        Surface(
+                            modifier = Modifier.clickable { selectedStoreId = store.id },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (selected) Color(0xFFDDF4E8) else Color.White,
+                            border = BorderStroke(1.dp, if (selected) BrandGreen else Color(0xFFE2E4E8))
+                        ) {
+                            Column(
+                                Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(store.name, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                                Text(
+                                    storedScore?.let { "${it.totalScore}%" } ?: "--",
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selected) BrandGreen else Color.DarkGray,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
             when {
                 state.score != null -> {
                     val score = state.score!!
-                    val compact = listOf(
-                        score.weatherSummary.takeIf { it.isNotBlank() },
-                        score.historySummary.takeIf { it.isNotBlank() },
-                        score.trendSummary.takeIf { it.contains("偏弱") || it.contains("偏强") }
-                    ).filterNotNull().distinct().joinToString(" · ")
-                    Text(
-                        compact.ifBlank { "正在积累同位置历史数据" },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.DarkGray,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        Modifier.fillMaxWidth().clickable { onOpenDetail(dateString, score.storeId) },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "${score.totalScore}%",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = BrandGreen
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        val compact = listOf(
+                            score.weatherSummary.takeIf { it.isNotBlank() },
+                            score.historySummary.takeIf { it.isNotBlank() },
+                            score.trendSummary.takeIf { it.contains("偏弱") || it.contains("偏强") }
+                        ).filterNotNull().distinct().joinToString(" · ")
+                        Text(
+                            compact.ifBlank { "正在积累同位置历史数据" },
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.DarkGray,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text("详情 ›", style = MaterialTheme.typography.labelSmall, color = BrandGreen)
+                    }
                 }
-                state.loading -> {
-                    Text(
-                        "正在根据当前位置、天气和历史营业数据分析…",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.Gray,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                else -> {
-                    Text(
-                        state.error.ifBlank { "经营建议暂不可用" },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.Gray,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+                state.loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                else -> Text(
+                    state.error.ifBlank { "经营建议暂不可用" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray,
+                    maxLines = 1
+                )
             }
         }
     }
@@ -2235,8 +2335,8 @@ private fun BusinessAdviceDetailContent(
     initialStoreId: Long?,
     onChanged: () -> Unit
 ) {
-    val date = remember(initialDate) {
-        runCatching { LocalDate.parse(initialDate) }.getOrElse { LocalDate.now() }
+    var date by remember(initialDate) {
+        mutableStateOf(runCatching { LocalDate.parse(initialDate) }.getOrElse { LocalDate.now() })
     }
     val stores = remember(dataVersion) { db.getStores() }
     var selectedStoreId by remember(initialStoreId, stores) {
@@ -2287,27 +2387,38 @@ private fun BusinessAdviceDetailContent(
             shape = RoundedCornerShape(18.dp)
         ) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("位置", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
-                    Spacer(Modifier.width(8.dp))
-                    Box {
-                        TextButton(onClick = { storeMenu = true }) {
-                            Text("${stores.firstOrNull { it.id == selectedStoreId }?.name ?: "选择位置"} ▾")
-                        }
-                        DropdownMenu(expanded = storeMenu, onDismissRequest = { storeMenu = false }) {
-                            stores.forEach { store ->
-                                DropdownMenuItem(
-                                    text = { Text(store.name) },
-                                    onClick = {
-                                        selectedStoreId = store.id
-                                        storeMenu = false
-                                    }
-                                )
-                            }
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    stores.forEach { store ->
+                        val selected = store.id == selectedStoreId
+                        Surface(
+                            modifier = Modifier.clickable { selectedStoreId = store.id },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (selected) Color(0xFFDDF4E8) else Color.White,
+                            border = BorderStroke(1.dp, if (selected) BrandGreen else Color(0xFFE2E4E8))
+                        ) {
+                            Text(
+                                store.name,
+                                modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                color = if (selected) BrandGreen else Color.DarkGray,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1
+                            )
                         }
                     }
-                    Spacer(Modifier.weight(1f))
-                    Text(date.toString(), style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { date = date.minusDays(1) }) { Text("‹") }
+                    Text(
+                        "${date.monthValue}月${date.dayOfMonth}日 ${chineseWeekday(date)}",
+                        modifier = Modifier.weight(1f),
+                        textAlign = TextAlign.Center,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    TextButton(onClick = { date = date.plusDays(1) }) { Text("›") }
                 }
 
                 when {
@@ -2724,16 +2835,47 @@ private fun WeatherDetailContent(
     var selectedDate by remember(initialDate) {
         mutableStateOf(runCatching { LocalDate.parse(initialDate) }.getOrElse { LocalDate.now() })
     }
-    var manualStoreId by remember(selectedDate) {
-        mutableStateOf(if (selectedDate.toString() == initialDate) initialStoreId else null)
+    var manualStoreId by remember(initialStoreId) {
+        mutableStateOf(initialStoreId)
     }
-    var storeMenu by remember { mutableStateOf(false) }
     val stores = remember(dataVersion) { db.getStores() }
     val resolution = remember(dataVersion, selectedDate) { db.resolveWeatherStore(selectedDate.toString()) }
     val store = stores.firstOrNull { it.id == manualStoreId }
         ?: resolution.store
         ?: stores.firstOrNull()
     var state by remember(selectedDate, store?.id) { mutableStateOf(WeatherUiState(loading = true)) }
+    var forecast15 by remember(store?.id) { mutableStateOf<WeatherOverview?>(null) }
+    var recent7History by remember(store?.id) { mutableStateOf<Map<String, WeatherOverview>>(emptyMap()) }
+
+    LaunchedEffect(store?.id, store?.latitude, store?.longitude, currentBook.cloudBookId, dataVersion) {
+        val s = store ?: return@LaunchedEffect
+        if (s.latitude == null || s.longitude == null) {
+            forecast15 = null
+            recent7History = emptyMap()
+            return@LaunchedEffect
+        }
+        val bookId = weatherBookId(currentBook)
+        if (bookId.isBlank()) return@LaunchedEffect
+        val today = LocalDate.now()
+        val currentForecast = withContext(Dispatchers.IO) {
+            runCatching { WeatherClient(cloudSyncManager).fetchOverview(bookId, s, today, 120) }.getOrNull()
+        }
+        forecast15 = currentForecast
+        val historyMap = linkedMapOf<String, WeatherOverview>()
+        currentForecast?.let { historyMap[today.toString()] = it }
+        for (offset in 1L..6L) {
+            val target = today.minusDays(offset)
+            val targetText = target.toString()
+            val fetched = withContext(Dispatchers.IO) {
+                runCatching { WeatherClient(cloudSyncManager).fetchHistoricalDay(bookId, s, target) }.getOrNull()
+            }
+            val local = if (fetched == null) withContext(Dispatchers.IO) { db.getBusinessWeatherHistory(targetText, s.id) } else null
+            val localOverview = local?.let { runCatching { WeatherClient.parseOverview(it.payloadJson, true) }.getOrNull() }
+            val resolved = fetched ?: localOverview
+            if (resolved != null) historyMap[targetText] = resolved
+        }
+        recent7History = historyMap
+    }
 
     LaunchedEffect(selectedDate, store?.id, store?.latitude, store?.longitude, currentBook.cloudBookId) {
         val s = store
@@ -2748,7 +2890,8 @@ private fun WeatherDetailContent(
             val localOverview = localHistory?.let { history ->
                 runCatching { WeatherClient.parseOverview(history.payloadJson, true) }.getOrNull()
             }
-            if (localOverview != null) {
+            val isRecentHistory = !selectedDate.isBefore(LocalDate.now().minusDays(10))
+            if (localOverview != null && !isRecentHistory) {
                 state = WeatherUiState(
                     localOverview,
                     snapshotType = "LOCAL_HISTORY",
@@ -2761,20 +2904,27 @@ private fun WeatherDetailContent(
                 runCatching {
                     val bookId = weatherBookId(currentBook)
                     if (bookId.isBlank()) throw IllegalStateException("当前账本尚未连接云端天气服务")
-                    WeatherClient(cloudSyncManager).fetchArchive(bookId, s, selectedDate)
+                    if (isRecentHistory) {
+                        runCatching { WeatherClient(cloudSyncManager).fetchHistoricalDay(bookId, s, selectedDate) }
+                            .getOrElse { WeatherClient(cloudSyncManager).fetchArchive(bookId, s, selectedDate) }
+                    } else {
+                        WeatherClient(cloudSyncManager).fetchArchive(bookId, s, selectedDate)
+                    }
                 }
             }
             state = archived.fold(
                 onSuccess = { overview ->
                     withContext(Dispatchers.IO) {
                         val business = db.getStoreDailyRecord(date, s.id)
-                        db.cacheBusinessWeatherHistory(
-                            date = date,
-                            store = s,
-                            actualStartTime = business?.actualStartTime?.ifBlank { s.defaultStartTime } ?: s.defaultStartTime,
-                            actualEndTime = business?.actualEndTime?.ifBlank { s.defaultEndTime } ?: s.defaultEndTime,
-                            payloadJson = overview.rawJson
-                        )
+                        if (business != null) {
+                            db.cacheBusinessWeatherHistory(
+                                date = date,
+                                store = s,
+                                actualStartTime = business.actualStartTime.ifBlank { s.defaultStartTime },
+                                actualEndTime = business.actualEndTime.ifBlank { s.defaultEndTime },
+                                payloadJson = overview.rawJson
+                            )
+                        }
                         db.saveWeatherCache(date, s.id, overview.rawJson, WEATHER_CACHE_ARCHIVE_MS)
                     }
                     WeatherUiState(overview, snapshotType = "SERVER_ARCHIVE", updatedAtMillis = System.currentTimeMillis())
@@ -2869,8 +3019,8 @@ private fun WeatherDetailContent(
                 onHorizontalDrag = { _, amount -> drag += amount },
                 onDragEnd = {
                     when {
-                        drag <= -70f -> { selectedDate = selectedDate.plusDays(1); manualStoreId = null }
-                        drag >= 70f -> { selectedDate = selectedDate.minusDays(1); manualStoreId = null }
+                        drag <= -70f -> { selectedDate = selectedDate.plusDays(1) }
+                        drag >= 70f -> { selectedDate = selectedDate.minusDays(1) }
                     }
                 }
             )
@@ -2881,19 +3031,38 @@ private fun WeatherDetailContent(
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFEAF5FF)), shape = RoundedCornerShape(18.dp)) {
                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box {
-                            TextButton(onClick = { if (stores.isNotEmpty()) storeMenu = true }) {
-                                Text("${store?.name ?: "经营位置"} ▾", fontWeight = FontWeight.Bold)
-                            }
-                            DropdownMenu(expanded = storeMenu, onDismissRequest = { storeMenu = false }) {
-                                stores.forEach { option ->
-                                    DropdownMenuItem(text = { Text(option.name) }, onClick = { manualStoreId = option.id; storeMenu = false })
-                                }
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        stores.forEach { option ->
+                            val selected = option.id == store?.id
+                            Surface(
+                                modifier = Modifier.clickable { manualStoreId = option.id },
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (selected) Color(0xFFDDEEFF) else Color.White,
+                                border = BorderStroke(1.dp, if (selected) Color(0xFF3A86C8) else Color(0xFFE2E4E8))
+                            ) {
+                                Text(
+                                    option.name,
+                                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (selected) Color(0xFF276C9E) else Color.DarkGray,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 1
+                                )
                             }
                         }
-                        Spacer(Modifier.weight(1f))
-                        Text(weatherDateLabel(selectedDate), style = MaterialTheme.typography.labelMedium, color = Color.DarkGray)
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { selectedDate = selectedDate.minusDays(1) }) { Text("‹") }
+                        Text(
+                            weatherDateLabel(selectedDate),
+                            modifier = Modifier.weight(1f),
+                            textAlign = TextAlign.Center,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        TextButton(onClick = { selectedDate = selectedDate.plusDays(1) }) { Text("›") }
                     }
                     when {
                         state.loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -2955,7 +3124,7 @@ private fun WeatherDetailContent(
             item {
                 Text(
                     when {
-                        ov.historical -> "营业时段逐小时天气档案"
+                        ov.historical -> "当天24小时逐小时实际天气"
                         selectedDate == LocalDate.now() -> "未来24小时逐小时预报"
                         else -> "24小时逐小时预报"
                     },
@@ -2963,7 +3132,7 @@ private fun WeatherDetailContent(
                 )
                 Text(
                     when {
-                        ov.historical -> "服务器按实际营业位置与营业时间保存；实际天气与当时预报分开记录"
+                        ov.historical -> "最近10天优先读取全天实际天气；更早日期使用已保存的真实营业天气档案"
                         selectedDate == LocalDate.now() -> "从当前小时开始，向后连续24小时"
                         else -> "按所选日期显示逐小时天气"
                     },
@@ -3009,6 +3178,89 @@ private fun WeatherDetailContent(
                                     }
                                     Text("风 ${h.windDirection.orEmpty()} ${h.windScale.orEmpty()}级", style = MaterialTheme.typography.labelSmall)
                                     Text("风速 ${windSpeedText(h.windSpeed)}", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                Text("最近7天天气", fontWeight = FontWeight.Bold)
+                Text(
+                    "过去6天 + 今天；点击日期查看当天逐小时天气",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.Gray
+                )
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    val today = LocalDate.now()
+                    (6L downTo 0L).forEach { offset ->
+                        val d = today.minusDays(offset)
+                        val dayOverview = recent7History[d.toString()]
+                        val dayWeather = dayOverview?.daily?.firstOrNull { it.date == d.toString() } ?: dayOverview?.selectedDay()
+                        val selected = selectedDate == d
+                        Surface(
+                            modifier = Modifier.width(92.dp).clickable { selectedDate = d },
+                            shape = RoundedCornerShape(11.dp),
+                            color = if (selected) Color(0xFFDDEEFF) else Color.White,
+                            border = BorderStroke(1.dp, if (selected) Color(0xFF3A86C8) else Color(0xFFE2E4E8))
+                        ) {
+                            Column(
+                                Modifier.padding(horizontal = 7.dp, vertical = 8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Text("${d.monthValue}/${d.dayOfMonth}", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelMedium)
+                                Text(if (d == today) "今天" else chineseWeekday(d).removePrefix("星期"), style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                if (dayWeather != null) {
+                                    Text(weatherEmoji(dayWeather.codeDay, dayWeather.textDay), fontSize = 20.sp)
+                                    Text(dayWeather.textDay.ifBlank { "—" }, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                                    Text("${weatherTemp(dayWeather.tempMin)}/${weatherTemp(dayWeather.tempMax)}", style = MaterialTheme.typography.labelSmall)
+                                } else {
+                                    Text("—", fontSize = 20.sp, color = Color.Gray)
+                                    Text("暂无数据", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                Text("未来15天天气", fontWeight = FontWeight.Bold)
+                Text("8–15天为远期趋势参考；逐小时预报以天气服务实际覆盖时段为准", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                val futureDays = forecast15?.daily.orEmpty().take(15)
+                if (futureDays.isEmpty()) {
+                    Text("暂无15天预报数据", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(7.dp)
+                    ) {
+                        futureDays.forEachIndexed { index, d ->
+                            val parsedDate = runCatching { LocalDate.parse(d.date) }.getOrNull()
+                            val selected = parsedDate == selectedDate
+                            Surface(
+                                modifier = Modifier.width(96.dp).clickable(enabled = parsedDate != null) { parsedDate?.let { selectedDate = it } },
+                                shape = RoundedCornerShape(11.dp),
+                                color = if (selected) Color(0xFFE7F6ED) else Color.White,
+                                border = BorderStroke(1.dp, if (selected) BrandGreen else Color(0xFFE2E4E8))
+                            ) {
+                                Column(
+                                    Modifier.padding(horizontal = 7.dp, vertical = 8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text(parsedDate?.let { "${it.monthValue}/${it.dayOfMonth}" } ?: d.date, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelMedium)
+                                    if (index >= 7) Text("趋势", style = MaterialTheme.typography.labelSmall, color = Color(0xFF8A6D00))
+                                    else Text(parsedDate?.let { chineseWeekday(it).removePrefix("星期") } ?: "", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                    Text(weatherEmoji(d.codeDay, d.textDay), fontSize = 20.sp)
+                                    Text(d.textDay.ifBlank { "—" }, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                                    Text("${weatherTemp(d.tempMin)}/${weatherTemp(d.tempMax)}", style = MaterialTheme.typography.labelSmall)
+                                    Text(weatherPercent(d.precipitationProbability), style = MaterialTheme.typography.labelSmall, color = Color(0xFF2C6E9B))
                                 }
                             }
                         }
@@ -3134,9 +3386,9 @@ private fun WeatherDetailContent(
             }
 
             item {
-                Text(if (ov.historical) "营业日天气汇总" else "未来天气", fontWeight = FontWeight.Bold)
+                Text(if (ov.historical) "营业日天气汇总" else "所选日期天气汇总", fontWeight = FontWeight.Bold)
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ov.daily.take(if (ov.historical) 1 else 10).forEach { d ->
+                    ov.daily.filter { it.date == selectedDate.toString() }.ifEmpty { ov.daily.take(1) }.forEach { d ->
                         Row(
                             Modifier.fillMaxWidth().background(Color.White, RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -3787,7 +4039,7 @@ private fun HomeScreen(
                                 )
                                 DashboardTile(
                                     "🧮",
-                                    "预估经营利润",
+                                    "预估经营利润（仅参考）",
                                     when {
                                         !operatingAnalysis.inventoryComplete -> "待盘点"
                                         !operatingAnalysis.costComplete -> {
@@ -4252,7 +4504,8 @@ private fun InventoryScreen(
     dataVersion: Int,
     workDate: String,
     onWorkDateChange: (String) -> Unit,
-    onChanged: () -> Unit
+    onChanged: () -> Unit,
+    onEditGuardChange: (Boolean, String, (() -> Boolean)?, (() -> Unit)?) -> Unit
 ) {
     val date = workDate
     var message by remember { mutableStateOf("") }
@@ -4289,6 +4542,86 @@ private fun InventoryScreen(
         it.openingQuantity > 0.000001 && it.purchasedQuantity <= 0.000001
     }
     val savedCount = inventoryItems.count { it.saved }
+    val remainingEstimatedValue = inventoryItems.sumOf { item ->
+        val key = itemKey(item)
+        val remaining = remainingInputs[key]?.toDoubleOrNull() ?: item.remainingQuantity
+        remaining.coerceAtLeast(0.0) * (item.effectiveUnitCost ?: 0.0)
+    }
+    val remainingMissingCostCount = inventoryItems.count { item ->
+        val key = itemKey(item)
+        val remaining = remainingInputs[key]?.toDoubleOrNull() ?: item.remainingQuantity
+        remaining > 0.000001 && item.effectiveUnitCost == null
+    }
+
+    fun inventoryDirty(): Boolean = inventoryItems.any { item ->
+        val key = itemKey(item)
+        val remaining = remainingInputs[key]?.toDoubleOrNull() ?: 0.0
+        val loss = lossInputs[key]?.toDoubleOrNull() ?: 0.0
+        kotlin.math.abs(remaining - item.remainingQuantity) > 0.000001 ||
+            kotlin.math.abs(loss - item.lossQuantity) > 0.000001
+    }
+
+    fun saveInventoryEdits(): Boolean {
+        val invalid = inventoryItems.firstOrNull { item ->
+            val remaining = remainingInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0
+            val loss = lossInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0
+            val available = item.openingQuantity + item.purchasedQuantity
+            remaining < 0 || loss < 0 || remaining + loss > available + 0.000001
+        }
+        if (invalid != null) {
+            message = "${invalid.fruitName} 的损耗和剩余库存不能为负数，且合计不能超过可售库存"
+            isError = true
+            return false
+        }
+        val saved = db.saveInventoryDay(
+            date = date,
+            items = inventoryItems.map { item ->
+                InventorySaveInput(
+                    fruitId = item.fruitId,
+                    fruitName = item.fruitName,
+                    unit = item.unit,
+                    lossQuantity = lossInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0,
+                    remainingQuantity = remainingInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0
+                )
+            }
+        )
+        if (saved) {
+            message = "库存盘点已保存"
+            isError = false
+            onChanged()
+            return true
+        }
+        message = "库存保存失败，请检查数据后重试"
+        isError = true
+        return false
+    }
+
+    fun discardInventoryEdits() {
+        val latest = db.getInventoryDayItems(date)
+        remainingInputs.clear()
+        lossInputs.clear()
+        latest.forEach { item ->
+            remainingInputs[itemKey(item)] = if (item.remainingQuantity == 0.0) "0" else fmt(item.remainingQuantity)
+            lossInputs[itemKey(item)] = if (item.lossQuantity == 0.0) "0" else fmt(item.lossQuantity)
+        }
+        message = ""
+        isError = false
+    }
+
+    val inventoryDirtyNow = inventoryDirty()
+    val latestInventorySave = rememberUpdatedState<() -> Boolean>({ saveInventoryEdits() })
+    val latestInventoryDiscard = rememberUpdatedState<() -> Unit>({ discardInventoryEdits() })
+    LaunchedEffect(inventoryDirtyNow, date) {
+        onEditGuardChange(
+            inventoryDirtyNow,
+            "库存盘点",
+            if (inventoryDirtyNow) ({ latestInventorySave.value() }) else null,
+            if (inventoryDirtyNow) ({ latestInventoryDiscard.value() }) else null
+        )
+    }
+    DisposableEffect(Unit) {
+        onDispose { onEditGuardChange(false, "库存盘点", null, null) }
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -4322,6 +4655,20 @@ private fun InventoryScreen(
                     "${carriedKinds}种",
                     Modifier.weight(1f),
                     SoftOrange
+                )
+                MiniSummaryCard(
+                    "剩余估值",
+                    money(remainingEstimatedValue),
+                    Modifier.weight(1f),
+                    SoftPurple
+                )
+            }
+            if (remainingMissingCostCount > 0) {
+                Text(
+                    "剩余估值未包含 ${remainingMissingCostCount} 种缺成本商品",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color(0xFFB26A00),
+                    modifier = Modifier.padding(top = 3.dp)
                 )
             }
             if (inventoryItems.isNotEmpty()) {
@@ -4486,42 +4833,7 @@ private fun InventoryScreen(
 
             item {
                 Button(
-                    onClick = {
-                        val invalid = inventoryItems.firstOrNull { item ->
-                            val remaining = remainingInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0
-                            val loss = lossInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0
-                            val available = item.openingQuantity + item.purchasedQuantity
-                            remaining < 0 ||
-                                loss < 0 ||
-                                remaining + loss > available + 0.000001
-                        }
-                        if (invalid != null) {
-                            message = "${invalid.fruitName} 的损耗和剩余库存不能为负数，且合计不能超过可售库存"
-                            isError = true
-                        } else {
-                            val saved =
-                                db.saveInventoryDay(
-                                    date = date,
-                                    items = inventoryItems.map { item ->
-                                        InventorySaveInput(
-                                            fruitId = item.fruitId,
-                                            fruitName = item.fruitName,
-                                            unit = item.unit,
-                                            lossQuantity = lossInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0,
-                                            remainingQuantity = remainingInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0
-                                        )
-                                    }
-                                )
-                            if (saved) {
-                                message = "库存盘点已保存"
-                                isError = false
-                                onChanged()
-                            } else {
-                                message = "库存保存失败，请检查数据后重试"
-                                isError = true
-                            }
-                        }
-                    },
+                    onClick = { saveInventoryEdits() },
                     modifier = Modifier.fillMaxWidth().height(44.dp)
                 ) {
                     Text("保存库存")
@@ -4988,6 +5300,8 @@ private fun PurchaseScreen(
     workDate: String,
     onWorkDateChange: (String) -> Unit,
     onChanged: () -> Unit,
+    onEditGuardChange: (Boolean, String, (() -> Boolean)?, (() -> Unit)?) -> Unit,
+    onRequestLeave: ((() -> Unit) -> Unit),
     protectHistoricalAction:
         (String, String, () -> Unit) -> Unit,
     onOpenHistory: () -> Unit
@@ -5085,6 +5399,7 @@ private fun PurchaseScreen(
     var completedPurchasesExpanded by remember(date) {
         mutableStateOf(false)
     }
+    var historicalPurchaseBaseline by remember(date) { mutableStateOf("") }
     var batchCompleteItems by remember(date) {
         mutableStateOf<List<PurchasePlanItemRecord>>(emptyList())
     }
@@ -5143,6 +5458,14 @@ private fun PurchaseScreen(
             row.totalCost,
             row.buyerId?.toString().orEmpty()
         ).joinToString("|")
+
+    fun currentHistoricalPurchaseFingerprint(): String =
+        listOf(
+            editingOrderId?.toString().orEmpty(),
+            editBuyerId?.toString().orEmpty(),
+            remark,
+            rows.joinToString("||") { rowFingerprint(it) }
+        ).joinToString("##")
 
     fun resetRowsToOneBlank() {
         rows.clear()
@@ -5363,15 +5686,16 @@ private fun PurchaseScreen(
             )
         }
         if (rows.isEmpty()) rows.add(newBlankRow())
+        historicalPurchaseBaseline = currentHistoricalPurchaseFingerprint()
         message = "已载入历史采购单，可直接修改"
     }
 
-    fun persistHistoricalEdit(lines: List<PurchaseLineInput>) {
-        val editId = editingOrderId ?: return
+    fun persistHistoricalEdit(lines: List<PurchaseLineInput>): Boolean {
+        val editId = editingOrderId ?: return false
         val selectedBuyer = editBuyer
         if (selectedBuyer == null) {
             message = "请选择采购人"
-            return
+            return false
         }
 
         val ok =
@@ -5390,17 +5714,20 @@ private fun PurchaseScreen(
             remark = ""
             resetRowsToOneBlank()
             message = "采购单已更新"
+            historicalPurchaseBaseline = ""
             onChanged()
+            return true
         } else {
             message = "保存失败，请检查内容"
+            return false
         }
     }
 
-    fun saveCollaborationDrafts() {
+    fun saveCollaborationDrafts(): Boolean {
         val filledRows = meaningfulRows()
         if (filledRows.isEmpty()) {
             message = "请至少填写一种采购商品"
-            return
+            return false
         }
 
         val latestPlanItems = db.getPurchasePlan(date)?.items.orEmpty()
@@ -5417,7 +5744,7 @@ private fun PurchaseScreen(
 
         if (pendingRows.isEmpty()) {
             message = "当前商品都已完成采购"
-            return
+            return false
         }
 
         // V1.4.7.39：只校验并保存新增/真正修改过的计划行。
@@ -5443,7 +5770,7 @@ private fun PurchaseScreen(
             }
         ) {
             message = "有商品没有选择商品，或数量/单价填写不正确"
-            return
+            return false
         }
 
         var savedCount = 0
@@ -5493,16 +5820,18 @@ private fun PurchaseScreen(
                     "采购清单已保存到协作采购，完成采购后才正式入账"
                 }
             onChanged()
+            return true
         } else {
             message = "部分商品保存失败，请检查后重试"
+            return false
         }
     }
 
 
-    fun saveEditedPendingPlan(row: PurchaseDraftRow) {
+    fun saveEditedPendingPlan(row: PurchaseDraftRow): Boolean {
         if (editingOrderId != null || row.planItemId == null || row.planItemId != editingPlanItemId) {
             message = "当前没有可保存的计划修改"
-            return
+            return false
         }
 
         val quantity = row.quantity.toDoubleOrNull() ?: 0.0
@@ -5517,7 +5846,7 @@ private fun PurchaseScreen(
                 (row.totalCost.isNotBlank() && (explicitTotal == null || explicitTotal < 0))
         ) {
             message = "商品、数量或单价填写不正确"
-            return
+            return false
         }
 
         val fruit =
@@ -5529,13 +5858,13 @@ private fun PurchaseScreen(
                 }
         if (fruit == null) {
             message = "商品已失效，请重新选择"
-            return
+            return false
         }
 
         val buyer = row.buyerId?.let { id -> partners.firstOrNull { it.id == id } }
         if (buyer == null) {
             message = "请选择采购人"
-            return
+            return false
         }
 
         val amount = explicitTotal ?: (quantity * unitPrice)
@@ -5557,9 +5886,105 @@ private fun PurchaseScreen(
             purchaseFormExpanded = false
             message = "${fruit.name} 计划修改已保存"
             onChanged()
+            return true
         } else {
             message = "修改保存失败，请重试"
+            return false
         }
+    }
+
+    fun purchaseHasUnsavedChanges(): Boolean {
+        if (editingOrderId != null) {
+            return historicalPurchaseBaseline.isNotBlank() &&
+                currentHistoricalPurchaseFingerprint() != historicalPurchaseBaseline
+        }
+        if (!purchaseFormExpanded && editingPlanItemId == null) return false
+        return rows.any { row ->
+            if (row.planItemId == null) {
+                (!row.isBlank && !isDefaultEmptyRow(row)) ||
+                    (row.unitWeight.toDoubleOrNull() ?: 0.0) > 0.000001 ||
+                    (row.buyerId != null && row.buyerId != defaultBuyerId())
+            } else {
+                syncedFingerprints[row.rowId] != rowFingerprint(row)
+            }
+        }
+    }
+
+    fun saveCurrentPurchaseEdits(): Boolean {
+        if (editingOrderId != null) {
+            val filledRows = meaningfulRows()
+            when {
+                editBuyer == null -> {
+                    message = "请选择采购人"
+                    return false
+                }
+                filledRows.isEmpty() -> {
+                    message = "请至少填写一种采购商品"
+                    return false
+                }
+                filledRows.any {
+                    it.fruitId == null ||
+                        (it.quantity.toDoubleOrNull() ?: 0.0) <= 0 ||
+                        (it.totalCost.toDoubleOrNull() ?: -1.0) < 0
+                } -> {
+                    message = "有商品没有选择商品，或数量/总价没有填写正确"
+                    return false
+                }
+            }
+            val lines = filledRows.mapNotNull { r ->
+                val activeFruit = fruits.firstOrNull { it.id == r.fruitId }
+                val resolvedFruit = activeFruit ?: r.fruitId?.let { id ->
+                    r.fruitNameSnapshot.takeIf { it.isNotBlank() }?.let { name ->
+                        FruitOption(id, name, r.unit)
+                    }
+                }
+                resolvedFruit?.let { f ->
+                    PurchaseLineInput(
+                        fruit = f,
+                        unit = r.unit,
+                        quantity = r.quantity.toDouble(),
+                        totalCost = r.totalCost.toDouble(),
+                        unitWeightJin = r.unitWeight.toDoubleOrNull() ?: 0.0
+                    )
+                }
+            }
+            if (lines.size != filledRows.size) {
+                message = "有历史商品无法识别，请重新选择该商品"
+                return false
+            }
+            return persistHistoricalEdit(lines)
+        }
+        val target = editingPlanItemId?.let { id -> rows.firstOrNull { it.planItemId == id } }
+        return if (target != null) saveEditedPendingPlan(target) else saveCollaborationDrafts()
+    }
+
+    fun discardCurrentPurchaseEdits() {
+        if (editingOrderId != null) {
+            editingOrderId = null
+            editBuyerId = null
+            historicalBuyerName = ""
+            remark = ""
+            historicalPurchaseBaseline = ""
+        }
+        editingPlanItemId = null
+        loadRowsFromCollaborationPlan()
+        purchaseFormExpanded = false
+        message = ""
+    }
+
+    val purchaseDirtyNow = purchaseHasUnsavedChanges()
+    val latestPurchaseSave = rememberUpdatedState<() -> Boolean>({ saveCurrentPurchaseEdits() })
+    val latestPurchaseDiscard = rememberUpdatedState<() -> Unit>({ discardCurrentPurchaseEdits() })
+    LaunchedEffect(purchaseDirtyNow, date, editingOrderId, editingPlanItemId) {
+        onEditGuardChange(
+            purchaseDirtyNow,
+            if (editingOrderId != null) "采购历史修改" else "采购编辑",
+            if (purchaseDirtyNow) ({ latestPurchaseSave.value() }) else null,
+            if (purchaseDirtyNow) ({ latestPurchaseDiscard.value() }) else null
+        )
+    }
+    DisposableEffect(Unit) {
+        onDispose { onEditGuardChange(false, "采购编辑", null, null) }
     }
 
     fun completeCollaborationDrafts() {
@@ -5732,12 +6157,10 @@ private fun PurchaseScreen(
                         )
                         TextButton(
                             onClick = {
-                                editingOrderId = null
-                                editBuyerId = null
-                                historicalBuyerName = ""
-                                remark = ""
-                                resetRowsToOneBlank()
-                                message = "已取消编辑"
+                                onRequestLeave {
+                                    discardCurrentPurchaseEdits()
+                                    message = "已取消编辑"
+                                }
                             }
                         ) { Text("取消") }
                     }
@@ -6490,11 +6913,13 @@ private fun PurchaseScreen(
                                     "采购记录"
                                 }
                             historyActionFruitName = ""
-                            protectHistoricalAction(
-                                detail.order.date,
-                                "修改 ${detail.order.date} · $label"
-                            ) {
-                                loadHistoryOrderForEdit(detail)
+                            onRequestLeave {
+                                protectHistoricalAction(
+                                    detail.order.date,
+                                    "修改 ${detail.order.date} · $label"
+                                ) {
+                                    loadHistoryOrderForEdit(detail)
+                                }
                             }
                         }
                     ) { Text("编辑") }
@@ -6573,18 +6998,20 @@ private fun PurchaseScreen(
                 Row {
                     TextButton(
                         onClick = {
-                            protectHistoricalAction(
-                                date,
-                                "修改 ${item.fruitName} 的历史采购记录"
-                            ) {
-                                planActionItem = null
-                                if (completed) {
-                                    completeDialogItem = item
-                                    completeDialogEditing = true
-                                } else {
-                                    editingPlanItemId = item.id
-                                    purchaseFormExpanded = true
-                                    message = "正在修改 ${item.fruitName}"
+                            onRequestLeave {
+                                protectHistoricalAction(
+                                    date,
+                                    "修改 ${item.fruitName} 的历史采购记录"
+                                ) {
+                                    planActionItem = null
+                                    if (completed) {
+                                        completeDialogItem = item
+                                        completeDialogEditing = true
+                                    } else {
+                                        editingPlanItemId = item.id
+                                        purchaseFormExpanded = true
+                                        message = "正在修改 ${item.fruitName}"
+                                    }
                                 }
                             }
                         }
@@ -7970,6 +8397,8 @@ private fun SessionScreen(
     workDate: String,
     onWorkDateChange: (String) -> Unit,
     onChanged: () -> Unit,
+    onEditGuardChange: (Boolean, String, (() -> Boolean)?, (() -> Unit)?) -> Unit,
+    onRequestLeave: ((() -> Unit) -> Unit),
     protectHistoricalAction:
         (String, String, () -> Unit) -> Unit,
     onOpenHistory: () -> Unit,
@@ -8011,6 +8440,7 @@ private fun SessionScreen(
     var message by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
     var deleteRecord by remember { mutableStateOf<StoreDailyRecord?>(null) }
+    var businessBaselineFingerprint by remember(date) { mutableStateOf("") }
 
     val activeSelectedStore = stores.firstOrNull { it.id == storeId }
     val historicalSelectedStore = if (editingRecordId != null && storeId != null && activeSelectedStore == null) {
@@ -8067,6 +8497,19 @@ private fun SessionScreen(
 
     val sharedPurchase = remember(dataVersion, date) { db.getPurchaseTotal(date) }
 
+    fun currentBusinessFingerprint(): String = buildString {
+        append(editingRecordId ?: 0L).append('|')
+        append(storeId ?: 0L).append('|')
+        append(expense).append('|').append(expensePayerId ?: 0L).append('|')
+        append(openingStock).append('|').append(closingStock).append('|')
+        append(newCustomer).append('|').append(oldCustomer).append('|')
+        append(actualStartTime).append('|').append(actualEndTime).append('|')
+        receiptRows.forEach { row ->
+            append(row.partnerId ?: 0L).append(':')
+            append(row.wechat).append(':').append(row.alipay).append(':').append(row.cash).append(';')
+        }
+    }
+
     fun clearForm(keepDate: Boolean = true) {
         if (!keepDate) onWorkDateChange(LocalDate.now().toString())
         editingRecordId = null
@@ -8090,6 +8533,7 @@ private fun SessionScreen(
         val defaultStore = stores.firstOrNull { it.id == storeId }
         actualStartTime = defaultStore?.defaultStartTime ?: "16:00"
         actualEndTime = defaultStore?.defaultEndTime ?: "24:00"
+        businessBaselineFingerprint = currentBusinessFingerprint()
     }
 
     fun loadRecord(r: StoreDailyRecord) {
@@ -8216,6 +8660,8 @@ private fun SessionScreen(
                 "已载入 ${r.storeName} 的营业记录，可直接修改"
             }
         isError = missingMultiReceipt
+        newBusinessFormExpanded = true
+        businessBaselineFingerprint = currentBusinessFingerprint()
     }
 
     LaunchedEffect(dataVersion, stores.map { it.id }, partners.map { it.id }, editingRecordId) {
@@ -8246,6 +8692,148 @@ private fun SessionScreen(
         }
     }
 
+    fun saveBusinessEdits(): Boolean {
+        val wNow = receiptRows.sumOf { it.wechat.toDoubleOrNull() ?: 0.0 }
+        val aNow = receiptRows.sumOf { it.alipay.toDoubleOrNull() ?: 0.0 }
+        val cNow = receiptRows.sumOf { it.cash.toDoubleOrNull() ?: 0.0 }
+        val eNow = expense.toDoubleOrNull() ?: 0.0
+        val openNow = openingStock.toDoubleOrNull() ?: 0.0
+        val closeNow = closingStock.toDoubleOrNull() ?: 0.0
+        val newNow = newCustomer.toIntOrNull() ?: 0
+        val oldNow = oldCustomer.toIntOrNull() ?: 0
+        val revenueNow = wNow + aNow + cNow
+
+        val requestedStore = storeId?.let { id ->
+            db.getStoreById(id) ?: if (editingRecordId != null) {
+                StoreOption(
+                    id,
+                    historicalStoreName.ifBlank { db.getStoreByIdIncludingDeleted(id)?.name ?: "已删除位置" },
+                    ""
+                )
+            } else null
+        }
+        if (requestedStore == null) {
+            message = "保存失败：请选择有效位置"
+            isError = true
+            return false
+        }
+
+        val normalizedReceiptRows = receiptRows.filter { it.hasIncome }
+        if (revenueNow > 0.005 && normalizedReceiptRows.isEmpty()) {
+            message = "保存失败：请填写至少一位收款人的微信、支付宝或现金"
+            isError = true
+            return false
+        }
+        if (normalizedReceiptRows.any { it.partnerId == null }) {
+            message = "保存失败：请为每一组有收款金额的记录选择收款人"
+            isError = true
+            return false
+        }
+
+        val requestedReceiptSplits = normalizedReceiptRows
+            .map { row ->
+                val active = row.partnerId?.let { db.getPartnerById(it) }
+                val historical = if (editingRecordId != null && row.partnerId != null) {
+                    db.getPartnerByIdIncludingDeleted(row.partnerId!!)
+                } else null
+                val rowWechat = row.wechat.toDoubleOrNull() ?: 0.0
+                val rowAlipay = row.alipay.toDoubleOrNull() ?: 0.0
+                val rowCash = row.cash.toDoubleOrNull() ?: 0.0
+                ReceiptSplitRecord(
+                    partnerId = active?.id ?: historical?.id ?: 0L,
+                    partnerName = active?.name ?: historical?.name ?: row.partnerNameSnapshot.ifBlank { "未指定" },
+                    amount = rowWechat + rowAlipay + rowCash,
+                    wechatIncome = rowWechat,
+                    alipayIncome = rowAlipay,
+                    cashIncome = rowCash
+                )
+            }
+            .groupBy { it.partnerId to it.partnerName }
+            .map { (key, parts) ->
+                val rowWechat = parts.sumOf { it.wechatIncome }
+                val rowAlipay = parts.sumOf { it.alipayIncome }
+                val rowCash = parts.sumOf { it.cashIncome }
+                ReceiptSplitRecord(
+                    partnerId = key.first,
+                    partnerName = key.second,
+                    amount = rowWechat + rowAlipay + rowCash,
+                    wechatIncome = rowWechat,
+                    alipayIncome = rowAlipay,
+                    cashIncome = rowCash
+                )
+            }
+        val legacyCollector = requestedReceiptSplits.singleOrNull()?.let { split ->
+            split.partnerId.takeIf { it > 0L }?.let { id -> PartnerOption(id, split.partnerName) }
+        }
+        val requestedExpensePayer = expensePayerId?.let { id ->
+            db.getPartnerById(id) ?: if (editingRecordId != null) {
+                PartnerOption(
+                    id,
+                    historicalExpensePayerName.ifBlank { db.getPartnerByIdIncludingDeleted(id)?.name ?: "已删除合伙人" }
+                )
+            } else null
+        }
+        if (eNow > 0 && expensePayerId != null && requestedExpensePayer == null) {
+            message = "保存失败：费用付款人已失效，请重新选择"
+            isError = true
+            return false
+        }
+
+        val result = db.saveStoreDailyRecord(
+            recordId = editingRecordId,
+            date = date,
+            store = requestedStore,
+            wechat = wNow,
+            wechatCollector = legacyCollector,
+            alipay = aNow,
+            alipayCollector = legacyCollector,
+            cash = cNow,
+            cashCollector = legacyCollector,
+            receiptSplits = requestedReceiptSplits,
+            expense = eNow,
+            expensePayer = requestedExpensePayer,
+            openingStock = openNow,
+            closingStock = closeNow,
+            newCustomer = newNow,
+            oldCustomer = oldNow,
+            actualStartTime = actualStartTime,
+            actualEndTime = actualEndTime
+        )
+        message = result.message
+        isError = !result.success
+        if (!result.success) return false
+
+        clearForm()
+        newBusinessFormExpanded = false
+        onChanged()
+        return true
+    }
+
+    fun discardBusinessEdits() {
+        clearForm()
+        newBusinessFormExpanded = false
+        message = ""
+        isError = false
+    }
+
+    val businessDirtyNow =
+        (editingRecordId != null || newBusinessFormExpanded) &&
+            businessBaselineFingerprint.isNotBlank() &&
+            currentBusinessFingerprint() != businessBaselineFingerprint
+    val latestBusinessSave = rememberUpdatedState<() -> Boolean>({ saveBusinessEdits() })
+    val latestBusinessDiscard = rememberUpdatedState<() -> Unit>({ discardBusinessEdits() })
+    LaunchedEffect(businessDirtyNow, date, editingRecordId, newBusinessFormExpanded) {
+        onEditGuardChange(
+            businessDirtyNow,
+            if (editingRecordId != null) "营业记录修改" else "营业录入",
+            if (businessDirtyNow) ({ latestBusinessSave.value() }) else null,
+            if (businessDirtyNow) ({ latestBusinessDiscard.value() }) else null
+        )
+    }
+    DisposableEffect(Unit) {
+        onDispose { onEditGuardChange(false, "营业录入", null, null) }
+    }
+
     val w = receiptRows.sumOf { it.wechat.toDoubleOrNull() ?: 0.0 }
     val a = receiptRows.sumOf { it.alipay.toDoubleOrNull() ?: 0.0 }
     val c = receiptRows.sumOf { it.cash.toDoubleOrNull() ?: 0.0 }
@@ -8264,6 +8852,11 @@ private fun SessionScreen(
     val businessWeatherStores =
         if (actualBusinessWeatherStores.isNotEmpty()) actualBusinessWeatherStores
         else listOfNotNull(businessWeatherStore)
+    val orderedTodayRecords = remember(todayRecords, editingRecordId) {
+        val editId = editingRecordId
+        if (editId == null) todayRecords
+        else todayRecords.filter { it.id != editId } + todayRecords.filter { it.id == editId }
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -8293,25 +8886,6 @@ private fun SessionScreen(
             }
         }
 
-        if (editingRecordId != null) {
-            item {
-                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF7D9))) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("正在编辑营业记录 #$editingRecordId", Modifier.weight(1f), fontWeight = FontWeight.Bold)
-                        TextButton(onClick = {
-                            clearForm()
-                            newBusinessFormExpanded = false
-                            message = "已取消编辑"
-                            isError = false
-                        }) { Text("取消编辑") }
-                    }
-                }
-            }
-        }
-
         if (todayRecords.isNotEmpty()) {
             item {
                 Text(
@@ -8326,7 +8900,7 @@ private fun SessionScreen(
             }
 
             items(
-                todayRecords,
+                orderedTodayRecords,
                 key = {
                     "today_business_${it.id}"
                 }
@@ -8334,13 +8908,13 @@ private fun SessionScreen(
                 record ->
                 Card(
                     onClick = {
-                        protectHistoricalAction(
-                            record.date,
-                            "修改 ${record.date} · ${record.storeName} 营业记录"
-                        ) {
-                            loadRecord(
-                                record
-                            )
+                        onRequestLeave {
+                            protectHistoricalAction(
+                                record.date,
+                                "修改 ${record.date} · ${record.storeName} 营业记录"
+                            ) {
+                                loadRecord(record)
+                            }
                         }
                     },
                     modifier =
@@ -8441,6 +9015,30 @@ private fun SessionScreen(
                                 Color.DarkGray,
                             maxLines = 2
                         )
+                        if (editingRecordId == record.id) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "正在原地编辑",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = BrandGreen,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    "取消编辑",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.clickable {
+                                        onRequestLeave {
+                                            discardBusinessEdits()
+                                            message = "已取消编辑"
+                                        }
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -8457,6 +9055,7 @@ private fun SessionScreen(
                     onClick = {
                         clearForm()
                         newBusinessFormExpanded = true
+                        businessBaselineFingerprint = currentBusinessFingerprint()
                         message = ""
                         isError = false
                     },
@@ -8539,51 +9138,12 @@ private fun SessionScreen(
         }
 
         item {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                verticalAlignment = Alignment.Bottom
-            ) {
-                CompactNumberField(
-                    "日常开销",
-                    expense,
-                    { expense = it },
-                    Modifier.weight(1f)
-                )
-
-                Box(Modifier.weight(1.15f)) {
-                    CompactSelectButton(
-                        "费用付款人",
-                        expensePayerDisplayName,
-                        Modifier.fillMaxWidth()
-                    ) { expensePayerMenu = true }
-
-                    DropdownMenu(
-                        expanded = expensePayerMenu,
-                        onDismissRequest = { expensePayerMenu = false }
-                    ) {
-                        partners.forEach { p ->
-                            DropdownMenuItem(
-                                text = { Text(p.name) },
-                                onClick = {
-                                    expensePayerId = p.id
-                                    historicalExpensePayerName = ""
-                                    expensePayerMenu = false
-                                }
-                            )
-                        }
-                        DropdownMenuItem(
-                            text = { Text("未指定") },
-                            onClick = {
-                                expensePayerId = null
-                                historicalExpensePayerName = ""
-                                expensePayerMenu = false
-                            }
-                        )
-                    }
-                }
-
-            }
+            CompactNumberField(
+                "日常开销",
+                expense,
+                { expense = it },
+                Modifier.fillMaxWidth()
+            )
         }
 
         item {
@@ -8610,8 +9170,39 @@ private fun SessionScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 4.dp),
-                horizontalArrangement = Arrangement.End
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                Box(Modifier.weight(1f)) {
+                    CompactSelectButton(
+                        "费用付款人",
+                        expensePayerDisplayName,
+                        Modifier.fillMaxWidth()
+                    ) { expensePayerMenu = true }
+                    DropdownMenu(
+                        expanded = expensePayerMenu,
+                        onDismissRequest = { expensePayerMenu = false }
+                    ) {
+                        partners.forEach { p ->
+                            DropdownMenuItem(
+                                text = { Text(p.name) },
+                                onClick = {
+                                    expensePayerId = p.id
+                                    historicalExpensePayerName = ""
+                                    expensePayerMenu = false
+                                }
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = { Text("未指定") },
+                            onClick = {
+                                expensePayerId = null
+                                historicalExpensePayerName = ""
+                                expensePayerMenu = false
+                            }
+                        )
+                    }
+                }
                 OutlinedButton(
                     onClick = {
                         val unused =
@@ -8626,8 +9217,8 @@ private fun SessionScreen(
                             )
                         )
                     },
-                    modifier = Modifier.height(30.dp),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    modifier = Modifier.weight(0.72f).height(34.dp),
+                    contentPadding = PaddingValues(horizontal = 7.dp, vertical = 0.dp),
                     enabled = partners.isNotEmpty()
                 ) {
                     Text(
@@ -8661,128 +9252,7 @@ private fun SessionScreen(
 
         item {
             Button(
-                onClick = {
-                    val requestedStore = storeId?.let { id ->
-                        db.getStoreById(id) ?: if (editingRecordId != null) {
-                            StoreOption(
-                                id,
-                                historicalStoreName.ifBlank { db.getStoreByIdIncludingDeleted(id)?.name ?: "已删除位置" },
-                                ""
-                            )
-                        } else null
-                    }
-                    if (requestedStore == null) {
-                        message = "保存失败：请选择有效位置"
-                        isError = true
-                        return@Button
-                    }
-
-                    val normalizedReceiptRows =
-                        receiptRows.filter { it.hasIncome }
-
-                    if (revenue > 0.005 && normalizedReceiptRows.isEmpty()) {
-                        message = "保存失败：请填写至少一位收款人的微信、支付宝或现金"
-                        isError = true
-                        return@Button
-                    }
-
-                    if (normalizedReceiptRows.any { it.partnerId == null }) {
-                        message = "保存失败：请为每一组有收款金额的记录选择收款人"
-                        isError = true
-                        return@Button
-                    }
-
-                    val requestedReceiptSplits =
-                        normalizedReceiptRows
-                            .map { row ->
-                                val active = row.partnerId?.let { db.getPartnerById(it) }
-                                val historical =
-                                    if (editingRecordId != null && row.partnerId != null) {
-                                        db.getPartnerByIdIncludingDeleted(row.partnerId!!)
-                                    } else {
-                                        null
-                                    }
-                                val rowWechat = row.wechat.toDoubleOrNull() ?: 0.0
-                                val rowAlipay = row.alipay.toDoubleOrNull() ?: 0.0
-                                val rowCash = row.cash.toDoubleOrNull() ?: 0.0
-                                ReceiptSplitRecord(
-                                    partnerId = active?.id ?: historical?.id ?: 0L,
-                                    partnerName =
-                                        active?.name
-                                            ?: historical?.name
-                                            ?: row.partnerNameSnapshot.ifBlank { "未指定" },
-                                    amount = rowWechat + rowAlipay + rowCash,
-                                    wechatIncome = rowWechat,
-                                    alipayIncome = rowAlipay,
-                                    cashIncome = rowCash
-                                )
-                            }
-                            .groupBy { it.partnerId to it.partnerName }
-                            .map { (key, parts) ->
-                                val rowWechat = parts.sumOf { it.wechatIncome }
-                                val rowAlipay = parts.sumOf { it.alipayIncome }
-                                val rowCash = parts.sumOf { it.cashIncome }
-                                ReceiptSplitRecord(
-                                    partnerId = key.first,
-                                    partnerName = key.second,
-                                    amount = rowWechat + rowAlipay + rowCash,
-                                    wechatIncome = rowWechat,
-                                    alipayIncome = rowAlipay,
-                                    cashIncome = rowCash
-                                )
-                            }
-                    val legacyCollector =
-                        requestedReceiptSplits.singleOrNull()?.let { split ->
-                            split.partnerId.takeIf { it > 0L }?.let { id ->
-                                PartnerOption(id, split.partnerName)
-                            }
-                        }
-
-                    val requestedExpensePayer = expensePayerId?.let { id ->
-                        db.getPartnerById(id) ?: if (editingRecordId != null) {
-                            PartnerOption(
-                                id,
-                                historicalExpensePayerName.ifBlank { db.getPartnerByIdIncludingDeleted(id)?.name ?: "已删除合伙人" }
-                            )
-                        } else null
-                    }
-                    if (e > 0 && expensePayerId != null && requestedExpensePayer == null) {
-                        message = "保存失败：费用付款人已失效，请重新选择"
-                        isError = true
-                        return@Button
-                    }
-
-                    val result = db.saveStoreDailyRecord(
-                        recordId = editingRecordId,
-                        date = date,
-                        store = requestedStore,
-                        wechat = w,
-                        wechatCollector = legacyCollector,
-                        alipay = a,
-                        alipayCollector = legacyCollector,
-                        cash = c,
-                        cashCollector = legacyCollector,
-                        receiptSplits = requestedReceiptSplits,
-                        expense = e,
-                        expensePayer = requestedExpensePayer,
-                        openingStock = open,
-                        closingStock = close,
-                        newCustomer = n,
-                        oldCustomer = o,
-                        actualStartTime = actualStartTime,
-                        actualEndTime = actualEndTime
-                    )
-
-                    message = result.message
-                    isError = !result.success
-
-                    if (result.success) {
-                        // 保存完成后立即退出编辑模式，避免继续显示“正在编辑营业记录”。
-                        clearForm()
-                        newBusinessFormExpanded = false
-                        onChanged()
-                    }
-                },
+                onClick = { saveBusinessEdits() },
                 modifier = Modifier.fillMaxWidth().height(44.dp),
                 contentPadding = PaddingValues(vertical = 5.dp)
             ) {
@@ -8901,19 +9371,23 @@ private fun SessionScreen(
                                 .fillMaxWidth()
                                 .combinedClickable(
                                     onClick = {
-                                        protectHistoricalAction(
-                                            record.date,
-                                            "修改 ${record.date} · ${record.storeName} 营业记录"
-                                        ) {
-                                            loadRecord(record)
+                                        onRequestLeave {
+                                            protectHistoricalAction(
+                                                record.date,
+                                                "修改 ${record.date} · ${record.storeName} 营业记录"
+                                            ) {
+                                                loadRecord(record)
+                                            }
                                         }
                                     },
                                     onLongClick = {
-                                        protectHistoricalAction(
-                                            record.date,
-                                            "删除 ${record.date} · ${record.storeName} 营业记录"
-                                        ) {
-                                            deleteRecord = record
+                                        onRequestLeave {
+                                            protectHistoricalAction(
+                                                record.date,
+                                                "删除 ${record.date} · ${record.storeName} 营业记录"
+                                            ) {
+                                                deleteRecord = record
+                                            }
                                         }
                                     }
                                 )
@@ -9383,12 +9857,20 @@ private fun SettlementDayContent(
     val profitRows = remember(dataVersion, date) {
         db.getProfitDistribution(date)
     }
+    val visibleProfitRows = profitRows.filter { kotlin.math.abs(it.allocatedProfit) > 0.005 || kotlin.math.abs(it.ratio) > 0.000001 }
+    val hiddenZeroProfitCount = profitRows.size - visibleProfitRows.size
     val bundle = remember(dataVersion, date) {
         db.getCashSettlement(date)
     }
     val settlementCenter = remember(dataVersion) {
         db.getSettlementCenter()
     }
+    val cashSnapshotStale = bundle?.settlement?.let { old ->
+        kotlin.math.abs(old.revenue - summary.revenue) > 0.005 ||
+            kotlin.math.abs(old.purchaseCost - summary.purchase) > 0.005 ||
+            kotlin.math.abs(old.expense - summary.expense) > 0.005 ||
+            kotlin.math.abs(old.profit - summary.profit) > 0.005
+    } ?: false
 
     LaunchedEffect(
         dataVersion,
@@ -9624,7 +10106,7 @@ private fun SettlementDayContent(
             }
         } else {
             items(
-                profitRows,
+                visibleProfitRows,
                 // V1.4.7.22: old multi-device data can contain more than one
                 // active cloud row for the same date + partner. Using that
                 // logical pair as a Compose key crashes LazyColumn with
@@ -9665,6 +10147,15 @@ private fun SettlementDayContent(
                                 }
                         )
                     }
+                }
+            }
+            if (hiddenZeroProfitCount > 0) {
+                item {
+                    Text(
+                        "另有 ${hiddenZeroProfitCount} 名合伙人本次分配为0，已隐藏；其采购垫资、收款和资金余额仍正常参与资金轧差。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Gray
+                    )
                 }
             }
         }
@@ -9759,6 +10250,24 @@ private fun SettlementDayContent(
         }
 
         bundle?.let { b ->
+            if (cashSnapshotStale) {
+                item {
+                    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3D6))) {
+                        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("⚠ 结算后账目发生变化", fontWeight = FontWeight.Bold, color = Color(0xFF8A5A00))
+                            Text(
+                                "原轧差利润 ${money(b.settlement.profit)} · 当前实际利润 ${money(summary.profit)} · 差额 ${money(summary.profit - b.settlement.profit)}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                "已发生的真实转账不会被系统偷偷改写；请核对原结算后再重新处理差额。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.Gray
+                            )
+                        }
+                    }
+                }
+            }
             item {
                 Row(
                     verticalAlignment = Alignment.CenterVertically
@@ -10049,9 +10558,20 @@ private fun SettlementDayContent(
                             "营业 ${money(h.revenue)} · " +
                                 "进货 ${money(h.purchaseCost)} · " +
                                 "利润 ${money(h.profit)}",
-                            style =
-                                MaterialTheme.typography.bodySmall
+                            style = MaterialTheme.typography.bodySmall
                         )
+                        val current = db.getDailySummary(h.date)
+                        val stale = kotlin.math.abs(current.revenue - h.revenue) > 0.005 ||
+                            kotlin.math.abs(current.purchase - h.purchaseCost) > 0.005 ||
+                            kotlin.math.abs(current.expense - h.expense) > 0.005 ||
+                            kotlin.math.abs(current.profit - h.profit) > 0.005
+                        if (stale) {
+                            Text(
+                                "⚠ 当前实际利润 ${money(current.profit)} · 与原轧差相差 ${money(current.profit - h.profit)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF8A5A00)
+                            )
+                        }
                     }
                     Column(
                         horizontalAlignment = Alignment.End
@@ -11757,60 +12277,29 @@ private fun MoreScreen(
                         SettingsSection(
                             "经营设置"
                         ) {
-                            var needDivider =
-                                false
-
-                            if (
-                                allowed(
-                                    BookPermissions.BASIC_EDIT
-                                )
+                            SettingsRow(
+                                "🤝",
+                                "合伙人与利润分配"
                             ) {
-                                SettingsRow(
-                                    "👥",
-                                    "合伙人管理"
-                                ) {
-                                    sub =
-                                        MorePage.PARTNERS
-                                }
+                                sub = MorePage.PROFIT
+                            }
+
+                            if (allowed(BookPermissions.BASIC_EDIT)) {
                                 SettingsDivider()
                                 SettingsRow(
                                     "📍",
                                     "位置管理"
                                 ) {
-                                    sub =
-                                        MorePage.STORES
+                                    sub = MorePage.STORES
                                 }
                                 SettingsDivider()
                                 SettingsRow(
                                     "📦",
                                     "商品管理"
                                 ) {
-                                    sub =
-                                        MorePage.FRUITS
+                                    sub = MorePage.FRUITS
                                 }
-                                needDivider =
-                                    true
                             }
-
-                            if (
-                                allowed(
-                                    BookPermissions.PROFIT_VIEW
-                                )
-                            ) {
-                                if (needDivider) {
-                                    SettingsDivider()
-                                }
-                                SettingsRow(
-                                    "💰",
-                                    "利润分配"
-                                ) {
-                                    sub =
-                                        MorePage.PROFIT
-                                }
-                                needDivider =
-                                    true
-                            }
-
                         }
                     }
                 }
@@ -12193,13 +12682,15 @@ private fun MoreScreen(
 
         MorePage.PARTNERS -> {
             SubPage(
-                "合伙人管理",
+                "合伙人与利润分配",
                 { sub = MorePage.MENU }
             ) {
-                PartnerContent(
-                    db,
-                    dataVersion,
-                    onChanged
+                PartnerProfitCombinedContent(
+                    db = db,
+                    dataVersion = dataVersion,
+                    canEditProfit = BookPermissions.has(currentBook, systemRole, BookPermissions.PROFIT_EDIT),
+                    protectHistoricalAction = protectHistoricalAction,
+                    onChanged = onChanged
                 )
             }
         }
@@ -12246,17 +12737,13 @@ private fun MoreScreen(
 
         MorePage.PROFIT -> {
             SubPage(
-                "利润分配",
+                "合伙人与利润分配",
                 { sub = MorePage.MENU }
             ) {
-                ProfitContent(
+                PartnerProfitCombinedContent(
                     db = db,
                     dataVersion = dataVersion,
-                    canEdit = BookPermissions.has(
-                        currentBook,
-                        systemRole,
-                        BookPermissions.PROFIT_EDIT
-                    ),
+                    canEditProfit = BookPermissions.has(currentBook, systemRole, BookPermissions.PROFIT_EDIT),
                     protectHistoricalAction = protectHistoricalAction,
                     onChanged = onChanged
                 )
@@ -12401,7 +12888,7 @@ private fun OperatingAnalysisContent(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 MetricCard(
-                    title = if (analysis.costComplete) "预估经营利润" else "已知成本口径利润",
+                    title = if (analysis.costComplete) "预估经营利润（仅参考）" else "已知成本口径利润（仅参考）",
                     value = analysis.operatingProfit?.let { money(it) } ?: "—",
                     modifier = Modifier.weight(1f),
                     color = if ((analysis.operatingProfit ?: 0.0) >= 0) SoftGreen else Color(0xFFFFECEC),
@@ -12419,6 +12906,12 @@ private fun OperatingAnalysisContent(
                     sub = if (analysis.costComplete) "毛利率 ${percent(analysis.grossMargin)}" else "缺成本 ${missingCostItems.size}种"
                 )
             }
+            Text(
+                "预估利润、预估毛利与单品估算数据仅用于经营分析，不参与利润分配、资金轧差或任何正式结算。",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.Gray,
+                modifier = Modifier.padding(top = 4.dp)
+            )
         }
 
         item {
@@ -21484,6 +21977,49 @@ private fun BackupContent(
 }
 
 @Composable
+private fun PartnerProfitCombinedContent(
+    db: AppDatabase,
+    dataVersion: Int,
+    canEditProfit: Boolean,
+    protectHistoricalAction: (String, String, () -> Unit) -> Unit,
+    onChanged: () -> Unit
+) {
+    var tab by remember { mutableIntStateOf(0) }
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            FilterChip(
+                selected = tab == 0,
+                onClick = { tab = 0 },
+                label = { Text("合伙人管理") },
+                modifier = Modifier.weight(1f)
+            )
+            FilterChip(
+                selected = tab == 1,
+                onClick = { tab = 1 },
+                label = { Text("利润分配") },
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Box(Modifier.fillMaxSize()) {
+            if (tab == 0) {
+                PartnerContent(db, dataVersion, onChanged)
+            } else {
+                ProfitContent(
+                    db = db,
+                    dataVersion = dataVersion,
+                    canEdit = canEditProfit,
+                    protectHistoricalAction = protectHistoricalAction,
+                    onChanged = onChanged
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun PartnerContent(db: AppDatabase, dataVersion: Int, onChanged: () -> Unit) {
     val partners = remember(dataVersion) { db.getPartners() }
     var addDialog by remember { mutableStateOf(false) }
@@ -22497,7 +23033,19 @@ private fun ProfitContent(
                             if (summary.profit < 0) "亏损分担预览" else "分配预览",
                             fontWeight = FontWeight.Bold
                         )
-                        allocations.forEach { (p, pct) -> SummaryRow("${p.name} · ${cleanPercent(pct)}%", money(summary.profit * pct / 100.0)) }
+                        val activeAllocations = allocations.filter { (_, pct) -> kotlin.math.abs(pct) > 0.000001 }
+                        val hiddenZeroCount = allocations.size - activeAllocations.size
+                        activeAllocations.forEach { (p, pct) ->
+                            SummaryRow("${p.name} · ${cleanPercent(pct)}%", money(summary.profit * pct / 100.0))
+                        }
+                        if (hiddenZeroCount > 0) {
+                            Text(
+                                "另有 ${hiddenZeroCount} 名合伙人当前分配比例为0，本次未参与${if (summary.profit < 0) "亏损分担" else "利润分配"}。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.Gray,
+                                modifier = Modifier.padding(top = 5.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -22508,7 +23056,18 @@ private fun ProfitContent(
                     Column(Modifier.weight(1f)) {
                         Text("当前日期已保存", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text("利润基数：${money(saved.first().sourceProfit)}", style = MaterialTheme.typography.bodySmall)
-                        saved.forEach { r -> Text("${r.partnerName} · ${cleanPercent(r.ratio * 100)}%：${money(r.allocatedProfit)}", style = MaterialTheme.typography.bodySmall) }
+                        val visibleSaved = saved.filter { kotlin.math.abs(it.ratio) > 0.000001 }
+                        val hiddenSavedCount = saved.size - visibleSaved.size
+                        visibleSaved.forEach { r ->
+                            Text("${r.partnerName} · ${cleanPercent(r.ratio * 100)}%：${money(r.allocatedProfit)}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (hiddenSavedCount > 0) {
+                            Text(
+                                "另有 ${hiddenSavedCount} 名合伙人0分配，已隐藏。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.Gray
+                            )
+                        }
                     }
                     if (canEdit) {
                         TextButton(

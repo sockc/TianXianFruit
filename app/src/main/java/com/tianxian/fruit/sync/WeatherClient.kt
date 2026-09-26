@@ -123,6 +123,30 @@ class WeatherClient(
         return parseOverview(json, historical = false)
     }
 
+    fun fetchHistoricalDay(
+        bookId: String,
+        store: StoreOption,
+        date: LocalDate
+    ): WeatherOverview {
+        val session = cloudSyncManager.session()
+            ?: throw IllegalStateException("尚未登录云端，无法读取历史天气")
+        val lat = store.latitude ?: throw IllegalArgumentException("该位置尚未设置纬度")
+        val lon = store.longitude ?: throw IllegalArgumentException("该位置尚未设置经度")
+        val encodedBook = URLEncoder.encode(bookId, "UTF-8")
+        val path = buildString {
+            append("/api/v1/weather/history-day?book_id=")
+            append(encodedBook)
+            append("&lat=")
+            append(lat)
+            append("&lon=")
+            append(lon)
+            append("&date=")
+            append(date)
+        }
+        val json = requestJson(session, path)
+        return parseOverview(json, historical = true)
+    }
+
     fun fetchArchive(
         bookId: String,
         store: StoreOption,

@@ -2128,6 +2128,11 @@ class CloudSyncManager(
             )
         } while (pull.hasMore)
 
+        // V1.4.7.59: source rows and old settlement snapshots can arrive in
+        // different cloud-event order. Reconcile after the complete pull so an
+        // obsolete, not-yet-paid cash settlement cannot survive silently.
+        db.invalidateStaleUnsettledCashSettlements()
+
         return count to cursor
     }
 

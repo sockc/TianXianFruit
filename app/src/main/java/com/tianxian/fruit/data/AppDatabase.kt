@@ -10841,6 +10841,41 @@ class AppDatabase(
         return count > 0
     }
 
+    /**
+     * V1.4.7.59: after a cloud pull, source accounting rows may arrive later than
+     * an older cash-settlement snapshot. Re-check every active snapshot against
+     * the current formal DailySummary. Unsettled stale snapshots are invalidated;
+     * snapshots with real transferred money are preserved for audit and the UI
+     * will show the difference instead of silently rewriting history.
+     */
+    fun invalidateStaleUnsettledCashSettlements(): Int {
+        val db = writableDatabase
+        val dates = db.rawQuery(
+            "SELECT DISTINCT date FROM daily_cash_settlement WHERE deleted=0 ORDER BY date",
+            emptyArray()
+        ).use { c -> buildList { while (c.moveToNext()) add(c.str("date")) } }
+        var changed = 0
+        dates.forEach { date ->
+            val bundle = getCashSettlement(date) ?: return@forEach
+            val current = getDailySummary(date)
+            val old = bundle.settlement
+            val stale =
+                kotlin.math.abs(old.revenue - current.revenue) > 0.005 ||
+                    kotlin.math.abs(old.purchaseCost - current.purchase) > 0.005 ||
+                    kotlin.math.abs(old.expense - current.expense) > 0.005 ||
+                    kotlin.math.abs(old.profit - current.profit) > 0.005
+            if (!stale) return@forEach
+
+            val hasRealTransfer = bundle.transfers.any { it.settledAmount > 0.005 || it.confirmedAt > 0L }
+            if (hasRealTransfer) return@forEach
+
+            val p = invalidateProfitDistributionForDate(db, date)
+            val c = invalidateCashSettlementForDate(db, date)
+            if (p || c) changed++
+        }
+        return changed
+    }
+
     fun saveStoreDailyRecord(
         recordId: Long? = null,
         date: String,
