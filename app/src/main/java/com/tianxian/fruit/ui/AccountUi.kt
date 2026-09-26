@@ -29,6 +29,14 @@ internal fun CloudLoginGate(
     var password by remember {
         mutableStateOf("")
     }
+    var showAdvanced by remember {
+        mutableStateOf(false)
+    }
+    var serverUrl by remember {
+        mutableStateOf(
+            cloudSyncManager.defaultBaseUrl()
+        )
+    }
     var loading by remember {
         mutableStateOf(false)
     }
@@ -100,6 +108,122 @@ internal fun CloudLoginGate(
                         PasswordVisualTransformation()
                 )
 
+                TextButton(
+                    onClick = {
+                        showAdvanced =
+                            !showAdvanced
+                    },
+                    contentPadding =
+                        PaddingValues(
+                            horizontal = 0.dp,
+                            vertical = 2.dp
+                        )
+                ) {
+                    Text(
+                        if (showAdvanced) {
+                            "收起高级设置"
+                        } else {
+                            "高级设置 · 更改服务器"
+                        }
+                    )
+                }
+
+                if (showAdvanced) {
+                    OutlinedTextField(
+                        value = serverUrl,
+                        onValueChange = {
+                            serverUrl = it
+                        },
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        label = {
+                            Text("服务器地址")
+                        },
+                        placeholder = {
+                            Text(
+                                CloudSyncManager
+                                    .DEFAULT_BASE_URL
+                            )
+                        },
+                        supportingText = {
+                            Text(
+                                "迁移或测试服务器时使用。登录成功后才会保存。"
+                            )
+                        },
+                        singleLine = true
+                    )
+
+                    Row(
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        verticalAlignment =
+                            Alignment.CenterVertically
+                    ) {
+                        TextButton(
+                            onClick = {
+                                serverUrl =
+                                    CloudSyncManager
+                                        .DEFAULT_BASE_URL
+                            },
+                            contentPadding =
+                                PaddingValues(0.dp)
+                        ) {
+                            Text("恢复默认服务器")
+                        }
+
+                        Spacer(
+                            Modifier.weight(1f)
+                        )
+
+                        Text(
+                            if (
+                                serverUrl
+                                    .trim()
+                                    .startsWith(
+                                        "http://",
+                                        ignoreCase = true
+                                    )
+                            ) {
+                                "⚠ 正式版请使用 HTTPS"
+                            } else {
+                                "HTTPS"
+                            },
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall,
+                            color =
+                                if (
+                                    serverUrl
+                                        .trim()
+                                        .startsWith(
+                                            "http://",
+                                            ignoreCase = true
+                                        )
+                                ) {
+                                    Color(0xFFB26A00)
+                                } else {
+                                    Color.Gray
+                                }
+                        )
+                    }
+                } else if (
+                    serverUrl
+                        .trim()
+                        .trimEnd('/') !=
+                    CloudSyncManager
+                        .DEFAULT_BASE_URL
+                ) {
+                    Text(
+                        "当前使用自定义服务器：${serverUrl.trim()}",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall,
+                        color = Color(0xFFB26A00)
+                    )
+                }
+
                 Button(
                     onClick = {
                         if (
@@ -107,6 +231,20 @@ internal fun CloudLoginGate(
                             username.trim().isBlank() ||
                             password.isBlank()
                         ) {
+                            return@Button
+                        }
+
+                        if (
+                            serverUrl
+                                .trim()
+                                .startsWith(
+                                    "http://",
+                                    ignoreCase = true
+                                )
+                        ) {
+                            showAdvanced = true
+                            message =
+                                "正式版为保护账号密码，仅支持 HTTPS 服务器"
                             return@Button
                         }
 
@@ -122,8 +260,7 @@ internal fun CloudLoginGate(
                                     runCatching {
                                         cloudSyncManager.login(
                                             baseUrl =
-                                                cloudSyncManager
-                                                    .defaultBaseUrl(),
+                                                serverUrl,
                                             username =
                                                 username.trim(),
                                             password =
