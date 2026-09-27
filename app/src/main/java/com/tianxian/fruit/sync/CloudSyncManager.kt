@@ -1431,6 +1431,21 @@ class CloudSyncManager(
         )
     }
 
+    fun resolveConflictsUseCloud(
+        db: AppDatabase,
+        book: LedgerBook,
+        conflicts: List<SyncConflictRecord>
+    ): CloudSyncResult {
+        conflicts.forEach {
+            db.resolveConflictUseCloud(it)
+        }
+
+        return syncCurrentBook(
+            db,
+            book
+        )
+    }
+
     fun resolveConflictUseLocal(
         db: AppDatabase,
         book: LedgerBook,
@@ -1448,6 +1463,60 @@ class CloudSyncManager(
                 book
             )
 
+        pushLocalConflictResolution(
+            current = current,
+            db = db,
+            book = book,
+            cloudBook = cloudBook,
+            conflict = conflict
+        )
+
+        return syncCurrentBook(
+            db,
+            book
+        )
+    }
+
+    fun resolveConflictsUseLocal(
+        db: AppDatabase,
+        book: LedgerBook,
+        conflicts: List<SyncConflictRecord>
+    ): CloudSyncResult {
+        val current =
+            requireSession()
+
+        verifyLogin()
+        registerDevice(current)
+
+        val cloudBook =
+            resolveCloudBook(
+                current,
+                book
+            )
+
+        conflicts.forEach { conflict ->
+            pushLocalConflictResolution(
+                current = current,
+                db = db,
+                book = book,
+                cloudBook = cloudBook,
+                conflict = conflict
+            )
+        }
+
+        return syncCurrentBook(
+            db,
+            book
+        )
+    }
+
+    private fun pushLocalConflictResolution(
+        current: CloudSession,
+        db: AppDatabase,
+        book: LedgerBook,
+        cloudBook: CloudBookInfo,
+        conflict: SyncConflictRecord
+    ) {
         val conflictChange =
             SyncChangeRecord(
                 id = -1L,
@@ -1587,12 +1656,14 @@ class CloudSyncManager(
                     item.optJSONObject(
                         "server_payload"
                     )
-                        ?: JSONObject()
+                        ?: JSONObject(),
+                manualRequired =
+                    conflict.manualRequired
             )
 
             throw CloudApiException(
                 409,
-                "云端在处理冲突期间又发生了变化，请重新选择"
+                "云端在处理冲突期间又发生了变化"
             )
         }
 
@@ -1602,11 +1673,142 @@ class CloudSyncManager(
             acceptedVersion =
                 nextVersion
         )
+    }
 
-        return syncCurrentBook(
-            db,
-            book
+    private fun conflictPayload(
+        raw: String
+    ): JSONObject =
+        runCatching {
+            JSONObject(raw)
+        }.getOrDefault(
+            JSONObject()
         )
+
+    private fun payloadUpdatedAt(
+        payload: JSONObject?
+    ): Long =
+        payload?.optLong(
+            "updated_at",
+            0L
+        ) ?: 0L
+
+    private fun shouldKeepLocalConflict(
+        db: AppDatabase,
+        conflict: SyncConflictRecord
+    ): Boolean {
+        val localPayload =
+            db.getSyncPayload(
+                conflict.tableName,
+                conflict.recordSyncId
+            ) ?: return false
+
+        val serverPayload =
+            conflictPayload(
+                conflict.serverPayload
+            )
+
+        val localUpdatedAt =
+            payloadUpdatedAt(
+                localPayload
+            )
+        val serverUpdatedAt =
+            payloadUpdatedAt(
+                serverPayload
+            )
+
+        if (
+            localUpdatedAt !=
+            serverUpdatedAt
+        ) {
+            return localUpdatedAt >
+                serverUpdatedAt
+        }
+
+        if (
+            conflict.localVersion !=
+            conflict.serverVersion
+        ) {
+            return conflict.localVersion >
+                conflict.serverVersion
+        }
+
+        // 时间和版本完全相同仍然内容不同，云端作为稳定的最终仲裁者。
+        return false
+    }
+
+    private fun autoResolveStoredConflicts(
+        current: CloudSession,
+        db: AppDatabase,
+        book: LedgerBook,
+        cloudBook: CloudBookInfo
+    ) {
+        repeat(4) {
+            val automatic =
+                db.getSyncConflicts()
+                    .filterNot {
+                        it.manualRequired
+                    }
+
+            if (automatic.isEmpty()) {
+                return
+            }
+
+            var madeProgress = false
+
+            automatic.forEach { conflict ->
+                if (
+                    shouldKeepLocalConflict(
+                        db,
+                        conflict
+                    )
+                ) {
+                    try {
+                        pushLocalConflictResolution(
+                            current = current,
+                            db = db,
+                            book = book,
+                            cloudBook = cloudBook,
+                            conflict = conflict
+                        )
+                        madeProgress = true
+                    } catch (
+                        error: CloudApiException
+                    ) {
+                        if (error.statusCode == 403) {
+                            // 权限已收紧时，本机无权继续覆盖，直接采用云端。
+                            db.resolveConflictUseCloud(
+                                conflict
+                            )
+                            madeProgress = true
+                        } else if (
+                            error.statusCode == 409
+                        ) {
+                            // 冲突快照已刷新，下一轮立即按最新快照重新仲裁。
+                            madeProgress = true
+                        } else {
+                            throw error
+                        }
+                    }
+                } else {
+                    db.resolveConflictUseCloud(
+                        conflict
+                    )
+                    madeProgress = true
+                }
+            }
+
+            if (!madeProgress) {
+                return
+            }
+        }
+
+        // 极端情况下云端连续变化超过重试窗口，为避免普通冲突残留并继续弹窗，
+        // 使用当前最新云端快照收敛；批量删除保护不在此范围内。
+        db.getSyncConflicts()
+            .filterNot { it.manualRequired }
+            .forEach {
+                db.resolveConflictUseCloud(it)
+            }
     }
 
     fun downloadCloudBook(
@@ -1766,12 +1968,26 @@ class CloudSyncManager(
             db.prepareCloudIdRanges()
         }
 
+        // V1.4.7.62：普通版本冲突不再打断用户。按记录 updated_at 判定最新内容，
+        // 时间相同再比较 row_version；仍相同则云端作为稳定仲裁。
+        // 只有“批量删除保护”会保留为人工确认。
+        autoResolveStoredConflicts(
+            current = current,
+            db = db,
+            book = book,
+            cloudBook = cloudBook
+        )
+
         var uploadedCount = 0
-        var conflictCount = 0
+        var conflictCount =
+            db.getManualSyncConflictCount()
         val blockedTables =
             linkedSetOf<String>()
 
-        if (canEdit) {
+        if (
+            canEdit &&
+            conflictCount == 0
+        ) {
             while (true) {
                 val pending =
                     db.getPendingSyncChangesExcludingTables(
@@ -1875,19 +2091,44 @@ class CloudSyncManager(
                             serverDeleted =
                                 conflict.serverDeleted,
                             serverPayload =
-                                conflict.serverPayload
+                                conflict.serverPayload,
+                            manualRequired = false
                         )
                     }
 
-                conflictCount +=
+                if (
                     pushResult.conflicts
-                        .size
+                        .count {
+                            it.serverDeleted
+                        } >= 2
+                ) {
+                    db.markServerDeleteConflictsManual()
+                }
 
                 if (
                     pushResult.conflicts
-                        .isNotEmpty() ||
+                        .isNotEmpty()
+                ) {
+                    autoResolveStoredConflicts(
+                        current = current,
+                        db = db,
+                        book = book,
+                        cloudBook = cloudBook
+                    )
+                }
+
+                conflictCount =
+                    db.getManualSyncConflictCount()
+
+                if (conflictCount > 0) {
+                    break
+                }
+
+                if (
                     pushResult
                         .acceptedLocalIds
+                        .isEmpty() &&
+                    pushResult.conflicts
                         .isEmpty()
                 ) {
                     break
@@ -1932,6 +2173,9 @@ class CloudSyncManager(
                     book.id
                 )
             }
+
+            conflictCount =
+                db.getManualSyncConflictCount()
         }
 
         val now =
@@ -1954,7 +2198,7 @@ class CloudSyncManager(
         } else {
             db.setLastCloudSync(
                 db.getLastCloudSyncAt(),
-                "发现 $conflictCount 条版本冲突"
+                "检测到 $conflictCount 条批量删除待确认"
             )
         }
 
@@ -1970,7 +2214,7 @@ class CloudSyncManager(
         val message =
             when {
                 conflictCount > 0 ->
-                    "已上传 $uploadedCount 条，但发现 $conflictCount 条冲突，未继续覆盖云端"
+                    "检测到 $conflictCount 条批量删除待确认；其余修改已按最新版本同步"
 
                 !canEdit &&
                     pendingReadOnly ->
@@ -2091,6 +2335,11 @@ class CloudSyncManager(
         var cursor =
             startCursor
 
+        // 远端批量删除先缓冲；只有确认本次同步最终仍会删除 2 条及以上
+        // 本机有效业务数据时，才进入人工保护。普通更新和单条删除无感同步。
+        val pendingRemoteDeletes =
+            linkedMapOf<String, PullEvent>()
+
         do {
             val pull =
                 pullBatch(
@@ -2101,6 +2350,91 @@ class CloudSyncManager(
 
             pull.events.forEach {
                 event ->
+                val key =
+                    event.tableName +
+                        "|" +
+                        event.syncId
+
+                if (
+                    event.operation ==
+                    "DELETE" &&
+                    requiresBulkDeleteConfirmation(
+                        event.tableName
+                    ) &&
+                    remoteDeleteWouldRemoveActiveLocal(
+                        db,
+                        event
+                    )
+                ) {
+                    pendingRemoteDeletes[key] =
+                        event
+                } else {
+                    // 同一条记录后续若又出现恢复/更新事件，旧删除不再需要保护。
+                    pendingRemoteDeletes.remove(
+                        key
+                    )
+                    db.applyRemoteSyncEvent(
+                        tableName =
+                            event.tableName,
+                        syncId =
+                            event.syncId,
+                        rowVersion =
+                            event.rowVersion,
+                        operation =
+                            event.operation,
+                        payload =
+                            event.payload,
+                        modifiedBy =
+                            event.modifiedBy
+                    )
+                }
+            }
+
+            count +=
+                pull.events.size
+
+            cursor =
+                pull.nextCursor
+        } while (pull.hasMore)
+
+        val finalDeletes =
+            pendingRemoteDeletes.values
+                .filter {
+                    remoteDeleteWouldRemoveActiveLocal(
+                        db,
+                        it
+                    )
+                }
+
+        if (finalDeletes.size >= 2) {
+            finalDeletes.forEach { event ->
+                val localPayload =
+                    db.getSyncPayload(
+                        event.tableName,
+                        event.syncId
+                    )
+                        ?: JSONObject()
+
+                db.saveSyncConflict(
+                    tableName =
+                        event.tableName,
+                    syncId =
+                        event.syncId,
+                    localVersion =
+                        localPayload.optLong(
+                            "row_version",
+                            1L
+                        ),
+                    serverVersion =
+                        event.rowVersion,
+                    serverDeleted = true,
+                    serverPayload =
+                        event.payload,
+                    manualRequired = true
+                )
+            }
+        } else {
+            finalDeletes.forEach { event ->
                 db.applyRemoteSyncEvent(
                     tableName =
                         event.tableName,
@@ -2116,17 +2450,11 @@ class CloudSyncManager(
                         event.modifiedBy
                 )
             }
+        }
 
-            count +=
-                pull.events.size
-
-            cursor =
-                pull.nextCursor
-
-            db.setServerCursor(
-                cursor
-            )
-        } while (pull.hasMore)
+        db.setServerCursor(
+            cursor
+        )
 
         // V1.4.7.59: source rows and old settlement snapshots can arrive in
         // different cloud-event order. Reconcile after the complete pull so an
@@ -2135,6 +2463,48 @@ class CloudSyncManager(
 
         return count to cursor
     }
+
+    private fun remoteDeleteWouldRemoveActiveLocal(
+        db: AppDatabase,
+        event: PullEvent
+    ): Boolean {
+        val local =
+            db.getSyncPayload(
+                event.tableName,
+                event.syncId
+            ) ?: return false
+
+        if (
+            local.optInt(
+                "deleted",
+                0
+            ) == 1
+        ) {
+            return false
+        }
+
+        val localVersion =
+            local.optLong(
+                "row_version",
+                0L
+            )
+
+        return event.rowVersion >
+            localVersion
+    }
+
+    private fun requiresBulkDeleteConfirmation(
+        tableName: String
+    ): Boolean =
+        tableName !in
+            setOf(
+                "business_weather_history",
+                "daily_business_score",
+                "fruit_season_catalog",
+                "fruit_alias",
+                "fruit_season_region",
+                "fruit_profile"
+            )
 
     private fun purchaseActivityBackfillKey(
         bookId: String
@@ -2688,7 +3058,7 @@ class CloudSyncManager(
             "https://sync.830888.xyz"
 
         private const val APP_VERSION =
-            "1.4.7.61"
+            "1.4.7.62"
 
         private const val KEY_PURCHASE_ACTIVITY_BACKFILL_PREFIX =
             "purchase_activity_backfill_v1_4_"

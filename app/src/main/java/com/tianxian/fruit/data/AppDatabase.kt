@@ -834,6 +834,7 @@ data class SyncConflictRecord(
     val localVersion: Long,
     val serverVersion: Long,
     val serverDeleted: Boolean,
+    val manualRequired: Boolean,
     val localPayload: String,
     val serverPayload: String,
     val detectedAt: Long
@@ -928,6 +929,7 @@ class AppDatabase(
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
+        createV33SyncConflictPolicy(db)
         createV12PurchaseActivity(
             db
         )
@@ -1056,6 +1058,9 @@ class AppDatabase(
         }
         if (oldVersion < 32) {
             createV32FruitSeasonLibrary(db)
+        }
+        if (oldVersion < 33) {
+            createV33SyncConflictPolicy(db)
         }
     }
 
@@ -3251,6 +3256,7 @@ class AppDatabase(
                 local_version INTEGER NOT NULL,
                 server_version INTEGER NOT NULL,
                 server_deleted INTEGER NOT NULL DEFAULT 0,
+                manual_required INTEGER NOT NULL DEFAULT 0,
                 local_payload TEXT NOT NULL DEFAULT '{}',
                 server_payload TEXT NOT NULL DEFAULT '{}',
                 detected_at INTEGER NOT NULL,
@@ -3264,6 +3270,58 @@ class AppDatabase(
                 "idx_sync_conflict_detected " +
                 "ON sync_conflict(detected_at)"
         )
+    }
+
+    private fun createV33SyncConflictPolicy(
+        db: SQLiteDatabase
+    ) {
+        if (!tableExists(db, "sync_conflict")) {
+            createV11ConflictSupport(db)
+        }
+
+        if (
+            !columnExists(
+                db,
+                "sync_conflict",
+                "manual_required"
+            )
+        ) {
+            db.execSQL(
+                "ALTER TABLE sync_conflict " +
+                    "ADD COLUMN manual_required INTEGER NOT NULL DEFAULT 0"
+            )
+        }
+
+        // 升级前若已经存在 2 条及以上云端删除冲突，保守地保留人工确认。
+        db.execSQL(
+            """
+            UPDATE sync_conflict
+            SET manual_required=1
+            WHERE server_deleted=1
+              AND (
+                  SELECT COUNT(*)
+                  FROM sync_conflict
+                  WHERE server_deleted=1
+              ) >= 2
+            """.trimIndent()
+        )
+
+        // 旧版本留下的普通“版本冲突”错误不再需要占用同步状态；
+        // 真正的批量删除保护会在下一次同步时重新写入明确提示。
+        if (tableExists(db, "sync_cloud_state")) {
+            db.execSQL(
+                """
+                UPDATE sync_cloud_state
+                SET last_error=''
+                WHERE last_error LIKE '%版本冲突%'
+                  AND NOT EXISTS(
+                      SELECT 1
+                      FROM sync_conflict
+                      WHERE manual_required=1
+                  )
+                """.trimIndent()
+            )
+        }
     }
 
     private fun createSyncTriggers(
@@ -3784,7 +3842,8 @@ class AppDatabase(
         localVersion: Long,
         serverVersion: Long,
         serverDeleted: Boolean,
-        serverPayload: JSONObject
+        serverPayload: JSONObject,
+        manualRequired: Boolean = false
     ) {
         if (
             tableName !in
@@ -3808,15 +3867,17 @@ class AppDatabase(
                 local_version,
                 server_version,
                 server_deleted,
+                manual_required,
                 local_payload,
                 server_payload,
                 detected_at
-            ) VALUES(?,?,?,?,?,?,?,?)
+            ) VALUES(?,?,?,?,?,?,?,?,?)
             ON CONFLICT(table_name,record_sync_id)
             DO UPDATE SET
                 local_version=excluded.local_version,
                 server_version=excluded.server_version,
                 server_deleted=excluded.server_deleted,
+                manual_required=excluded.manual_required,
                 local_payload=excluded.local_payload,
                 server_payload=excluded.server_payload,
                 detected_at=excluded.detected_at
@@ -3827,6 +3888,7 @@ class AppDatabase(
                 localVersion,
                 serverVersion,
                 if (serverDeleted) 1 else 0,
+                if (manualRequired) 1 else 0,
                 localPayload.toString(),
                 serverPayload.toString(),
                 System.currentTimeMillis()
@@ -3845,6 +3907,7 @@ class AppDatabase(
                 local_version,
                 server_version,
                 server_deleted,
+                manual_required,
                 local_payload,
                 server_payload,
                 detected_at
@@ -3880,6 +3943,10 @@ class AppDatabase(
                                 c.int(
                                     "server_deleted"
                                 ) == 1,
+                            manualRequired =
+                                c.int(
+                                    "manual_required"
+                                ) == 1,
                             localPayload =
                                 c.str(
                                     "local_payload"
@@ -3911,6 +3978,33 @@ class AppDatabase(
                 0
             }
         }
+
+    fun getManualSyncConflicts():
+        List<SyncConflictRecord> =
+        getSyncConflicts()
+            .filter { it.manualRequired }
+
+    fun getManualSyncConflictCount(): Int =
+        readableDatabase.rawQuery(
+            "SELECT COUNT(*) AS c " +
+                "FROM sync_conflict " +
+                "WHERE manual_required=1",
+            null
+        ).use { c ->
+            if (c.moveToFirst()) {
+                c.int("c")
+            } else {
+                0
+            }
+        }
+
+    fun markServerDeleteConflictsManual() {
+        writableDatabase.execSQL(
+            "UPDATE sync_conflict " +
+                "SET manual_required=1 " +
+                "WHERE server_deleted=1"
+        )
+    }
 
     fun clearSyncConflict(
         tableName: String,
@@ -14574,7 +14668,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 32
+        const val DB_VERSION = 33
     }
 }
 

@@ -480,7 +480,7 @@ private fun PageSyncStatus(
             syncContext.refreshVersion
         ) {
             syncContext.db
-                .getSyncConflicts()
+                .getManualSyncConflicts()
         }
 
     val tableError =
@@ -519,7 +519,7 @@ private fun PageSyncStatus(
                 "! 无云权限"
 
             conflicts.isNotEmpty() ->
-                "⚠ 同步冲突 ${conflicts.size}"
+                "⚠ 批量删除待确认 ${conflicts.size}"
 
             syncContext.syncing ->
                 "↻ 同步中"
@@ -589,12 +589,12 @@ private fun PageSyncStatus(
                                 verticalArrangement = Arrangement.spacedBy(5.dp)
                             ) {
                                 Text(
-                                    "⚠ 同步冲突 ${conflicts.size} 条",
+                                    "⚠ 批量删除待确认 ${conflicts.size} 条",
                                     color = MaterialTheme.colorScheme.error,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
-                                    "本机与云端存在不同版本，请逐条确认保留哪一份。",
+                                    "检测到云端一次将删除多条本机业务数据，需要确认。普通修改冲突已按最新版本自动处理。",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = Color.DarkGray
                                 )
@@ -605,7 +605,7 @@ private fun PageSyncStatus(
                                     },
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Text("处理冲突 ›")
+                                    Text("确认批量删除 ›")
                                 }
                             }
                         }
@@ -653,31 +653,37 @@ private fun PageSyncStatus(
         )
     }
 
-    fun resolveConflict(
-        conflict: SyncConflictRecord,
+    fun resolveConflicts(
+        items: List<SyncConflictRecord>,
         keepLocal: Boolean
     ) {
-        if (conflictBusy) return
+        if (conflictBusy || items.isEmpty()) return
         conflictBusy = true
-        conflictMessage = if (keepLocal) "正在保留本机版本…" else "正在采用云端版本…"
+        conflictMessage =
+            if (keepLocal) {
+                "正在保留本机数据…"
+            } else {
+                "正在确认云端批量删除…"
+            }
         coroutineScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val syncResult =
                         if (keepLocal) {
-                            syncContext.cloudSyncManager.resolveConflictUseLocal(
+                            syncContext.cloudSyncManager.resolveConflictsUseLocal(
                                 db = syncContext.db,
                                 book = syncContext.currentBook,
-                                conflict = conflict
+                                conflicts = items
                             )
                         } else {
-                            syncContext.cloudSyncManager.resolveConflictUseCloud(
+                            syncContext.cloudSyncManager.resolveConflictsUseCloud(
                                 db = syncContext.db,
                                 book = syncContext.currentBook,
-                                conflict = conflict
+                                conflicts = items
                             )
                         }
-                    syncResult.message to syncContext.db.getSyncConflictCount()
+                    syncResult.message to
+                        syncContext.db.getManualSyncConflictCount()
                 }
             }
             conflictBusy = false
@@ -700,8 +706,8 @@ private fun PageSyncStatus(
             conflicts = conflicts,
             busy = conflictBusy,
             onDismiss = { showConflictDialog = false },
-            onUseCloud = { conflict -> resolveConflict(conflict, keepLocal = false) },
-            onUseLocal = { conflict -> resolveConflict(conflict, keepLocal = true) }
+            onUseCloud = { items -> resolveConflicts(items, keepLocal = false) },
+            onUseLocal = { items -> resolveConflicts(items, keepLocal = true) }
         )
     }
 }
@@ -15602,7 +15608,7 @@ private fun LedgerManagementContent(
             refresh,
             cloudRefresh
         ) {
-            db.getSyncConflicts()
+            db.getManualSyncConflicts()
         }
 
     var showSyncDetails by remember {
@@ -15863,7 +15869,7 @@ private fun LedgerManagementContent(
 
                             conflicts
                                 .isNotEmpty() ->
-                                "需要处理 ${conflicts.size} 条冲突"
+                                "有 ${conflicts.size} 条批量删除待确认"
 
                             cloudLocalStatus
                                 .lastError
@@ -15953,7 +15959,7 @@ private fun LedgerManagementContent(
                                 Modifier.fillMaxWidth()
                         ) {
                             Text(
-                                "处理同步冲突（${conflicts.size}）"
+                                "确认批量删除（${conflicts.size}）"
                             )
                         }
                     }
@@ -16998,24 +17004,23 @@ private fun LedgerManagementContent(
                     false
             },
             onUseCloud = {
-                conflict ->
                 runCloudTask(
                     busyText =
-                        "正在采用云端版本…",
+                        "正在确认云端批量删除…",
                     block = {
                         cloudSyncManager
-                            .resolveConflictUseCloud(
+                            .resolveConflictsUseCloud(
                                 db = db,
                                 book =
                                     liveCurrentBook,
-                                conflict =
-                                    conflict
+                                conflicts =
+                                    conflicts
                             )
                             .message
                     },
                     onSuccess = {
                         if (
-                            db.getSyncConflictCount() ==
+                            db.getManualSyncConflictCount() ==
                             0
                         ) {
                             showConflictDialog =
@@ -17025,24 +17030,23 @@ private fun LedgerManagementContent(
                 )
             },
             onUseLocal = {
-                conflict ->
                 runCloudTask(
                     busyText =
-                        "正在保留本机版本…",
+                        "正在保留本机数据…",
                     block = {
                         cloudSyncManager
-                            .resolveConflictUseLocal(
+                            .resolveConflictsUseLocal(
                                 db = db,
                                 book =
                                     liveCurrentBook,
-                                conflict =
-                                    conflict
+                                conflicts =
+                                    conflicts
                             )
                             .message
                     },
                     onSuccess = {
                         if (
-                            db.getSyncConflictCount() ==
+                            db.getManualSyncConflictCount() ==
                             0
                         ) {
                             showConflictDialog =
@@ -17071,22 +17075,20 @@ private fun SyncConflictDialog(
     conflicts: List<SyncConflictRecord>,
     busy: Boolean,
     onDismiss: () -> Unit,
-    onUseCloud: (SyncConflictRecord) -> Unit,
-    onUseLocal: (SyncConflictRecord) -> Unit
+    onUseCloud: (List<SyncConflictRecord>) -> Unit,
+    onUseLocal: (List<SyncConflictRecord>) -> Unit
 ) {
     if (conflicts.isEmpty()) {
         return
     }
 
-    val conflict =
-        conflicts.first()
+    val preview =
+        conflicts.take(6)
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text(
-                "同步冲突 · ${syncTableLabel(conflict.tableName)}"
-            )
+            Text("批量删除同步保护")
         },
         text = {
             Column(
@@ -17103,7 +17105,7 @@ private fun SyncConflictDialog(
                     )
             ) {
                 Text(
-                    "还有 ${conflicts.size} 条冲突待处理",
+                    "云端将删除 ${conflicts.size} 条本机业务数据",
                     color =
                         MaterialTheme
                             .colorScheme
@@ -17113,7 +17115,7 @@ private fun SyncConflictDialog(
                 )
 
                 Text(
-                    "本机版本 ${conflict.localVersion} · 云端版本 ${conflict.serverVersion}",
+                    "普通新增、修改和单条删除均按最新记录自动同步；只有一次涉及多条删除时才需要人工确认。",
                     style =
                         MaterialTheme
                             .typography
@@ -17121,18 +17123,29 @@ private fun SyncConflictDialog(
                     color = Color.Gray
                 )
 
-                Text(
-                    conflictPayloadDiff(
-                        conflict
-                    ),
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodySmall
-                )
+                preview.forEach { conflict ->
+                    Text(
+                        "• ${syncTableLabel(conflict.tableName)} · ${conflict.recordSyncId.take(12)}",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall
+                    )
+                }
+
+                if (conflicts.size > preview.size) {
+                    Text(
+                        "另有 ${conflicts.size - preview.size} 条…",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall,
+                        color = Color.Gray
+                    )
+                }
 
                 Text(
-                    "采用云端：放弃本机这条未同步修改。\n保留本机：以当前本机内容生成一个比云端更新的新版本。",
+                    "确认删除：接受云端这批删除。\n全部保留本机：把当前本机数据重新作为最新版本同步到云端。",
                     style =
                         MaterialTheme
                             .typography
@@ -17145,12 +17158,12 @@ private fun SyncConflictDialog(
             Button(
                 onClick = {
                     onUseLocal(
-                        conflict
+                        conflicts
                     )
                 },
                 enabled = !busy
             ) {
-                Text("保留本机")
+                Text("全部保留本机")
             }
         },
         dismissButton = {
@@ -17158,12 +17171,12 @@ private fun SyncConflictDialog(
                 TextButton(
                     onClick = {
                         onUseCloud(
-                            conflict
+                            conflicts
                         )
                     },
                     enabled = !busy
                 ) {
-                    Text("采用云端")
+                    Text("确认删除全部")
                 }
 
                 TextButton(
