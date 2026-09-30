@@ -724,15 +724,16 @@ class BusinessScoreEngine(
         actualStartTime: String? = null,
         actualEndTime: String? = null
     ): WeatherMetrics {
-        val startHour = parseHour(actualStartTime?.takeIf { it.isNotBlank() } ?: store.defaultStartTime, 16)
-        val endHour = parseHour(actualEndTime?.takeIf { it.isNotBlank() } ?: store.defaultEndTime, 24)
-            .let { if (it <= startHour) 24 else it }
-        val preStart = (startHour - 3).coerceAtLeast(0)
+        val targetDate = runCatching { LocalDate.parse(overview.date) }.getOrElse { LocalDate.now() }
+        val window = BusinessWeatherWindow.forDay(
+            targetDate,
+            actualStartTime?.takeIf { it.isNotBlank() } ?: store.defaultStartTime,
+            actualEndTime?.takeIf { it.isNotBlank() } ?: store.defaultEndTime
+        )
         val hours = overview.hourly
-        val preHours = hours.filter { hourInWindow(it, preStart, startHour) }
-        val businessHours = hours.filter { hourInWindow(it, startHour, endHour) }
-        val relevantBusiness = businessHours.ifEmpty { hours }
-        val day = overview.selectedDay()
+        val preHours = hours.filter { window.beforeBusiness(it.time) }
+        val relevantBusiness = hours.filter { window.duringBusiness(it.time) }
+        val day = overview.daily.firstOrNull { it.date == overview.date }
         val maxPop = relevantBusiness.mapNotNull { it.precipitationProbability }.maxOrNull()
             ?: day?.precipitationProbability
             ?: 0.0
@@ -757,17 +758,13 @@ class BusinessScoreEngine(
             avgTemp = avgTemp,
             avgHumidity = avgHumidity,
             maxWindSpeed = maxWind,
-            hasAlert = overview.alerts.isNotEmpty(),
+            hasAlert = overview.alerts.any { alert ->
+                // Keep undated warnings, but exclude warnings scoped to other dates.
+                alert.startTime.isBlank() || alert.startTime.take(10) == overview.date ||
+                    alert.endTime.take(10) == overview.date
+            },
             rainy = rainy
         )
-    }
-
-    private fun parseHour(value: String, fallback: Int): Int =
-        value.trim().substringBefore(':').toIntOrNull()?.coerceIn(0, 24) ?: fallback
-
-    private fun hourInWindow(hour: WeatherHour, start: Int, end: Int): Boolean {
-        val h = hour.time.substringAfter('T', "").take(2).toIntOrNull() ?: return false
-        return h >= start && h < end
     }
 
     private fun temperatureLabel(temp: Double?): String = when {

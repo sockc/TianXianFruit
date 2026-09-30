@@ -1062,6 +1062,9 @@ class AppDatabase(
         if (oldVersion < 33) {
             createV33SyncConflictPolicy(db)
         }
+        if (oldVersion < 34) {
+            createSyncTriggers(db)
+        }
     }
 
     private fun createV29InventoryLoss(
@@ -3327,6 +3330,8 @@ class AppDatabase(
     private fun createSyncTriggers(
         db: SQLiteDatabase
     ) {
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_sync_change_record_pending " +
+            "ON sync_change_log(uploaded,table_name,record_sync_id,id)")
         syncableTables().filter { tableExists(db, it) }.forEach {
             table ->
             db.execSQL(
@@ -3365,11 +3370,11 @@ class AppDatabase(
                             WHERE id=1
                         ),
                         sync_status=2,
-                        updated_at=
-                            CAST(
-                                strftime('%s','now')
-                                AS INTEGER
-                            ) * 1000
+                        updated_at=MAX(
+                            COALESCE(NEW.updated_at,0),
+                            CAST(strftime('%s','now') AS INTEGER) * 1000 +
+                                CAST(substr(strftime('%f','now'),4,3) AS INTEGER)
+                        )
                     WHERE id=NEW.id;
 
                     INSERT INTO sync_change_log(
@@ -3425,11 +3430,11 @@ class AppDatabase(
                             WHERE id=1
                         ),
                         sync_status=2,
-                        updated_at=
-                            CAST(
-                                strftime('%s','now')
-                                AS INTEGER
-                            ) * 1000
+                        updated_at=MAX(
+                            COALESCE(NEW.updated_at,0), OLD.updated_at + 1,
+                            CAST(strftime('%s','now') AS INTEGER) * 1000 +
+                                CAST(substr(strftime('%f','now'),4,3) AS INTEGER)
+                        )
                     WHERE id=NEW.id;
 
                     INSERT INTO sync_change_log(
@@ -3616,55 +3621,89 @@ class AppDatabase(
         }
     }
 
+    fun getSyncableTableNames(): List<String> = syncableTables()
+
     fun getPendingSyncChangesExcludingTables(
         excludedTables: Set<String>,
-        limit: Int = 200
+        limit: Int = 200,
+        allowedOperations: Set<Pair<String, String>>? = null
     ): List<SyncChangeRecord> {
-        if (excludedTables.isEmpty()) {
-            return getPendingSyncChanges(limit)
+        if (allowedOperations != null && allowedOperations.isEmpty()) return emptyList()
+        val clauses = mutableListOf("q.uploaded=0", SyncQueueSql.LATEST_PENDING)
+        val args = mutableListOf<String>()
+        if (excludedTables.isNotEmpty()) {
+            clauses += "q.table_name NOT IN(${excludedTables.joinToString(",") { "?" }})"
+            args += excludedTables
         }
-
-        val placeholders =
-            excludedTables.joinToString(",") { "?" }
-        val args =
-            excludedTables.toList() +
-                limit.toString()
-
+        if (allowedOperations != null) {
+            clauses += allowedOperations.joinToString(" OR ", "(", ")") {
+                "(q.table_name=? AND q.operation=?)"
+            }
+            allowedOperations.forEach { (table, operation) -> args += table; args += operation }
+        }
+        args += limit.coerceAtLeast(1).toString()
         return readableDatabase.rawQuery(
-            """
-            SELECT
-                id,
-                table_name,
-                record_sync_id,
-                operation,
-                row_version,
-                device_id,
-                changed_at
-            FROM sync_change_log
-            WHERE uploaded=0
-              AND table_name NOT IN($placeholders)
-            ORDER BY id
-            LIMIT ?
-            """.trimIndent(),
+            "SELECT q.* FROM sync_change_log q WHERE ${clauses.joinToString(" AND ")} " +
+                "ORDER BY ${SyncQueueSql.ORIGINAL_ORDER} LIMIT ?",
             args.toTypedArray()
-        ).use { c ->
-            buildList {
-                while (c.moveToNext()) {
-                    add(
-                        SyncChangeRecord(
-                            id = c.long("id"),
-                            tableName = c.str("table_name"),
-                            recordSyncId = c.str("record_sync_id"),
-                            operation = c.str("operation"),
-                            rowVersion = c.long("row_version"),
-                            deviceId = c.str("device_id"),
-                            changedAt = c.long("changed_at")
-                        )
-                    )
+        ).use { c -> buildList {
+            while (c.moveToNext()) add(SyncChangeRecord(
+                id = c.long("id"), tableName = c.str("table_name"),
+                recordSyncId = c.str("record_sync_id"), operation = c.str("operation"),
+                rowVersion = c.long("row_version"), deviceId = c.str("device_id"),
+                changedAt = c.long("changed_at")
+            ))
+        } }
+    }
+
+    internal data class SyncUploadSnapshot(
+        val change: SyncChangeRecord,
+        val payload: JSONObject,
+        val localChangeIds: List<Long>
+    )
+
+    internal fun getSyncUploadSnapshot(change: SyncChangeRecord): SyncUploadSnapshot? {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val payload = getSyncPayload(change.tableName, change.recordSyncId) ?: return null
+            val version = payload.optLong("row_version", change.rowVersion)
+            val ids = db.rawQuery(
+                "SELECT id FROM sync_change_log WHERE table_name=? AND record_sync_id=? " +
+                    "AND uploaded=0 AND row_version<=? ORDER BY id",
+                arrayOf(change.tableName, change.recordSyncId, version.toString())
+            ).use { c -> buildList { while (c.moveToNext()) add(c.getLong(0)) } }
+            db.setTransactionSuccessful()
+            return SyncUploadSnapshot(
+                change.copy(
+                    rowVersion = version,
+                    operation = if (payload.optInt("deleted", 0) == 1) "DELETE" else "UPSERT",
+                    changedAt = payload.optLong("updated_at", change.changedAt)
+                ), payload, ids
+            )
+        } finally { db.endTransaction() }
+    }
+
+    internal fun getDeleteBusinessKey(table: String, syncId: String, payload: JSONObject): String? {
+        val local = getSyncPayload(table, syncId) ?: payload
+        val parent = when (table) {
+            "purchase_activity" -> local.optString("order_sync_id").takeIf { it.isNotBlank() }
+            "purchase_collaboration" -> local.optString("plan_item_sync_id").takeIf { it.isNotBlank() }?.let {
+                getSyncPayload("purchase_plan_item", it)?.let { row ->
+                    parentSyncId("purchase_plan", row.optLong("plan_id"))
                 }
             }
+            "purchase_item" -> parentSyncId("purchase_order", local.optLong("order_id"))
+            "purchase_plan_item" -> parentSyncId("purchase_plan", local.optLong("plan_id"))
+            "profit_settlement_item" -> parentSyncId("profit_settlement_batch", local.optLong("batch_id"))
+            else -> null
         }
+        return SyncDeletePolicy.businessKey(table, syncId, parent)
     }
+
+    private fun parentSyncId(table: String, id: Long): String? = readableDatabase.rawQuery(
+        "SELECT sync_id FROM $table WHERE id=? LIMIT 1", arrayOf(id.toString())
+    ).use { c -> if (c.moveToFirst()) c.getString(0) else null }
 
     fun markSyncChangesUploaded(
         ids: List<Long>
@@ -3999,10 +4038,15 @@ class AppDatabase(
         }
 
     fun markServerDeleteConflictsManual() {
+        val deletes = getSyncConflicts().filter { it.serverDeleted }
+        val manual = SyncDeletePolicy.requiresConfirmation(deletes.map {
+            getDeleteBusinessKey(it.tableName, it.recordSyncId, runCatching {
+                JSONObject(it.serverPayload)
+            }.getOrDefault(JSONObject()))
+        })
         writableDatabase.execSQL(
-            "UPDATE sync_conflict " +
-                "SET manual_required=1 " +
-                "WHERE server_deleted=1"
+            "UPDATE sync_conflict SET manual_required=? WHERE server_deleted=1",
+            arrayOf<Any>(if (manual) 1 else 0)
         )
     }
 
@@ -4065,83 +4109,42 @@ class AppDatabase(
         )
     }
 
-    fun completeLocalConflictResolution(
+    internal fun completeLocalConflictResolution(
         conflict: SyncConflictRecord,
-        acceptedVersion: Long
+        acceptedVersion: Long,
+        snapshot: SyncUploadSnapshot
     ) {
-        val db =
-            writableDatabase
-
+        val db = writableDatabase
         db.beginTransaction()
-
         try {
-            setRemoteApply(
-                db,
-                true
-            )
-
-            db.update(
-                conflict.tableName,
-                ContentValues().apply {
-                    put(
-                        "row_version",
-                        acceptedVersion
-                    )
-                    put(
-                        "modified_by",
-                        deviceId
-                    )
-                    put(
-                        "sync_status",
-                        0
-                    )
-                    put(
-                        "updated_at",
-                        System.currentTimeMillis()
-                    )
-                },
-                "sync_id=?",
-                arrayOf(
-                    conflict.recordSyncId
-                )
-            )
-
-            db.execSQL(
-                """
-                UPDATE sync_change_log
-                SET uploaded=1
-                WHERE table_name=?
-                  AND record_sync_id=?
-                """.trimIndent(),
-                arrayOf<Any?>(
-                    conflict.tableName,
-                    conflict.recordSyncId
-                )
-            )
-
-            db.delete(
-                "sync_conflict",
-                "table_name=? " +
-                    "AND record_sync_id=?",
-                arrayOf(
-                    conflict.tableName,
-                    conflict.recordSyncId
-                )
-            )
-
-            setRemoteApply(
-                db,
-                false
-            )
-
-            db.setTransactionSuccessful()
-        } finally {
-            runCatching {
-                setRemoteApply(
-                    db,
-                    false
+            val current = getSyncPayload(conflict.tableName, conflict.recordSyncId)
+            val currentVersion = current?.optLong("row_version", 0L) ?: 0L
+            val editedDuringUpload = currentVersion != snapshot.change.rowVersion
+            val nextVersion = if (editedDuringUpload) {
+                maxOf(currentVersion, acceptedVersion) + 1
+            } else acceptedVersion
+            setRemoteApply(db, true)
+            db.update(conflict.tableName, ContentValues().apply {
+                put("row_version", nextVersion)
+                put("modified_by", deviceId)
+                put("sync_status", if (editedDuringUpload) 1 else 0)
+            }, "sync_id=?", arrayOf(conflict.recordSyncId))
+            // Acknowledge only the immutable snapshot sent to the server.
+            snapshot.localChangeIds.forEach { id ->
+                db.execSQL("UPDATE sync_change_log SET uploaded=1 WHERE id=?", arrayOf(id))
+            }
+            if (editedDuringUpload) {
+                db.execSQL(
+                    "UPDATE sync_change_log SET row_version=? WHERE table_name=? AND record_sync_id=? AND uploaded=0",
+                    arrayOf(nextVersion, conflict.tableName, conflict.recordSyncId)
                 )
             }
+            db.delete("sync_conflict", "table_name=? AND record_sync_id=?",
+                arrayOf(conflict.tableName, conflict.recordSyncId))
+            setRemoteApply(db, false)
+            db.setTransactionSuccessful()
+        } finally {
+            runCatching { setRemoteApply(db, false) }
             db.endTransaction()
         }
     }
@@ -10328,7 +10331,7 @@ class AppDatabase(
         fruitId: Long,
         unit: String
     ): InventoryCostBasis {
-        data class PurchaseAgg(val quantity: Double, val cost: Double)
+        data class PurchaseAgg(val quantity: Double, val cost: Double, val costKnown: Boolean)
 
         val purchases = linkedMapOf<String, PurchaseAgg>()
         readableDatabase.rawQuery(
@@ -10378,7 +10381,9 @@ class AppDatabase(
                 purchases[day] =
                     PurchaseAgg(
                         quantity = (existing?.quantity ?: 0.0) + quantity,
-                        cost = (existing?.cost ?: 0.0) + effectiveCost
+                        cost = (existing?.cost ?: 0.0) + effectiveCost,
+                        costKnown = (existing?.costKnown ?: true) &&
+                            (quantity <= 0.000001 || effectiveUnitPrice > 0.000001)
                     )
             }
         }
@@ -10407,57 +10412,16 @@ class AppDatabase(
             return InventoryCostBasis(effective.unitCost, effective.unitCost != null)
         }
 
-        var runningQuantity = 0.0
-        var runningCost = 0.0
-        var lastUnitCost: Double? = null
-        var costAvailable = true
-
+        val tracker = InventoryCostTracker()
         dates.forEach { day ->
             purchases[day]?.let { purchase ->
-                runningQuantity += purchase.quantity
-                runningCost += purchase.cost
-                if (runningQuantity > 0.000001 && runningCost > 0.000001) {
-                    lastUnitCost = runningCost / runningQuantity
-                }
-                if (purchase.quantity > 0.000001 && purchase.cost <= 0.000001 && lastUnitCost == null) {
-                    costAvailable = false
-                }
+                tracker.purchase(purchase.quantity, purchase.cost, purchase.costKnown)
             }
-
-            snapshots[day]?.let { remaining ->
-                if (remaining <= 0.000001) {
-                    // 库存归零后，旧批次成本链结束；后续新采购可以重新建立成本基础。
-                    runningQuantity = 0.0
-                    runningCost = 0.0
-                    lastUnitCost = null
-                    costAvailable = true
-                } else {
-                    val unitCost =
-                        when {
-                            runningQuantity > 0.000001 && runningCost > 0.000001 ->
-                                runningCost / runningQuantity
-                            lastUnitCost != null -> lastUnitCost
-                            else -> null
-                        }
-                    if (unitCost == null) {
-                        costAvailable = false
-                    }
-                    runningQuantity = remaining
-                    runningCost = if (unitCost != null) remaining * unitCost else 0.0
-                    if (unitCost != null) lastUnitCost = unitCost
-                }
-            }
+            snapshots[day]?.let(tracker::snapshot)
         }
-
-        val finalUnitCost =
-            when {
-                runningQuantity <= 0.000001 -> lastUnitCost ?: 0.0
-                runningCost > 0.000001 -> runningCost / runningQuantity
-                lastUnitCost != null -> lastUnitCost
-                else -> null
-            }
+        val finalUnitCost = tracker.unitCost
         val fallback = finalUnitCost ?: getEffectiveUnitCost(fruitId, "", unit, snapshotDate).unitCost
-        return InventoryCostBasis(fallback, (costAvailable && fallback != null) || fallback != null)
+        return InventoryCostBasis(fallback, tracker.complete && fallback != null)
     }
 
     fun getOperatingAnalysis(date: String): OperatingAnalysisRecord {
@@ -14668,7 +14632,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 33
+        const val DB_VERSION = 34
     }
 }
 

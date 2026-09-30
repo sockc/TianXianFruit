@@ -503,14 +503,7 @@ private fun PageSyncStatus(
                 .orEmpty()
         }
 
-    val effectiveError =
-        if (tableError.isNotBlank()) {
-            tableError
-        } else if (scopeTables.isEmpty()) {
-            cloudStatus.lastError
-        } else {
-            ""
-        }
+    val effectiveError = SyncStatusPolicy.error(cloudStatus.lastError, tableError)
 
     val statusText =
         when {
@@ -532,7 +525,7 @@ private fun PageSyncStatus(
 
             syncContext.currentBook.cloudEnabled -> {
                 val time = compactSyncTime(cloudStatus.lastSyncAt)
-                if (time.isBlank()) "✓ 已同步" else "✓ 已同步 $time"
+                if (time.isBlank()) "尚未同步" else "✓ 已同步 $time"
             }
 
             else -> "仅本机"
@@ -2419,7 +2412,14 @@ private fun loadAndSaveBusinessScore(
     }
 
     val calculated = BusinessScoreEngine(db).calculate(date, store, overview)
-    return db.saveBusinessScore(calculated) ?: calculated
+    val previous = db.getBusinessScore(dateString, store.id)
+    val saved = db.saveBusinessScore(calculated) ?: return calculated
+    if (saved.updatedAt != previous?.updatedAt && BookPermissions.has(
+            currentBook, cloudSyncManager.session()?.systemRole.orEmpty(), BookPermissions.BUSINESS_EDIT
+        )) {
+        cloudSyncManager.scheduleAutoSync(currentBook)
+    }
+    return saved
 }
 
 @Composable
@@ -2478,7 +2478,6 @@ private fun HomeBusinessAdviceCard(
         state = result.fold(
             onSuccess = { score ->
                 if (score != null) {
-                    cloudSyncManager.scheduleAutoSync(currentBook)
                     BusinessAdviceUiState(score = score)
                 } else BusinessAdviceUiState(error = "经营建议暂未生成")
             },
@@ -2706,9 +2705,6 @@ private fun BusinessAdviceDetailContent(
         else BusinessAdviceUiState(error = if (date.isBefore(LocalDate.now())) "该日期没有当时保存的经营评分" else "经营评分生成失败")
         tagDraft = resolved?.specialTag.orEmpty()
         noteDraft = resolved?.specialNote.orEmpty()
-        if (resolved != null && !date.isBefore(LocalDate.now())) {
-            cloudSyncManager.scheduleAutoSync(currentBook)
-        }
     }
 
     Column(
@@ -4914,8 +4910,10 @@ private fun InventoryScreen(
     val date = workDate
     var message by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
-    val remainingInputs = remember { mutableStateMapOf<String, String>() }
-    val lossInputs = remember { mutableStateMapOf<String, String>() }
+    val remainingInputs = remember(date) { mutableStateMapOf<String, String>() }
+    val lossInputs = remember(date) { mutableStateMapOf<String, String>() }
+    val remainingBaseline = remember(date) { mutableMapOf<String, String>() }
+    val lossBaseline = remember(date) { mutableMapOf<String, String>() }
     var costEditItem by remember { mutableStateOf<InventoryDayItemRecord?>(null) }
     var costEditValue by remember { mutableStateOf("") }
     var retailEditItem by remember { mutableStateOf<InventoryDayItemRecord?>(null) }
@@ -4930,15 +4928,12 @@ private fun InventoryScreen(
 
     LaunchedEffect(dataVersion, date) {
         val latest = db.getInventoryDayItems(date)
-        remainingInputs.clear()
-        lossInputs.clear()
-        latest.forEach { item ->
-            // 库存盘点的两个可编辑字段必须明确显示 0，而不是空白占位。
-            remainingInputs[itemKey(item)] = if (item.remainingQuantity == 0.0) "0" else fmt(item.remainingQuantity)
-            lossInputs[itemKey(item)] = if (item.lossQuantity == 0.0) "0" else fmt(item.lossQuantity)
-        }
-        message = ""
-        isError = false
+        DraftRefreshPolicy.merge(remainingInputs, remainingBaseline, latest.associate {
+            itemKey(it) to if (it.remainingQuantity == 0.0) "0" else fmt(it.remainingQuantity)
+        })
+        DraftRefreshPolicy.merge(lossInputs, lossBaseline, latest.associate {
+            itemKey(it) to if (it.lossQuantity == 0.0) "0" else fmt(it.lossQuantity)
+        })
     }
 
     val purchasedKinds = inventoryItems.count { it.purchasedQuantity > 0.000001 }
@@ -4957,7 +4952,9 @@ private fun InventoryScreen(
         remaining > 0.000001 && item.effectiveUnitCost == null
     }
 
-    fun inventoryDirty(): Boolean = inventoryItems.any { item ->
+    fun inventoryDirty(): Boolean =
+        remainingInputs.keys.any { it !in remainingBaseline } ||
+        lossInputs.keys.any { it !in lossBaseline } || inventoryItems.any { item ->
         val key = itemKey(item)
         val remaining = remainingInputs[key]?.toDoubleOrNull() ?: 0.0
         val loss = lossInputs[key]?.toDoubleOrNull() ?: 0.0
@@ -4966,6 +4963,12 @@ private fun InventoryScreen(
     }
 
     fun saveInventoryEdits(): Boolean {
+        val activeKeys = inventoryItems.map(::itemKey).toSet()
+        if (remainingInputs.keys.any { it !in activeKeys } || lossInputs.keys.any { it !in activeKeys }) {
+            message = "有正在编辑的商品已在云端删除，草稿仍保留；请核对后放弃草稿并重新盘点"
+            isError = true
+            return false
+        }
         val invalid = inventoryItems.firstOrNull { item ->
             val remaining = remainingInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0
             val loss = lossInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0
@@ -5004,10 +5007,14 @@ private fun InventoryScreen(
         val latest = db.getInventoryDayItems(date)
         remainingInputs.clear()
         lossInputs.clear()
+        remainingBaseline.clear()
+        lossBaseline.clear()
         latest.forEach { item ->
             remainingInputs[itemKey(item)] = if (item.remainingQuantity == 0.0) "0" else fmt(item.remainingQuantity)
             lossInputs[itemKey(item)] = if (item.lossQuantity == 0.0) "0" else fmt(item.lossQuantity)
         }
+        remainingBaseline.putAll(remainingInputs)
+        lossBaseline.putAll(lossInputs)
         message = ""
         isError = false
     }
