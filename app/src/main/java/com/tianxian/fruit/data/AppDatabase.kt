@@ -4065,48 +4065,33 @@ class AppDatabase(
         )
     }
 
-    fun resolveConflictUseCloud(
-        conflict: SyncConflictRecord
-    ) {
-        val payload =
-            runCatching {
-                JSONObject(
-                    conflict.serverPayload
+    fun resolveConflictUseCloud(conflict: SyncConflictRecord) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val payload = runCatching { JSONObject(conflict.serverPayload) }.getOrDefault(JSONObject())
+            val reviewedLocal = runCatching { JSONObject(conflict.localPayload) }.getOrDefault(JSONObject())
+            val currentLocal = getSyncPayload(conflict.tableName, conflict.recordSyncId)
+            if (currentLocal != null && (
+                    currentLocal.optLong("row_version") != reviewedLocal.optLong("row_version") ||
+                    currentLocal.optLong("updated_at") != reviewedLocal.optLong("updated_at")
+                )) {
+                // Refresh arbitration if an edit was made after this conflict snapshot.
+                saveSyncConflict(conflict.tableName, conflict.recordSyncId,
+                    currentLocal.optLong("row_version"), conflict.serverVersion,
+                    conflict.serverDeleted, payload, conflict.manualRequired)
+            } else {
+                markRecordChangesUploaded(conflict.tableName, conflict.recordSyncId)
+                applyRemoteRecord(
+                    tableName = conflict.tableName, syncId = conflict.recordSyncId,
+                    rowVersion = conflict.serverVersion,
+                    operation = if (conflict.serverDeleted) "DELETE" else "UPSERT",
+                    payload = payload, modifiedBy = "cloud-conflict", force = true
                 )
-            }.getOrDefault(
-                JSONObject()
-            )
-
-        markRecordChangesUploaded(
-            conflict.tableName,
-            conflict.recordSyncId
-        )
-
-        applyRemoteRecord(
-            tableName =
-                conflict.tableName,
-            syncId =
-                conflict.recordSyncId,
-            rowVersion =
-                conflict.serverVersion,
-            operation =
-                if (
-                    conflict.serverDeleted
-                ) {
-                    "DELETE"
-                } else {
-                    "UPSERT"
-                },
-            payload = payload,
-            modifiedBy =
-                "cloud-conflict",
-            force = true
-        )
-
-        clearSyncConflict(
-            conflict.tableName,
-            conflict.recordSyncId
-        )
+                clearSyncConflict(conflict.tableName, conflict.recordSyncId)
+            }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
     }
 
     internal fun completeLocalConflictResolution(
@@ -4136,7 +4121,7 @@ class AppDatabase(
             if (editedDuringUpload) {
                 db.execSQL(
                     "UPDATE sync_change_log SET row_version=? WHERE table_name=? AND record_sync_id=? AND uploaded=0",
-                    arrayOf(nextVersion, conflict.tableName, conflict.recordSyncId)
+                    arrayOf<Any?>(nextVersion, conflict.tableName, conflict.recordSyncId)
                 )
             }
             db.delete("sync_conflict", "table_name=? AND record_sync_id=?",
