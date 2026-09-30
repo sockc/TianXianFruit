@@ -23,9 +23,19 @@ ensure_tmux(){
       apt-get update -y
       apt-get install -y tmux
     fi
+
     echo '恢复任务将进入 tmux 会话：tianxian-recover'
     echo '如果 SSH 中断，重新登录后执行：tmux attach -t tianxian-recover'
-    exec tmux new-session -A -s tianxian-recover /usr/local/sbin/tianxian-recover
+
+    if tmux has-session -t tianxian-recover 2>/dev/null; then
+      exec tmux attach -t tianxian-recover
+    fi
+
+    tmux new-session -d -s tianxian-recover
+    tmux set-option -t tianxian-recover remain-on-exit on >/dev/null
+    tmux send-keys -t tianxian-recover \
+      "exec bash /usr/local/sbin/tianxian-recover" C-m
+    exec tmux attach -t tianxian-recover
   fi
 }
 
