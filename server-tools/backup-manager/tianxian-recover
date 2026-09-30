@@ -15,6 +15,21 @@ MANAGER_URL='https://raw.githubusercontent.com/sockc/TianXianFruit/feat/one-clic
 die(){ echo "✗ $*" >&2; exit 1; }
 step(){ echo; echo "[$1/8] $2"; }
 [[ ${EUID:-$(id -u)} -eq 0 ]] || die '请使用 root 运行。'
+
+ensure_tmux(){
+  if [[ -z "${TMUX:-}" && -t 0 && -t 1 ]]; then
+    if ! command -v tmux >/dev/null 2>&1; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -y
+      apt-get install -y tmux
+    fi
+    echo '恢复任务将进入 tmux 会话：tianxian-recover'
+    echo '如果 SSH 中断，重新登录后执行：tmux attach -t tianxian-recover'
+    exec tmux new-session -A -s tianxian-recover /usr/local/sbin/tianxian-recover
+  fi
+}
+
+ensure_tmux
 [[ ! -e "$TARGET" ]] || die "$TARGET 已存在；裸机恢复拒绝覆盖现有 Server。"
 
 setup_credentials(){
