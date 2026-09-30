@@ -121,7 +121,13 @@ fi
 
 step 6 '恢复 key 与 R2 配置'
 install -m 0600 "$KEY" "$TARGET/.backup-key"
-install -m 0600 "$R2ENV" "$TARGET/.r2.env"
+if [[ -x "$TARGET/scripts/init-r2-config.sh" ]]; then
+  echo '请按提示再次输入同一套 R2 参数；这里由恢复后的 Server 生成正式 .r2.env 格式。'
+  rm -f "$TARGET/.r2.env"
+  (cd "$TARGET" && ./scripts/init-r2-config.sh)
+else
+  die '恢复后的 Server 缺少 scripts/init-r2-config.sh'
+fi
 if [[ -x "$TARGET/tianxian-r2-test" ]]; then (cd "$TARGET" && ./tianxian-r2-test); fi
 if [[ -x "$TARGET/scripts/install-txb-cron.sh" ]]; then (cd "$TARGET" && ./scripts/install-txb-cron.sh); fi
 
