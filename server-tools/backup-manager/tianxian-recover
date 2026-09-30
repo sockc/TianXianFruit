@@ -16,9 +16,46 @@ die(){ echo "✗ $*" >&2; exit 1; }
 step(){ echo; echo "[$1/8] $2"; }
 [[ ${EUID:-$(id -u)} -eq 0 ]] || die '请使用 root 运行。'
 [[ ! -e "$TARGET" ]] || die "$TARGET 已存在；裸机恢复拒绝覆盖现有 Server。"
-[[ -s "$KEY" ]] || die "缺少 $KEY"
-[[ -s "$R2ENV" ]] || die "缺少 $R2ENV"
-chmod 600 "$KEY" "$R2ENV"
+
+setup_credentials(){
+  if [[ ! -s "$KEY" ]]; then
+    local backup_key
+    read -r -s -p '原 .backup-key（64位十六进制，输入不显示）：' backup_key
+    echo
+    [[ "$backup_key" =~ ^[0-9A-Fa-f]{64}$ ]] || die 'backup-key 格式错误。'
+    printf '%s\\n' "$backup_key" > "$KEY"
+    unset backup_key
+  fi
+
+  if [[ ! -s "$R2ENV" ]]; then
+    local endpoint bucket prefix access_key secret_key
+    read -r -p 'R2_ENDPOINT（完整 https://...r2.cloudflarestorage.com 地址）：' endpoint
+    read -r -p 'R2_BUCKET [tianxian]：' bucket
+    bucket="${bucket:-tianxian}"
+    read -r -p 'R2_PREFIX [tianxian-backups]：' prefix
+    prefix="${prefix:-tianxian-backups}"
+    read -r -s -p 'R2 Access Key ID（输入不显示）：' access_key
+    echo
+    read -r -s -p 'R2 Secret Access Key（输入不显示）：' secret_key
+    echo
+    [[ -n "$endpoint" && -n "$access_key" && -n "$secret_key" ]] || die 'R2 配置不能为空。'
+    cat > "$R2ENV" <<EOF_R2
+R2_ENDPOINT='$endpoint'
+R2_BUCKET='$bucket'
+R2_PREFIX='$prefix'
+AWS_ACCESS_KEY_ID='$access_key'
+AWS_SECRET_ACCESS_KEY='$secret_key'
+EOF_R2
+    unset endpoint bucket prefix access_key secret_key
+  fi
+
+  chmod 600 "$KEY" "$R2ENV"
+  local compact_key
+  compact_key="$(tr -d '\\r\\n[:space:]' < "$KEY")"
+  [[ "$compact_key" =~ ^[0-9A-Fa-f]{64}$ ]] || die "$KEY 中不是有效 backup-key。"
+}
+
+setup_credentials
 # shellcheck disable=SC1090
 source "$R2ENV"
 : "${R2_ENDPOINT:?R2_ENDPOINT 未配置}"
