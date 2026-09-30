@@ -30,7 +30,7 @@ trap cleanup EXIT
 trap 'die "操作在第 $LINENO 行失败，请查看 $LOG_FILE"' ERR
 
 need_root() {
-  [[ \${EUID:-$(id -u)} -eq 0 ]] || die "请使用 root 运行：sudo tianxian"
+  [[ ${EUID:-$(id -u)} -eq 0 ]] || die "请使用 root 运行：sudo tianxian"
 }
 
 acquire_lock() {
@@ -48,12 +48,12 @@ safe_source() {
 
 detect_server_dir() {
   local candidates=(
-    "\${SERVER_DIR:-}"
+    "${SERVER_DIR:-}"
     "/opt/TianXian-Server"
     "/home/ubuntu/TianXian-Server_V1.0.1-Lucky"
   )
   local d
-  for d in "\${candidates[@]}"; do
+  for d in "${candidates[@]}"; do
     [[ -n "$d" && -x "$d/tianxian-backup" && -x "$d/tianxian-restore" ]] && { printf '%s\n' "$d"; return 0; }
   done
 
@@ -67,10 +67,10 @@ write_config() {
   mkdir -p "$CONFIG_DIR"
   chmod 700 "$CONFIG_DIR"
   cat > "$CONFIG_FILE" <<EOF2
-SERVER_DIR='\${SERVER_DIR}'
-DOMAIN='\${DOMAIN}'
-RESTORE_TARGET='\${RESTORE_TARGET}'
-BACKUP_KEY='\${BACKUP_KEY}'
+SERVER_DIR='${SERVER_DIR}'
+DOMAIN='${DOMAIN}'
+RESTORE_TARGET='${RESTORE_TARGET}'
+BACKUP_KEY='${BACKUP_KEY}'
 EOF2
   chmod 600 "$CONFIG_FILE"
 }
@@ -79,20 +79,20 @@ first_run_setup() {
   printf '\n%b天鲜账本 · 备份恢复首次配置%b\n\n' "$C_BOLD" "$C_RESET"
   local detected=""
   detected="$(detect_server_dir || true)"
-  read -r -p "Server 目录 [\${detected:-$DEFAULT_TARGET}]: " SERVER_DIR
-  SERVER_DIR="\${SERVER_DIR:-\${detected:-$DEFAULT_TARGET}}"
+  read -r -p "Server 目录 [${detected:-$DEFAULT_TARGET}]: " SERVER_DIR
+  SERVER_DIR="${SERVER_DIR:-${detected:-$DEFAULT_TARGET}}"
   [[ -d "$SERVER_DIR" ]] || die "目录不存在：$SERVER_DIR"
   [[ -x "$SERVER_DIR/tianxian-backup" ]] || die "缺少 $SERVER_DIR/tianxian-backup"
   [[ -x "$SERVER_DIR/tianxian-restore" ]] || die "缺少 $SERVER_DIR/tianxian-restore"
 
   read -r -p "正式域名 [$DEFAULT_DOMAIN]: " DOMAIN
-  DOMAIN="\${DOMAIN:-$DEFAULT_DOMAIN}"
+  DOMAIN="${DOMAIN:-$DEFAULT_DOMAIN}"
   read -r -p "恢复目标目录 [$DEFAULT_TARGET]: " RESTORE_TARGET
-  RESTORE_TARGET="\${RESTORE_TARGET:-$DEFAULT_TARGET}"
+  RESTORE_TARGET="${RESTORE_TARGET:-$DEFAULT_TARGET}"
 
   local default_key="$SERVER_DIR/.backup-key"
   read -r -p "备份密钥文件 [$default_key]: " BACKUP_KEY
-  BACKUP_KEY="\${BACKUP_KEY:-$default_key}"
+  BACKUP_KEY="${BACKUP_KEY:-$default_key}"
 
   if [[ ! -f "$BACKUP_KEY" ]]; then
     warn "没有找到 backup-key。已有 TXB 时必须使用原密钥，不能生成新密钥替代。"
@@ -101,7 +101,7 @@ first_run_setup() {
     printf '3. 生成新 key（仅限从未产生过正式 TXB 的全新环境）\n'
     printf '0. 退出\n'
     read -r -p "请选择 [1]: " key_choice
-    key_choice="\${key_choice:-1}"
+    key_choice="${key_choice:-1}"
     case "$key_choice" in
       1)
         local pasted_key
@@ -139,10 +139,10 @@ load_config() {
   else
     first_run_setup
   fi
-  : "\${SERVER_DIR:?SERVER_DIR 未配置}"
-  DOMAIN="\${DOMAIN:-$DEFAULT_DOMAIN}"
-  RESTORE_TARGET="\${RESTORE_TARGET:-$DEFAULT_TARGET}"
-  BACKUP_KEY="\${BACKUP_KEY:-$SERVER_DIR/.backup-key}"
+  : "${SERVER_DIR:?SERVER_DIR 未配置}"
+  DOMAIN="${DOMAIN:-$DEFAULT_DOMAIN}"
+  RESTORE_TARGET="${RESTORE_TARGET:-$DEFAULT_TARGET}"
+  BACKUP_KEY="${BACKUP_KEY:-$SERVER_DIR/.backup-key}"
 }
 
 require_server_tools() {
@@ -239,7 +239,7 @@ one_key_backup() {
     warn "未检测到 R2 配置，本次只生成本地 TXB。"
   fi
 
-  ./tianxian-backup "\${args[@]}"
+  ./tianxian-backup "${args[@]}"
   local latest
   latest="$(latest_local_txb)"
   [[ -n "$latest" ]] || die "备份命令完成，但未找到新的 TXB。"
@@ -255,7 +255,7 @@ pre_restore_snapshot() {
   cd "$SERVER_DIR"
   local args=(--type manual --password-file "$BACKUP_KEY" --domain "$DOMAIN")
   has_r2 && args+=(--r2-if-configured)
-  ./tianxian-backup "\${args[@]}"
+  ./tianxian-backup "${args[@]}"
   local latest
   latest="$(latest_local_txb)"
   [[ -n "$latest" ]] || die "恢复前快照生成失败。"
@@ -467,12 +467,12 @@ EOF2
 main() {
   need_root
   load_config
-  case "\${1:-menu}" in
+  case "${1:-menu}" in
     menu) menu ;;
     backup) one_key_backup ;;
     restore-latest) restore_cloud_latest ;;
     restore-cloud) restore_cloud_selected ;;
-    restore-local) [[ -n "\${2:-}" ]] || die "缺少 TXB 路径"; restore_txb "$2" ;;
+    restore-local) [[ -n "${2:-}" ]] || die "缺少 TXB 路径"; restore_txb "$2" ;;
     list) r2_list ;;
     check) system_check ;;
     config) settings_menu ;;
