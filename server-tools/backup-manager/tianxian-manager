@@ -96,11 +96,11 @@ first_run_setup() {
       1)
         info "进入新服务器灾难恢复模式。"
         local recovery_download
-        recovery_download="$(mktemp)"
+        recovery_download="$(mktemp /usr/local/sbin/tianxian-recover.XXXXXX)"
         curl -fsSL "$RECOVER_URL" -o "$recovery_download"
         bash -n "$recovery_download"
-        install -m 0755 "$recovery_download" /usr/local/sbin/tianxian-recover
-        rm -f "$recovery_download"
+        chmod 0755 "$recovery_download"
+        mv -f "$recovery_download" /usr/local/sbin/tianxian-recover
         exec /usr/local/sbin/tianxian-recover
         ;;
       2) ;;
