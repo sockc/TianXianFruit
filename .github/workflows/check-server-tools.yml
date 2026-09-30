@@ -1,0 +1,23 @@
+name: Check server tools
+
+on:
+  push:
+    paths:
+      - "server-tools/backup-manager/tianxian-manager"
+      - "server-tools/backup-manager/tianxian-recover"
+      - ".github/workflows/check-server-tools.yml"
+  pull_request:
+    paths:
+      - "server-tools/backup-manager/tianxian-manager"
+      - "server-tools/backup-manager/tianxian-recover"
+      - ".github/workflows/check-server-tools.yml"
+
+jobs:
+  bash-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check TianXian manager syntax
+        run: bash -n server-tools/backup-manager/tianxian-manager
+      - name: Check TianXian recover syntax
+        run: bash -n server-tools/backup-manager/tianxian-recover
