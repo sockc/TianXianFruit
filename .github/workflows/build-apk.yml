@@ -107,6 +107,8 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
+          python3 -m unittest discover -s tests -v
+          gradle :app:testDebugUnitTest :app:lintDebug --stacktrace
           gradle :app:assembleRelease --stacktrace
 
       - name: Rename APK

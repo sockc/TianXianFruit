@@ -10,7 +10,7 @@ TARGET=/opt/TianXian-Server
 KEY=/root/.tianxian-backup-key
 R2ENV=/root/.tianxian-r2.env
 VENV=/opt/tianxian-recovery-venv
-MANAGER_URL='https://raw.githubusercontent.com/sockc/TianXianFruit/feat/one-click-backup-restore/server-tools/backup-manager/tianxian-manager'
+MANAGER_URL='https://raw.githubusercontent.com/sockc/TianXianFruit/main/server-tools/backup-manager/tianxian-manager'
 
 die(){ echo "✗ $*" >&2; exit 1; }
 step(){ echo; echo "[$1/8] $2"; }
@@ -179,8 +179,11 @@ fi
 echo 'ℹ 自动备份任务默认不安装；正式服务器可在 tianxian → 配置管理 → 自动备份管理中启用。'
 
 step 7 '安装日常管理命令'
-curl -fsSL "$MANAGER_URL" -o /usr/local/sbin/tianxian
-chmod 0755 /usr/local/sbin/tianxian
+manager_download="$(mktemp /usr/local/sbin/tianxian.XXXXXX)"
+curl -fsSL "$MANAGER_URL" -o "$manager_download"
+bash -n "$manager_download"
+chmod 0755 "$manager_download"
+mv -f "$manager_download" /usr/local/sbin/tianxian
 mkdir -p /etc/tianxian-manager
 chmod 700 /etc/tianxian-manager
 cat >/etc/tianxian-manager/config.env <<EOF2

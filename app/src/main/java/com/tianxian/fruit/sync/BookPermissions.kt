@@ -166,14 +166,9 @@ object BookPermissions {
             return true
         }
 
-        val effective =
-            if (book.permissions.isNotEmpty()) {
-                book.permissions
-            } else {
-                fallbackForRole(book.permission)
-            }
-
-        return permission in effective
+        // Legacy defaults are applied only while parsing a missing permissions field.
+        // An explicitly empty set is a real restriction, including for EDITOR.
+        return permission in book.permissions
     }
 
     fun canModifyAnything(
@@ -183,11 +178,5 @@ object BookPermissions {
         systemRole == "SUPERADMIN" ||
             book.permission == "OWNER" ||
             book.permission == "SUPERADMIN" ||
-            (
-                if (book.permissions.isNotEmpty()) {
-                    book.permissions
-                } else {
-                    fallbackForRole(book.permission)
-                }
-            ).any { it in editPermissions }
+            book.permissions.any { it in editPermissions }
 }

@@ -1,9 +1,11 @@
 package com.tianxian.fruit.sync
 
 import android.content.Context
+import com.tianxian.fruit.BuildConfig
 import com.tianxian.fruit.data.AppDatabase
 import com.tianxian.fruit.data.SyncChangeRecord
 import com.tianxian.fruit.data.SyncConflictRecord
+import com.tianxian.fruit.data.SyncDeletePolicy
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -537,13 +539,10 @@ class CloudSyncManager(
                     "LEGACY"
                 ),
             permissions =
-                parseStringSet(
-                    item.optJSONArray("permissions")
-                ).ifEmpty {
-                    BookPermissions
-                        .fallbackForRole(
-                            item.getString("role")
-                        )
+                if (item.has("permissions")) {
+                    parseStringSet(item.optJSONArray("permissions"))
+                } else {
+                    BookPermissions.fallbackForRole(item.getString("role"))
                 }
         )
 
@@ -635,13 +634,10 @@ class CloudSyncManager(
                     "LEGACY"
                 ),
             permissions =
-                parseStringSet(
-                    item.optJSONArray("permissions")
-                ).ifEmpty {
-                    BookPermissions
-                        .fallbackForRole(
-                            item.getString("role")
-                        )
+                if (item.has("permissions")) {
+                    parseStringSet(item.optJSONArray("permissions"))
+                } else {
+                    BookPermissions.fallbackForRole(item.getString("role"))
                 },
             visibleUserIds =
                 parseStringSet(
@@ -1189,17 +1185,7 @@ class CloudSyncManager(
             return true
         }
 
-        val effective =
-            if (book.permissions.isNotEmpty()) {
-                book.permissions
-            } else {
-                BookPermissions
-                    .fallbackForRole(
-                        book.role
-                    )
-            }
-
-        return permission in effective
+        return permission in book.permissions
     }
 
     private fun canPushChange(
@@ -1544,29 +1530,16 @@ class CloudSyncManager(
             )
         }
 
-        val localPayload =
-            db.getSyncPayload(
-                conflict.tableName,
-                conflict.recordSyncId
-            )
-                ?: throw IllegalStateException(
-                    "本机记录已经不存在"
-                )
-
-        val nextVersion =
-            conflict.serverVersion + 1
-
-        val operation =
-            if (
-                localPayload.optInt(
-                    "deleted",
-                    0
-                ) == 1
-            ) {
-                "DELETE"
-            } else {
-                "UPSERT"
-            }
+        val snapshot = db.getSyncUploadSnapshot(conflictChange)
+            ?: throw IllegalStateException("本机记录已经不存在")
+        val localPayload = snapshot.payload
+        val nextVersion = conflict.serverVersion + 1
+        val operation = snapshot.change.operation
+        if (!canPushChange(cloudBook, snapshot.change)) {
+            throw CloudApiException(403, "当前账号没有修改该业务数据的权限")
+        }
+        // The envelope and payload must represent the same server version.
+        localPayload.put("row_version", nextVersion)
 
         val change =
             JSONObject().apply {
@@ -1670,8 +1643,8 @@ class CloudSyncManager(
         db.completeLocalConflictResolution(
             conflict =
                 conflict,
-            acceptedVersion =
-                nextVersion
+            acceptedVersion = nextVersion,
+            snapshot = snapshot
         )
     }
 
@@ -1971,6 +1944,7 @@ class CloudSyncManager(
         // V1.4.7.62：普通版本冲突不再打断用户。按记录 updated_at 判定最新内容，
         // 时间相同再比较 row_version；仍相同则云端作为稳定仲裁。
         // 只有“批量删除保护”会保留为人工确认。
+        db.markServerDeleteConflictsManual()
         autoResolveStoredConflicts(
             current = current,
             db = db,
@@ -1981,8 +1955,13 @@ class CloudSyncManager(
         var uploadedCount = 0
         var conflictCount =
             db.getManualSyncConflictCount()
-        val blockedTables =
-            linkedSetOf<String>()
+        val blockedTables = linkedSetOf<String>()
+        val allowedOperations = db.getSyncableTableNames().flatMap { table ->
+            listOf("UPSERT", "DELETE").mapNotNull { operation ->
+                val candidate = SyncChangeRecord(0L, table, "", operation, 0L, "", 0L)
+                if (canPushChange(cloudBook, candidate)) table to operation else null
+            }
+        }.toSet()
 
         if (
             canEdit &&
@@ -1993,7 +1972,8 @@ class CloudSyncManager(
                     db.getPendingSyncChangesExcludingTables(
                         excludedTables =
                             blockedTables,
-                        limit = 100
+                        limit = 100,
+                        allowedOperations = allowedOperations
                     )
 
                 if (pending.isEmpty()) {
@@ -2034,7 +2014,8 @@ class CloudSyncManager(
                             current,
                             db,
                             book,
-                            tableBatch
+                            tableBatch,
+                            cloudBook
                         ).also {
                             clearTableSyncError(
                                 book.id,
@@ -2097,10 +2078,7 @@ class CloudSyncManager(
                     }
 
                 if (
-                    pushResult.conflicts
-                        .count {
-                            it.serverDeleted
-                        } >= 2
+                    pushResult.conflicts.any { it.serverDeleted }
                 ) {
                     db.markServerDeleteConflictsManual()
                 }
@@ -2129,7 +2107,7 @@ class CloudSyncManager(
                         .acceptedLocalIds
                         .isEmpty() &&
                     pushResult.conflicts
-                        .isEmpty()
+                        .isEmpty() && !pushResult.selectionChanged
                 ) {
                     break
                 }
@@ -2358,9 +2336,6 @@ class CloudSyncManager(
                 if (
                     event.operation ==
                     "DELETE" &&
-                    requiresBulkDeleteConfirmation(
-                        event.tableName
-                    ) &&
                     remoteDeleteWouldRemoveActiveLocal(
                         db,
                         event
@@ -2406,7 +2381,9 @@ class CloudSyncManager(
                     )
                 }
 
-        if (finalDeletes.size >= 2) {
+        if (SyncDeletePolicy.requiresConfirmation(finalDeletes.map {
+                db.getDeleteBusinessKey(it.tableName, it.syncId, it.payload)
+            })) {
             finalDeletes.forEach { event ->
                 val localPayload =
                     db.getSyncPayload(
@@ -2492,19 +2469,6 @@ class CloudSyncManager(
         return event.rowVersion >
             localVersion
     }
-
-    private fun requiresBulkDeleteConfirmation(
-        tableName: String
-    ): Boolean =
-        tableName !in
-            setOf(
-                "business_weather_history",
-                "daily_business_score",
-                "fruit_season_catalog",
-                "fruit_alias",
-                "fruit_season_region",
-                "fruit_profile"
-            )
 
     private fun purchaseActivityBackfillKey(
         bookId: String
@@ -2617,27 +2581,27 @@ class CloudSyncManager(
     private data class PushBatchResult(
         val acceptedLocalIds:
             List<Long>,
-        val conflicts:
-            List<ServerConflictInfo>
+        val conflicts: List<ServerConflictInfo>,
+        val selectionChanged: Boolean = false
     )
 
     private fun pushBatch(
         session: CloudSession,
         db: AppDatabase,
         book: LedgerBook,
-        pending:
-            List<SyncChangeRecord>
+        pending: List<SyncChangeRecord>,
+        cloudBook: CloudBookInfo
     ): PushBatchResult {
         val changes = JSONArray()
+        val snapshots = pending.map { change ->
+            db.getSyncUploadSnapshot(change)
+                ?: throw IllegalStateException("待同步记录不存在：${change.tableName}")
+        }.filter { canPushChange(cloudBook, it.change) }
+        if (snapshots.isEmpty()) return PushBatchResult(emptyList(), emptyList(), selectionChanged = true)
 
-        pending.forEach {
-            change ->
-            val payload =
-                db.getSyncPayload(
-                    change.tableName,
-                    change.recordSyncId
-                )
-                    ?: JSONObject()
+        snapshots.forEach { snapshot ->
+            val change = snapshot.change
+            val payload = snapshot.payload
 
             changes.put(
                 JSONObject().apply {
@@ -2722,16 +2686,10 @@ class CloudSyncManager(
                 )
         }
 
-        val acceptedLocalIds =
-            pending.filter {
-                changeKey(
-                    it.tableName,
-                    it.recordSyncId,
-                    it.rowVersion
-                ) in acceptedKeys
-            }.map {
-                it.id
-            }
+        val acceptedLocalIds = snapshots.filter { snapshot ->
+            val change = snapshot.change
+            changeKey(change.tableName, change.recordSyncId, change.rowVersion) in acceptedKeys
+        }.flatMap { it.localChangeIds }
 
         val conflictArray =
             response.getJSONArray(
@@ -2784,8 +2742,8 @@ class CloudSyncManager(
         return PushBatchResult(
             acceptedLocalIds =
                 acceptedLocalIds,
-            conflicts =
-                conflicts
+            conflicts = conflicts,
+            selectionChanged = snapshots.size != pending.size
         )
     }
 
@@ -3057,8 +3015,7 @@ class CloudSyncManager(
         const val DEFAULT_BASE_URL =
             "https://sync.830888.xyz"
 
-        private const val APP_VERSION =
-            "1.4.7.62"
+        private const val APP_VERSION = BuildConfig.VERSION_NAME
 
         private const val KEY_PURCHASE_ACTIVITY_BACKFILL_PREFIX =
             "purchase_activity_backfill_v1_4_"

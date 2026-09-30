@@ -3,7 +3,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-VERSION="1.0.3"
+VERSION="1.0.4"
 CONFIG_DIR="/etc/tianxian-manager"
 CONFIG_FILE="$CONFIG_DIR/config.env"
 LOG_DIR="/var/log/tianxian-manager"
@@ -11,7 +11,7 @@ LOG_FILE="$LOG_DIR/manager.log"
 LOCK_FILE="/var/lock/tianxian-manager.lock"
 DEFAULT_DOMAIN="sync.830888.xyz"
 DEFAULT_TARGET="/opt/TianXian-Server"
-RECOVER_URL="https://raw.githubusercontent.com/sockc/TianXianFruit/feat/one-click-backup-restore/server-tools/backup-manager/tianxian-recover"
+RECOVER_URL="https://raw.githubusercontent.com/sockc/TianXianFruit/main/server-tools/backup-manager/tianxian-recover"
 
 C_RESET='\033[0m'; C_RED='\033[31m'; C_GREEN='\033[32m'; C_YELLOW='\033[33m'; C_BLUE='\033[34m'; C_BOLD='\033[1m'
 
@@ -95,8 +95,12 @@ first_run_setup() {
     case "$new_server_choice" in
       1)
         info "进入新服务器灾难恢复模式。"
-        curl -fsSL "$RECOVER_URL" -o /usr/local/sbin/tianxian-recover
-        chmod 0755 /usr/local/sbin/tianxian-recover
+        local recovery_download
+        recovery_download="$(mktemp /usr/local/sbin/tianxian-recover.XXXXXX)"
+        curl -fsSL "$RECOVER_URL" -o "$recovery_download"
+        bash -n "$recovery_download"
+        chmod 0755 "$recovery_download"
+        mv -f "$recovery_download" /usr/local/sbin/tianxian-recover
         exec /usr/local/sbin/tianxian-recover
         ;;
       2) ;;
@@ -370,7 +374,7 @@ restore_cloud_latest() {
   printf '%s\n' "$listing"
   key="$(
     printf '%s\n' "$listing" \
-      | grep -oE 'tianxian-backups/[^[:space:]]+/TianXian-Backup-[0-9]{8}-[0-9]{6}-[^[:space:]]+\.txb\.enc' \
+      | grep -oE '[A-Za-z0-9_./-]+/TianXian-Backup-[0-9]{8}-[0-9]{6}-[^[:space:]]+\.txb\.enc' \
       | awk '{k=$0; if (match(k,/TianXian-Backup-[0-9]{8}-[0-9]{6}/)) {t=substr(k,RSTART+16,15); gsub(/-/,"",t); print t " " k}}' \
       | sort -r \
       | head -n 1 \
