@@ -32,9 +32,8 @@ ensure_tmux(){
     fi
 
     tmux new-session -d -s tianxian-recover
-    tmux set-option -t tianxian-recover remain-on-exit on >/dev/null
     tmux send-keys -t tianxian-recover \
-      "bash /usr/local/sbin/tianxian-recover; rc=\$?; echo; if [ \$rc -eq 0 ]; then echo '✓ 恢复任务已完成'; else echo '✗ 恢复任务失败，退出码：'\$rc; fi; echo '可输入 exit 关闭此 tmux 会话'; exec bash" C-m
+      "bash /usr/local/sbin/tianxian-recover; rc=\$?; echo; if [ \$rc -eq 0 ]; then echo '✓ 恢复任务已完成'; else echo '✗ 恢复任务失败，退出码：'\$rc; fi; echo '输入 exit 即可退出恢复会话并返回 SSH'; exec bash" C-m
     exec tmux attach -t tianxian-recover
   fi
 }
