@@ -16,30 +16,9 @@ die(){ echo "✗ $*" >&2; exit 1; }
 step(){ echo; echo "[$1/8] $2"; }
 [[ ${EUID:-$(id -u)} -eq 0 ]] || die '请使用 root 运行。'
 
-ensure_tmux(){
-  if [[ -z "${TMUX:-}" && -t 0 && -t 1 ]]; then
-    if ! command -v tmux >/dev/null 2>&1; then
-      export DEBIAN_FRONTEND=noninteractive
-      apt-get update -y
-      apt-get install -y tmux
-    fi
 
-    echo '恢复任务将进入 tmux 会话：tianxian-recover'
-    echo '如果 SSH 中断，重新登录后执行：tmux attach -t tianxian-recover'
-
-    if tmux has-session -t tianxian-recover 2>/dev/null; then
-      exec tmux attach -t tianxian-recover
-    fi
-
-    tmux new-session -d -s tianxian-recover
-    tmux send-keys -t tianxian-recover \
-      "bash /usr/local/sbin/tianxian-recover; rc=\$?; echo; if [ \$rc -eq 0 ]; then echo '✓ 恢复任务已完成'; else echo '✗ 恢复任务失败，退出码：'\$rc; fi; echo '输入 exit 即可退出恢复会话并返回 SSH'; exec bash" C-m
-    exec tmux attach -t tianxian-recover
-  fi
-}
-
-ensure_tmux
-
+# 默认直接在当前 SSH 会话中运行。
+# 不自动使用 tmux，避免旧会话/死 pane 导致误进入上一次恢复现场。
 RECOVER_LOG=/var/log/tianxian-recover.log
 mkdir -p /var/log
 touch "$RECOVER_LOG"
