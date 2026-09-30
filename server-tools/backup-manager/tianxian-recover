@@ -122,22 +122,9 @@ fi
 step 6 '恢复 key 与 R2 配置'
 install -m 0600 "$KEY" "$TARGET/.backup-key"
 if [[ -x "$TARGET/scripts/init-r2-config.sh" ]]; then
-  echo '自动复用前面已输入的 R2 参数，生成正式 .r2.env。'
+  echo '恢复后的 Server 需要生成正式 .r2.env；请按提示输入同一套 R2 参数。'
   rm -f "$TARGET/.r2.env"
-  R2_ACCOUNT_ID="${R2_ENDPOINT#https://}"
-  R2_ACCOUNT_ID="${R2_ACCOUNT_ID#http://}"
-  R2_ACCOUNT_ID="${R2_ACCOUNT_ID%%.*}"
-  [[ -n "$R2_ACCOUNT_ID" ]] || die '无法从 R2_ENDPOINT 提取 Account ID。'
-  (
-    cd "$TARGET"
-    printf '%s\n%s\n%s\n%s\n%s\n' \
-      "$R2_ACCOUNT_ID" \
-      "$AWS_ACCESS_KEY_ID" \
-      "$AWS_SECRET_ACCESS_KEY" \
-      "$R2_BUCKET" \
-      "$R2_PREFIX" \
-      | ./scripts/init-r2-config.sh
-  )
+  (cd "$TARGET" && ./scripts/init-r2-config.sh)
 else
   die '恢复后的 Server 缺少 scripts/init-r2-config.sh'
 fi
