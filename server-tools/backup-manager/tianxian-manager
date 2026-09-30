@@ -51,15 +51,18 @@ detect_server_dir() {
     "${SERVER_DIR:-}"
     "/opt/TianXian-Server"
     "/home/ubuntu/TianXian-Server_V1.0.1-Lucky"
+    "/root/tianxian-recovery-tools"
   )
   local d
   for d in "${candidates[@]}"; do
-    [[ -n "$d" && -x "$d/tianxian-backup" && -x "$d/tianxian-restore" ]] && { printf '%s\n' "$d"; return 0; }
+    [[ -n "$d" && -f "$d/tianxian-backup" && -f "$d/tianxian-restore" ]] && { printf '%s\n' "$d"; return 0; }
   done
 
   while IFS= read -r d; do
-    [[ -x "$d/tianxian-backup" && -x "$d/tianxian-restore" ]] && { printf '%s\n' "$d"; return 0; }
-  done < <(find /opt /home /root -maxdepth 3 -type f -name tianxian-backup -printf '%h\n' 2>/dev/null | sort -u)
+    [[ -f "$d/tianxian-backup" && -f "$d/tianxian-restore" ]] && { printf '%s\n' "$d"; return 0; }
+  done < <(
+    find /opt /home /root /srv -maxdepth 5 -type f -name tianxian-backup -printf '%h\n' 2>/dev/null       | sort -u
+  )
   return 1
 }
 
@@ -79,16 +82,27 @@ first_run_setup() {
   printf '\n%b天鲜账本 · 备份恢复首次配置%b\n\n' "$C_BOLD" "$C_RESET"
   local detected=""
   detected="$(detect_server_dir || true)"
-  read -r -p "Server 目录 [${detected:-$DEFAULT_TARGET}]: " SERVER_DIR
-  SERVER_DIR="${SERVER_DIR:-${detected:-$DEFAULT_TARGET}}"
+  if [[ -n "$detected" ]]; then
+    ok "自动识别到现有 Server：$detected"
+  else
+    warn "未自动识别到 Server，将等待手动输入实际目录。"
+  fi
+  read -r -p "Server 目录 [${detected:-请输入实际目录}]: " SERVER_DIR
+  SERVER_DIR="${SERVER_DIR:-$detected}"
+  [[ -n "$SERVER_DIR" ]] || die "没有指定 Server 目录。请先找到包含 tianxian-backup 和 tianxian-restore 的目录。"
   [[ -d "$SERVER_DIR" ]] || die "目录不存在：$SERVER_DIR"
-  [[ -x "$SERVER_DIR/tianxian-backup" ]] || die "缺少 $SERVER_DIR/tianxian-backup"
-  [[ -x "$SERVER_DIR/tianxian-restore" ]] || die "缺少 $SERVER_DIR/tianxian-restore"
+  [[ -f "$SERVER_DIR/tianxian-backup" ]] || die "缺少 $SERVER_DIR/tianxian-backup"
+  [[ -f "$SERVER_DIR/tianxian-restore" ]] || die "缺少 $SERVER_DIR/tianxian-restore"
+  chmod +x "$SERVER_DIR"/tianxian-backup "$SERVER_DIR"/tianxian-restore 2>/dev/null || true
+  [[ -f "$SERVER_DIR/tianxian-backup-check" ]] && chmod +x "$SERVER_DIR/tianxian-backup-check" 2>/dev/null || true
+  [[ -f "$SERVER_DIR/tianxian-backup-list" ]] && chmod +x "$SERVER_DIR/tianxian-backup-list" 2>/dev/null || true
+  [[ -f "$SERVER_DIR/tianxian-r2-download" ]] && chmod +x "$SERVER_DIR/tianxian-r2-download" 2>/dev/null || true
+  [[ -f "$SERVER_DIR/tianxian-r2-test" ]] && chmod +x "$SERVER_DIR/tianxian-r2-test" 2>/dev/null || true
 
   read -r -p "正式域名 [$DEFAULT_DOMAIN]: " DOMAIN
   DOMAIN="${DOMAIN:-$DEFAULT_DOMAIN}"
-  read -r -p "恢复目标目录 [$DEFAULT_TARGET]: " RESTORE_TARGET
-  RESTORE_TARGET="${RESTORE_TARGET:-$DEFAULT_TARGET}"
+  read -r -p "恢复目标目录 [$SERVER_DIR]: " RESTORE_TARGET
+  RESTORE_TARGET="${RESTORE_TARGET:-$SERVER_DIR}"
 
   local default_key="$SERVER_DIR/.backup-key"
   read -r -p "备份密钥文件 [$default_key]: " BACKUP_KEY
