@@ -202,8 +202,31 @@ done
 [[ -n "$HEALTH" ]] || die '恢复完成，但 /health 未通过。'
 echo "$HEALTH"
 echo
+
+AUTO_BACKUP_ENABLED=0
+read -r -p '是否开启 TianXian 自动备份？[y/N]：' enable_backup
+case "${enable_backup:-N}" in
+  y|Y|yes|YES|Yes)
+    if [[ -x "$TARGET/scripts/install-txb-cron.sh" ]]; then
+      (cd "$TARGET" && ./scripts/install-txb-cron.sh)
+      AUTO_BACKUP_ENABLED=1
+      echo '✓ 自动备份已开启。'
+    else
+      echo '! 未找到自动备份安装脚本，暂未开启。'
+    fi
+    ;;
+  *)
+    echo 'ℹ 自动备份未开启；以后可在 tianxian → 配置管理 → 自动备份管理中启用。'
+    ;;
+esac
+
+echo
 echo '✓ 天鲜账本裸机恢复完成。'
 echo '✓ R2 已复用首次输入参数完成配置。'
-echo '✓ 自动备份默认未启用；需要时运行 tianxian → 配置管理 → 自动备份管理。'
+if [[ "$AUTO_BACKUP_ENABLED" -eq 1 ]]; then
+  echo '✓ 自动备份：已开启。'
+else
+  echo '✓ 自动备份：未开启。'
+fi
 echo '✓ 以后运行：tianxian'
-echo '注意：脚本不会修改 DNS/Lucky；确认数据后再切正式域名，避免新旧服务器同时写入。'
+echo '注意：脚本不会修改 DNS/Lucky；确认数据后再切换正式服务，避免新旧服务器同时写入。'
