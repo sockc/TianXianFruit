@@ -30,6 +30,15 @@ ensure_tmux(){
 }
 
 ensure_tmux
+
+RECOVER_LOG=/var/log/tianxian-recover.log
+mkdir -p /var/log
+touch "$RECOVER_LOG"
+chmod 600 "$RECOVER_LOG"
+exec > >(tee -a "$RECOVER_LOG") 2>&1
+echo
+echo "===== TianXian recovery start: $(date '+%F %T %z') ====="
+
 [[ ! -e "$TARGET" ]] || die "$TARGET 已存在；裸机恢复拒绝覆盖现有 Server。"
 
 setup_credentials(){
