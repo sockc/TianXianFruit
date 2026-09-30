@@ -11,6 +11,7 @@ LOG_FILE="$LOG_DIR/manager.log"
 LOCK_FILE="/var/lock/tianxian-manager.lock"
 DEFAULT_DOMAIN="sync.830888.xyz"
 DEFAULT_TARGET="/opt/TianXian-Server"
+RECOVER_URL="https://raw.githubusercontent.com/sockc/TianXianFruit/feat/one-click-backup-restore/server-tools/backup-manager/tianxian-recover"
 
 C_RESET='\033[0m'; C_RED='\033[31m'; C_GREEN='\033[32m'; C_YELLOW='\033[33m'; C_BLUE='\033[34m'; C_BOLD='\033[1m'
 
@@ -85,7 +86,22 @@ first_run_setup() {
   if [[ -n "$detected" ]]; then
     ok "自动识别到现有 Server：$detected"
   else
-    warn "未自动识别到 Server，将等待手动输入实际目录。"
+    warn "未检测到 TianXian Server，这看起来是一台全新服务器。"
+    printf '1. 从 R2 最新备份执行一键灾难恢复（推荐）\\n'
+    printf '2. 手动输入已有 Server 目录\\n'
+    printf '0. 退出\\n'
+    read -r -p "请选择 [1]：" new_server_choice
+    new_server_choice="${new_server_choice:-1}"
+    case "$new_server_choice" in
+      1)
+        info "进入新服务器灾难恢复模式。"
+        curl -fsSL "$RECOVER_URL" -o /usr/local/sbin/tianxian-recover
+        chmod 0755 /usr/local/sbin/tianxian-recover
+        exec /usr/local/sbin/tianxian-recover
+        ;;
+      2) ;;
+      *) exit 0 ;;
+    esac
   fi
   read -r -p "Server 目录 [${detected:-请输入实际目录}]: " SERVER_DIR
   SERVER_DIR="${SERVER_DIR:-$detected}"
