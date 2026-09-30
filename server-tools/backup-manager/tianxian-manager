@@ -1,0 +1,575 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+umask 077
+
+VERSION="1.0.3"
+CONFIG_DIR="/etc/tianxian-manager"
+CONFIG_FILE="$CONFIG_DIR/config.env"
+LOG_DIR="/var/log/tianxian-manager"
+LOG_FILE="$LOG_DIR/manager.log"
+LOCK_FILE="/var/lock/tianxian-manager.lock"
+DEFAULT_DOMAIN="sync.830888.xyz"
+DEFAULT_TARGET="/opt/TianXian-Server"
+RECOVER_URL="https://raw.githubusercontent.com/sockc/TianXianFruit/feat/one-click-backup-restore/server-tools/backup-manager/tianxian-recover"
+
+C_RESET='\033[0m'; C_RED='\033[31m'; C_GREEN='\033[32m'; C_YELLOW='\033[33m'; C_BLUE='\033[34m'; C_BOLD='\033[1m'
+
+log() {
+  local level="$1"; shift
+  local msg="$*"
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  printf '[%s] [%s] %s\n' "$(date '+%F %T')" "$level" "$msg" >> "$LOG_FILE" 2>/dev/null || true
+}
+info() { printf "%bℹ%b %s\n" "$C_BLUE" "$C_RESET" "$*"; log INFO "$*"; }
+ok() { printf "%b✓%b %s\n" "$C_GREEN" "$C_RESET" "$*"; log OK "$*"; }
+warn() { printf "%b!%b %s\n" "$C_YELLOW" "$C_RESET" "$*"; log WARN "$*"; }
+die() { printf "%b✗%b %s\n" "$C_RED" "$C_RESET" "$*" >&2; log ERROR "$*"; exit 1; }
+
+cleanup() { :; }
+trap cleanup EXIT
+trap 'die "操作在第 $LINENO 行失败，请查看 $LOG_FILE"' ERR
+
+need_root() {
+  [[ ${EUID:-$(id -u)} -eq 0 ]] || die "请使用 root 运行：sudo tianxian"
+}
+
+acquire_lock() {
+  mkdir -p "$(dirname "$LOCK_FILE")"
+  exec 9>"$LOCK_FILE"
+  flock -n 9 || die "已有另一个备份/恢复任务正在运行。"
+}
+
+safe_source() {
+  local f="$1"
+  [[ -f "$f" ]] || return 0
+  # shellcheck disable=SC1090
+  source "$f"
+}
+
+detect_server_dir() {
+  local candidates=(
+    "${SERVER_DIR:-}"
+    "/opt/TianXian-Server"
+    "/home/ubuntu/TianXian-Server_V1.0.1-Lucky"
+    "/root/tianxian-recovery-tools"
+  )
+  local d
+  for d in "${candidates[@]}"; do
+    [[ -n "$d" && -f "$d/tianxian-backup" && -f "$d/tianxian-restore" ]] && { printf '%s\n' "$d"; return 0; }
+  done
+
+  while IFS= read -r d; do
+    [[ -f "$d/tianxian-backup" && -f "$d/tianxian-restore" ]] && { printf '%s\n' "$d"; return 0; }
+  done < <(
+    find /opt /home /root /srv -maxdepth 5 -type f -name tianxian-backup -printf '%h\n' 2>/dev/null       | sort -u
+  )
+  return 1
+}
+
+write_config() {
+  mkdir -p "$CONFIG_DIR"
+  chmod 700 "$CONFIG_DIR"
+  cat > "$CONFIG_FILE" <<EOF2
+SERVER_DIR='${SERVER_DIR}'
+DOMAIN='${DOMAIN}'
+RESTORE_TARGET='${RESTORE_TARGET}'
+BACKUP_KEY='${BACKUP_KEY}'
+EOF2
+  chmod 600 "$CONFIG_FILE"
+}
+
+first_run_setup() {
+  printf '\n%b天鲜账本 · 备份恢复首次配置%b\n\n' "$C_BOLD" "$C_RESET"
+  local detected=""
+  detected="$(detect_server_dir || true)"
+  if [[ -n "$detected" ]]; then
+    ok "自动识别到现有 Server：$detected"
+  else
+    warn "未检测到 TianXian Server，这看起来是一台全新服务器。"
+    printf '1. 从 R2 最新备份执行一键灾难恢复（推荐）\\n'
+    printf '2. 手动输入已有 Server 目录\\n'
+    printf '0. 退出\\n'
+    read -r -p "请选择 [1]：" new_server_choice
+    new_server_choice="${new_server_choice:-1}"
+    case "$new_server_choice" in
+      1)
+        info "进入新服务器灾难恢复模式。"
+        curl -fsSL "$RECOVER_URL" -o /usr/local/sbin/tianxian-recover
+        chmod 0755 /usr/local/sbin/tianxian-recover
+        exec /usr/local/sbin/tianxian-recover
+        ;;
+      2) ;;
+      *) exit 0 ;;
+    esac
+  fi
+  read -r -p "Server 目录 [${detected:-请输入实际目录}]: " SERVER_DIR
+  SERVER_DIR="${SERVER_DIR:-$detected}"
+  [[ -n "$SERVER_DIR" ]] || die "没有指定 Server 目录。请先找到包含 tianxian-backup 和 tianxian-restore 的目录。"
+  [[ -d "$SERVER_DIR" ]] || die "目录不存在：$SERVER_DIR"
+  [[ -f "$SERVER_DIR/tianxian-backup" ]] || die "缺少 $SERVER_DIR/tianxian-backup"
+  [[ -f "$SERVER_DIR/tianxian-restore" ]] || die "缺少 $SERVER_DIR/tianxian-restore"
+  chmod +x "$SERVER_DIR"/tianxian-backup "$SERVER_DIR"/tianxian-restore 2>/dev/null || true
+  [[ -f "$SERVER_DIR/tianxian-backup-check" ]] && chmod +x "$SERVER_DIR/tianxian-backup-check" 2>/dev/null || true
+  [[ -f "$SERVER_DIR/tianxian-backup-list" ]] && chmod +x "$SERVER_DIR/tianxian-backup-list" 2>/dev/null || true
+  [[ -f "$SERVER_DIR/tianxian-r2-download" ]] && chmod +x "$SERVER_DIR/tianxian-r2-download" 2>/dev/null || true
+  [[ -f "$SERVER_DIR/tianxian-r2-test" ]] && chmod +x "$SERVER_DIR/tianxian-r2-test" 2>/dev/null || true
+
+  DOMAIN="${DOMAIN:-$DEFAULT_DOMAIN}"
+  read -r -p "恢复目标目录 [$SERVER_DIR]: " RESTORE_TARGET
+  RESTORE_TARGET="${RESTORE_TARGET:-$SERVER_DIR}"
+
+  local default_key="$SERVER_DIR/.backup-key"
+  read -r -p "备份密钥文件 [$default_key]: " BACKUP_KEY
+  BACKUP_KEY="${BACKUP_KEY:-$default_key}"
+
+  if [[ ! -f "$BACKUP_KEY" ]]; then
+    warn "没有找到 backup-key。已有 TXB 时必须使用原密钥，不能生成新密钥替代。"
+    printf '1. 粘贴已有 backup-key（推荐）\n'
+    printf '2. 从已有文件导入\n'
+    printf '3. 生成新 key（仅限从未产生过正式 TXB 的全新环境）\n'
+    printf '0. 退出\n'
+    read -r -p "请选择 [1]: " key_choice
+    key_choice="${key_choice:-1}"
+    case "$key_choice" in
+      1)
+        local pasted_key
+        read -r -s -p "粘贴原 backup-key（输入不会显示）：" pasted_key
+        printf '\n'
+        [[ "$pasted_key" =~ ^[0-9A-Fa-f]{64}$ ]] || die "backup-key 格式不正确，应为 64 位十六进制字符。"
+        printf '%s\n' "$pasted_key" > "$BACKUP_KEY"
+        chmod 600 "$BACKUP_KEY"
+        ;;
+      2)
+        local source_key
+        read -r -e -p "已有密钥文件路径：" source_key
+        [[ -f "$source_key" ]] || die "文件不存在：$source_key"
+        install -m 0600 "$source_key" "$BACKUP_KEY"
+        ;;
+      3)
+        read -r -p "确认这是全新环境、没有任何旧 TXB？输入 NEW：" new_confirm
+        [[ "$new_confirm" == "NEW" ]] || die "已取消生成新密钥。"
+        openssl rand -hex 32 > "$BACKUP_KEY"
+        chmod 600 "$BACKUP_KEY"
+        ok "已生成 $BACKUP_KEY（请立即另存一份到服务器外）"
+        ;;
+      *) die "已取消。" ;;
+    esac
+  fi
+  chmod 600 "$BACKUP_KEY"
+
+  write_config
+  ok "配置已保存：$CONFIG_FILE"
+}
+
+load_config() {
+  if [[ -f "$CONFIG_FILE" ]]; then
+    safe_source "$CONFIG_FILE"
+  else
+    first_run_setup
+  fi
+  : "${SERVER_DIR:?SERVER_DIR 未配置}"
+  DOMAIN="${DOMAIN:-$DEFAULT_DOMAIN}"
+  RESTORE_TARGET="${RESTORE_TARGET:-$DEFAULT_TARGET}"
+  BACKUP_KEY="${BACKUP_KEY:-$SERVER_DIR/.backup-key}"
+}
+
+require_server_tools() {
+  local tool
+  for tool in tianxian-backup tianxian-backup-check tianxian-restore; do
+    [[ -x "$SERVER_DIR/$tool" ]] || die "缺少工具：$SERVER_DIR/$tool"
+  done
+}
+
+has_r2() {
+  [[ -f "$SERVER_DIR/.r2.env" && -x "$SERVER_DIR/tianxian-r2-test" ]]
+}
+
+latest_local_txb() {
+  find "$SERVER_DIR/backups" -type f -name '*.txb' -printf '%T@ %p\n' 2>/dev/null \
+    | sort -nr | head -n 1 | cut -d' ' -f2-
+}
+
+validate_key() {
+  [[ -f "$BACKUP_KEY" ]] || die "backup-key 不存在：$BACKUP_KEY"
+  chmod 600 "$BACKUP_KEY" 2>/dev/null || true
+  local size
+  size="$(stat -c '%s' "$BACKUP_KEY" 2>/dev/null || echo 0)"
+  [[ "$size" -gt 0 ]] || die "backup-key 为空。"
+}
+
+validate_txb() {
+  local txb="$1"
+  [[ -f "$txb" ]] || die "TXB 不存在：$txb"
+  info "校验 TXB：$(basename "$txb")"
+
+  local check_output check_status=0
+  set +e
+  check_output="$("$SERVER_DIR/tianxian-backup-check" "$txb" --password-file "$BACKUP_KEY" 2>&1)"
+  check_status=$?
+  set -e
+  printf '%s\n' "$check_output"
+
+  if [[ $check_status -eq 0 ]]; then
+    ok "TXB 完整性与密钥校验通过"
+    return 0
+  fi
+
+  # 兼容较旧 TXB V1 checker：它可能不支持 --password-file。
+  if printf '%s' "$check_output" | grep -qiE 'unknown option|unrecognized option|invalid option|usage:'; then
+    "$SERVER_DIR/tianxian-backup-check" "$txb"
+    local env_member
+    env_member="$(tar -tzf "$txb" | grep -E '(^|/)config/env\.enc$' | head -n 1 || true)"
+    [[ -n "$env_member" ]] || die "TXB 中没有找到 config/env.enc，无法验证 backup-key。"
+    if tar -xOzf "$txb" "$env_member" 2>/dev/null | openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+      -pass file:"$BACKUP_KEY" -out /dev/null 2>/dev/null; then
+      ok "TXB 完整性通过，backup-key 可解密 env.enc"
+      return 0
+    fi
+    die "TXB 完整，但 backup-key 无法解密 env.enc。"
+  fi
+
+  die "TXB 校验失败，禁止继续恢复。"
+}
+
+health_check() {
+  local base="http://127.0.0.1:18080"
+  info "检查本机后端：$base/health"
+  local out
+  out="$(curl -fsS --max-time 10 "$base/health" 2>/dev/null || true)"
+  [[ -n "$out" ]] || return 1
+  printf '%s\n' "$out"
+  return 0
+}
+
+db_check() {
+  [[ -f "$RESTORE_TARGET/.env" ]] || return 1
+  local db_user db_name
+  db_user="$(grep '^POSTGRES_USER=' "$RESTORE_TARGET/.env" | cut -d= -f2- || true)"
+  db_name="$(grep '^POSTGRES_DB=' "$RESTORE_TARGET/.env" | cut -d= -f2- || true)"
+  [[ -n "$db_user" && -n "$db_name" ]] || return 1
+  (cd "$RESTORE_TARGET" && docker compose exec -T postgres pg_isready -U "$db_user" -d "$db_name")
+}
+
+one_key_backup() {
+  acquire_lock
+  require_server_tools
+  validate_key
+  cd "$SERVER_DIR"
+  printf '\n%b开始一键备份%b\n' "$C_BOLD" "$C_RESET"
+  info "Server：$SERVER_DIR"
+
+  local args=(--type manual --password-file "$BACKUP_KEY" --domain "$DOMAIN")
+  if has_r2; then
+    info "检测到 R2 配置，将在本地备份成功后上传 R2。"
+    args+=(--r2)
+  else
+    warn "未检测到 R2 配置，本次只生成本地 TXB。"
+  fi
+
+  ./tianxian-backup "${args[@]}"
+  local latest
+  latest="$(latest_local_txb)"
+  [[ -n "$latest" ]] || die "备份命令完成，但未找到新的 TXB。"
+  validate_txb "$latest"
+  ok "一键备份完成：$latest"
+  if has_r2; then
+    ok "R2 上传流程已执行。"
+  fi
+}
+
+pre_restore_snapshot() {
+  info "恢复前自动生成 pre-restore 备份。"
+  cd "$SERVER_DIR"
+  local args=(--type manual --password-file "$BACKUP_KEY" --domain "$DOMAIN")
+  has_r2 && args+=(--r2-if-configured)
+  ./tianxian-backup "${args[@]}"
+  local latest
+  latest="$(latest_local_txb)"
+  [[ -n "$latest" ]] || die "恢复前快照生成失败。"
+  validate_txb "$latest"
+  ok "恢复前快照完成：$latest"
+}
+
+confirm_restore() {
+  local txb="$1"
+  printf '\n%b危险操作：恢复将覆盖目标服务器数据%b\n' "$C_RED$C_BOLD" "$C_RESET"
+  printf '备份：%s\n目标：%s\n\n' "$txb" "$RESTORE_TARGET"
+  read -r -p "请输入 RESTORE 继续：" confirm
+  [[ "$confirm" == "RESTORE" ]] || { warn "已取消恢复。"; return 1; }
+}
+
+restore_txb() {
+  local txb="$1"
+  acquire_lock
+  require_server_tools
+  validate_key
+  validate_txb "$txb"
+  confirm_restore "$txb" || return 0
+  pre_restore_snapshot
+
+  info "调用已验证的 TXB 恢复器。"
+  "$SERVER_DIR/tianxian-restore" "$txb" --password-file "$BACKUP_KEY" --target "$RESTORE_TARGET"
+
+  if health_check; then ok "后端 /health 正常"; else warn "恢复完成，但 /health 检查未通过，请查看容器日志。"; fi
+  if db_check; then ok "PostgreSQL accepting connections"; else warn "PostgreSQL 自动检查未完成，请执行 docker compose ps 检查。"; fi
+  ok "恢复流程结束。"
+}
+
+restore_local() {
+  read -r -e -p "请输入本地 .txb 路径：" txb
+  restore_txb "$txb"
+}
+
+r2_test() {
+  if [[ -x "$SERVER_DIR/tianxian-r2-test" ]]; then
+    (cd "$SERVER_DIR" && ./tianxian-r2-test)
+  else
+    die "当前 Server 包没有 tianxian-r2-test。"
+  fi
+}
+
+r2_configure() {
+  local init="$SERVER_DIR/scripts/init-r2-config.sh"
+  [[ -x "$init" ]] || die "缺少 R2 配置向导：$init"
+  (cd "$SERVER_DIR" && "$init")
+  r2_test
+}
+
+r2_list() {
+  [[ -x "$SERVER_DIR/tianxian-backup-list" ]] || die "缺少 tianxian-backup-list。"
+  (cd "$SERVER_DIR" && ./tianxian-backup-list)
+}
+
+r2_download_by_key() {
+  local key="$1" out="$2"
+  [[ -x "$SERVER_DIR/tianxian-r2-download" ]] || die "缺少 tianxian-r2-download。"
+  (cd "$SERVER_DIR" && ./tianxian-r2-download "$key" "$out" --password-file "$BACKUP_KEY")
+}
+
+restore_cloud_selected() {
+  validate_key
+  r2_list
+  printf '\n请从上面的列表复制完整 R2 Key，例如：\n'
+  printf 'tianxian-backups/manual/TianXian-Backup-YYYYMMDD-HHMMSS-manual.txb.enc\n\n'
+  read -r -p "R2 Key：" key
+  [[ -n "$key" ]] || { warn "已取消。"; return 0; }
+  local tmpdir out
+  tmpdir="$(mktemp -d /root/tianxian-restore.XXXXXX)"
+  out="$tmpdir/selected.txb"
+  r2_download_by_key "$key" "$out"
+  restore_txb "$out"
+  rm -rf "$tmpdir"
+}
+
+restore_cloud_latest() {
+  validate_key
+  [[ -x "$SERVER_DIR/tianxian-backup-list" ]] || die "缺少 tianxian-backup-list。"
+  local listing key
+  listing="$(cd "$SERVER_DIR" && ./tianxian-backup-list 2>&1)"
+  printf '%s\n' "$listing"
+  key="$(
+    printf '%s\n' "$listing" \
+      | grep -oE 'tianxian-backups/[^[:space:]]+/TianXian-Backup-[0-9]{8}-[0-9]{6}-[^[:space:]]+\.txb\.enc' \
+      | awk '{k=$0; if (match(k,/TianXian-Backup-[0-9]{8}-[0-9]{6}/)) {t=substr(k,RSTART+16,15); gsub(/-/,"",t); print t " " k}}' \
+      | sort -r \
+      | head -n 1 \
+      | cut -d' ' -f2- \
+      || true
+  )"
+  if [[ -z "$key" ]]; then
+    warn "无法从列表自动识别最新 Key，改为手动选择。"
+    restore_cloud_selected
+    return 0
+  fi
+  info "识别到最新云端备份：$key"
+  local tmpdir out
+  tmpdir="$(mktemp -d /root/tianxian-restore.XXXXXX)"
+  out="$tmpdir/latest.txb"
+  r2_download_by_key "$key" "$out"
+  restore_txb "$out"
+  rm -rf "$tmpdir"
+}
+
+system_check() {
+  printf '\n%b系统检查%b\n' "$C_BOLD" "$C_RESET"
+  printf '%-28s %s\n' "Manager" "$VERSION"
+  printf '%-28s %s\n' "Server dir" "$SERVER_DIR"
+  printf '%-28s %s\n' "Restore target" "$RESTORE_TARGET"
+  printf '%-28s %s\n' "Backup key" "$BACKUP_KEY"
+
+  command -v docker >/dev/null && ok "Docker：$(docker --version)" || warn "Docker 未安装"
+  docker compose version >/dev/null 2>&1 && ok "Docker Compose：$(docker compose version)" || warn "Docker Compose 不可用"
+  command -v openssl >/dev/null && ok "OpenSSL：$(openssl version)" || warn "OpenSSL 未安装"
+  command -v curl >/dev/null && ok "curl 可用" || warn "curl 未安装"
+  command -v flock >/dev/null && ok "flock 可用" || warn "flock 未安装（util-linux）"
+
+  [[ -f "$BACKUP_KEY" ]] && ok "backup-key 存在 ($(stat -c '%s bytes' "$BACKUP_KEY" 2>/dev/null || true))" || warn "backup-key 不存在"
+  [[ -f "$SERVER_DIR/.r2.env" ]] && ok "R2 配置存在" || warn "R2 尚未配置"
+  health_check && ok "Backend 健康" || warn "Backend /health 不正常"
+  (cd "$SERVER_DIR" && docker compose ps) || true
+}
+
+show_logs() {
+  printf '\n=== Manager 日志 ===\n'
+  tail -n 100 "$LOG_FILE" 2>/dev/null || true
+  printf '\n=== TXB 备份日志 ===\n'
+  tail -n 100 "$SERVER_DIR/backups/txb-backup.log" 2>/dev/null || true
+}
+
+install_cron() {
+  local script="$SERVER_DIR/scripts/install-txb-cron.sh"
+  [[ -x "$script" ]] || die "缺少自动备份安装脚本：$script"
+  (cd "$SERVER_DIR" && "$script")
+  ok "TianXian 自动备份已安装/刷新"
+}
+
+remove_cron() {
+  local tmp
+  tmp="$(mktemp)"
+  crontab -l 2>/dev/null \
+    | awk '
+        $0=="# BEGIN TIANXIAN TXB BACKUP" {skip=1; next}
+        $0=="# END TIANXIAN TXB BACKUP"   {skip=0; next}
+        !skip {print}
+      ' > "$tmp" || true
+
+  if [[ -s "$tmp" ]]; then
+    crontab "$tmp"
+  else
+    crontab -r 2>/dev/null || true
+  fi
+  rm -f "$tmp"
+  ok "TianXian 自动备份任务已停用；其它 crontab 未修改"
+}
+
+show_cron_status() {
+  local current
+  current="$(crontab -l 2>/dev/null || true)"
+  printf '\n%bTianXian 自动备份状态%b\n' "$C_BOLD" "$C_RESET"
+
+  if printf '%s\n' "$current" | grep -q '^# BEGIN TIANXIAN TXB BACKUP$'; then
+    ok "已启用"
+    printf '%s\n' "$current" | awk '
+      $0=="# BEGIN TIANXIAN TXB BACKUP" {show=1; next}
+      $0=="# END TIANXIAN TXB BACKUP"   {show=0; next}
+      show {print}
+    '
+  else
+    warn "未启用"
+  fi
+}
+
+auto_backup_menu() {
+  while true; do
+    printf '\n%b自动备份管理%b\n' "$C_BOLD" "$C_RESET"
+    printf '1. 安装/刷新自动备份任务\n'
+    printf '2. 停用自动备份任务\n'
+    printf '3. 查看自动备份状态\n'
+    printf '0. 返回\n'
+    read -r -p "请选择：" c
+    case "$c" in
+      1) install_cron; show_cron_status ;;
+      2) remove_cron; show_cron_status ;;
+      3) show_cron_status ;;
+      0) return 0 ;;
+      *) warn "无效选择" ;;
+    esac
+  done
+}
+
+settings_menu() {
+  while true; do
+    printf '\n%b配置管理%b\n' "$C_BOLD" "$C_RESET"
+    printf '1. 重新运行 Manager 配置\n'
+    printf '2. 配置/修改 R2\n'
+    printf '3. 测试 R2\n'
+    printf '4. 自动备份管理\n'
+    printf '5. 查看当前配置\n'
+    printf '0. 返回\n'
+    read -r -p "请选择：" c
+    case "$c" in
+      1) rm -f "$CONFIG_FILE"; first_run_setup; load_config ;;
+      2) r2_configure ;;
+      3) r2_test ;;
+      4) auto_backup_menu ;;
+      5)
+        printf 'SERVER_DIR=%s\nRESTORE_TARGET=%s\nBACKUP_KEY=%s\n' \
+          "$SERVER_DIR" "$RESTORE_TARGET" "$BACKUP_KEY"
+        show_cron_status
+        ;;
+      0) return 0 ;;
+      *) warn "无效选择" ;;
+    esac
+  done
+}
+
+menu() {
+  while true; do
+    printf '\n%b========================================%b\n' "$C_BOLD" "$C_RESET"
+    printf '%b       天鲜账本 · 服务器管理中心%b\n' "$C_BOLD" "$C_RESET"
+    printf '%b========================================%b\n' "$C_BOLD" "$C_RESET"
+    printf 'Server: %s\n\n' "$SERVER_DIR"
+    printf '1. 一键备份（本地 + R2）\n'
+    printf '2. 一键恢复最新云端备份\n'
+    printf '3. 选择历史云端备份恢复\n'
+    printf '4. 从本地 TXB 恢复\n'
+    printf '5. 查看云端备份列表\n'
+    printf '6. 系统检查\n'
+    printf '7. 配置管理\n'
+    printf '8. 查看备份/管理日志\n'
+    printf '0. 退出\n\n'
+    read -r -p "请选择：" choice
+    case "$choice" in
+      1) one_key_backup ;;
+      2) restore_cloud_latest ;;
+      3) restore_cloud_selected ;;
+      4) restore_local ;;
+      5) r2_list ;;
+      6) system_check ;;
+      7) settings_menu ;;
+      8) show_logs ;;
+      0) exit 0 ;;
+      *) warn "无效选择" ;;
+    esac
+  done
+}
+
+usage() {
+  cat <<EOF2
+用法：tianxian [命令]
+
+命令：
+  menu                 打开交互菜单（默认）
+  backup               一键备份
+  restore-latest       恢复最新云端备份
+  restore-cloud        选择云端历史备份恢复
+  restore-local PATH   从本地 TXB 恢复
+  list                 查看 R2 备份
+  check                系统检查
+  config               配置管理
+  logs                 查看日志
+  version              显示版本
+EOF2
+}
+
+main() {
+  need_root
+  load_config
+  case "${1:-menu}" in
+    menu) menu ;;
+    backup) one_key_backup ;;
+    restore-latest) restore_cloud_latest ;;
+    restore-cloud) restore_cloud_selected ;;
+    restore-local) [[ -n "${2:-}" ]] || die "缺少 TXB 路径"; restore_txb "$2" ;;
+    list) r2_list ;;
+    check) system_check ;;
+    config) settings_menu ;;
+    logs) show_logs ;;
+    version|-v|--version) printf 'TianXian Manager %s\n' "$VERSION" ;;
+    help|-h|--help) usage ;;
+    *) usage; exit 2 ;;
+  esac
+}
+
+main "$@"

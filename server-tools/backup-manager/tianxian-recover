@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+umask 077
+
+WORK=/root/tianxian-restore
+BOOT=/root/tianxian-bootstrap
+TOOLS=/root/tianxian-recovery-tools
+TARGET=/opt/TianXian-Server
+KEY=/root/.tianxian-backup-key
+R2ENV=/root/.tianxian-r2.env
+VENV=/opt/tianxian-recovery-venv
+MANAGER_URL='https://raw.githubusercontent.com/sockc/TianXianFruit/feat/one-click-backup-restore/server-tools/backup-manager/tianxian-manager'
+
+die(){ echo "✗ $*" >&2; exit 1; }
+step(){ echo; echo "[$1/8] $2"; }
+[[ ${EUID:-$(id -u)} -eq 0 ]] || die '请使用 root 运行。'
+
+
+# 默认直接在当前 SSH 会话中运行。
+# 不自动使用 tmux，避免旧会话/死 pane 导致误进入上一次恢复现场。
+RECOVER_LOG=/var/log/tianxian-recover.log
+mkdir -p /var/log
+touch "$RECOVER_LOG"
+chmod 600 "$RECOVER_LOG"
+exec > >(tee -a "$RECOVER_LOG") 2>&1
+echo
+echo "===== TianXian recovery start: $(date '+%F %T %z') ====="
+
+[[ ! -e "$TARGET" ]] || die "$TARGET 已存在；裸机恢复拒绝覆盖现有 Server。"
+
+setup_credentials(){
+  if [[ ! -s "$KEY" ]]; then
+    local backup_key
+    read -r -s -p '原 .backup-key（64位十六进制，输入不显示）：' backup_key
+    echo
+    [[ "$backup_key" =~ ^[0-9A-Fa-f]{64}$ ]] || die 'backup-key 格式错误。'
+    printf '%s\n' "$backup_key" > "$KEY"
+    unset backup_key
+  fi
+
+  if [[ ! -s "$R2ENV" ]]; then
+    local endpoint bucket prefix access_key secret_key
+    read -r -p 'R2_ENDPOINT（完整 https://...r2.cloudflarestorage.com 地址）：' endpoint
+    read -r -p 'R2_BUCKET [tianxian]：' bucket
+    bucket="${bucket:-tianxian}"
+    read -r -p 'R2_PREFIX [tianxian-backups]：' prefix
+    prefix="${prefix:-tianxian-backups}"
+    read -r -s -p 'R2 Access Key ID（输入不显示）：' access_key
+    echo
+    read -r -s -p 'R2 Secret Access Key（输入不显示）：' secret_key
+    echo
+    [[ -n "$endpoint" && -n "$access_key" && -n "$secret_key" ]] || die 'R2 配置不能为空。'
+    cat > "$R2ENV" <<EOF_R2
+R2_ENDPOINT='$endpoint'
+R2_BUCKET='$bucket'
+R2_PREFIX='$prefix'
+AWS_ACCESS_KEY_ID='$access_key'
+AWS_SECRET_ACCESS_KEY='$secret_key'
+EOF_R2
+    unset endpoint bucket prefix access_key secret_key
+  fi
+
+  chmod 600 "$KEY" "$R2ENV"
+  local compact_key
+  compact_key="$(tr -d '\r\n[:space:]' < "$KEY")"
+  [[ "$compact_key" =~ ^[0-9A-Fa-f]{64}$ ]] || die "$KEY 中不是有效 backup-key。"
+}
+
+setup_credentials
+# shellcheck disable=SC1090
+source "$R2ENV"
+: "${R2_ENDPOINT:?R2_ENDPOINT 未配置}"
+: "${R2_BUCKET:?R2_BUCKET 未配置}"
+: "${R2_PREFIX:?R2_PREFIX 未配置}"
+: "${AWS_ACCESS_KEY_ID:?AWS_ACCESS_KEY_ID 未配置}"
+: "${AWS_SECRET_ACCESS_KEY:?AWS_SECRET_ACCESS_KEY 未配置}"
+export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION=auto AWS_EC2_METADATA_DISABLED=true
+
+read -r -p '确认这是全新服务器，输入 RECOVER 开始恢复：' x
+[[ "$x" == RECOVER ]] || die '已取消。'
+
+step 1 '安装恢复环境'
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y ca-certificates curl openssl tar gzip python3 python3-venv python3-pip util-linux
+if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; then
+  curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
+  sh /tmp/get-docker.sh
+  rm -f /tmp/get-docker.sh
+fi
+systemctl enable --now docker >/dev/null 2>&1 || true
+if [[ ! -x "$VENV/bin/aws" ]]; then
+  python3 -m venv "$VENV"
+  "$VENV/bin/pip" install -q --upgrade pip awscli
+fi
+
+step 2 '下载 R2 最新加密 TXB'
+mkdir -p "$WORK"
+AWS="$VENV/bin/aws"
+LIST="$($AWS s3 ls "s3://${R2_BUCKET}/${R2_PREFIX}/" --recursive --endpoint-url "$R2_ENDPOINT")"
+REMOTE="$(printf '%s\n' "$LIST" | awk '$4 ~ /\.txb\.enc$/ {print $1" "$2" "$4}' | sort -r | head -1 | cut -d' ' -f3-)"
+[[ -n "$REMOTE" ]] || die 'R2 中没有找到 .txb.enc'
+echo "最新备份：$REMOTE"
+$AWS s3 cp "s3://${R2_BUCKET}/${REMOTE}" "$WORK/latest.txb.enc" --endpoint-url "$R2_ENDPOINT"
+sha256sum "$WORK/latest.txb.enc" | tee "$WORK/latest.txb.enc.sha256"
+
+step 3 '解密并检查 TXB'
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+  -in "$WORK/latest.txb.enc" \
+  -out "$WORK/latest.txb" \
+  -pass file:"$KEY"
+tar -tzf "$WORK/latest.txb" >/dev/null || die '解密结果不是有效 TXB，请检查 backup-key。'
+
+step 4 '提取 TXB 内置 Server 恢复工具'
+rm -rf "$BOOT" "$TOOLS"
+mkdir -p "$BOOT" "$TOOLS"
+tar -xzf "$WORK/latest.txb" -C "$BOOT"
+if [[ -f "$BOOT/checksums/SHA256SUMS" ]]; then
+  (cd "$BOOT" && sha256sum -c checksums/SHA256SUMS)
+fi
+[[ -f "$BOOT/server/server-release.tar.gz" ]] || die 'TXB 缺少 server/server-release.tar.gz'
+tar -xzf "$BOOT/server/server-release.tar.gz" -C "$TOOLS"
+chmod +x "$TOOLS/tianxian-restore" "$TOOLS/scripts/tianxian-restore" 2>/dev/null || true
+[[ -x "$TOOLS/tianxian-restore" ]] || die '没有找到 tianxian-restore'
+
+step 5 '执行正式恢复'
+if [[ -f "$TOOLS/tianxian-backup-check" ]]; then
+  chmod +x "$TOOLS/tianxian-backup-check"
+  "$TOOLS/tianxian-backup-check" "$WORK/latest.txb" --password-file "$KEY"
+fi
+"$TOOLS/tianxian-restore" "$WORK/latest.txb" --password-file "$KEY" --target "$TARGET"
+
+step 6 '恢复 key 与 R2 配置'
+install -m 0600 "$KEY" "$TARGET/.backup-key"
+
+R2_ACCOUNT_ID="${R2_ENDPOINT#https://}"
+R2_ACCOUNT_ID="${R2_ACCOUNT_ID#http://}"
+R2_ACCOUNT_ID="${R2_ACCOUNT_ID%%.*}"
+[[ -n "$R2_ACCOUNT_ID" ]] || die '无法从 R2_ENDPOINT 提取 Account ID。'
+
+export R2_ACCOUNT_ID R2_ENDPOINT R2_BUCKET R2_PREFIX AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+python3 - "$TARGET/.r2.env" <<'PY_R2'
+import os
+import shlex
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+values = {
+    "R2_ACCOUNT_ID": os.environ["R2_ACCOUNT_ID"],
+    "R2_ENDPOINT": os.environ["R2_ENDPOINT"],
+    "R2_ACCESS_KEY_ID": os.environ["AWS_ACCESS_KEY_ID"],
+    "R2_SECRET_ACCESS_KEY": os.environ["AWS_SECRET_ACCESS_KEY"],
+    "R2_BUCKET": os.environ["R2_BUCKET"],
+    "R2_PREFIX": os.environ["R2_PREFIX"],
+    # Compatibility aliases for bootstrap/AWS CLI based tooling.
+    "AWS_ACCESS_KEY_ID": os.environ["AWS_ACCESS_KEY_ID"],
+    "AWS_SECRET_ACCESS_KEY": os.environ["AWS_SECRET_ACCESS_KEY"],
+}
+path.write_text(
+    "".join(f"{key}={shlex.quote(value)}\n" for key, value in values.items()),
+    encoding="utf-8",
+)
+PY_R2
+chmod 600 "$TARGET/.r2.env"
+echo '✓ 已复用首次输入的 R2 参数生成正式 .r2.env，无需再次输入。'
+
+if [[ -x "$TARGET/tianxian-r2-test" ]]; then
+  if ! (cd "$TARGET" && ./tianxian-r2-test); then
+    echo '生成的 R2 配置字段：'
+    sed 's/=.*$/=<hidden>/' "$TARGET/.r2.env"
+    die 'R2 自动配置测试失败。可恢复后运行 tianxian → 配置管理 → 配置/修改 R2。'
+  fi
+else
+  die '恢复后的 Server 缺少 tianxian-r2-test'
+fi
+
+echo 'ℹ 自动备份任务默认不安装；正式服务器可在 tianxian → 配置管理 → 自动备份管理中启用。'
+
+step 7 '安装日常管理命令'
+curl -fsSL "$MANAGER_URL" -o /usr/local/sbin/tianxian
+chmod 0755 /usr/local/sbin/tianxian
+mkdir -p /etc/tianxian-manager
+chmod 700 /etc/tianxian-manager
+cat >/etc/tianxian-manager/config.env <<EOF2
+SERVER_DIR='$TARGET'
+DOMAIN='sync.830888.xyz'
+RESTORE_TARGET='$TARGET'
+BACKUP_KEY='$TARGET/.backup-key'
+EOF2
+chmod 600 /etc/tianxian-manager/config.env
+
+step 8 '健康检查'
+(cd "$TARGET" && docker compose ps)
+HEALTH=''
+for _ in $(seq 1 30); do
+  HEALTH="$(curl -fsS --max-time 3 http://127.0.0.1:18080/health 2>/dev/null || true)"
+  [[ -n "$HEALTH" ]] && break
+  sleep 2
+done
+[[ -n "$HEALTH" ]] || die '恢复完成，但 /health 未通过。'
+echo "$HEALTH"
+echo
+
+AUTO_BACKUP_ENABLED=0
+read -r -p '是否开启 TianXian 自动备份？[y/N]：' enable_backup
+case "${enable_backup:-N}" in
+  y|Y|yes|YES|Yes)
+    if [[ -x "$TARGET/scripts/install-txb-cron.sh" ]]; then
+      (cd "$TARGET" && ./scripts/install-txb-cron.sh)
+      AUTO_BACKUP_ENABLED=1
+      echo '✓ 自动备份已开启。'
+    else
+      echo '! 未找到自动备份安装脚本，暂未开启。'
+    fi
+    ;;
+  *)
+    echo 'ℹ 自动备份未开启；以后可在 tianxian → 配置管理 → 自动备份管理中启用。'
+    ;;
+esac
+
+echo
+echo '✓ 天鲜账本裸机恢复完成。'
+echo '✓ R2 已复用首次输入参数完成配置。'
+if [[ "$AUTO_BACKUP_ENABLED" -eq 1 ]]; then
+  echo '✓ 自动备份：已开启。'
+else
+  echo '✓ 自动备份：未开启。'
+fi
+echo '✓ 以后运行：tianxian'
+echo '注意：脚本不会修改 DNS/Lucky；确认数据后再切换正式服务，避免新旧服务器同时写入。'
