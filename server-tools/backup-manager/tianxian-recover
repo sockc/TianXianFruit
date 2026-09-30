@@ -155,15 +155,50 @@ fi
 
 step 6 '恢复 key 与 R2 配置'
 install -m 0600 "$KEY" "$TARGET/.backup-key"
-if [[ -x "$TARGET/scripts/init-r2-config.sh" ]]; then
-  echo '恢复后的 Server 需要生成正式 .r2.env；请按提示输入同一套 R2 参数。'
-  rm -f "$TARGET/.r2.env"
-  (cd "$TARGET" && ./scripts/init-r2-config.sh)
+
+R2_ACCOUNT_ID="${R2_ENDPOINT#https://}"
+R2_ACCOUNT_ID="${R2_ACCOUNT_ID#http://}"
+R2_ACCOUNT_ID="${R2_ACCOUNT_ID%%.*}"
+[[ -n "$R2_ACCOUNT_ID" ]] || die '无法从 R2_ENDPOINT 提取 Account ID。'
+
+export R2_ACCOUNT_ID R2_ENDPOINT R2_BUCKET R2_PREFIX AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+python3 - "$TARGET/.r2.env" <<'PY_R2'
+import os
+import shlex
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+values = {
+    "R2_ACCOUNT_ID": os.environ["R2_ACCOUNT_ID"],
+    "R2_ENDPOINT": os.environ["R2_ENDPOINT"],
+    "R2_ACCESS_KEY_ID": os.environ["AWS_ACCESS_KEY_ID"],
+    "R2_SECRET_ACCESS_KEY": os.environ["AWS_SECRET_ACCESS_KEY"],
+    "R2_BUCKET": os.environ["R2_BUCKET"],
+    "R2_PREFIX": os.environ["R2_PREFIX"],
+    # Compatibility aliases for bootstrap/AWS CLI based tooling.
+    "AWS_ACCESS_KEY_ID": os.environ["AWS_ACCESS_KEY_ID"],
+    "AWS_SECRET_ACCESS_KEY": os.environ["AWS_SECRET_ACCESS_KEY"],
+}
+path.write_text(
+    "".join(f"{key}={shlex.quote(value)}\n" for key, value in values.items()),
+    encoding="utf-8",
+)
+PY_R2
+chmod 600 "$TARGET/.r2.env"
+echo '✓ 已复用首次输入的 R2 参数生成正式 .r2.env，无需再次输入。'
+
+if [[ -x "$TARGET/tianxian-r2-test" ]]; then
+  if ! (cd "$TARGET" && ./tianxian-r2-test); then
+    echo '生成的 R2 配置字段：'
+    sed 's/=.*$/=<hidden>/' "$TARGET/.r2.env"
+    die 'R2 自动配置测试失败。可恢复后运行 tianxian → 配置管理 → 配置/修改 R2。'
+  fi
 else
-  die '恢复后的 Server 缺少 scripts/init-r2-config.sh'
+  die '恢复后的 Server 缺少 tianxian-r2-test'
 fi
-if [[ -x "$TARGET/tianxian-r2-test" ]]; then (cd "$TARGET" && ./tianxian-r2-test); fi
-if [[ -x "$TARGET/scripts/install-txb-cron.sh" ]]; then (cd "$TARGET" && ./scripts/install-txb-cron.sh); fi
+
+echo 'ℹ 自动备份任务默认不安装；正式服务器可在 tianxian → 配置管理 → 自动备份管理中启用。'
 
 step 7 '安装日常管理命令'
 curl -fsSL "$MANAGER_URL" -o /usr/local/sbin/tianxian
@@ -190,5 +225,7 @@ done
 echo "$HEALTH"
 echo
 echo '✓ 天鲜账本裸机恢复完成。'
+echo '✓ R2 已复用首次输入参数完成配置。'
+echo '✓ 自动备份默认未启用；需要时运行 tianxian → 配置管理 → 自动备份管理。'
 echo '✓ 以后运行：tianxian'
 echo '注意：脚本不会修改 DNS/Lucky；确认数据后再切正式域名，避免新旧服务器同时写入。'
