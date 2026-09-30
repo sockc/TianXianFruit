@@ -23,7 +23,7 @@ setup_credentials(){
     read -r -s -p '原 .backup-key（64位十六进制，输入不显示）：' backup_key
     echo
     [[ "$backup_key" =~ ^[0-9A-Fa-f]{64}$ ]] || die 'backup-key 格式错误。'
-    printf '%s\\n' "$backup_key" > "$KEY"
+    printf '%s\n' "$backup_key" > "$KEY"
     unset backup_key
   fi
 
@@ -51,7 +51,7 @@ EOF_R2
 
   chmod 600 "$KEY" "$R2ENV"
   local compact_key
-  compact_key="$(tr -d '\\r\\n[:space:]' < "$KEY")"
+  compact_key="$(tr -d '\r\n[:space:]' < "$KEY")"
   [[ "$compact_key" =~ ^[0-9A-Fa-f]{64}$ ]] || die "$KEY 中不是有效 backup-key。"
 }
 
