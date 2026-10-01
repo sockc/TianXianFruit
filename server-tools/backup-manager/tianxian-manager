@@ -12,7 +12,7 @@ LOCK_FILE="/var/lock/tianxian-manager.lock"
 DEFAULT_DOMAIN="sync.830888.xyz"
 DEFAULT_TARGET="/opt/TianXian-Server"
 DEFAULT_BACKEND_PORT="18080"
-RECOVER_URL="https://raw.githubusercontent.com/sockc/TianXianFruit/feat/recovery-port-selection/server-tools/backup-manager/tianxian-recover"
+RECOVER_URL="https://raw.githubusercontent.com/sockc/TianXianFruit/main/server-tools/backup-manager/tianxian-recover"
 
 C_RESET='\033[0m'; C_RED='\033[31m'; C_GREEN='\033[32m'; C_YELLOW='\033[33m'; C_BLUE='\033[34m'; C_BOLD='\033[1m'
 
