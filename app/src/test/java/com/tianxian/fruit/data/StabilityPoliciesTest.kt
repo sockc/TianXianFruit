@@ -112,6 +112,149 @@ class StabilityPoliciesTest {
         assertEquals("库存表不兼容", SyncStatusPolicy.error("网络失败", "库存表不兼容"))
     }
 
+    @Test fun weatherForecastDetailStopsPretendingLongRangeHourlyExists() {
+        val today = LocalDate.parse("2026-10-01")
+        assertEquals(
+            WeatherDisplayPolicy.MODE_HOURLY,
+            WeatherDisplayPolicy.forecastDetailMode(
+                today,
+                today
+            )
+        )
+        assertEquals(
+            WeatherDisplayPolicy.MODE_HOURLY,
+            WeatherDisplayPolicy.forecastDetailMode(
+                today.plusDays(4),
+                today
+            )
+        )
+        assertEquals(
+            WeatherDisplayPolicy.MODE_TREND,
+            WeatherDisplayPolicy.forecastDetailMode(
+                today.plusDays(5),
+                today
+            )
+        )
+        assertEquals(
+            WeatherDisplayPolicy.MODE_HISTORICAL,
+            WeatherDisplayPolicy.forecastDetailMode(
+                today.minusDays(1),
+                today
+            )
+        )
+    }
+
+    @Test fun weatherCoverageIncludesCrossMidnightHourlyBuckets() {
+        val window =
+            BusinessWeatherWindow.forDay(
+                LocalDate.parse("2026-10-01"),
+                "23:30",
+                "02:15"
+            )
+        val coverage =
+            WeatherDisplayPolicy.hourlyCoverage(
+                window,
+                listOf(
+                    "2026-10-01T23:00:00+08:00",
+                    "2026-10-02T00:00:00+08:00",
+                    "2026-10-02T01:00:00+08:00",
+                    "2026-10-02T02:00:00+08:00"
+                )
+            )
+        assertEquals(4, coverage.expected)
+        assertEquals(4, coverage.actual)
+        assertEquals(1.0, coverage.ratio, 0.000001)
+        assertTrue(
+            WeatherDisplayPolicy.hourBucketOverlaps(
+                window,
+                "2026-10-02T00:00:00+08:00"
+            )
+        )
+    }
+
+    @Test fun weatherAlertsAreScopedToPreOpenAndBusinessWindow() {
+        val window =
+            BusinessWeatherWindow.forDay(
+                LocalDate.parse("2026-10-01"),
+                "16:00",
+                "24:00"
+            )
+        assertTrue(
+            WeatherDisplayPolicy.alertRelevant(
+                "2026-10-01T14:00:00+08:00",
+                "2026-10-01T17:00:00+08:00",
+                window
+            )
+        )
+        assertFalse(
+            WeatherDisplayPolicy.alertRelevant(
+                "2026-10-01T08:00:00+08:00",
+                "2026-10-01T12:00:00+08:00",
+                window
+            )
+        )
+        assertFalse(
+            WeatherDisplayPolicy.alertRelevant(
+                "2026-10-02T03:00:00+08:00",
+                "2026-10-02T05:00:00+08:00",
+                window
+            )
+        )
+    }
+
+    @Test fun weatherCacheRefreshesFasterNearBusinessAndRain() {
+        val date = LocalDate.parse("2026-10-01")
+        val window =
+            BusinessWeatherWindow.forDay(
+                date,
+                "16:00",
+                "24:00"
+            )
+        assertEquals(
+            5L * 60L * 1000L,
+            WeatherDisplayPolicy.cacheTtlMillis(
+                date = date,
+                today = date,
+                now = LocalDateTime.parse(
+                    "2026-10-01T15:00:00"
+                ),
+                window = window,
+                rainRisk = true,
+                hasAlert = false
+            )
+        )
+        assertEquals(
+            10L * 60L * 1000L,
+            WeatherDisplayPolicy.cacheTtlMillis(
+                date = date,
+                today = date,
+                now = LocalDateTime.parse(
+                    "2026-10-01T15:00:00"
+                ),
+                window = window,
+                rainRisk = false,
+                hasAlert = false
+            )
+        )
+        assertEquals(
+            3L * 60L * 60L * 1000L,
+            WeatherDisplayPolicy.cacheTtlMillis(
+                date = date.plusDays(7),
+                today = date,
+                now = LocalDateTime.parse(
+                    "2026-10-01T15:00:00"
+                ),
+                window = BusinessWeatherWindow.forDay(
+                    date.plusDays(7),
+                    "16:00",
+                    "24:00"
+                ),
+                rainRisk = false,
+                hasAlert = false
+            )
+        )
+    }
+
     @Test fun highIndexWithoutHistoryDoesNotBecomeAConfidentRecommendation() {
         assertEquals(
             "资料不足",

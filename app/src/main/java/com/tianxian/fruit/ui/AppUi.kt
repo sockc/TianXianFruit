@@ -1706,6 +1706,7 @@ private fun DetailedWeatherSummaryCard(
     store: StoreOption?,
     day: WeatherDay?,
     dayHours: List<WeatherHour>,
+    allHours: List<WeatherHour>,
     businessHours: List<WeatherHour>,
     historical: Boolean,
     alerts: List<WeatherAlert>
@@ -1730,11 +1731,19 @@ private fun DetailedWeatherSummaryCard(
     val rainPeriods = weatherRainPeriodSummary(availableHours)
     val businessRain = businessHours.sumOf { it.precipitation ?: 0.0 }
     val businessPop = businessHours.mapNotNull { it.precipitationProbability }.maxOrNull()
-    val businessStart = storeTimeMinutes(store?.defaultStartTime.orEmpty(), 16 * 60)
-    val before3 = availableHours.filter {
-        val minute = weatherClockMinutes(it.time) ?: return@filter false
-        minute in maxOf(0, businessStart - 180) until businessStart
-    }
+    val businessWindow =
+        BusinessWeatherWindow.forDay(
+            selectedDate,
+            store?.defaultStartTime ?: "16:00",
+            store?.defaultEndTime ?: "24:00"
+        )
+    val before3 =
+        allHours.filter {
+            WeatherDisplayPolicy.preOpenHourBucketOverlaps(
+                businessWindow,
+                it.time
+            )
+        }
     val before3Rain = before3.sumOf { it.precipitation ?: 0.0 }
     val before3Pop = before3.mapNotNull { it.precipitationProbability }.maxOrNull()
     val dayText = day?.textDay.orEmpty().ifBlank { weatherDominantText(availableHours.filter { !weatherHourIsNight(it.time, day, it.code) }) }
@@ -1927,6 +1936,234 @@ private fun DetailedWeatherSummaryCard(
     }
 }
 
+@Composable
+private fun BusinessWeatherFocusCard(
+    selectedDate: LocalDate,
+    store: StoreOption?,
+    hours: List<WeatherHour>,
+    historical: Boolean,
+    stale: Boolean,
+    trendOnly: Boolean,
+    relevantAlerts: List<WeatherAlert>
+) {
+    val window =
+        BusinessWeatherWindow.forDay(
+            selectedDate,
+            store?.defaultStartTime ?: "16:00",
+            store?.defaultEndTime ?: "24:00"
+        )
+    val (firstHalf, secondHalf) =
+        WeatherDisplayPolicy.splitBusinessWindow(
+            window
+        )
+    val preWindow =
+        BusinessWeatherWindow(
+            window.preStart,
+            window.start
+        )
+    val preHours =
+        hours.filter {
+            WeatherDisplayPolicy.preOpenHourBucketOverlaps(
+                window,
+                it.time
+            )
+        }
+    val firstHours =
+        hours.filter {
+            WeatherDisplayPolicy.hourBucketOverlaps(
+                firstHalf,
+                it.time
+            )
+        }
+    val secondHours =
+        hours.filter {
+            WeatherDisplayPolicy.hourBucketOverlaps(
+                secondHalf,
+                it.time
+            )
+        }
+    val coverage =
+        WeatherDisplayPolicy.hourlyCoverage(
+            window,
+            hours.map { it.time }
+        )
+    val evidence =
+        BusinessAdvicePolicy.weatherEvidenceStatus(
+            coverageRatio = coverage.ratio,
+            stale = stale
+        )
+
+    Card(
+        colors =
+            CardDefaults.cardColors(
+                containerColor =
+                    if (trendOnly) {
+                        Color(0xFFFFF8E7)
+                    } else {
+                        Color(0xFFF3FAF5)
+                    }
+            ),
+        border =
+            BorderStroke(
+                1.dp,
+                if (trendOnly) {
+                    Color(0xFFE7C66C)
+                } else {
+                    Color(0xFFB8DFC7)
+                }
+            ),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(13.dp),
+            verticalArrangement =
+                Arrangement.spacedBy(7.dp)
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment =
+                    Alignment.CenterVertically
+            ) {
+                Text(
+                    "经营时段天气",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    if (trendOnly) {
+                        "趋势预报"
+                    } else {
+                        weatherEvidenceLabel(
+                            evidence
+                        )
+                    },
+                    style =
+                        MaterialTheme.typography.labelMedium,
+                    color =
+                        if (trendOnly) {
+                            Color(0xFF8A6D00)
+                        } else {
+                            BrandGreen
+                        }
+                )
+            }
+
+            if (trendOnly) {
+                Text(
+                    "该日期超出当前逐小时可靠范围，只显示日级趋势；不生成具体小时段结论。",
+                    style =
+                        MaterialTheme.typography.bodySmall,
+                    color = Color.DarkGray
+                )
+                Text(
+                    "未来5个日历日支持逐小时查看，第6–15天作为趋势参考。",
+                    style =
+                        MaterialTheme.typography.labelSmall,
+                    color = Color.Gray
+                )
+            } else {
+                Text(
+                    "逐小时数据 ${coverage.actual}/${coverage.expected}小时 · ${weatherEvidenceLabel(evidence)}",
+                    style =
+                        MaterialTheme.typography.bodySmall,
+                    color =
+                        if (evidence == "COMPLETE") {
+                            BrandGreen
+                        } else {
+                            Color(0xFFB26A00)
+                        }
+                )
+
+                val rows =
+                    listOf(
+                        Triple(
+                            "开摊前3小时",
+                            weatherWindowLabel(
+                                preWindow,
+                                selectedDate
+                            ),
+                            weatherSegmentRiskText(
+                                preHours,
+                                historical
+                            )
+                        ),
+                        Triple(
+                            "前半段",
+                            weatherWindowLabel(
+                                firstHalf,
+                                selectedDate
+                            ),
+                            weatherSegmentRiskText(
+                                firstHours,
+                                historical
+                            )
+                        ),
+                        Triple(
+                            "后半段",
+                            weatherWindowLabel(
+                                secondHalf,
+                                selectedDate
+                            ),
+                            weatherSegmentRiskText(
+                                secondHours,
+                                historical
+                            )
+                        )
+                    )
+                rows.forEach {
+                        (title, range, summary) ->
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment =
+                            Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "$title $range",
+                            modifier =
+                                Modifier.weight(1f),
+                            style =
+                                MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            summary,
+                            style =
+                                MaterialTheme.typography.bodySmall,
+                            fontWeight =
+                                FontWeight.SemiBold,
+                            color =
+                                when {
+                                    summary.contains("明显") ||
+                                        summary.contains("高温") ||
+                                        summary.contains("风力") ->
+                                        Color(0xFFC62828)
+                                    summary.contains("雨") ->
+                                        Color(0xFFB26A00)
+                                    summary.contains("稳定") ->
+                                        BrandGreen
+                                    else ->
+                                        Color.Gray
+                                }
+                        )
+                    }
+                }
+
+                if (relevantAlerts.isNotEmpty()) {
+                    Text(
+                        "⚠ 营业前后相关预警 ${relevantAlerts.size} 条，查看下方预警详情",
+                        style =
+                            MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFC62828),
+                        fontWeight =
+                            FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+    }
+}
 private fun weatherTemp(value: Double?): String =
     value?.let { "${String.format(Locale.CHINA, "%.0f", it)}°" } ?: "—"
 
@@ -1967,12 +2204,52 @@ private fun weatherLocationSourceText(source: String, confidence: Double, sample
 private fun weatherBookId(book: LedgerBook): String =
     book.cloudBookId.ifBlank { book.id.takeIf { it.contains('-') }.orEmpty() }
 
-private const val WEATHER_CACHE_TODAY_MS = 10 * 60 * 1000L
-private const val WEATHER_CACHE_FUTURE_MS = 30 * 60 * 1000L
 private const val WEATHER_CACHE_ARCHIVE_MS = 24 * 60 * 60 * 1000L
 
-private fun weatherCacheTtl(date: LocalDate): Long =
-    if (date == LocalDate.now()) WEATHER_CACHE_TODAY_MS else WEATHER_CACHE_FUTURE_MS
+private fun weatherCacheTtl(
+    date: LocalDate,
+    store: StoreOption? = null,
+    overview: WeatherOverview? = null
+): Long {
+    val window =
+        BusinessWeatherWindow.forDay(
+            date,
+            store?.defaultStartTime ?: "16:00",
+            store?.defaultEndTime ?: "24:00"
+        )
+    val businessHours =
+        overview?.hourly.orEmpty()
+            .filter {
+                WeatherDisplayPolicy.hourBucketOverlaps(
+                    window,
+                    it.time
+                )
+            }
+    val rainRisk =
+        businessHours.any {
+            (it.precipitationProbability ?: 0.0) >= 40.0 ||
+                (it.precipitation ?: 0.0) > 0.05
+        }
+    val hasAlert =
+        overview?.alerts.orEmpty()
+            .any {
+                WeatherDisplayPolicy.alertRelevant(
+                    it.startTime,
+                    it.endTime,
+                    window
+                )
+            }
+    return WeatherDisplayPolicy.cacheTtlMillis(
+        date = date,
+        today = LocalDate.now(),
+        now = LocalDateTime.now(
+            ZoneId.of("Asia/Shanghai")
+        ),
+        window = window,
+        rainRisk = rainRisk,
+        hasAlert = hasAlert
+    )
+}
 
 private fun storeTimeMinutes(value: String, fallback: Int): Int {
     if (value == "24:00") return 24 * 60
@@ -1989,19 +2266,189 @@ private fun storeBusinessHours(
     date: String,
     store: StoreOption?
 ): List<WeatherHour> {
-    val start = storeTimeMinutes(store?.defaultStartTime ?: "16:00", 16 * 60)
-    val end = storeTimeMinutes(store?.defaultEndTime ?: "24:00", 24 * 60)
-    return hours.filter { h ->
-        if (!h.time.startsWith(date)) return@filter false
-        val hour = h.time.substringAfter('T', "").take(2).toIntOrNull() ?: return@filter false
-        val bucketStart = hour * 60
-        val bucketEnd = bucketStart + 60
-        bucketEnd > start && bucketStart < end
+    val parsedDate =
+        runCatching {
+            LocalDate.parse(date)
+        }.getOrElse {
+            return emptyList()
+        }
+    val window =
+        BusinessWeatherWindow.forDay(
+            parsedDate,
+            store?.defaultStartTime ?: "16:00",
+            store?.defaultEndTime ?: "24:00"
+        )
+    return hours.filter {
+        WeatherDisplayPolicy.hourBucketOverlaps(
+            window,
+            it.time
+        )
     }
 }
 
-private fun businessTimeLabel(store: StoreOption?): String =
-    "${store?.defaultStartTime ?: "16:00"}–${store?.defaultEndTime ?: "24:00"}"
+private fun storePreBusinessHours(
+    hours: List<WeatherHour>,
+    date: LocalDate,
+    store: StoreOption?
+): List<WeatherHour> {
+    val window =
+        BusinessWeatherWindow.forDay(
+            date,
+            store?.defaultStartTime ?: "16:00",
+            store?.defaultEndTime ?: "24:00"
+        )
+    return hours.filter {
+        WeatherDisplayPolicy.preOpenHourBucketOverlaps(
+            window,
+            it.time
+        )
+    }
+}
+
+private fun weatherRelevantAlerts(
+    alerts: List<WeatherAlert>,
+    date: LocalDate,
+    store: StoreOption?
+): List<WeatherAlert> {
+    val window =
+        BusinessWeatherWindow.forDay(
+            date,
+            store?.defaultStartTime ?: "16:00",
+            store?.defaultEndTime ?: "24:00"
+        )
+    return alerts.filter {
+        WeatherDisplayPolicy.alertRelevant(
+            it.startTime,
+            it.endTime,
+            window
+        )
+    }
+}
+
+private fun weatherCoverageStatus(
+    date: LocalDate,
+    store: StoreOption?,
+    hours: List<WeatherHour>,
+    stale: Boolean
+): Pair<WeatherDisplayPolicy.HourlyCoverage, String> {
+    val window =
+        BusinessWeatherWindow.forDay(
+            date,
+            store?.defaultStartTime ?: "16:00",
+            store?.defaultEndTime ?: "24:00"
+        )
+    val coverage =
+        WeatherDisplayPolicy.hourlyCoverage(
+            window,
+            hours.map { it.time }
+        )
+    val status =
+        BusinessAdvicePolicy.weatherEvidenceStatus(
+            coverageRatio = coverage.ratio,
+            stale = stale
+        )
+    return coverage to status
+}
+
+private fun weatherEvidenceLabel(value: String): String =
+    when (value.uppercase(Locale.ROOT)) {
+        "COMPLETE" -> "完整"
+        "PARTIAL" -> "部分缺失"
+        "SPARSE" -> "缺失较多"
+        "STALE" -> "已过期"
+        else -> "无逐小时数据"
+    }
+
+private fun weatherWindowLabel(
+    window: BusinessWeatherWindow,
+    baseDate: LocalDate
+): String {
+    val formatter =
+        DateTimeFormatter.ofPattern("HH:mm")
+    val startText =
+        window.start.format(formatter)
+    val endText =
+        window.end.format(formatter)
+    fun dayPrefix(value: LocalDate): String =
+        when {
+            value.isBefore(baseDate) -> "前一日"
+            value.isAfter(baseDate) -> "次日"
+            else -> ""
+        }
+    return dayPrefix(
+        window.start.toLocalDate()
+    ) + startText + "–" +
+        dayPrefix(
+            window.end.toLocalDate()
+        ) + endText
+}
+
+private fun weatherSegmentRiskText(
+    hours: List<WeatherHour>,
+    historical: Boolean
+): String {
+    if (hours.isEmpty()) {
+        return "逐小时数据不足"
+    }
+    val maxPop =
+        hours.mapNotNull {
+            it.precipitationProbability
+        }.maxOrNull() ?: 0.0
+    val rain =
+        hours.sumOf {
+            it.precipitation ?: 0.0
+        }
+    val wind =
+        hours.mapNotNull {
+            it.windSpeed
+        }.maxOrNull() ?: 0.0
+    val maxTemp =
+        hours.mapNotNull {
+            it.temperature
+        }.maxOrNull()
+
+    return when {
+        rain >= 2.0 || maxPop >= 60.0 ->
+            if (historical) {
+                "有明显降雨"
+            } else {
+                "有明显降雨风险"
+            }
+        rain > 0.05 || maxPop >= 40.0 ->
+            if (historical) {
+                "有降雨"
+            } else {
+                "有雨风险"
+            }
+        wind >= 25.0 ->
+            "风力偏大"
+        (maxTemp ?: 0.0) >= 34.0 ->
+            "高温偏热"
+        else ->
+            "天气较稳定"
+    }
+}
+
+private fun businessTimeLabel(
+    store: StoreOption?
+): String {
+    val start =
+        store?.defaultStartTime ?: "16:00"
+    val end =
+        store?.defaultEndTime ?: "24:00"
+    val startMinutes =
+        storeTimeMinutes(start, 16 * 60)
+    val endMinutes =
+        storeTimeMinutes(end, 24 * 60)
+    return if (
+        end != "24:00" &&
+        endMinutes <= startMinutes
+    ) {
+        "$start–次日$end"
+    } else {
+        "$start–$end"
+    }
+}
 
 private fun windSpeedText(value: Double?): String =
     value?.let { String.format(Locale.CHINA, "%.0fkm/h", it) } ?: "—"
@@ -2019,7 +2466,8 @@ private data class WeatherUiState(
     val refreshing: Boolean = false,
     val error: String = "",
     val snapshotType: String = "",
-    val updatedAtMillis: Long = 0L
+    val updatedAtMillis: Long = 0L,
+    val expiresAtMillis: Long = 0L
 )
 
 private fun weatherAlertLevel(alert: WeatherAlert): Int {
@@ -2168,7 +2616,8 @@ private fun HomeWeatherCard(
                     loading = false,
                     refreshing = stale,
                     snapshotType = "CACHE",
-                    updatedAtMillis = cached.fetchedAt
+                    updatedAtMillis = cached.fetchedAt,
+                    expiresAtMillis = cached.expiresAt
                 )
                 if (!stale) return@LaunchedEffect
             }
@@ -2182,17 +2631,24 @@ private fun HomeWeatherCard(
                 val overview = WeatherClient(cloudSyncManager)
                     .fetchOverview(bookId, store, selectedDate, 120)
                 val fetchedAt = System.currentTimeMillis()
+                val ttl =
+                    weatherCacheTtl(
+                        selectedDate,
+                        store,
+                        overview
+                    )
                 db.saveWeatherCache(
                     dateString,
                     store.id,
                     overview.rawJson,
-                    weatherCacheTtl(selectedDate),
+                    ttl,
                     fetchedAt
                 )
                 WeatherUiState(
                     overview = overview,
                     snapshotType = "CACHE",
-                    updatedAtMillis = fetchedAt
+                    updatedAtMillis = fetchedAt,
+                    expiresAtMillis = fetchedAt + ttl
                 )
             }
         }
@@ -2213,11 +2669,34 @@ private fun HomeWeatherCard(
     val temp = current?.temperature?.takeIf { selectedDate == LocalDate.now() }
         ?: businessHours.firstOrNull()?.temperature
         ?: day?.tempMax
-    val homeAlerts = remember(overview?.rawJson) {
-        overview?.alerts.orEmpty()
-            .filter { weatherAlertLevel(it) >= 2 }
-            .sortedByDescending(::weatherAlertLevel)
-    }
+    val homeAlerts =
+        remember(
+            overview?.rawJson,
+            selectedDate,
+            selectedStore?.id
+        ) {
+            weatherRelevantAlerts(
+                overview?.alerts.orEmpty(),
+                selectedDate,
+                selectedStore
+            )
+                .filter {
+                    weatherAlertLevel(it) >= 2
+                }
+                .sortedByDescending(
+                    ::weatherAlertLevel
+                )
+        }
+    val homeCoverage =
+        weatherCoverageStatus(
+            date = selectedDate,
+            store = selectedStore,
+            hours = overview?.hourly.orEmpty(),
+            stale =
+                state.expiresAtMillis > 0L &&
+                    state.expiresAtMillis <=
+                    System.currentTimeMillis()
+        )
 
     Card(
         modifier = Modifier
@@ -2312,6 +2791,16 @@ private fun HomeWeatherCard(
                             buildString {
                                 append(sourceText)
                                 if (updateText.isNotBlank()) append(" · 更新于 $updateText")
+                                append(
+                                    " · 营业时段 " +
+                                        homeCoverage.first.actual +
+                                        "/" +
+                                        homeCoverage.first.expected +
+                                        "小时 · " +
+                                        weatherEvidenceLabel(
+                                            homeCoverage.second
+                                        )
+                                )
                                 if (state.refreshing) append(" · 后台更新中")
                             },
                             style = MaterialTheme.typography.labelSmall,
@@ -2327,7 +2816,7 @@ private fun HomeWeatherCard(
                             color = BrandGreen
                         )
                     }
-                    if (selectedDate == LocalDate.now() && homeAlerts.isNotEmpty()) {
+                    if (homeAlerts.isNotEmpty()) {
                         val alert = homeAlerts.first()
                         val level = weatherAlertLevel(alert)
                         Surface(
@@ -2417,7 +2906,12 @@ private fun loadAndSaveBusinessScore(
             }.onSuccess { fresh ->
                 overview = fresh
                 val fetchedAt = System.currentTimeMillis()
-                val ttl = weatherCacheTtl(date)
+                val ttl =
+                    weatherCacheTtl(
+                        date,
+                        store,
+                        fresh
+                    )
                 weatherFetchedAt = fetchedAt
                 weatherExpiresAt = fetchedAt + ttl
                 db.saveWeatherCache(
@@ -3176,7 +3670,14 @@ private fun BusinessWeatherCard(
             if (parsed != null) {
                 hasCache = true
                 val stale = cached.expiresAt <= now
-                state = WeatherUiState(parsed, refreshing = stale, snapshotType = "CACHE", updatedAtMillis = cached.fetchedAt)
+                state =
+                    WeatherUiState(
+                        parsed,
+                        refreshing = stale,
+                        snapshotType = "CACHE",
+                        updatedAtMillis = cached.fetchedAt,
+                        expiresAtMillis = cached.expiresAt
+                    )
                 if (!stale) return@LaunchedEffect
             }
         }
@@ -3185,10 +3686,18 @@ private fun BusinessWeatherCard(
             runCatching {
                 val bookId = weatherBookId(currentBook)
                 if (bookId.isBlank()) throw IllegalStateException("账本尚未连接云端天气服务")
-                val overview = WeatherClient(cloudSyncManager).fetchOverview(bookId, selectedStore, selectedDate, 120)
+                val overview =
+                    WeatherClient(cloudSyncManager)
+                        .fetchOverview(bookId, selectedStore, selectedDate, 120)
                 val fetchedAt = System.currentTimeMillis()
-                db.saveWeatherCache(date, selectedStore.id, overview.rawJson, weatherCacheTtl(selectedDate), fetchedAt)
-                WeatherUiState(overview, snapshotType = "CACHE", updatedAtMillis = fetchedAt)
+                val ttl = weatherCacheTtl(selectedDate, selectedStore, overview)
+                db.saveWeatherCache(date, selectedStore.id, overview.rawJson, ttl, fetchedAt)
+                WeatherUiState(
+                    overview,
+                    snapshotType = "CACHE",
+                    updatedAtMillis = fetchedAt,
+                    expiresAtMillis = fetchedAt + ttl
+                )
             }
         }
         state = refreshed.getOrElse { error ->
@@ -3198,6 +3707,15 @@ private fun BusinessWeatherCard(
 
     val ov = state.overview
     val bh = storeBusinessHours(ov?.hourly.orEmpty(), date, store)
+    val coverage =
+        weatherCoverageStatus(
+            date = selectedDate,
+            store = store,
+            hours = ov?.hourly.orEmpty(),
+            stale =
+                state.expiresAtMillis > 0L &&
+                    state.expiresAtMillis <= System.currentTimeMillis()
+        )
     val pop = bh.mapNotNull { it.precipitationProbability }.maxOrNull()
     val day = ov?.daily?.firstOrNull { it.date == date } ?: ov?.selectedDay()
     val text = ov?.current?.text?.takeIf { selectedDate == LocalDate.now() } ?: day?.textDay.orEmpty().ifBlank { bh.firstOrNull()?.text.orEmpty() }
@@ -3225,7 +3743,9 @@ private fun BusinessWeatherCard(
             }
             if (ov != null) {
                 Text(
-                    "${businessTimeLabel(store)} · 降雨概率${weatherPercent(pop)} · 风 ${bh.firstOrNull()?.windDirection.orEmpty()} ${bh.firstOrNull()?.windScale.orEmpty()}级",
+                    "${businessTimeLabel(store)} · 降雨概率${weatherPercent(pop)} · " +
+                        "时段 ${coverage.first.actual}/${coverage.first.expected}小时 ${weatherEvidenceLabel(coverage.second)} · " +
+                        "风 ${bh.firstOrNull()?.windDirection.orEmpty()} ${bh.firstOrNull()?.windScale.orEmpty()}级",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.DarkGray
                 )
@@ -3338,116 +3858,387 @@ private fun WeatherDetailContent(
         ?: stores.firstOrNull()
     var state by remember(selectedDate, store?.id) { mutableStateOf(WeatherUiState(loading = true)) }
     var forecast15 by remember(store?.id) { mutableStateOf<WeatherOverview?>(null) }
+    var forecast15UpdatedAt by remember(store?.id) { mutableStateOf(0L) }
+    var forecast15ExpiresAt by remember(store?.id) { mutableStateOf(0L) }
+    var forecast15Resolved by remember(store?.id) { mutableStateOf(false) }
+    var forecast15Refreshing by remember(store?.id) { mutableStateOf(false) }
     var recent7History by remember(store?.id) { mutableStateOf<Map<String, WeatherOverview>>(emptyMap()) }
 
     LaunchedEffect(store?.id, store?.latitude, store?.longitude, currentBook.cloudBookId, dataVersion) {
-        val s = store ?: return@LaunchedEffect
+        forecast15Resolved = false
+        forecast15Refreshing = false
+        val s = store
+        if (s == null) {
+            forecast15 = null
+            forecast15UpdatedAt = 0L
+            forecast15ExpiresAt = 0L
+            forecast15Resolved = true
+            return@LaunchedEffect
+        }
         if (s.latitude == null || s.longitude == null) {
             forecast15 = null
+            forecast15UpdatedAt = 0L
+            forecast15ExpiresAt = 0L
+            forecast15Resolved = true
             recent7History = emptyMap()
             return@LaunchedEffect
         }
-        val bookId = weatherBookId(currentBook)
-        if (bookId.isBlank()) return@LaunchedEffect
+
         val today = LocalDate.now()
-        val currentForecast = withContext(Dispatchers.IO) {
-            runCatching { WeatherClient(cloudSyncManager).fetchOverview(bookId, s, today, 120) }.getOrNull()
+        val todayText = today.toString()
+        val now = System.currentTimeMillis()
+        val cachedForecast =
+            withContext(Dispatchers.IO) {
+                db.getWeatherCache(todayText, s.id)
+            }
+        var currentForecast =
+            cachedForecast?.let { cached ->
+                runCatching {
+                    WeatherClient.parseOverview(
+                        cached.payloadJson,
+                        historical = false
+                    )
+                }.getOrNull()
+            }
+        var currentUpdatedAt =
+            cachedForecast?.fetchedAt ?: 0L
+        var currentExpiresAt =
+            cachedForecast?.expiresAt ?: 0L
+
+        if (currentForecast != null) {
+            forecast15 = currentForecast
+            forecast15UpdatedAt = currentUpdatedAt
+            forecast15ExpiresAt = currentExpiresAt
+            forecast15Resolved = true
         }
+
+        if (
+            currentForecast == null ||
+            cachedForecast == null ||
+            cachedForecast.expiresAt <= now
+        ) {
+            val bookId = weatherBookId(currentBook)
+            if (bookId.isNotBlank()) {
+                forecast15Refreshing = true
+                val fresh =
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            WeatherClient(cloudSyncManager)
+                                .fetchOverview(
+                                    bookId,
+                                    s,
+                                    today,
+                                    120
+                                )
+                        }.getOrNull()
+                    }
+                if (fresh != null) {
+                    val fetchedAt = System.currentTimeMillis()
+                    val ttl = weatherCacheTtl(today, s, fresh)
+                    withContext(Dispatchers.IO) {
+                        db.saveWeatherCache(
+                            todayText,
+                            s.id,
+                            fresh.rawJson,
+                            ttl,
+                            fetchedAt
+                        )
+                    }
+                    currentForecast = fresh
+                    currentUpdatedAt = fetchedAt
+                    currentExpiresAt = fetchedAt + ttl
+                }
+                forecast15Refreshing = false
+            }
+        }
+
         forecast15 = currentForecast
+        forecast15UpdatedAt = currentUpdatedAt
+        forecast15ExpiresAt = currentExpiresAt
+        forecast15Resolved = true
+
+        // 最近 7 天卡片只读本地已有数据；用户真正点进某天时再按需请求服务器，
+        // 避免打开天气页就连续请求 6 个历史日期。
         val historyMap = linkedMapOf<String, WeatherOverview>()
-        currentForecast?.let { historyMap[today.toString()] = it }
+        currentForecast?.let {
+            historyMap[todayText] = it
+        }
         for (offset in 1L..6L) {
             val target = today.minusDays(offset)
             val targetText = target.toString()
-            val fetched = withContext(Dispatchers.IO) {
-                runCatching { WeatherClient(cloudSyncManager).fetchHistoricalDay(bookId, s, target) }.getOrNull()
+            val localHistory =
+                withContext(Dispatchers.IO) {
+                    db.getBusinessWeatherHistory(
+                        targetText,
+                        s.id
+                    )
+                }
+            val localOverview =
+                localHistory?.let { history ->
+                    runCatching {
+                        WeatherClient.parseOverview(
+                            history.payloadJson,
+                            historical = true
+                        )
+                    }.getOrNull()
+                } ?: withContext(Dispatchers.IO) {
+                    db.getWeatherCache(targetText, s.id)
+                }?.let { cached ->
+                    runCatching {
+                        WeatherClient.parseOverview(
+                            cached.payloadJson,
+                            historical = true
+                        )
+                    }.getOrNull()
+                }
+            if (localOverview != null) {
+                historyMap[targetText] = localOverview
             }
-            val local = if (fetched == null) withContext(Dispatchers.IO) { db.getBusinessWeatherHistory(targetText, s.id) } else null
-            val localOverview = local?.let { runCatching { WeatherClient.parseOverview(it.payloadJson, true) }.getOrNull() }
-            val resolved = fetched ?: localOverview
-            if (resolved != null) historyMap[targetText] = resolved
         }
         recent7History = historyMap
     }
-
-    LaunchedEffect(selectedDate, store?.id, store?.latitude, store?.longitude, currentBook.cloudBookId) {
+    LaunchedEffect(
+        selectedDate,
+        store?.id,
+        store?.latitude,
+        store?.longitude,
+        currentBook.cloudBookId,
+        forecast15?.rawJson,
+        forecast15Resolved,
+        forecast15ExpiresAt,
+        forecast15Refreshing
+    ) {
         val s = store
         if (s == null) {
             state = WeatherUiState(error = "还没有经营位置")
             return@LaunchedEffect
         }
         val date = selectedDate.toString()
-        val past = selectedDate.isBefore(LocalDate.now())
-        if (past) {
-            val localHistory = withContext(Dispatchers.IO) { db.getBusinessWeatherHistory(date, s.id) }
-            val localOverview = localHistory?.let { history ->
-                runCatching { WeatherClient.parseOverview(history.payloadJson, true) }.getOrNull()
+        val today = LocalDate.now()
+        val detailMode =
+            WeatherDisplayPolicy.forecastDetailMode(
+                selectedDate,
+                today
+            )
+
+        if (selectedDate == today) {
+            if (!forecast15Resolved) {
+                state = WeatherUiState(loading = true)
+                return@LaunchedEffect
             }
-            val isRecentHistory = !selectedDate.isBefore(LocalDate.now().minusDays(10))
-            if (localOverview != null && !isRecentHistory) {
+            val todayOverview = forecast15
+            if (todayOverview != null) {
                 state = WeatherUiState(
-                    localOverview,
-                    snapshotType = "LOCAL_HISTORY",
-                    updatedAtMillis = localHistory.updatedAt
+                    overview = todayOverview,
+                    refreshing = forecast15Refreshing,
+                    snapshotType = "CACHE",
+                    updatedAtMillis = forecast15UpdatedAt,
+                    expiresAtMillis = forecast15ExpiresAt
                 )
                 return@LaunchedEffect
             }
+        }
 
-            val archived = withContext(Dispatchers.IO) {
-                runCatching {
-                    val bookId = weatherBookId(currentBook)
-                    if (bookId.isBlank()) throw IllegalStateException("当前账本尚未连接云端天气服务")
-                    if (isRecentHistory) {
-                        runCatching { WeatherClient(cloudSyncManager).fetchHistoricalDay(bookId, s, selectedDate) }
-                            .getOrElse { WeatherClient(cloudSyncManager).fetchArchive(bookId, s, selectedDate) }
+        if (detailMode == WeatherDisplayPolicy.MODE_TREND) {
+            val trendDay =
+                forecast15?.daily
+                    ?.firstOrNull { it.date == date }
+            if (trendDay == null) {
+                state =
+                    if (forecast15 == null) {
+                        WeatherUiState(loading = true)
                     } else {
-                        WeatherClient(cloudSyncManager).fetchArchive(bookId, s, selectedDate)
+                        WeatherUiState(
+                            error = "该日期暂无远期趋势数据"
+                        )
+                    }
+            } else {
+                val trendOverview =
+                    forecast15!!.copy(
+                        date = date,
+                        current = null,
+                        hourly = emptyList(),
+                        daily = listOf(trendDay),
+                        minutelySummary = "",
+                        alerts =
+                            weatherRelevantAlerts(
+                                forecast15!!.alerts,
+                                selectedDate,
+                                s
+                            )
+                    )
+                state = WeatherUiState(
+                    overview = trendOverview,
+                    snapshotType = "TREND",
+                    updatedAtMillis = forecast15UpdatedAt
+                )
+            }
+            return@LaunchedEffect
+        }
+
+        val past = selectedDate.isBefore(today)
+        if (past) {
+            val localHistory =
+                withContext(Dispatchers.IO) {
+                    db.getBusinessWeatherHistory(date, s.id)
+                }
+            val localOverview =
+                localHistory?.let { history ->
+                    runCatching {
+                        WeatherClient.parseOverview(
+                            history.payloadJson,
+                            historical = true
+                        )
+                    }.getOrNull()
+                }
+            val isRecentHistory =
+                !selectedDate.isBefore(
+                    today.minusDays(10)
+                )
+
+            if (localOverview != null) {
+                state = WeatherUiState(
+                    overview = localOverview,
+                    snapshotType = "LOCAL_HISTORY",
+                    updatedAtMillis = localHistory.updatedAt
+                )
+                if (!isRecentHistory) {
+                    return@LaunchedEffect
+                }
+            } else {
+                state = WeatherUiState(loading = true)
+            }
+
+            val archived =
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        val bookId = weatherBookId(currentBook)
+                        if (bookId.isBlank()) {
+                            throw IllegalStateException(
+                                "当前账本尚未连接云端天气服务"
+                            )
+                        }
+                        if (isRecentHistory) {
+                            runCatching {
+                                WeatherClient(cloudSyncManager)
+                                    .fetchHistoricalDay(
+                                        bookId,
+                                        s,
+                                        selectedDate
+                                    )
+                            }.getOrElse {
+                                WeatherClient(cloudSyncManager)
+                                    .fetchArchive(
+                                        bookId,
+                                        s,
+                                        selectedDate
+                                    )
+                            }
+                        } else {
+                            WeatherClient(cloudSyncManager)
+                                .fetchArchive(
+                                    bookId,
+                                    s,
+                                    selectedDate
+                                )
+                        }
                     }
                 }
-            }
             state = archived.fold(
                 onSuccess = { overview ->
+                    val fetchedAt = System.currentTimeMillis()
                     withContext(Dispatchers.IO) {
-                        val business = db.getStoreDailyRecord(date, s.id)
+                        val business =
+                            db.getStoreDailyRecord(date, s.id)
                         if (business != null) {
                             db.cacheBusinessWeatherHistory(
                                 date = date,
                                 store = s,
-                                actualStartTime = business.actualStartTime.ifBlank { s.defaultStartTime },
-                                actualEndTime = business.actualEndTime.ifBlank { s.defaultEndTime },
+                                actualStartTime =
+                                    business.actualStartTime
+                                        .ifBlank {
+                                            s.defaultStartTime
+                                        },
+                                actualEndTime =
+                                    business.actualEndTime
+                                        .ifBlank {
+                                            s.defaultEndTime
+                                        },
                                 payloadJson = overview.rawJson
                             )
                         }
-                        db.saveWeatherCache(date, s.id, overview.rawJson, WEATHER_CACHE_ARCHIVE_MS)
+                        db.saveWeatherCache(
+                            date,
+                            s.id,
+                            overview.rawJson,
+                            WEATHER_CACHE_ARCHIVE_MS,
+                            fetchedAt
+                        )
                     }
-                    WeatherUiState(overview, snapshotType = "SERVER_ARCHIVE", updatedAtMillis = System.currentTimeMillis())
+                    if (
+                        !selectedDate.isBefore(
+                            today.minusDays(6)
+                        )
+                    ) {
+                        recent7History =
+                            recent7History +
+                                (date to overview)
+                    }
+                    WeatherUiState(
+                        overview = overview,
+                        snapshotType = "SERVER_ARCHIVE",
+                        updatedAtMillis = fetchedAt
+                    )
                 },
                 onFailure = { error ->
-                    val cached = withContext(Dispatchers.IO) { db.getWeatherCache(date, s.id) }
-                    val parsed = cached?.let {
-                        runCatching { WeatherClient.parseOverview(it.payloadJson, true) }.getOrNull()
-                    }
-                    if (parsed != null) {
-                        WeatherUiState(
-                            parsed,
-                            snapshotType = "ARCHIVE_CACHE",
-                            updatedAtMillis = cached.fetchedAt
-                        )
+                    if (localOverview != null) {
+                        state.copy(refreshing = false)
                     } else {
-                        val message = when {
-                            error is CloudApiException &&
-                                error.statusCode == 404 &&
-                                error.message.orEmpty().equals("Not Found", ignoreCase = true) ->
-                                "服务器历史天气接口未启用，请确认 Server V1.0.12-Lucky 已部署"
+                        val cached =
+                            withContext(Dispatchers.IO) {
+                                db.getWeatherCache(date, s.id)
+                            }
+                        val parsed =
+                            cached?.let {
+                                runCatching {
+                                    WeatherClient.parseOverview(
+                                        it.payloadJson,
+                                        historical = true
+                                    )
+                                }.getOrNull()
+                            }
+                        if (parsed != null) {
+                            WeatherUiState(
+                                parsed,
+                                snapshotType = "ARCHIVE_CACHE",
+                                updatedAtMillis =
+                                    cached.fetchedAt
+                            )
+                        } else {
+                            val message =
+                                when {
+                                    error is CloudApiException &&
+                                        error.statusCode == 404 &&
+                                        error.message.orEmpty()
+                                            .equals(
+                                                "Not Found",
+                                                ignoreCase = true
+                                            ) ->
+                                        "服务器历史天气接口未启用，请确认 Server V1.0.12-Lucky 已部署"
 
-                            error is CloudApiException &&
-                                error.statusCode == 404 ->
-                                error.message.orEmpty().ifBlank { "该营业日暂无服务器逐小时天气档案" }
+                                    error is CloudApiException &&
+                                        error.statusCode == 404 ->
+                                        error.message.orEmpty()
+                                            .ifBlank {
+                                                "该营业日暂无服务器逐小时天气档案"
+                                            }
 
-                            else ->
-                                error.message ?: "该日期暂无服务器历史天气档案"
+                                    else ->
+                                        error.message
+                                            ?: "该日期暂无服务器历史天气档案"
+                                }
+                            WeatherUiState(error = message)
                         }
-                        WeatherUiState(error = message)
                     }
                 }
             )
@@ -3455,38 +4246,100 @@ private fun WeatherDetailContent(
         }
 
         if (s.latitude == null || s.longitude == null) {
-            state = WeatherUiState(error = "${s.name} 尚未绑定天气经纬度")
+            state = WeatherUiState(
+                error = "${s.name} 尚未绑定天气经纬度"
+            )
             return@LaunchedEffect
         }
 
         val now = System.currentTimeMillis()
-        val cached = withContext(Dispatchers.IO) { db.getWeatherCache(date, s.id) }
+        val cached =
+            withContext(Dispatchers.IO) {
+                db.getWeatherCache(date, s.id)
+            }
         var hasCache = false
         if (cached != null) {
-            val parsed = runCatching { WeatherClient.parseOverview(cached.payloadJson, false) }.getOrNull()
+            val parsed =
+                runCatching {
+                    WeatherClient.parseOverview(
+                        cached.payloadJson,
+                        false
+                    )
+                }.getOrNull()
             if (parsed != null) {
                 hasCache = true
                 val stale = cached.expiresAt <= now
-                state = WeatherUiState(parsed, refreshing = stale, snapshotType = "CACHE", updatedAtMillis = cached.fetchedAt)
+                state = WeatherUiState(
+                    overview = parsed,
+                    refreshing = stale,
+                    snapshotType = "CACHE",
+                    updatedAtMillis = cached.fetchedAt,
+                    expiresAtMillis = cached.expiresAt
+                )
                 if (!stale) return@LaunchedEffect
             }
         }
-        if (!hasCache) state = WeatherUiState(loading = true)
-        val refreshed = withContext(Dispatchers.IO) {
-            runCatching {
-                val bookId = weatherBookId(currentBook)
-                if (bookId.isBlank()) throw IllegalStateException("当前账本尚未连接云端天气服务")
-                val ov = WeatherClient(cloudSyncManager).fetchOverview(bookId, s, selectedDate, 120)
-                val fetchedAt = System.currentTimeMillis()
-                db.saveWeatherCache(date, s.id, ov.rawJson, weatherCacheTtl(selectedDate), fetchedAt)
-                WeatherUiState(ov, snapshotType = "CACHE", updatedAtMillis = fetchedAt)
+        if (!hasCache) {
+            state = WeatherUiState(loading = true)
+        }
+        val refreshed =
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val bookId = weatherBookId(currentBook)
+                    if (bookId.isBlank()) {
+                        throw IllegalStateException(
+                            "当前账本尚未连接云端天气服务"
+                        )
+                    }
+                    val overview =
+                        WeatherClient(cloudSyncManager)
+                            .fetchOverview(
+                                bookId,
+                                s,
+                                selectedDate,
+                                120
+                            )
+                    val fetchedAt =
+                        System.currentTimeMillis()
+                    val ttl =
+                        weatherCacheTtl(
+                            selectedDate,
+                            s,
+                            overview
+                        )
+                    db.saveWeatherCache(
+                        date,
+                        s.id,
+                        overview.rawJson,
+                        ttl,
+                        fetchedAt
+                    )
+                    if (selectedDate == today) {
+                        forecast15 = overview
+                        forecast15UpdatedAt = fetchedAt
+                        forecast15ExpiresAt = fetchedAt + ttl
+                        forecast15Resolved = true
+                    }
+                    WeatherUiState(
+                        overview,
+                        snapshotType = "CACHE",
+                        updatedAtMillis = fetchedAt,
+                        expiresAtMillis = fetchedAt + ttl
+                    )
+                }
+            }
+        state = refreshed.getOrElse { error ->
+            if (hasCache) {
+                state.copy(refreshing = false)
+            } else {
+                WeatherUiState(
+                    error =
+                        error.message
+                            ?: "天气加载失败"
+                )
             }
         }
-        state = refreshed.getOrElse { error ->
-            if (hasCache) state.copy(refreshing = false) else WeatherUiState(error = error.message ?: "天气加载失败")
-        }
     }
-
     val ov = state.overview
     val dateString = selectedDate.toString()
     val day = ov?.daily?.firstOrNull { it.date == dateString } ?: ov?.selectedDay()
@@ -3503,6 +4356,31 @@ private fun WeatherDetailContent(
     }
     val business = storeBusinessHours(ov?.hourly.orEmpty(), dateString, store)
     val trendHours = hourly24.filter { it.temperature != null }
+    val detailMode =
+        WeatherDisplayPolicy.forecastDetailMode(
+            selectedDate,
+            LocalDate.now()
+        )
+    val trendOnly =
+        state.snapshotType == "TREND" ||
+            detailMode == WeatherDisplayPolicy.MODE_TREND
+    val relevantAlerts =
+        remember(
+            ov?.rawJson,
+            selectedDate,
+            store?.id
+        ) {
+            weatherRelevantAlerts(
+                ov?.alerts.orEmpty(),
+                selectedDate,
+                store
+            )
+        }
+    val weatherStale =
+        ov?.historical != true &&
+            state.expiresAtMillis > 0L &&
+            state.expiresAtMillis <=
+                System.currentTimeMillis()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().pointerInput(selectedDate) {
@@ -3582,6 +4460,7 @@ private fun WeatherDetailContent(
                                             append(if (manualStoreId != null) "指定位置" else weatherLocationSourceText(resolution.source, resolution.confidence, resolution.sampleCount))
                                             val updated = weatherUpdatedText(state.updatedAtMillis)
                                             if (updated.isNotBlank()) append(" · 更新于 $updated")
+                                            if (trendOnly) append(" · 日级趋势")
                                             if (state.refreshing) append(" · 后台更新中")
                                         },
                                         style = MaterialTheme.typography.labelSmall,
@@ -3598,23 +4477,38 @@ private fun WeatherDetailContent(
 
         if (ov != null) {
             item {
-                DetailedWeatherSummaryCard(
+                BusinessWeatherFocusCard(
                     selectedDate = selectedDate,
                     store = store,
-                    day = day,
-                    dayHours = hoursForDate,
-                    businessHours = business,
+                    hours = ov.hourly,
                     historical = ov.historical,
-                    alerts = ov.alerts
+                    stale = weatherStale,
+                    trendOnly = trendOnly,
+                    relevantAlerts = relevantAlerts
                 )
             }
 
-            if (ov.alerts.isNotEmpty()) {
+            if (!trendOnly) {
+                item {
+                    DetailedWeatherSummaryCard(
+                        selectedDate = selectedDate,
+                        store = store,
+                        day = day,
+                        dayHours = hoursForDate,
+                        allHours = ov.hourly,
+                        businessHours = business,
+                        historical = ov.historical,
+                        alerts = relevantAlerts
+                    )
+                }
+            }
+
+            if (relevantAlerts.isNotEmpty()) {
                 item {
                     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFEEEE))) {
                         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text("天气预警", fontWeight = FontWeight.Bold, color = Color(0xFFC62828))
-                            ov.alerts.take(3).forEach { alert ->
+                            relevantAlerts.take(3).forEach { alert ->
                                 Text("⚠ ${alert.title}", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
                                 if (alert.description.isNotBlank()) Text(alert.description, style = MaterialTheme.typography.bodySmall, color = Color.DarkGray, maxLines = 3)
                             }
@@ -3636,6 +4530,7 @@ private fun WeatherDetailContent(
             item {
                 Text(
                     when {
+                        trendOnly -> "远期天气趋势"
                         ov.historical -> "当天24小时逐小时实际天气"
                         selectedDate == LocalDate.now() -> "未来24小时逐小时预报"
                         else -> "24小时逐小时预报"
@@ -3644,6 +4539,7 @@ private fun WeatherDetailContent(
                 )
                 Text(
                     when {
+                        trendOnly -> "第6–15天仅提供日级趋势；临近到未来5个日历日时再显示逐小时天气"
                         ov.historical -> "最近10天优先读取全天实际天气；更早日期使用已保存的真实营业天气档案"
                         selectedDate == LocalDate.now() -> "从当前小时开始，向后连续24小时"
                         else -> "按所选日期显示逐小时天气"
@@ -3652,7 +4548,15 @@ private fun WeatherDetailContent(
                     color = Color.Gray
                 )
                 if (hourly24.isEmpty()) {
-                    Text("该时段暂无逐小时数据", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        if (trendOnly) {
+                            "远期趋势日期不提供逐小时数据"
+                        } else {
+                            "该时段暂无逐小时数据"
+                        },
+                        color = Color.Gray,
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 } else {
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         hourly24.forEach { h ->
@@ -3751,7 +4655,7 @@ private fun WeatherDetailContent(
             item {
                 Text("未来15天天气", fontWeight = FontWeight.Bold)
                 Text(
-                    "一行一天；点击任意日期查看该日逐小时预报。8–15天为趋势参考。",
+                    "未来5个日历日支持逐小时；第6–15天为日级趋势参考。点击日期查看对应详情。",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.Gray
                 )
@@ -3784,9 +4688,9 @@ private fun WeatherDetailContent(
                                             style = MaterialTheme.typography.bodySmall
                                         )
                                         Text(
-                                            if (index >= 7) "趋势" else parsedDate?.let { chineseWeekday(it).removePrefix("星期") }.orEmpty(),
+                                            if (index >= 5) "趋势" else parsedDate?.let { chineseWeekday(it).removePrefix("星期") }.orEmpty(),
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = if (index >= 7) Color(0xFF8A6D00) else Color.Gray
+                                            color = if (index >= 5) Color(0xFF8A6D00) else Color.Gray
                                         )
                                     }
 
@@ -3815,7 +4719,11 @@ private fun WeatherDetailContent(
                                         )
                                         if (selected) {
                                             Text(
-                                                "已选中，点击上方查看详细汇总与逐小时",
+                                                if (index >= 5) {
+                                                    "已选中，日级趋势参考"
+                                                } else {
+                                                    "已选中，可查看逐小时详情"
+                                                },
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = BrandGreen,
                                                 maxLines = 1
@@ -3944,22 +4852,24 @@ private fun WeatherDetailContent(
                 }
             }
 
-            item {
-                val maxPop = business.mapNotNull { it.precipitationProbability }.maxOrNull()
-                val amount = business.sumOf { it.precipitation ?: 0.0 }
-                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF6FBFF))) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Text("经营时段 ${businessTimeLabel(store)}", fontWeight = FontWeight.Bold)
-                        Text(
-                            if (ov.historical)
-                                "当时预报最高降雨概率 ${weatherPercent(maxPop)} · 实况降雨 ${weatherAmount(amount)}"
-                            else
-                                "最高降雨概率 ${weatherPercent(maxPop)} · 预计降雨 ${weatherAmount(amount)}"
-                        )
-                        val wet = business.filter { (it.precipitationProbability ?: 0.0) >= 40 || (it.precipitation ?: 0.0) > 0.05 }
-                        if (wet.isNotEmpty()) {
-                            Text("重点时段：${wet.joinToString("、") { weatherHourLabel(it.time) }}", color = Color(0xFF2C6E9B), style = MaterialTheme.typography.bodySmall)
-                        } else Text("经营时段暂无明显降雨信号", color = BrandGreen, style = MaterialTheme.typography.bodySmall)
+            if (!trendOnly) {
+                item {
+                    val maxPop = business.mapNotNull { it.precipitationProbability }.maxOrNull()
+                    val amount = business.sumOf { it.precipitation ?: 0.0 }
+                    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF6FBFF))) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Text("经营时段 ${businessTimeLabel(store)}", fontWeight = FontWeight.Bold)
+                            Text(
+                                if (ov.historical)
+                                    "当时预报最高降雨概率 ${weatherPercent(maxPop)} · 实况降雨 ${weatherAmount(amount)}"
+                                else
+                                    "最高降雨概率 ${weatherPercent(maxPop)} · 预计降雨 ${weatherAmount(amount)}"
+                            )
+                            val wet = business.filter { (it.precipitationProbability ?: 0.0) >= 40 || (it.precipitation ?: 0.0) > 0.05 }
+                            if (wet.isNotEmpty()) {
+                                Text("重点时段：${wet.joinToString("、") { weatherHourLabel(it.time) }}", color = Color(0xFF2C6E9B), style = MaterialTheme.typography.bodySmall)
+                            } else Text("经营时段暂无明显降雨信号", color = BrandGreen, style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
             }

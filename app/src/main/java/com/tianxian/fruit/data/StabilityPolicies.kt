@@ -1,10 +1,12 @@
 package com.tianxian.fruit.data
 
+import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.OffsetDateTime
 import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 import kotlin.math.round
 
 /** A business day can extend past midnight; timestamps are compared in China time. */
@@ -39,6 +41,216 @@ internal data class BusinessWeatherWindow(
             return BusinessWeatherWindow(start, end)
         }
     }
+}
+
+internal object WeatherDisplayPolicy {
+    const val MODE_HISTORICAL = "HISTORICAL"
+    const val MODE_HOURLY = "HOURLY"
+    const val MODE_TREND = "TREND"
+
+    data class HourlyCoverage(
+        val expected: Int,
+        val actual: Int
+    ) {
+        val ratio: Double
+            get() =
+                if (expected <= 0) {
+                    0.0
+                } else {
+                    (actual.toDouble() / expected.toDouble())
+                        .coerceIn(0.0, 1.0)
+                }
+    }
+
+    fun forecastDetailMode(
+        selectedDate: LocalDate,
+        today: LocalDate
+    ): String {
+        if (selectedDate.isBefore(today)) {
+            return MODE_HISTORICAL
+        }
+        val daysAhead =
+            ChronoUnit.DAYS.between(
+                today,
+                selectedDate
+            )
+        return if (daysAhead in 0L..4L) {
+            MODE_HOURLY
+        } else {
+            MODE_TREND
+        }
+    }
+
+    fun hourBucketOverlaps(
+        window: BusinessWeatherWindow,
+        timestamp: String
+    ): Boolean {
+        val bucketStart =
+            parseLocal(timestamp)
+                ?.withMinute(0)
+                ?.withSecond(0)
+                ?.withNano(0)
+                ?: return false
+        val bucketEnd =
+            bucketStart.plusHours(1)
+        return bucketEnd.isAfter(window.start) &&
+            bucketStart.isBefore(window.end)
+    }
+
+    fun preOpenHourBucketOverlaps(
+        window: BusinessWeatherWindow,
+        timestamp: String
+    ): Boolean {
+        val bucketStart =
+            parseLocal(timestamp)
+                ?.withMinute(0)
+                ?.withSecond(0)
+                ?.withNano(0)
+                ?: return false
+        val bucketEnd =
+            bucketStart.plusHours(1)
+        return bucketEnd.isAfter(window.preStart) &&
+            bucketStart.isBefore(window.start)
+    }
+
+    fun hourlyCoverage(
+        window: BusinessWeatherWindow,
+        timestamps: Iterable<String>
+    ): HourlyCoverage {
+        var expected = 0
+        var cursor =
+            window.start
+                .withMinute(0)
+                .withSecond(0)
+                .withNano(0)
+        while (cursor.isBefore(window.end)) {
+            expected += 1
+            cursor = cursor.plusHours(1)
+        }
+
+        val actual =
+            timestamps
+                .mapNotNull(::parseLocal)
+                .map {
+                    it.withMinute(0)
+                        .withSecond(0)
+                        .withNano(0)
+                }
+                .filter { bucketStart ->
+                    val bucketEnd =
+                        bucketStart.plusHours(1)
+                    bucketEnd.isAfter(window.start) &&
+                        bucketStart.isBefore(window.end)
+                }
+                .distinct()
+                .size
+
+        return HourlyCoverage(
+            expected = expected,
+            actual = actual
+        )
+    }
+
+    fun alertRelevant(
+        startTime: String,
+        endTime: String,
+        window: BusinessWeatherWindow
+    ): Boolean {
+        val start = parseLocal(startTime)
+        val end = parseLocal(endTime)
+        if (start == null && end == null) {
+            return true
+        }
+
+        val relevantStart = window.preStart
+        val relevantEnd = window.end
+        return when {
+            start != null && end != null ->
+                !end.isBefore(relevantStart) &&
+                    start.isBefore(relevantEnd)
+            start != null ->
+                start.isBefore(relevantEnd)
+            else ->
+                !end!!.isBefore(relevantStart)
+        }
+    }
+
+    fun cacheTtlMillis(
+        date: LocalDate,
+        today: LocalDate,
+        now: LocalDateTime,
+        window: BusinessWeatherWindow,
+        rainRisk: Boolean,
+        hasAlert: Boolean
+    ): Long {
+        if (date.isBefore(today)) {
+            return 24L * 60L * 60L * 1000L
+        }
+
+        val daysAhead =
+            ChronoUnit.DAYS.between(
+                today,
+                date
+            )
+        if (daysAhead >= 5) {
+            return 3L * 60L * 60L * 1000L
+        }
+        if (daysAhead >= 2) {
+            return 60L * 60L * 1000L
+        }
+        if (daysAhead == 1L) {
+            return 30L * 60L * 1000L
+        }
+
+        if (rainRisk || hasAlert) {
+            return 5L * 60L * 1000L
+        }
+
+        val nearBusiness =
+            !now.isBefore(window.preStart.minusHours(1)) &&
+                now.isBefore(window.end.plusHours(1))
+        return if (nearBusiness) {
+            10L * 60L * 1000L
+        } else {
+            20L * 60L * 1000L
+        }
+    }
+
+    fun splitBusinessWindow(
+        window: BusinessWeatherWindow
+    ): Pair<BusinessWeatherWindow, BusinessWeatherWindow> {
+        val minutes =
+            Duration.between(
+                window.start,
+                window.end
+            ).toMinutes()
+        val midpoint =
+            window.start.plusMinutes(
+                (minutes / 2L)
+                    .coerceAtLeast(1L)
+            )
+        return BusinessWeatherWindow(
+            window.start,
+            midpoint
+        ) to BusinessWeatherWindow(
+            midpoint,
+            window.end
+        )
+    }
+
+    private fun parseLocal(
+        value: String
+    ): LocalDateTime? =
+        runCatching {
+            OffsetDateTime.parse(value)
+                .atZoneSameInstant(
+                    ZoneId.of("Asia/Shanghai")
+                )
+                .toLocalDateTime()
+        }.getOrNull()
+            ?: runCatching {
+                LocalDateTime.parse(value)
+            }.getOrNull()
 }
 
 /** Unknown batch costs stay unknown until stock reaches zero or that batch is corrected. */
