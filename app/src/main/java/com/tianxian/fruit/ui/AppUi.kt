@@ -2552,7 +2552,7 @@ private fun HomeBusinessAdviceCard(
                             ) {
                                 Text(store.name, style = MaterialTheme.typography.labelSmall, maxLines = 1)
                                 Text(
-                                    storedScore?.let { "${it.totalScore}%" } ?: "--",
+                                    storedScore?.let { "${it.totalScore}分" } ?: "--",
                                     fontWeight = FontWeight.Bold,
                                     color = if (selected) BrandGreen else Color.DarkGray,
                                     style = MaterialTheme.typography.bodySmall
@@ -2566,34 +2566,44 @@ private fun HomeBusinessAdviceCard(
             when {
                 state.score != null -> {
                     val score = state.score!!
+                    val modelMeta =
+                        remember(score.detailsJson) {
+                            businessScoreModelUi(score.detailsJson)
+                        }
                     Row(
                         Modifier.fillMaxWidth().clickable { onOpenDetail(dateString, score.storeId) },
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            "${score.totalScore}%",
+                            "${score.totalScore}分",
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Bold,
                             color = BrandGreen
                         )
                         Spacer(Modifier.width(8.dp))
-                        val compact = listOf(
-                            score.weatherSummary.takeIf { it.isNotBlank() },
-                            score.historySummary.takeIf { it.isNotBlank() },
-                            score.trendSummary.takeIf { it.contains("偏弱") || it.contains("偏强") }
-                        ).filterNotNull().distinct().joinToString(" · ")
-                        Text(
-                            compact.ifBlank { "正在积累同位置历史数据" },
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.DarkGray,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                modelMeta.recommendation.ifBlank {
+                                    if (score.sampleCount < 3) "资料不足" else "谨慎营业"
+                                },
+                                fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            val compact = listOf(
+                                score.weatherSummary.takeIf { it.isNotBlank() },
+                                score.historySummary.takeIf { it.isNotBlank() }
+                            ).filterNotNull().distinct().joinToString(" · ")
+                            Text(
+                                compact.ifBlank { "正在积累同位置历史数据" },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.DarkGray,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                         Text("详情 ›", style = MaterialTheme.typography.labelSmall, color = BrandGreen)
                     }
-                }
-                state.loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                }                state.loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
                 else -> Text(
                     state.error.ifBlank { "经营建议暂不可用" },
                     style = MaterialTheme.typography.bodySmall,
