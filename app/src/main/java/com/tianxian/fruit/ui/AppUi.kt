@@ -4453,6 +4453,7 @@ private fun WeatherDetailContent(
             item {
                 Text(
                     when {
+                        trendOnly -> "远期天气趋势"
                         ov.historical -> "当天24小时逐小时实际天气"
                         selectedDate == LocalDate.now() -> "未来24小时逐小时预报"
                         else -> "24小时逐小时预报"
@@ -4461,6 +4462,7 @@ private fun WeatherDetailContent(
                 )
                 Text(
                     when {
+                        trendOnly -> "第6–15天仅提供日级趋势；临近到未来5个日历日时再显示逐小时天气"
                         ov.historical -> "最近10天优先读取全天实际天气；更早日期使用已保存的真实营业天气档案"
                         selectedDate == LocalDate.now() -> "从当前小时开始，向后连续24小时"
                         else -> "按所选日期显示逐小时天气"
@@ -4469,7 +4471,15 @@ private fun WeatherDetailContent(
                     color = Color.Gray
                 )
                 if (hourly24.isEmpty()) {
-                    Text("该时段暂无逐小时数据", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        if (trendOnly) {
+                            "远期趋势日期不提供逐小时数据"
+                        } else {
+                            "该时段暂无逐小时数据"
+                        },
+                        color = Color.Gray,
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 } else {
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         hourly24.forEach { h ->
@@ -4568,7 +4578,7 @@ private fun WeatherDetailContent(
             item {
                 Text("未来15天天气", fontWeight = FontWeight.Bold)
                 Text(
-                    "一行一天；点击任意日期查看该日逐小时预报。8–15天为趋势参考。",
+                    "未来5个日历日支持逐小时；第6–15天为日级趋势参考。点击日期查看对应详情。",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.Gray
                 )
@@ -4601,9 +4611,9 @@ private fun WeatherDetailContent(
                                             style = MaterialTheme.typography.bodySmall
                                         )
                                         Text(
-                                            if (index >= 7) "趋势" else parsedDate?.let { chineseWeekday(it).removePrefix("星期") }.orEmpty(),
+                                            if (index >= 5) "趋势" else parsedDate?.let { chineseWeekday(it).removePrefix("星期") }.orEmpty(),
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = if (index >= 7) Color(0xFF8A6D00) else Color.Gray
+                                            color = if (index >= 5) Color(0xFF8A6D00) else Color.Gray
                                         )
                                     }
 
@@ -4632,7 +4642,11 @@ private fun WeatherDetailContent(
                                         )
                                         if (selected) {
                                             Text(
-                                                "已选中，点击上方查看详细汇总与逐小时",
+                                                if (index >= 5) {
+                                                    "已选中，日级趋势参考"
+                                                } else {
+                                                    "已选中，可查看逐小时详情"
+                                                },
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = BrandGreen,
                                                 maxLines = 1
