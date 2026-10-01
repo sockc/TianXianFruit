@@ -2643,25 +2643,51 @@ private data class BusinessScoreModelUi(
     val version: String = "V1",
     val evidenceStrength: Double = 0.0,
     val calibrationCount: Int = 0,
-    val calibrationAdjustment: Double = 0.0
+    val calibrationAdjustment: Double = 0.0,
+    val recommendation: String = "",
+    val snapshotStage: String = "",
+    val positionSampleCount: Int = 0,
+    val excludedHistoryCount: Int = 0,
+    val weatherCoverage: Double = 0.0,
+    val weatherEvidenceStatus: String = "MISSING",
+    val businessWindowTip: String = "",
+    val inventoryAdvice: String = "",
+    val revenueRangeLow: Double = 0.0,
+    val revenueRangeHigh: Double = 0.0,
+    val specialReminder: String = ""
 )
 
 private fun businessScoreModelUi(detailsJson: String): BusinessScoreModelUi =
     runCatching {
         val root = JSONObject(detailsJson.ifBlank { "{}" })
         val calibration = root.optJSONObject("calibration")
+        val weather = root.optJSONObject("weather")
+        val actions = root.optJSONObject("actions")
         BusinessScoreModelUi(
             version = root.optString("score_version", "V1"),
             evidenceStrength = root.optDouble("evidence_strength", 0.0),
             calibrationCount = calibration?.optInt("sample_count", 0) ?: 0,
-            calibrationAdjustment = calibration?.optDouble("adjustment_points", 0.0) ?: 0.0
+            calibrationAdjustment = calibration?.optDouble("adjustment_points", 0.0) ?: 0.0,
+            recommendation = root.optString("recommendation", ""),
+            snapshotStage = root.optString("snapshot_stage", ""),
+            positionSampleCount = root.optInt("position_sample_count", 0),
+            excludedHistoryCount = root.optInt("excluded_history_count", 0),
+            weatherCoverage = weather?.optDouble("coverage_ratio", 0.0) ?: 0.0,
+            weatherEvidenceStatus = weather?.optString("evidence_status", "MISSING") ?: "MISSING",
+            businessWindowTip = actions?.optString("business_window_tip", "") ?: "",
+            inventoryAdvice = actions?.optString("inventory_advice", "") ?: "",
+            revenueRangeLow = actions?.optDouble("revenue_range_low", 0.0) ?: 0.0,
+            revenueRangeHigh = actions?.optDouble("revenue_range_high", 0.0) ?: 0.0,
+            specialReminder = actions?.optString("special_factor_reminder", "") ?: ""
         )
     }.getOrDefault(BusinessScoreModelUi())
 
 private data class BusinessScoreSnapshotUi(
     val at: Long,
     val score: Int,
-    val summary: String
+    val summary: String,
+    val stage: String = "LEGACY",
+    val recommendation: String = ""
 )
 
 private fun businessScoreSnapshots(raw: String): List<BusinessScoreSnapshotUi> =
@@ -2674,12 +2700,31 @@ private fun businessScoreSnapshots(raw: String): List<BusinessScoreSnapshotUi> =
                     BusinessScoreSnapshotUi(
                         at = o.optLong("at"),
                         score = o.optInt("score"),
-                        summary = o.optString("weather_summary")
+                        summary = o.optString("weather_summary"),
+                        stage = o.optString("stage", "LEGACY"),
+                        recommendation = o.optString("recommendation", "")
                     )
                 )
             }
         }
     }.getOrDefault(emptyList())
+
+private fun businessWeatherEvidenceLabel(value: String): String =
+    when (value.uppercase(Locale.ROOT)) {
+        "COMPLETE" -> "预报完整"
+        "PARTIAL" -> "部分缺失"
+        "SPARSE" -> "缺失较多"
+        "STALE" -> "已过期"
+        else -> "天气数据不足"
+    }
+
+private fun businessSnapshotStageLabel(value: String): String =
+    when (value.uppercase(Locale.ROOT)) {
+        "PRE_OPEN" -> "开摊前"
+        "LIVE" -> "营业中"
+        "FINAL" -> "收摊后"
+        else -> "历史"
+    }
 
 @Composable
 private fun BusinessAdviceDetailContent(
