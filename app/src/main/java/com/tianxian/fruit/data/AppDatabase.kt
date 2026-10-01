@@ -1065,6 +1065,11 @@ class AppDatabase(
         if (oldVersion < 34) {
             createSyncTriggers(db)
         }
+        if (oldVersion < 35) {
+            // V35: operating advice is local-only; rebuild sync triggers and
+            // purge any legacy queued/conflict rows for local-only tables.
+            createSyncTriggers(db)
+        }
     }
 
     private fun createV29InventoryLoss(
@@ -3333,10 +3338,9 @@ class AppDatabase(
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_sync_change_record_pending " +
             "ON sync_change_log(uploaded,table_name,record_sync_id,id)")
 
-        // These tables are device-local derived/cache data. This runs on every
-        // database open so an existing DB34 installation is fixed without a
-        // schema-version bump: remove any old queued changes/conflicts and make
-        // sure legacy sync triggers cannot recreate them.
+        // These tables are device-local derived/cache data. Rebuilding triggers
+        // removes old queued changes/conflicts and prevents legacy sync triggers
+        // from recreating them.
         SyncTablePolicy.localOnlyTables.forEach { table ->
             db.execSQL("DROP TRIGGER IF EXISTS sync_${table}_ai")
             db.execSQL("DROP TRIGGER IF EXISTS sync_${table}_au")
@@ -14713,7 +14717,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 34
+        const val DB_VERSION = 35
     }
 }
 
