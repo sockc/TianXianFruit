@@ -1,0 +1,464 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+FILE=""
+TARGET="${TIANXIAN_RESTORE_DIR:-$HOME/TianXian-Server}"
+PASSWORD_FILE=""
+FORCE=0
+BACKEND_PORT=""
+BACKEND_BIND_REQUEST=""
+WEB_BIND_REQUEST=""
+WEB_PORT=""
+WEB_TARGET="${TIANXIAN_WEB_RESTORE_DIR:-/opt/TianXian-Web}"
+SKIP_WEB=0
+WEB_API_MODE="internal"
+WEB_API_URL=""
+
+usage() {
+  cat <<USAGE
+Usage: tianxian-restore FILE.txb [options]
+
+Options:
+  --target DIR          Restore server into DIR (default: ~/TianXian-Server)
+  --password-file FILE  File containing TXB encryption passphrase/key
+  --backend-port PORT   Override restored Backend host port
+  --backend-bind IPS    Comma-separated host IPv4 addresses (default: 127.0.0.1)
+  --web-target DIR      Restore TianXian Web into DIR (default: /opt/TianXian-Web)
+  --web-port PORT       Override restored Web host port
+  --web-bind IPS        Comma-separated Web host IPv4 addresses (default: 127.0.0.1)
+  --skip-web            Do not restore Web even if the TXB contains it
+  --keep-web-api        Retain the backed-up Web API address (production cutover)
+  --web-api-url URL     Use an explicit HTTP(S) Web API address
+  --force               Move existing restore target(s) aside and continue
+  -h, --help            Show help
+USAGE
+}
+
+validate_port() {
+  local port="$1"
+  [[ "$port" =~ ^[0-9]+$ ]] || return 1
+  (( port >= 1 && port <= 65535 ))
+}
+
+# Reject malformed, unavailable and conflicting bindings before touching any files.
+validate_bindings() {
+  local label="$1" ips="$2" port="$3"
+  python3 - "$label" "$ips" "$port" <<'PY_VALIDATE_BINDS'
+import ipaddress
+import socket
+import sys
+
+label, value, raw_port = sys.argv[1:]
+try:
+    port = int(raw_port)
+    if not 1 <= port <= 65535:
+        raise ValueError("port must be 1..65535")
+    addresses = [part.strip() for part in value.split(",")]
+    if not addresses or any(not part for part in addresses):
+        raise ValueError("empty address (use comma to separate IPv4 addresses)")
+    parsed = [str(ipaddress.IPv4Address(part)) for part in addresses]
+    if len(set(parsed)) != len(parsed):
+        raise ValueError("duplicate listening address")
+    if "0.0.0.0" in parsed and len(parsed) != 1:
+        raise ValueError("0.0.0.0 must be used alone; it covers every IPv4 address")
+    for ip in parsed:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind((ip, port))
+            except OSError as exc:
+                raise ValueError(f"{ip}:{port} cannot bind on this machine: {exc}") from exc
+except (ValueError, ipaddress.AddressValueError) as exc:
+    raise SystemExit(f"{label} bind configuration invalid: {exc}")
+PY_VALIDATE_BINDS
+}
+
+# Compose port entries in these snapshots use one quoted string per binding.
+# Replace *all* prior mappings for the requested container port with the
+# selected comma-separated host addresses, preserving other Compose settings.
+patch_compose_bindings() {
+  local file="$1" container_port="$2" host_port="$3" label="$4" ips="$5"
+  python3 - "$file" "$container_port" "$host_port" "$label" "$ips" <<'PY_PATCH_BINDS'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+container_port, host_port, label = sys.argv[2:5]
+ips = [s.strip() for s in sys.argv[5].split(",")]
+text = path.read_text(encoding="utf-8")
+pattern = re.compile(
+    r'^(?P<indent>[ \t]*)-[ \t]*(?P<quote>["\x27])'
+    r'(?:(?:[0-9]{1,3}\.){3}[0-9]{1,3}:)?[0-9]+:'
+    + re.escape(container_port)
+    + r'(?:/tcp)?(?P=quote)[ \t]*$',
+    re.MULTILINE,
+)
+matches = list(pattern.finditer(text))
+if not matches:
+    raise SystemExit(f"Could not find quoted {label} port mapping to {container_port} in {path}")
+first = matches[0]
+indent, quote = first.group("indent", "quote")
+replacement = "\n".join(
+    f"{indent}- {quote}{ip}:{host_port}:{container_port}{quote}" for ip in ips
+)
+# Reverse order keeps earlier character positions unchanged.
+for m in reversed(matches[1:]):
+    text = text[:m.start()] + text[m.end():]
+text = text[:first.start()] + replacement + text[first.end():]
+path.write_text(text, encoding="utf-8")
+PY_PATCH_BINDS
+}
+
+# Add a persistent shared network to each Compose project. Docker service DNS
+# then resolves "backend" from the Web container regardless of host bind IPs.
+attach_private_api_network() {
+  local file="$1" service="$2" network="$3"
+  python3 - "$file" "$service" "$network" <<'PY_API_NETWORK'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+service = sys.argv[2]
+network = sys.argv[3]
+text = path.read_text(encoding="utf-8")
+head = re.search(r"^  " + re.escape(service) + r":[ \t]*$", text, re.M)
+if head is None:
+    raise SystemExit(f"Service {service} missing from {path}")
+tail = re.search(r"^(?:  [A-Za-z0-9_-]+:|[A-Za-z0-9_-]+:)", text[head.end():], re.M)
+end = head.end() + tail.start() if tail else len(text)
+block = text[head.start():end]
+networks = re.search(r"^    networks:[ \t]*$", block, re.M)
+if networks:
+    if not re.search(r"^      - " + re.escape("txb_web_api") + r"[ \t]*$", block, re.M):
+        offset = networks.end()
+        block = block[:offset] + "\n      - txb_web_api" + block[offset:]
+else:
+    block = block.rstrip("\n") + "\n    networks:\n      - txb_web_api\n"
+text = text[:head.start()] + block + text[end:]
+root = re.search(r"^networks:[ \t]*$", text, re.M)
+declaration = f"  txb_web_api:\n    external: true\n    name: {network}\n"
+if root:
+    remainder = text[root.end():]
+    nxt = re.search(r"^[A-Za-z0-9_-]+:[ \t]*$", remainder, re.M)
+    pos = root.end() + nxt.start() if nxt else len(text)
+    root_block = text[root.end():pos]
+    if re.search(r"^  txb_web_api:[ \t]*$", root_block, re.M):
+        raise SystemExit("txb_web_api is already defined; refuse to override it")
+    text = text[:pos].rstrip("\n") + "\n" + declaration + "\n" + text[pos:]
+else:
+    text = text.rstrip("\n") + "\n\nnetworks:\n" + declaration
+path.write_text(text, encoding="utf-8")
+PY_API_NETWORK
+}
+
+update_web_api_env() {
+  local file="$1" url="$2"
+  python3 - "$file" "$url" <<'PY_API_ENV'
+import os
+import sys
+from pathlib import Path
+file, url = sys.argv[1:]
+path = Path(file)
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+lines = [line for line in lines if not line.startswith("TIANXIAN_API_BASE_URL=")]
+lines.append("TIANXIAN_API_BASE_URL=" + url)
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+os.chmod(path, 0o600)
+PY_API_ENV
+}
+
+validate_custom_web_api() {
+  python3 - "$1" <<'PY_API_URL'
+import sys
+from urllib.parse import urlsplit
+url = sys.argv[1]
+p = urlsplit(url)
+if (p.scheme not in ("http", "https") or not p.hostname or
+    p.username or p.password or p.query or p.fragment or
+    any(c in url for c in ("\r", "\n", "$")) or p.path not in ("", "/")):
+    raise SystemExit("Custom Web API must be a simple HTTP(S) origin without credentials, query or path")
+PY_API_URL
+}
+
+# A wildcard listener is reachable locally at 127.0.0.1. Prefer loopback
+# whenever it is part of an explicit multi-address binding.
+health_host() {
+  local ips="$1"
+  case ",$ips," in
+    *,127.0.0.1,*|*,0.0.0.0,*) printf '127.0.0.1\n' ;;
+    *) printf '%s\n' "${ips%%,*}" ;;
+  esac
+}
+
+[[ $# -gt 0 ]] || { usage >&2; exit 2; }
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then usage; exit 0; fi
+FILE="$1"; shift
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --target) TARGET="${2:-}"; shift 2 ;;
+    --password-file) PASSWORD_FILE="${2:-}"; shift 2 ;;
+    --backend-port) BACKEND_PORT="${2:-}"; shift 2 ;;
+    --backend-bind) BACKEND_BIND_REQUEST="${2:-}"; shift 2 ;;
+    --web-target) WEB_TARGET="${2:-}"; shift 2 ;;
+    --web-port) WEB_PORT="${2:-}"; shift 2 ;;
+    --web-bind) WEB_BIND_REQUEST="${2:-}"; shift 2 ;;
+    --skip-web) SKIP_WEB=1; shift ;;
+    --keep-web-api) WEB_API_MODE="preserve"; shift ;;
+    --web-api-url) WEB_API_MODE="custom"; WEB_API_URL="${2:-}"; shift 2 ;;
+    --force) FORCE=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+FILE="$(cd "$(dirname "$FILE")" && pwd)/$(basename "$FILE")"
+[[ -f "$FILE" ]] || { echo "TXB file not found: $FILE" >&2; exit 1; }
+for cmd in docker openssl tar sha256sum curl mktemp grep head tr seq python3; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "Missing required command: $cmd" >&2; exit 1; }
+done
+docker compose version >/dev/null 2>&1 || { echo "Docker Compose plugin is not available." >&2; exit 1; }
+
+TMP="$(mktemp -d /tmp/tianxian-restore.XXXXXX)"
+trap 'rm -rf "$TMP"' EXIT INT TERM
+PAYLOAD="$TMP/payload"
+mkdir -p "$PAYLOAD"
+
+echo "[1/10] Extracting TXB..."
+tar -xzf "$FILE" -C "$PAYLOAD"
+[[ -f "$PAYLOAD/checksums/SHA256SUMS" ]] || { echo "Invalid TXB: missing checksums." >&2; exit 1; }
+[[ -f "$PAYLOAD/metadata/manifest.env" ]] || { echo "Invalid TXB: missing manifest.env." >&2; exit 1; }
+[[ -f "$PAYLOAD/database/postgres.dump" ]] || { echo "Invalid TXB: missing database dump." >&2; exit 1; }
+[[ -f "$PAYLOAD/config/env.enc" ]] || { echo "Invalid TXB: missing encrypted environment." >&2; exit 1; }
+[[ -f "$PAYLOAD/server/server-release.tar.gz" ]] || { echo "This TXB has no exact server snapshot; exact restore cannot continue." >&2; exit 1; }
+
+echo "[2/10] Verifying internal SHA256 checksums..."
+(cd "$PAYLOAD" && sha256sum -c checksums/SHA256SUMS)
+
+# shellcheck disable=SC1090
+. "$PAYLOAD/metadata/manifest.env"
+[[ "${TXB_FORMAT_VERSION:-}" == "1" ]] || { echo "Unsupported TXB format: ${TXB_FORMAT_VERSION:-unknown}" >&2; exit 1; }
+
+# The archived host ports belong to the *source* server, not this machine.
+# Default to safe loopback bindings and fixed ports unless explicitly overridden.
+BACKEND_PORT="${BACKEND_PORT:-18080}"
+WEB_PORT="${WEB_PORT:-3800}"
+# Do not confuse TXB V1 metadata BACKEND_BIND=127.0.0.1:18080 with
+# address-only --backend-bind. Restores default to loopback for safety.
+BACKEND_BIND="${BACKEND_BIND_REQUEST:-127.0.0.1}"
+WEB_BIND="${WEB_BIND_REQUEST:-127.0.0.1}"
+validate_port "$BACKEND_PORT" || { echo "Invalid Backend port: $BACKEND_PORT" >&2; exit 1; }
+validate_port "$WEB_PORT" || { echo "Invalid Web port: $WEB_PORT" >&2; exit 1; }
+
+WEB_PRESENT=0
+if [[ "$SKIP_WEB" -eq 0 && -f "$PAYLOAD/web/web-release.tar.gz" ]]; then
+  WEB_PRESENT=1
+fi
+if [[ "$WEB_API_MODE" == "custom" ]]; then
+  validate_custom_web_api "$WEB_API_URL"
+fi
+
+# Validate the new listeners before decrypting, moving targets or touching DB.
+validate_bindings "Backend" "$BACKEND_BIND" "$BACKEND_PORT"
+if [[ "$WEB_PRESENT" -eq 1 ]]; then
+  validate_bindings "Web" "$WEB_BIND" "$WEB_PORT"
+  if [[ "$BACKEND_PORT" == "$WEB_PORT" ]]; then
+    if [[ "$BACKEND_BIND" == "0.0.0.0" || "$WEB_BIND" == "0.0.0.0" ]]; then
+      echo "Backend/Web wildcard listeners cannot share host port $WEB_PORT." >&2
+      exit 1
+    fi
+    IFS=',' read -r -a backend_ips <<<"$BACKEND_BIND"
+    IFS=',' read -r -a web_ips <<<"$WEB_BIND"
+    for backend_ip in "${backend_ips[@]}"; do
+      for web_ip in "${web_ips[@]}"; do
+        if [[ "${backend_ip// /}" == "${web_ip// /}" ]]; then
+          echo "Backend and Web cannot share the same host address and port: $backend_ip:$WEB_PORT" >&2
+          exit 1
+        fi
+      done
+    done
+  fi
+  if [[ -e "$WEB_TARGET" && "$FORCE" -ne 1 ]]; then
+    echo "Web target already exists: $WEB_TARGET (check before restoring database)." >&2
+    exit 1
+  fi
+fi
+
+
+BACKUP_PASSWORD="${TIANXIAN_BACKUP_PASSWORD:-}"
+if [[ -z "$BACKUP_PASSWORD" && -n "$PASSWORD_FILE" ]]; then
+  [[ -f "$PASSWORD_FILE" ]] || { echo "Password file not found: $PASSWORD_FILE" >&2; exit 1; }
+  BACKUP_PASSWORD="$(head -n 1 "$PASSWORD_FILE" | tr -d '\r\n')"
+fi
+if [[ -z "$BACKUP_PASSWORD" ]]; then
+  if [[ ! -t 0 ]]; then
+    echo "No restore password available. Set TIANXIAN_BACKUP_PASSWORD or use --password-file." >&2
+    exit 1
+  fi
+  printf "Backup decryption passphrase: " >&2
+  stty -echo
+  IFS= read -r BACKUP_PASSWORD
+  stty echo
+  printf "\n" >&2
+fi
+
+DECRYPTED_ENV="$TMP/.env"
+DECRYPTED_WEB_ENV="$TMP/web.env"
+echo "[3/10] Decrypting configuration..."
+if ! openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+  -in "$PAYLOAD/config/env.enc" -out "$DECRYPTED_ENV" \
+  -pass fd:3 3<<<"$BACKUP_PASSWORD"; then
+  echo "Failed to decrypt Server .env. Wrong key/passphrase or damaged backup." >&2
+  exit 1
+fi
+chmod 600 "$DECRYPTED_ENV"
+
+if [[ "$WEB_PRESENT" -eq 1 && -f "$PAYLOAD/web/web-env.enc" ]]; then
+  if ! openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+    -in "$PAYLOAD/web/web-env.enc" -out "$DECRYPTED_WEB_ENV" \
+    -pass fd:3 3<<<"$BACKUP_PASSWORD"; then
+    echo "Failed to decrypt Web .env. Wrong key/passphrase or damaged backup." >&2
+    exit 1
+  fi
+  chmod 600 "$DECRYPTED_WEB_ENV"
+fi
+
+if [[ -e "$TARGET" ]]; then
+  if [[ "$FORCE" -ne 1 ]]; then
+    echo "Target already exists: $TARGET" >&2
+    echo "Use --force to move it aside and continue." >&2
+    exit 1
+  fi
+  OLD="${TARGET}.before-restore-$(date '+%Y%m%d-%H%M%S')"
+  echo "Moving existing target to: $OLD"
+  mv "$TARGET" "$OLD"
+fi
+
+mkdir -p "$TARGET"
+echo "[4/10] Restoring exact server files..."
+tar -xzf "$PAYLOAD/server/server-release.tar.gz" -C "$TARGET"
+cp "$DECRYPTED_ENV" "$TARGET/.env"
+chmod 600 "$TARGET/.env"
+mkdir -p "$TARGET/backups"
+if [[ "$WEB_PRESENT" -eq 1 && "$WEB_API_MODE" == "internal" ]]; then
+  NETWORK_NAME="tianxian-recovery-$(printf '%s' "$TARGET|$WEB_TARGET" | sha256sum | cut -c1-12)"
+  if ! docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
+    docker network create "$NETWORK_NAME" >/dev/null
+  fi
+  attach_private_api_network "$TARGET/docker-compose.yml" backend "$NETWORK_NAME"
+fi
+patch_compose_bindings "$TARGET/docker-compose.yml" 8000 "$BACKEND_PORT" "Backend" "$BACKEND_BIND"
+(cd "$TARGET" && docker compose config --quiet) || { echo "Generated Backend Compose configuration is invalid." >&2; exit 1; }
+
+cd "$TARGET"
+set -a
+# shellcheck disable=SC1091
+. ./.env
+set +a
+: "${POSTGRES_DB:?POSTGRES_DB missing after restore}"
+: "${POSTGRES_USER:?POSTGRES_USER missing after restore}"
+
+echo "[5/10] Starting PostgreSQL..."
+docker compose up -d postgres
+for _ in $(seq 1 60); do
+  if docker compose exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then break; fi
+  sleep 2
+done
+docker compose exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1 || { echo "PostgreSQL did not become ready." >&2; exit 1; }
+
+echo "[6/10] Restoring PostgreSQL dump..."
+docker compose exec -T postgres pg_restore \
+  -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  --clean --if-exists --no-owner --no-acl --exit-on-error \
+  < "$PAYLOAD/database/postgres.dump"
+
+echo "[7/10] Building and starting TianXian Server..."
+docker compose build backend
+docker compose up -d
+
+SERVER_HEALTH=""
+for _ in $(seq 1 60); do
+  SERVER_HEALTH="$(curl -fsS "http://$(health_host "$BACKEND_BIND"):$BACKEND_PORT/health" 2>/dev/null || true)"
+  [[ -n "$SERVER_HEALTH" ]] && break
+  sleep 2
+done
+[[ -n "$SERVER_HEALTH" ]] || { echo "Backend health check failed on port $BACKEND_PORT." >&2; docker compose ps; exit 1; }
+
+echo "[8/10] Restoring TianXian Web..."
+WEB_HEALTH="skipped"
+if [[ "$WEB_PRESENT" -eq 1 ]]; then
+  if [[ -e "$WEB_TARGET" ]]; then
+    if [[ "$FORCE" -ne 1 ]]; then
+      echo "Web target already exists: $WEB_TARGET" >&2
+      echo "Use --force to move it aside and continue." >&2
+      exit 1
+    fi
+    WEB_OLD="${WEB_TARGET}.before-restore-$(date '+%Y%m%d-%H%M%S')"
+    echo "Moving existing Web target to: $WEB_OLD"
+    mv "$WEB_TARGET" "$WEB_OLD"
+  fi
+
+  mkdir -p "$WEB_TARGET"
+  tar -xzf "$PAYLOAD/web/web-release.tar.gz" -C "$WEB_TARGET"
+  if [[ -f "$DECRYPTED_WEB_ENV" ]]; then
+    cp "$DECRYPTED_WEB_ENV" "$WEB_TARGET/.env"
+    chmod 600 "$WEB_TARGET/.env"
+  fi
+  case "$WEB_API_MODE" in
+    internal)
+      attach_private_api_network "$WEB_TARGET/docker-compose.yml" tianxian-web "$NETWORK_NAME"
+      update_web_api_env "$WEB_TARGET/.env" "http://backend:8000"
+      echo "Web API automatically linked to restored backend over private Docker network."
+      ;;
+    custom)
+      update_web_api_env "$WEB_TARGET/.env" "$WEB_API_URL"
+      echo "Web API switched to explicitly supplied address."
+      ;;
+    preserve)
+      [[ -f "$WEB_TARGET/.env" ]] || { echo "Backed-up Web .env is missing; cannot keep original API address." >&2; exit 1; }
+      echo "Web API address preserved explicitly for domain migration."
+      ;;
+  esac
+  [[ -f "$WEB_TARGET/docker-compose.yml" ]] || { echo "Web snapshot is missing docker-compose.yml" >&2; exit 1; }
+  patch_compose_bindings "$WEB_TARGET/docker-compose.yml" "${WEB_CONTAINER_PORT:-3000}" "$WEB_PORT" "Web" "$WEB_BIND"
+  (cd "$WEB_TARGET" && docker compose config --quiet) || { echo "Generated Web Compose configuration is invalid." >&2; exit 1; }
+
+  (cd "$WEB_TARGET" && docker compose up -d --build)
+  WEB_HEALTH="failed"
+  for _ in $(seq 1 60); do
+    if curl -fsS -o /dev/null "http://$(health_host "$WEB_BIND"):$WEB_PORT/" 2>/dev/null; then
+      WEB_HEALTH="ok"
+      break
+    fi
+    sleep 2
+  done
+  [[ "$WEB_HEALTH" == "ok" ]] || { echo "Web health check failed on port $WEB_PORT." >&2; (cd "$WEB_TARGET" && docker compose ps); exit 1; }
+  # HTTP page health alone is insufficient. Validate the API from inside Web.
+  (cd "$WEB_TARGET" && docker compose exec -T tianxian-web node -e '
+    fetch(process.env.TIANXIAN_API_BASE_URL.replace(/\/$/, "") + "/health", {signal: AbortSignal.timeout(10000)})
+      .then(async r => {
+        const j = await r.json();
+        if (!r.ok || j.ok !== true || j.service !== "tianxian-sync") throw new Error("Unexpected API health");
+        process.stdout.write("Web → restored API: OK\\n");
+      })
+      .catch(e => { console.error(e.message); process.exitCode = 1; });
+  ') || { echo "Web cannot connect to its configured API. Check Web .env and Docker network." >&2; exit 1; }
+else
+  echo "No Web snapshot in this TXB; Web restore skipped."
+fi
+
+echo "[9/10] Verifying restored services..."
+echo "Health: $SERVER_HEALTH"
+if [[ "$WEB_PRESENT" -eq 1 ]]; then
+  echo "Web health: $WEB_HEALTH"
+fi
+
+echo "[10/10] Restore completed."
+echo "Restored server version: ${SERVER_VERSION:-unknown}"
+echo "Backend binds: $BACKEND_BIND (port $BACKEND_PORT)"
+if [[ "$WEB_PRESENT" -eq 1 ]]; then
+  echo "Restored Web version: ${WEB_VERSION:-unknown}"
+  echo "Web directory: $WEB_TARGET"
+  echo "Web binds: $WEB_BIND (port $WEB_PORT)"
+  echo "Web API mode: $WEB_API_MODE"
+fi

@@ -11,11 +11,37 @@ KEY=/root/.tianxian-backup-key
 R2ENV=/root/.tianxian-r2.env
 VENV=/opt/tianxian-recovery-venv
 DEFAULT_BACKEND_PORT=18080
+DEFAULT_WEB_PORT=3800
 BACKEND_PORT=$DEFAULT_BACKEND_PORT
+WEB_PORT=$DEFAULT_WEB_PORT
+WEB_TARGET=/opt/TianXian-Web
+WEB_INCLUDED=0
 MANAGER_URL='https://raw.githubusercontent.com/sockc/TianXianFruit/main/server-tools/backup-manager/tianxian-manager'
+RESTORE_URL='https://raw.githubusercontent.com/sockc/TianXianFruit/main/server-tools/txb-web/tianxian-restore'
+BACKUP_URL='https://raw.githubusercontent.com/sockc/TianXianFruit/main/server-tools/txb-web/tianxian-backup'
+R2_KEY_OVERRIDE=''
+BACKEND_BIND='127.0.0.1'
+WEB_BIND='127.0.0.1'
 
 die(){ echo "✗ $*" >&2; exit 1; }
 step(){ echo; echo "[$1/8] $2"; }
+usage() {
+  cat <<'USAGE'
+用法：tianxian-recover [--r2-key 完整R2对象路径]
+
+--r2-key  从 R2 精确恢复指定 TXB；省略时选择最新备份。
+监听地址在解密并校验 TXB 后交互选择。
+多个 IPv4 地址使用英文逗号分隔，例如 127.0.0.1,192.168.6.1。
+0.0.0.0 必须单独使用，会监听所有 IPv4 网卡。
+USAGE
+}
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --r2-key) [[ $# -ge 2 && -n "$2" ]] || die "--r2-key 缺少对象路径"; R2_KEY_OVERRIDE="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "未知参数：$1" ;;
+  esac
+done
 [[ ${EUID:-$(id -u)} -eq 0 ]] || die '请使用 root 运行。'
 
 
@@ -100,9 +126,16 @@ fi
 step 2 '下载 R2 最新加密 TXB'
 mkdir -p "$WORK"
 AWS="$VENV/bin/aws"
-LIST="$($AWS s3 ls "s3://${R2_BUCKET}/${R2_PREFIX}/" --recursive --endpoint-url "$R2_ENDPOINT")"
-REMOTE="$(printf '%s\n' "$LIST" | awk '$4 ~ /\.txb\.enc$/ {print $1" "$2" "$4}' | sort -r | head -1 | cut -d' ' -f3-)"
-[[ -n "$REMOTE" ]] || die 'R2 中没有找到 .txb.enc'
+if [[ -n "$R2_KEY_OVERRIDE" ]]; then
+  [[ "$R2_KEY_OVERRIDE" == "$R2_PREFIX/"* && "$R2_KEY_OVERRIDE" == *.txb.enc ]] ||
+    die "--r2-key 必须是 $R2_PREFIX/ 下的 .txb.enc 对象"
+  [[ "$R2_KEY_OVERRIDE" != *'..'* ]] || die "R2 Key 含无效路径片段"
+  REMOTE="$R2_KEY_OVERRIDE"
+else
+  LIST="$($AWS s3 ls "s3://${R2_BUCKET}/${R2_PREFIX}/" --recursive --endpoint-url "$R2_ENDPOINT")"
+  REMOTE="$(printf '%s\n' "$LIST" | awk '$4 ~ /\.txb\.enc$/ {print $1" "$2" "$4}' | sort -r | head -1 | cut -d' ' -f3-)"
+  [[ -n "$REMOTE" ]] || die 'R2 中没有找到 .txb.enc'
+fi
 echo "最新备份：$REMOTE"
 $AWS s3 cp "s3://${R2_BUCKET}/${REMOTE}" "$WORK/latest.txb.enc" --endpoint-url "$R2_ENDPOINT"
 sha256sum "$WORK/latest.txb.enc" | tee "$WORK/latest.txb.enc.sha256"
@@ -125,13 +158,16 @@ fi
 tar -xzf "$BOOT/server/server-release.tar.gz" -C "$TOOLS"
 chmod +x "$TOOLS/tianxian-restore" "$TOOLS/scripts/tianxian-restore" 2>/dev/null || true
 [[ -x "$TOOLS/tianxian-restore" ]] || die '没有找到 tianxian-restore'
+[[ -f "$TOOLS/scripts/tianxian-restore" ]] || die 'TXB Server 快照中缺少恢复脚本。'
 
-step 5 '执行正式恢复'
-if [[ -f "$TOOLS/tianxian-backup-check" ]]; then
-  chmod +x "$TOOLS/tianxian-backup-check"
-  "$TOOLS/tianxian-backup-check" "$WORK/latest.txb" --password-file "$KEY"
-fi
-"$TOOLS/tianxian-restore" "$WORK/latest.txb" --password-file "$KEY" --target "$TARGET"
+# Old TXBs cannot contain later listener-address features. Apply the tested
+# current restore tool to the extracted snapshot before any DB is modified.
+RESTORER_DOWNLOAD="$(mktemp "$WORK/tianxian-restore.XXXXXX")"
+curl -fsSL "$RESTORE_URL" -o "$RESTORER_DOWNLOAD" || die '无法取得新版恢复工具，尚未执行数据恢复。'
+bash -n "$RESTORER_DOWNLOAD" || die '新版恢复工具语法检查失败。'
+install -m 0755 "$RESTORER_DOWNLOAD" "$TOOLS/scripts/tianxian-restore"
+rm -f "$RESTORER_DOWNLOAD"
+echo '✓ 已装载支持多监听地址的新版恢复器。'
 
 validate_port(){
   local port="$1"
@@ -139,39 +175,190 @@ validate_port(){
   (( port >= 1 && port <= 65535 ))
 }
 
-port_in_use(){
-  local port="$1"
-  ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$port$"
+# Check exact requested IPv4 addresses, local ownership and host port
+# availability. Echo canonical comma-separated addresses on success.
+check_listeners(){
+  local label="$1" ips="$2" port="$3"
+  python3 - "$label" "$ips" "$port" <<'PY_CHECK'
+import ipaddress
+import socket
+import sys
+
+label, raw, port_string = sys.argv[1:]
+try:
+    port = int(port_string)
+    if not 1 <= port <= 65535:
+        raise ValueError("端口必须在 1-65535 之间")
+    addresses = [part.strip() for part in raw.split(",")]
+    if not addresses or any(not part for part in addresses):
+        raise ValueError("监听地址不能为空，请用英文逗号分隔")
+    addresses = [str(ipaddress.IPv4Address(part)) for part in addresses]
+    if len(set(addresses)) != len(addresses):
+        raise ValueError("监听地址重复")
+    if "0.0.0.0" in addresses and len(addresses) > 1:
+        raise ValueError("0.0.0.0 代表所有 IPv4 地址，不能与其他地址混用")
+    for ip in addresses:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            try:
+                sock.bind((ip, port))
+            except OSError as exc:
+                raise ValueError(
+                    f"{ip}:{port} 无法监听（地址不属于 EQ 或端口被占用）：{exc}"
+                ) from exc
+    print(",".join(addresses))
+except (ValueError, ipaddress.AddressValueError) as exc:
+    print(f"{label}: {exc}", file=sys.stderr)
+    sys.exit(1)
+PY_CHECK
 }
 
-echo
-read -r -p "Server 后端端口 [$DEFAULT_BACKEND_PORT]：" BACKEND_PORT
-BACKEND_PORT="${BACKEND_PORT:-$DEFAULT_BACKEND_PORT}"
-validate_port "$BACKEND_PORT" || die "端口无效：$BACKEND_PORT（必须为 1-65535）"
+prompt_listener(){
+  local label="$1" default_ips="$2" port="$3" chosen=""
+  while true; do
+    read -r -p "$label 监听地址 [$default_ips]（多个地址用英文逗号）： " chosen
+    chosen="${chosen:-$default_ips}"
+    local normalized=""
+    if ! normalized="$(check_listeners "$label" "$chosen" "$port")"; then
+      echo '! 地址或端口不正确，请重新输入。' >&2
+      continue
+    fi
+    if [[ "$normalized" == '0.0.0.0' ]]; then
+      echo '! 警告：0.0.0.0 会监听所有 IPv4 网卡，可能暴露在公网；需额外配置防火墙。' >&2
+      local confirm_public=""
+      read -r -p '确认开放监听请输入 EXPOSE，否则重新选择：' confirm_public
+      [[ "$confirm_public" == EXPOSE ]] || continue
+    fi
+    printf '%s\n' "$normalized"
+    return 0
+  done
+}
 
-if [[ "$BACKEND_PORT" != "$DEFAULT_BACKEND_PORT" ]]; then
-  port_in_use "$BACKEND_PORT" && die "端口 $BACKEND_PORT 已被占用，请重新选择。"
+health_host(){
+  local ips="$1"
+  case ",$ips," in
+    *,127.0.0.1,*|*,0.0.0.0,*) printf '127.0.0.1\n' ;;
+    *) printf '%s\n' "${ips%%,*}" ;;
+  esac
+}
 
-  python3 - "$TARGET/docker-compose.yml" "$BACKEND_PORT" <<'PY_PORT'
-import re
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-port = sys.argv[2]
-text = path.read_text(encoding="utf-8")
-pattern = re.compile(r'(?P<host>127\.0\.0\.1|0\.0\.0\.0):(?P<port>\d+):8000')
-new_text, count = pattern.subn(lambda m: f"{m.group('host')}:{port}:8000", text, count=1)
-if count != 1:
-    raise SystemExit("未找到 Backend 端口映射，未修改 docker-compose.yml")
-path.write_text(new_text, encoding="utf-8")
-PY_PORT
-
-  (cd "$TARGET" && docker compose up -d backend)
-  echo "✓ Backend 宿主机端口已改为 $BACKEND_PORT"
-else
-  echo "✓ Backend 继续使用默认端口 $DEFAULT_BACKEND_PORT"
+# Read optional port/Web metadata from the TXB before starting services.
+if [[ -f "$BOOT/metadata/manifest.env" ]]; then
+  # shellcheck disable=SC1090
+  source "$BOOT/metadata/manifest.env"
 fi
+# Backup host addresses/ports are historical metadata. Never adopt them as
+# restore defaults: the destination machine may have different interfaces.
+# Prefer loopback so a fresh recovery is not exposed before DNS/Lucky cutover.
+DEFAULT_BACKEND_BIND='127.0.0.1'
+DEFAULT_BACKEND_PORT=18080
+if [[ -f "$BOOT/web/web-metadata.env" ]]; then
+  # shellcheck disable=SC1090
+  source "$BOOT/web/web-metadata.env"
+fi
+if [[ -f "$BOOT/web/web-release.tar.gz" ]]; then
+  WEB_INCLUDED=1
+fi
+
+echo
+echo "备份来源 Server 监听：${BACKEND_BIND_LIST:-${BACKEND_BIND:-未知}}（原端口 ${BACKEND_HOST_PORT:-未知}，仅供参考）"
+if [[ "$WEB_INCLUDED" -eq 1 ]]; then
+  echo "备份来源 Web 监听：${WEB_BIND_LIST:-未知}（原端口 ${WEB_HOST_PORT:-未知}，仅供参考）"
+fi
+echo '恢复默认：Server 127.0.0.1:18080；Web 127.0.0.1:3800。'
+
+echo
+while true; do
+  read -r -p "Server 后端端口 [$DEFAULT_BACKEND_PORT]： " BACKEND_PORT
+  BACKEND_PORT="${BACKEND_PORT:-$DEFAULT_BACKEND_PORT}"
+  if validate_port "$BACKEND_PORT"; then break; fi
+  echo '! 端口必须为 1-65535，请重新输入。'
+done
+BACKEND_BIND="$(prompt_listener 'Server' "$DEFAULT_BACKEND_BIND" "$BACKEND_PORT")"
+echo "✓ Server 绑定：$BACKEND_BIND:$BACKEND_PORT"
+
+if [[ "$WEB_INCLUDED" -eq 1 ]]; then
+  while true; do
+    read -r -p "Web 端口 [$DEFAULT_WEB_PORT]： " WEB_PORT
+    WEB_PORT="${WEB_PORT:-$DEFAULT_WEB_PORT}"
+    if validate_port "$WEB_PORT"; then break; fi
+    echo '! 端口必须为 1-65535，请重新输入。'
+  done
+  while true; do
+    WEB_BIND="$(prompt_listener 'Web' '127.0.0.1' "$WEB_PORT")"
+    if [[ "$WEB_PORT" == "$BACKEND_PORT" ]]; then
+      if [[ "$BACKEND_BIND" == '0.0.0.0' || "$WEB_BIND" == '0.0.0.0' ]]; then
+        echo '! Server/Web 的通配地址不能共用相同端口，请修改 Web 地址或端口。'
+        continue
+      fi
+      IFS=',' read -r -a backend_addrs <<<"$BACKEND_BIND"
+      IFS=',' read -r -a web_addrs <<<"$WEB_BIND"
+      conflict=0
+      for b in "${backend_addrs[@]}"; do
+        for w in "${web_addrs[@]}"; do
+          [[ "$b" == "$w" ]] && conflict=1
+        done
+      done
+      if [[ "$conflict" -eq 1 ]]; then
+        echo '! Server/Web 有重复监听地址且端口相同，请更改 Web 地址或端口。'
+        continue
+      fi
+    fi
+    break
+  done
+  echo "✓ Web 绑定：$WEB_BIND:$WEB_PORT"
+  echo
+  echo 'Web 与恢复后的 Server 如何连接：'
+  echo '1. 自动使用私有 Docker 网络（推荐，默认，不依赖宿主机 IP）'
+  echo '2. 保留备份中的 API 地址（仅在正式域名已切换到新服务器时使用）'
+  echo '3. 指定其他 API 地址（HTTP/HTTPS）'
+  read -r -p '请选择 [1]： ' web_api_choice
+  case "${web_api_choice:-1}" in
+    1) WEB_API_MODE=internal ;;
+    2) WEB_API_MODE=preserve ;;
+    3)
+      WEB_API_MODE=custom
+      read -r -p '新 Web API 地址（例如 https://test-sync.example.com）： ' WEB_API_URL
+      [[ -n "$WEB_API_URL" ]] || die '自定义 Web API 地址不能为空'
+      ;;
+    *) die '无效选择，已取消恢复。' ;;
+  esac
+else
+  WEB_PORT="$DEFAULT_WEB_PORT"
+  echo 'ℹ 此 TXB 未包含 Web，跳过 Web 端口选择。'
+fi
+
+step 5 '执行正式恢复'
+if [[ -f "$TOOLS/tianxian-backup-check" ]]; then
+  chmod +x "$TOOLS/tianxian-backup-check"
+  "$TOOLS/tianxian-backup-check" "$WORK/latest.txb" --password-file "$KEY"
+fi
+
+RESTORE_HELP="$("$TOOLS/tianxian-restore" --help 2>&1 || true)"
+printf '%s' "$RESTORE_HELP" | grep -q -- '--backend-bind' ||
+  die '新版恢复器缺少 --backend-bind，拒绝继续恢复。'
+RESTORE_ARGS=("$WORK/latest.txb"
+  --password-file "$KEY"
+  --target "$TARGET"
+  --backend-port "$BACKEND_PORT"
+  --backend-bind "$BACKEND_BIND")
+if [[ "$WEB_INCLUDED" -eq 1 ]]; then
+  RESTORE_ARGS+=(--web-target "$WEB_TARGET" --web-port "$WEB_PORT" --web-bind "$WEB_BIND")
+  case "${WEB_API_MODE:-internal}" in
+    preserve) RESTORE_ARGS+=(--keep-web-api) ;;
+    custom) RESTORE_ARGS+=(--web-api-url "$WEB_API_URL") ;;
+  esac
+fi
+"$TOOLS/tianxian-restore" "${RESTORE_ARGS[@]}"
+
+# Persist the tested recovery tools inside the restored Server, not just in
+# /root bootstrap, so the next TXB and future Manager restores support IP lists.
+install -m 0755 "$TOOLS/scripts/tianxian-restore" "$TARGET/scripts/tianxian-restore"
+BACKUP_DOWNLOAD="$(mktemp "$WORK/tianxian-backup.XXXXXX")"
+curl -fsSL "$BACKUP_URL" -o "$BACKUP_DOWNLOAD" || die '恢复已完成，但无法取得新版 TXB 备份工具。'
+bash -n "$BACKUP_DOWNLOAD" || die '新版备份工具语法校验失败。'
+install -m 0755 "$BACKUP_DOWNLOAD" "$TARGET/scripts/tianxian-backup"
+rm -f "$BACKUP_DOWNLOAD"
+echo '✓ 新版备份/恢复工具已安装到恢复后的 Server。'
 
 step 6 '恢复 key 与 R2 配置'
 install -m 0600 "$KEY" "$TARGET/.backup-key"
@@ -234,6 +421,10 @@ DOMAIN='sync.830888.xyz'
 RESTORE_TARGET='$TARGET'
 BACKUP_KEY='$TARGET/.backup-key'
 BACKEND_PORT='$BACKEND_PORT'
+BACKEND_BIND='$BACKEND_BIND'
+WEB_BIND='$WEB_BIND'
+WEB_DIR='$WEB_TARGET'
+WEB_PORT='$WEB_PORT'
 EOF2
 chmod 600 /etc/tianxian-manager/config.env
 
@@ -241,12 +432,25 @@ step 8 '健康检查'
 (cd "$TARGET" && docker compose ps)
 HEALTH=''
 for _ in $(seq 1 30); do
-  HEALTH="$(curl -fsS --max-time 3 "http://127.0.0.1:$BACKEND_PORT/health" 2>/dev/null || true)"
+  HEALTH="$(curl -fsS --max-time 3 "http://$(health_host "$BACKEND_BIND"):$BACKEND_PORT/health" 2>/dev/null || true)"
   [[ -n "$HEALTH" ]] && break
   sleep 2
 done
 [[ -n "$HEALTH" ]] || die '恢复完成，但 /health 未通过。'
 echo "$HEALTH"
+
+if [[ "$WEB_INCLUDED" -eq 1 ]]; then
+  WEB_OK=0
+  for _ in $(seq 1 30); do
+    if curl -fsS --max-time 3 -o /dev/null "http://$(health_host "$WEB_BIND"):$WEB_PORT/" 2>/dev/null; then
+      WEB_OK=1
+      break
+    fi
+    sleep 2
+  done
+  [[ "$WEB_OK" -eq 1 ]] || die "恢复完成，但 Web 端口 $WEB_PORT 健康检查未通过。"
+  echo "✓ Web 健康：127.0.0.1:$WEB_PORT"
+fi
 echo
 
 AUTO_BACKUP_ENABLED=0
@@ -269,7 +473,13 @@ esac
 echo
 echo '✓ 天鲜账本裸机恢复完成。'
 echo '✓ R2 已复用首次输入参数完成配置。'
-echo "✓ Backend 端口：$BACKEND_PORT"
+echo "✓ Backend：$BACKEND_BIND（端口 $BACKEND_PORT）"
+if [[ "$WEB_INCLUDED" -eq 1 ]]; then
+  echo "✓ Web：已恢复到 $WEB_TARGET；监听 $WEB_BIND（端口 $WEB_PORT）"
+  echo "✓ Web API 连接模式：${WEB_API_MODE:-internal}"
+else
+  echo '✓ Web：此备份未包含，已跳过'
+fi
 if [[ "$AUTO_BACKUP_ENABLED" -eq 1 ]]; then
   echo '✓ 自动备份：已开启。'
 else
