@@ -3015,7 +3015,18 @@ private fun BusinessAdviceDetailContent(
                 }
             }
 
-            if (score.actualRevenue > 0.0 || score.actualCustomers > 0) {
+            val hasActualRecord =
+                remember(
+                    dataVersion,
+                    score.date,
+                    score.storeId
+                ) {
+                    db.getStoreDailyRecord(
+                        score.date,
+                        score.storeId
+                    ) != null
+                }
+            if (hasActualRecord) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = SoftGreen),
                     shape = RoundedCornerShape(16.dp)
