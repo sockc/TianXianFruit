@@ -2590,6 +2590,7 @@ private fun HomeBusinessAdviceCard(
                                 style = MaterialTheme.typography.bodySmall
                             )
                             val compact = listOf(
+                                modelMeta.specialReminder.takeIf { it.isNotBlank() },
                                 score.weatherSummary.takeIf { it.isNotBlank() },
                                 score.historySummary.takeIf { it.isNotBlank() }
                             ).filterNotNull().distinct().joinToString(" · ")
