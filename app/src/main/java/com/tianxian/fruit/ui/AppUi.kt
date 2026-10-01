@@ -108,6 +108,10 @@ enum class AppPage(val title: String, val emoji: String) {
 
 private enum class MorePage {
     MENU,
+    BUSINESS_CENTER,
+    PRODUCT_CENTER,
+    BOOK_COLLAB,
+    HOME_SETTINGS,
     BOOKS,
     CLOUD_BOOKS,
     MEMBER_PERMISSIONS,
@@ -122,7 +126,6 @@ private enum class MorePage {
     OPERATING_ANALYSIS,
     PERSONAL_SUMMARY,
     BACKUP,
-    PARTNERS,
     STORES,
     PROFIT,
     FRUITS,
@@ -144,8 +147,6 @@ private enum class HomeQuickAction(
     PROFIT("💰", "合伙人与利润", MorePage.PROFIT),
     BACKUP("💾", "数据备份", MorePage.BACKUP),
     CLOUD_BOOKS("☁️", "云端账本", MorePage.CLOUD_BOOKS),
-    MEMBER_PERMISSIONS("👥", "成员权限", MorePage.MEMBER_PERMISSIONS),
-    PARTNERS("🤝", "合伙人", MorePage.PARTNERS),
     STORES("📍", "位置管理", MorePage.STORES),
     FRUITS("🍇", "商品管理", MorePage.FRUITS),
     SECURITY("🔐", "安全验证", MorePage.SECURITY),
@@ -175,8 +176,6 @@ private fun homeQuickActionAllowed(
         HomeQuickAction.PROFIT -> allowed(BookPermissions.PROFIT_VIEW)
         HomeQuickAction.BACKUP ->
             currentBook.permission == "OWNER" || systemRole == "SUPERADMIN"
-        HomeQuickAction.MEMBER_PERMISSIONS -> false
-        HomeQuickAction.PARTNERS,
         HomeQuickAction.STORES,
         HomeQuickAction.FRUITS -> allowed(BookPermissions.BASIC_EDIT)
         HomeQuickAction.BOOKS ->
@@ -377,7 +376,8 @@ private fun syncTablesForPageTitle(
         title.contains("营业") ->
             setOf("store_daily_record", "business_weather_history")
 
-        title.contains("经营分析") ->
+        title.contains("经营分析中心") ||
+            title.contains("经营分析") ->
             setOf(
                 "store_daily_record",
                 "purchase_order",
@@ -412,8 +412,15 @@ private fun syncTablesForPageTitle(
             title.contains("摊位管理") ->
             setOf("store")
 
-        title.contains("商品管理") ->
-            setOf("fruit")
+        title.contains("商品与水果资料") ||
+            title.contains("商品管理") ->
+            setOf(
+                "fruit",
+                "fruit_season_catalog",
+                "fruit_alias",
+                "fruit_season_region",
+                "fruit_profile"
+            )
 
         else ->
             emptySet()
@@ -13602,33 +13609,15 @@ private fun MoreScreen(
             ) {
                 item {
                     SettingsSection(
-                        "账本与数据"
+                        "经营数据"
                     ) {
-                        if (
-                            systemRole ==
-                            "SUPERADMIN"
-                        ) {
-                            SettingsRow(
-                                "📚",
-                                "账本管理"
-                            ) {
-                                sub =
-                                    MorePage.BOOKS
-                            }
-                            SettingsDivider()
-                        }
+                        var hasPrevious = false
 
                         if (
                             allowed(
                                 BookPermissions.HISTORY_VIEW
                             )
                         ) {
-                            if (
-                                systemRole !=
-                                "SUPERADMIN"
-                            ) {
-                                // 普通成员没有“账本管理”，历史记录作为本组第一项。
-                            }
                             SettingsRow(
                                 "🧾",
                                 "历史记录"
@@ -13636,6 +13625,7 @@ private fun MoreScreen(
                                 sub =
                                     MorePage.HISTORY
                             }
+                            hasPrevious = true
                         }
 
                         if (
@@ -13646,7 +13636,7 @@ private fun MoreScreen(
                                 BookPermissions.PURCHASE_PLAN_EDIT
                             )
                         ) {
-                            SettingsDivider()
+                            if (hasPrevious) SettingsDivider()
                             SettingsRow(
                                 "🛒",
                                 "协作采购"
@@ -13654,6 +13644,7 @@ private fun MoreScreen(
                                 sub =
                                     MorePage.PURCHASE_ACTIVITY
                             }
+                            hasPrevious = true
                         }
 
                         if (
@@ -13661,40 +13652,16 @@ private fun MoreScreen(
                                 BookPermissions.STATS_VIEW
                             )
                         ) {
-                            SettingsDivider()
+                            if (hasPrevious) SettingsDivider()
                             SettingsRow(
                                 "📊",
-                                "经营统计"
+                                "经营分析中心",
+                                trailing = "统计 · 分析 · 天气 · 个人"
                             ) {
                                 sub =
-                                    MorePage.STATS
+                                    MorePage.BUSINESS_CENTER
                             }
-
-                            SettingsDivider()
-                            SettingsRow(
-                                "🧮",
-                                "经营分析"
-                            ) {
-                                sub =
-                                    MorePage.OPERATING_ANALYSIS
-                            }
-
-                            SettingsDivider()
-                            SettingsRow(
-                                "🌤️",
-                                "经营天气"
-                            ) {
-                                onOpenWeather(LocalDate.now().toString(), null)
-                            }
-
-                            SettingsDivider()
-                            SettingsRow(
-                                "👤",
-                                "个人汇总"
-                            ) {
-                                sub =
-                                    MorePage.PERSONAL_SUMMARY
-                            }
+                            hasPrevious = true
                         }
 
                         if (
@@ -13702,7 +13669,7 @@ private fun MoreScreen(
                                 BookPermissions.REPORT_VIEW
                             )
                         ) {
-                            SettingsDivider()
+                            if (hasPrevious) SettingsDivider()
                             SettingsRow(
                                 "📄",
                                 "生成报表"
@@ -13711,66 +13678,22 @@ private fun MoreScreen(
                                     MorePage.REPORT
                             }
                         }
-
-                        if (
-                            currentBook.permission ==
-                            "OWNER" ||
-                            systemRole ==
-                            "SUPERADMIN"
-                        ) {
-                            SettingsDivider()
-                            SettingsRow(
-                                "💾",
-                                "数据备份"
-                            ) {
-                                sub =
-                                    MorePage.BACKUP
-                            }
-                        }
                     }
                 }
 
                 item {
                     SettingsSection(
-                        "水果资料"
+                        "经营资料"
                     ) {
-                        SettingsRow(
-                            "🍉",
-                            "水果季节库"
-                        ) {
-                            sub = MorePage.FRUIT_LIBRARY
-                        }
-                    }
-                }
+                        var hasPrevious = false
 
-                if (systemRole == "SUPERADMIN") {
-                    item {
-                        SettingsSection(
-                            "云端与协作"
-                        ) {
-                            SettingsRow(
-                                "☁️",
-                                "云端共享账本"
-                            ) {
-                                sub =
-                                    MorePage.CLOUD_BOOKS
-                            }
-
-                        }
-                    }
-                }
-
-                if (
-                    allowed(
-                        BookPermissions.BASIC_EDIT
-                    ) ||
-                    allowed(
-                        BookPermissions.PROFIT_VIEW
-                    )
-                ) {
-                    item {
-                        SettingsSection(
-                            "经营设置"
+                        if (
+                            allowed(
+                                BookPermissions.BASIC_EDIT
+                            ) ||
+                            allowed(
+                                BookPermissions.PROFIT_VIEW
+                            )
                         ) {
                             SettingsRow(
                                 "🤝",
@@ -13778,21 +13701,82 @@ private fun MoreScreen(
                             ) {
                                 sub = MorePage.PROFIT
                             }
+                            hasPrevious = true
+                        }
 
-                            if (allowed(BookPermissions.BASIC_EDIT)) {
-                                SettingsDivider()
-                                SettingsRow(
-                                    "📍",
-                                    "位置管理"
+                        if (
+                            allowed(
+                                BookPermissions.BASIC_EDIT
+                            )
+                        ) {
+                            if (hasPrevious) SettingsDivider()
+                            SettingsRow(
+                                "📍",
+                                "位置管理"
+                            ) {
+                                sub = MorePage.STORES
+                            }
+                            hasPrevious = true
+                        }
+
+                        if (hasPrevious) SettingsDivider()
+                        SettingsRow(
+                            "🍉",
+                            "商品与水果资料",
+                            trailing =
+                                if (
+                                    allowed(
+                                        BookPermissions.BASIC_EDIT
+                                    )
                                 ) {
-                                    sub = MorePage.STORES
+                                    "商品管理 · 季节库"
+                                } else {
+                                    "水果季节库"
                                 }
-                                SettingsDivider()
+                        ) {
+                            sub = MorePage.PRODUCT_CENTER
+                        }
+                    }
+                }
+
+                if (
+                    systemRole == "SUPERADMIN" ||
+                    currentBook.permission == "OWNER"
+                ) {
+                    item {
+                        SettingsSection(
+                            "账本与数据"
+                        ) {
+                            var hasPrevious = false
+
+                            if (
+                                systemRole ==
+                                "SUPERADMIN"
+                            ) {
                                 SettingsRow(
-                                    "📦",
-                                    "商品管理"
+                                    "☁️",
+                                    "账本与协作",
+                                    trailing = "账本 · 云端 · 成员"
                                 ) {
-                                    sub = MorePage.FRUITS
+                                    sub =
+                                        MorePage.BOOK_COLLAB
+                                }
+                                hasPrevious = true
+                            }
+
+                            if (
+                                currentBook.permission ==
+                                "OWNER" ||
+                                systemRole ==
+                                "SUPERADMIN"
+                            ) {
+                                if (hasPrevious) SettingsDivider()
+                                SettingsRow(
+                                    "💾",
+                                    "数据备份"
+                                ) {
+                                    sub =
+                                        MorePage.BACKUP
                                 }
                             }
                         }
@@ -13801,8 +13785,19 @@ private fun MoreScreen(
 
                 item {
                     SettingsSection(
-                        "安全"
+                        "设置"
                     ) {
+                        SettingsRow(
+                            "🎨",
+                            "首页设置",
+                            trailing = "顶部 · 快捷操作"
+                        ) {
+                            sub =
+                                MorePage.HOME_SETTINGS
+                        }
+
+                        SettingsDivider()
+
                         SettingsRow(
                             "🔐",
                             "安全与验证",
@@ -13815,28 +13810,6 @@ private fun MoreScreen(
                         ) {
                             sub =
                                 MorePage.SECURITY
-                        }
-                    }
-                }
-
-                item {
-                    SettingsSection(
-                        "界面与显示"
-                    ) {
-                        SettingsRow(
-                            "🎨",
-                            "首页顶部设置"
-                        ) {
-                            sub =
-                                MorePage.HOME_HEADER
-                        }
-                        SettingsDivider()
-                        SettingsRow(
-                            "⚡",
-                            "首页快捷操作"
-                        ) {
-                            sub =
-                                MorePage.HOME_QUICK_ACTIONS
                         }
                     }
                 }
@@ -13917,6 +13890,75 @@ private fun MoreScreen(
                         )
                     }
                 }
+            }
+        }
+
+        MorePage.BUSINESS_CENTER -> {
+            SubPage(
+                "经营分析中心",
+                { sub = MorePage.MENU }
+            ) {
+                BusinessCenterContent(
+                    db = db,
+                    dataVersion = dataVersion,
+                    currentBook = currentBook,
+                    cloudSyncManager = cloudSyncManager
+                )
+            }
+        }
+
+        MorePage.PRODUCT_CENTER -> {
+            SubPage(
+                "商品与水果资料",
+                { sub = MorePage.MENU }
+            ) {
+                ProductCenterContent(
+                    db = db,
+                    dataVersion = dataVersion,
+                    canEdit =
+                        BookPermissions.has(
+                            currentBook,
+                            systemRole,
+                            BookPermissions.BASIC_EDIT
+                        ),
+                    onChanged = onChanged
+                )
+            }
+        }
+
+        MorePage.BOOK_COLLAB -> {
+            SubPage(
+                "账本与协作",
+                { sub = MorePage.MENU }
+            ) {
+                BookCollaborationContent(
+                    db = db,
+                    ledgerManager = ledgerManager,
+                    cloudSyncManager = cloudSyncManager,
+                    currentBook = currentBook,
+                    onSwitchBook = onSwitchBook,
+                    onChanged = onChanged
+                )
+            }
+        }
+
+        MorePage.HOME_SETTINGS -> {
+            SubPage(
+                "首页设置",
+                { sub = MorePage.MENU }
+            ) {
+                HomeSettingsCombinedContent(
+                    ledgerUiSettingsManager =
+                        ledgerUiSettingsManager,
+                    currentBook =
+                        currentBook,
+                    systemRole =
+                        systemRole,
+                    uiSettingsVersion =
+                        uiSettingsVersion,
+                    onChanged =
+                        onUiSettingsChanged
+                )
             }
         }
 
@@ -14175,21 +14217,6 @@ private fun MoreScreen(
             }
         }
 
-        MorePage.PARTNERS -> {
-            SubPage(
-                "合伙人与利润分配",
-                { sub = MorePage.MENU }
-            ) {
-                PartnerProfitCombinedContent(
-                    db = db,
-                    dataVersion = dataVersion,
-                    canEditProfit = BookPermissions.has(currentBook, systemRole, BookPermissions.PROFIT_EDIT),
-                    protectHistoricalAction = protectHistoricalAction,
-                    onChanged = onChanged
-                )
-            }
-        }
-
         MorePage.STORES -> {
             SubPage(
                 "位置管理",
@@ -14259,6 +14286,272 @@ private fun MoreScreen(
     }
 }
 
+
+@Composable
+private fun BusinessCenterContent(
+    db: AppDatabase,
+    dataVersion: Int,
+    currentBook: LedgerBook,
+    cloudSyncManager: CloudSyncManager
+) {
+    var tab by remember { mutableIntStateOf(0) }
+    val labels =
+        listOf(
+            "经营统计",
+            "经营分析",
+            "经营天气",
+            "个人汇总"
+        )
+
+    Column(Modifier.fillMaxSize()) {
+        ScrollableTabRow(
+            selectedTabIndex = tab,
+            edgePadding = 8.dp
+        ) {
+            labels.forEachIndexed { index, label ->
+                Tab(
+                    selected = tab == index,
+                    onClick = { tab = index },
+                    text = { Text(label) }
+                )
+            }
+        }
+
+        Box(Modifier.fillMaxSize()) {
+            when (tab) {
+                0 ->
+                    StatsContent(
+                        db = db,
+                        dataVersion = dataVersion
+                    )
+
+                1 ->
+                    OperatingAnalysisContent(
+                        db = db,
+                        dataVersion = dataVersion,
+                        currentBook = currentBook,
+                        cloudSyncManager = cloudSyncManager
+                    )
+
+                2 ->
+                    WeatherDetailContent(
+                        db = db,
+                        dataVersion = dataVersion,
+                        currentBook = currentBook,
+                        cloudSyncManager = cloudSyncManager,
+                        initialDate =
+                            LocalDate.now().toString(),
+                        initialStoreId = null
+                    )
+
+                else ->
+                    PersonalSummaryContent(
+                        db = db,
+                        dataVersion = dataVersion
+                    )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProductCenterContent(
+    db: AppDatabase,
+    dataVersion: Int,
+    canEdit: Boolean,
+    onChanged: () -> Unit
+) {
+    if (!canEdit) {
+        FruitSeasonLibraryContent(
+            db = db,
+            dataVersion = dataVersion,
+            canEdit = false,
+            onChanged = onChanged
+        )
+        return
+    }
+
+    var tab by remember { mutableIntStateOf(0) }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(
+                    horizontal = 12.dp,
+                    vertical = 6.dp
+                ),
+            horizontalArrangement =
+                Arrangement.spacedBy(8.dp)
+        ) {
+            FilterChip(
+                selected = tab == 0,
+                onClick = { tab = 0 },
+                label = { Text("商品管理") },
+                modifier = Modifier.weight(1f)
+            )
+            FilterChip(
+                selected = tab == 1,
+                onClick = { tab = 1 },
+                label = { Text("水果季节库") },
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        Box(Modifier.fillMaxSize()) {
+            if (tab == 0) {
+                FruitManagementContent(
+                    db = db,
+                    dataVersion = dataVersion,
+                    onChanged = onChanged
+                )
+            } else {
+                FruitSeasonLibraryContent(
+                    db = db,
+                    dataVersion = dataVersion,
+                    canEdit = true,
+                    onChanged = onChanged
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BookCollaborationContent(
+    db: AppDatabase,
+    ledgerManager: LedgerManager,
+    cloudSyncManager: CloudSyncManager,
+    currentBook: LedgerBook,
+    onSwitchBook: (String) -> Unit,
+    onChanged: () -> Unit
+) {
+    var tab by remember { mutableIntStateOf(0) }
+    val labels =
+        listOf(
+            "账本",
+            "云端账本",
+            "成员权限"
+        )
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(
+                    horizontal = 12.dp,
+                    vertical = 6.dp
+                ),
+            horizontalArrangement =
+                Arrangement.spacedBy(8.dp)
+        ) {
+            labels.forEachIndexed { index, label ->
+                FilterChip(
+                    selected = tab == index,
+                    onClick = { tab = index },
+                    label = { Text(label) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        Box(Modifier.fillMaxSize()) {
+            when (tab) {
+                0 ->
+                    LedgerManagementContent(
+                        db = db,
+                        ledgerManager = ledgerManager,
+                        cloudSyncManager = cloudSyncManager,
+                        currentBook = currentBook,
+                        onSwitchBook = onSwitchBook,
+                        onChanged = onChanged
+                    )
+
+                1 ->
+                    CloudSharedBooksContent(
+                        cloudSyncManager = cloudSyncManager,
+                        ledgerManager = ledgerManager,
+                        currentBook = currentBook,
+                        onSwitchBook = onSwitchBook,
+                        onChanged = onChanged
+                    )
+
+                else ->
+                    MemberPermissionContent(
+                        cloudSyncManager = cloudSyncManager,
+                        ledgerManager = ledgerManager,
+                        currentBook = currentBook,
+                        onChanged = onChanged
+                    )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeSettingsCombinedContent(
+    ledgerUiSettingsManager: LedgerUiSettingsManager,
+    currentBook: LedgerBook,
+    systemRole: String,
+    uiSettingsVersion: Int,
+    onChanged: () -> Unit
+) {
+    var tab by remember { mutableIntStateOf(0) }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(
+                    horizontal = 12.dp,
+                    vertical = 6.dp
+                ),
+            horizontalArrangement =
+                Arrangement.spacedBy(8.dp)
+        ) {
+            FilterChip(
+                selected = tab == 0,
+                onClick = { tab = 0 },
+                label = { Text("顶部显示") },
+                modifier = Modifier.weight(1f)
+            )
+            FilterChip(
+                selected = tab == 1,
+                onClick = { tab = 1 },
+                label = { Text("快捷操作") },
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        Box(Modifier.fillMaxSize()) {
+            if (tab == 0) {
+                HomeHeaderSettingsContent(
+                    ledgerUiSettingsManager =
+                        ledgerUiSettingsManager,
+                    currentBook =
+                        currentBook,
+                    uiSettingsVersion =
+                        uiSettingsVersion,
+                    onChanged =
+                        onChanged
+                )
+            } else {
+                HomeQuickActionsSettingsContent(
+                    manager =
+                        ledgerUiSettingsManager,
+                    currentBook =
+                        currentBook,
+                    systemRole =
+                        systemRole,
+                    uiSettingsVersion =
+                        uiSettingsVersion,
+                    onChanged =
+                        onChanged
+                )
+            }
+        }
+    }
+}
 
 @Composable
 private fun OperatingAnalysisContent(
