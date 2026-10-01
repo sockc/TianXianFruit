@@ -130,6 +130,86 @@ internal object SyncStatusPolicy {
     fun error(globalError: String, tableError: String): String = tableError.ifBlank { globalError }
 }
 
+internal object BusinessAdvicePolicy {
+    const val MIN_HISTORY_FOR_CONCLUSION = 3
+    const val MIN_HISTORY_FOR_MEDIUM_CONFIDENCE = 7
+
+    private val abnormalHistoryTags = setOf(
+        "短时营业",
+        "提前收摊",
+        "缺货",
+        "临时换位"
+    )
+
+    fun weatherEvidenceStatus(
+        coverageRatio: Double,
+        stale: Boolean
+    ): String = when {
+        stale -> "STALE"
+        coverageRatio >= 0.85 -> "COMPLETE"
+        coverageRatio >= 0.50 -> "PARTIAL"
+        coverageRatio > 0.0 -> "SPARSE"
+        else -> "MISSING"
+    }
+
+    fun recommendation(
+        score: Int,
+        validHistoryCount: Int,
+        similarCount: Int,
+        weatherStatus: String
+    ): String {
+        if (validHistoryCount < MIN_HISTORY_FOR_CONCLUSION) return "资料不足"
+        if (
+            weatherStatus in setOf("MISSING", "SPARSE", "STALE") &&
+            validHistoryCount < MIN_HISTORY_FOR_MEDIUM_CONFIDENCE
+        ) {
+            return "资料不足"
+        }
+        if (similarCount <= 0 && validHistoryCount < MIN_HISTORY_FOR_MEDIUM_CONFIDENCE) {
+            return "资料不足"
+        }
+        return if (score >= 75) "建议正常营业" else "谨慎营业"
+    }
+
+    fun confidence(
+        validHistoryCount: Int,
+        similarCount: Int,
+        weatherStatus: String
+    ): String = when {
+        validHistoryCount < MIN_HISTORY_FOR_CONCLUSION -> "INSUFFICIENT"
+        weatherStatus in setOf("MISSING", "SPARSE", "STALE") &&
+            validHistoryCount < MIN_HISTORY_FOR_MEDIUM_CONFIDENCE -> "INSUFFICIENT"
+        similarCount >= 10 &&
+            validHistoryCount >= 20 &&
+            weatherStatus == "COMPLETE" -> "HIGH"
+        similarCount >= 5 &&
+            validHistoryCount >= 10 &&
+            weatherStatus in setOf("COMPLETE", "PARTIAL") -> "MEDIUM"
+        else -> "LOW"
+    }
+
+    fun historyUsable(
+        durationRatio: Double?,
+        specialTag: String
+    ): Boolean {
+        if (specialTag.trim() in abnormalHistoryTags) return false
+        if (durationRatio != null && durationRatio < 0.70) return false
+        return true
+    }
+
+    fun snapshotStage(
+        targetDate: LocalDate,
+        now: LocalDateTime,
+        window: BusinessWeatherWindow
+    ): String = when {
+        targetDate.isAfter(now.toLocalDate()) -> "PRE_OPEN"
+        targetDate.isBefore(now.toLocalDate()) -> "FINAL"
+        now.isBefore(window.start) -> "PRE_OPEN"
+        now.isBefore(window.end) -> "LIVE"
+        else -> "FINAL"
+    }
+}
+
 internal object SyncTablePolicy {
     // Forecast snapshots and calculated operating advice are disposable local data.
     // Actual business weather history remains syncable because it is an accounting input.

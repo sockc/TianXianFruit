@@ -6,20 +6,24 @@ import com.tianxian.fruit.sync.WeatherOverview
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.DayOfWeek
+import java.time.Duration
 import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * V1.4.7.56 今日经营建议 V2。
+ * V1.4.7.65 经营建议决策版。
  *
  * 核心原则：
- * 1. 每个位置建立自己的经营基准，优先使用最近 60 个有效营业日的中位数。
- * 2. 以“同位置相似历史日”为核心证据，不再把固定权重简单相加。
- * 3. 天气、日期、近期趋势作为相似度/修正证据；样本不足时自动向中性 70 分回归。
- * 4. 当日实绩只用于营业后复盘和后续自动校准，绝不参与当天开摊前评分。
+ * 1. 分数只是综合经营指数，不是赚钱概率；经营结论受样本与天气证据门槛约束。
+ * 2. 历史基准只使用正常营业样本；短时营业、提前收摊、缺货、临时换位不污染基准。
+ * 3. 天气必须检查营业时段逐小时覆盖率和缓存新鲜度，缺失数据优先降低可信度。
+ * 4. PRE_OPEN / LIVE / FINAL 分阶段保存；自动校准只比较 PRE_OPEN 与后续最终实绩。
  */
 class BusinessScoreEngine(
     private val db: AppDatabase
@@ -33,7 +37,14 @@ class BusinessScoreEngine(
         val avgHumidity: Double? = null,
         val maxWindSpeed: Double? = null,
         val hasAlert: Boolean = false,
-        val rainy: Boolean = false
+        val rainy: Boolean = false,
+        val expectedHourCount: Int = 0,
+        val actualHourCount: Int = 0,
+        val coverageRatio: Double = 0.0,
+        val evidenceStatus: String = "MISSING",
+        val fetchedAt: Long = 0L,
+        val stale: Boolean = false,
+        val wetHours: List<String> = emptyList()
     )
 
     data class CalendarInfo(
@@ -66,14 +77,49 @@ class BusinessScoreEngine(
     fun calculate(
         date: LocalDate,
         store: StoreOption,
-        weather: WeatherOverview?
+        weather: WeatherOverview?,
+        weatherFetchedAt: Long = 0L,
+        weatherExpiresAt: Long = 0L
     ): BusinessScoreRecord {
         val dateString = date.toString()
-        val positionHistory = db.getStoreDailyRecordsBefore(store.id, dateString, 180)
-            .filter { it.revenue > 0.0 }
-            .take(180)
+        val rawPositionHistory =
+            db.getStoreDailyRecordsBefore(store.id, dateString, 180)
+                .take(180)
+        val historicalScores =
+            db.getBusinessScoresBefore(store.id, dateString, 180)
+                .associateBy { it.date }
+        val positionHistory =
+            rawPositionHistory.filter { record ->
+                val durationRatio = businessDurationRatio(record, store)
+                val tag = historicalScores[record.date]?.specialTag.orEmpty()
+                val hasOperatingEvidence =
+                    record.revenue > 0.0 ||
+                        record.actualStartTime.isNotBlank() ||
+                        record.actualEndTime.isNotBlank()
+                hasOperatingEvidence &&
+                    BusinessAdvicePolicy.historyUsable(
+                        durationRatio = durationRatio,
+                        specialTag = tag
+                    )
+            }
+        val excludedHistoryCount =
+            (rawPositionHistory.size - positionHistory.size)
+                .coerceAtLeast(0)
         val calendar = calendarInfo(date)
-        val weatherMetrics = weather?.let { weatherMetrics(it, store) }
+        val weatherMetrics =
+            weather?.let {
+                weatherMetrics(
+                    overview = it,
+                    store = store,
+                    fetchedAt = weatherFetchedAt,
+                    expiresAt = weatherExpiresAt,
+                    checkFreshness = true
+                )
+            }
+        val targetSpecialTag =
+            db.getBusinessScore(dateString, store.id)
+                ?.specialTag
+                .orEmpty()
 
         // 位置基准：只用本位置，最近 60 个有效营业日；中位数比平均数更抗异常值。
         val baselinePool = positionHistory.take(60)
@@ -135,11 +181,11 @@ class BusinessScoreEngine(
         // 只作“资料补充”的全账本样本，不参与正式总分，避免不同位置串位误导。
         val ledgerFallbackCount = if (positionHistory.size < 4) {
             db.getRecentDailyRecords(180)
-                .count { it.date < dateString && it.storeId != store.id && it.revenue > 0.0 }
+                .count { it.date < dateString && it.storeId != store.id && it.revenue >= 0.0 }
                 .coerceAtMost(99)
         } else 0
 
-        val similarRevenue = weightedMetric(similar) { it.record.revenue }
+        val similarRevenue = weightedMetric(similar, allowZero = true) { it.record.revenue }
         val similarCustomers = weightedMetric(similar) {
             it.record.customerTotal.toDouble().takeIf { v -> v > 0.0 }
         }
@@ -156,7 +202,12 @@ class BusinessScoreEngine(
             similarTicket = similarTicket,
             similar = similar
         )
-        val weatherPart = scoreWeatherV2(weatherMetrics)
+        val weatherPart =
+            scoreWeatherV2(
+                metrics = weatherMetrics,
+                historical = historical,
+                baselineRevenue = baselineRevenue
+            )
         val calendarPart = scoreCalendarV2(calendar, positionHistory, baselineRevenue)
         val trendPart = scoreTrendV2(positionHistory, baselineRevenue, baselineCustomers, baselineTicket)
 
@@ -168,7 +219,12 @@ class BusinessScoreEngine(
             similar.isNotEmpty() -> 0.22
             else -> 0.08
         }
-        val weatherWeight = if (weatherMetrics != null) 0.24 else 0.06
+        val weatherWeight = when (weatherMetrics?.evidenceStatus) {
+            "COMPLETE" -> 0.24
+            "PARTIAL" -> 0.16
+            "SPARSE", "STALE" -> 0.08
+            else -> 0.04
+        }
         val calendarWeight = if (positionHistory.size >= 8) 0.14 else 0.09
         val trendWeight = if (positionHistory.size >= 3) 0.16 else 0.08
         val totalWeight = historyWeight + weatherWeight + calendarWeight + trendWeight
@@ -186,23 +242,102 @@ class BusinessScoreEngine(
         val evidenceStrength = evidenceStrength(
             similarCount = similar.size,
             positionCount = positionHistory.size,
-            hasWeather = weatherMetrics != null,
+            weatherStatus = weatherMetrics?.evidenceStatus ?: "MISSING",
             calibrationCount = calibration.first
         )
         val total = (70.0 + (calibratedRaw - 70.0) * evidenceStrength)
             .roundToInt()
             .coerceIn(35, 100)
 
-        val confidence = when {
-            similar.size >= 10 && positionHistory.size >= 20 && weatherMetrics != null -> "HIGH"
-            similar.size >= 5 && positionHistory.size >= 10 -> "MEDIUM"
-            else -> "LOW"
-        }
+        val weatherStatus =
+            weatherMetrics?.evidenceStatus ?: "MISSING"
+        val validHistoryForDecision =
+            if (baselineRevenue > 0.0) {
+                positionHistory.size
+            } else {
+                0
+            }
+        val confidence =
+            BusinessAdvicePolicy.confidence(
+                validHistoryCount = validHistoryForDecision,
+                similarCount = similar.size,
+                weatherStatus = weatherStatus
+            )
+        val recommendation =
+            BusinessAdvicePolicy.recommendation(
+                score = total,
+                validHistoryCount = validHistoryForDecision,
+                similarCount = similar.size,
+                weatherStatus = weatherStatus
+            )
+        val snapshotStage =
+            BusinessAdvicePolicy.snapshotStage(
+                targetDate = date,
+                now =
+                    LocalDateTime.now(
+                        ZoneId.of("Asia/Shanghai")
+                    ),
+                window =
+                    BusinessWeatherWindow.forDay(
+                        date,
+                        store.defaultStartTime,
+                        store.defaultEndTime
+                    )
+            )
+        val revenueReferencePool =
+            if (similar.size >= 3) {
+                similar.map { it.record.revenue }
+            } else {
+                baselinePool.map { it.revenue }
+            }
+        val revenueRangeLow =
+            if (revenueReferencePool.size >= 3) {
+                percentile(revenueReferencePool, 0.25)
+            } else {
+                0.0
+            }
+        val revenueRangeHigh =
+            if (revenueReferencePool.size >= 3) {
+                percentile(revenueReferencePool, 0.75)
+            } else {
+                0.0
+            }
+        val businessWindowTip =
+            when {
+                weatherMetrics == null ||
+                    weatherMetrics.actualHourCount <= 0 ->
+                    "营业时段逐小时天气不足，先按保守方案安排"
+                weatherMetrics.wetHours.isNotEmpty() ->
+                    "重点关注 " +
+                        weatherMetrics.wetHours
+                            .take(4)
+                            .joinToString("、") +
+                        " 的降雨风险"
+                else ->
+                    "营业时段暂未发现明显降雨时段"
+            }
+        val inventoryAdvice =
+            inventoryAdvice(
+                dateString = dateString,
+                baselineRevenue = baselineRevenue
+            )
+        val specialReminder =
+            targetSpecialTag
+                .takeIf { it.isNotBlank() }
+                ?.let {
+                    "已标记“" + it +
+                        "”，当前先作为经营提醒，不直接加减分"
+                }
+                .orEmpty()
 
         val details = JSONObject().apply {
-            put("score_version", "V2_SIMILAR_DAY")
-            put("model", "STORE_BASELINE_SIMILAR_DAY_CALIBRATED")
+            put("score_version", "V3_DECISION_GUARDRAILS")
+            put("model", "STORE_BASELINE_SIMILAR_DAY_STAGED_CALIBRATION")
+            put("recommendation", recommendation)
+            put("snapshot_stage", snapshotStage)
             put("position_sample_count", positionHistory.size)
+            put("raw_position_sample_count", rawPositionHistory.size)
+            put("excluded_history_count", excludedHistoryCount)
             put("same_store_similar_count", similar.size)
             put("ledger_fallback_count", ledgerFallbackCount)
             put("evidence_strength", evidenceStrength)
@@ -237,12 +372,49 @@ class BusinessScoreEngine(
                     put("max_wind_speed", m.maxWindSpeed)
                     put("has_alert", m.hasAlert)
                     put("rainy", m.rainy)
+                    put("expected_hour_count", m.expectedHourCount)
+                    put("actual_hour_count", m.actualHourCount)
+                    put("coverage_ratio", m.coverageRatio)
+                    put("evidence_status", m.evidenceStatus)
+                    put("fetched_at", m.fetchedAt)
+                    put("stale", m.stale)
+                    put("wet_hours", JSONArray(m.wetHours))
                 }
+            })
+            put("actions", JSONObject().apply {
+                put("business_window_tip", businessWindowTip)
+                put("inventory_advice", inventoryAdvice)
+                put("revenue_range_low", revenueRangeLow)
+                put("revenue_range_high", revenueRangeHigh)
+                put("special_factor_reminder", specialReminder)
             })
             put("reasons", JSONObject().apply {
                 put("weather", JSONArray(weatherPart.reasons))
-                put("history", JSONArray(historyPart.reasons))
-                put("calendar", JSONArray(calendarPart.reasons))
+                put(
+                    "history",
+                    JSONArray(
+                        historyPart.reasons +
+                            if (excludedHistoryCount > 0) {
+                                listOf(
+                                    "已排除 " +
+                                        excludedHistoryCount +
+                                        " 个短时/异常营业样本，避免历史基准失真"
+                                )
+                            } else {
+                                emptyList()
+                            }
+                    )
+                )
+                put(
+                    "calendar",
+                    JSONArray(
+                        calendarPart.reasons +
+                            specialReminder
+                                .takeIf { it.isNotBlank() }
+                                ?.let(::listOf)
+                                .orEmpty()
+                    )
+                )
                 put("trend", JSONArray(trendPart.reasons + calibrationReason(calibration)))
             })
             put("similar_dates", JSONArray().apply {
@@ -305,7 +477,7 @@ class BusinessScoreEngine(
         similarTicket: Double,
         similar: List<HistoricalDay>
     ): ComponentResult {
-        if (similar.isEmpty() || baselineRevenue <= 0.0 || similarRevenue <= 0.0) {
+        if (similar.isEmpty() || baselineRevenue <= 0.0 || similarRevenue < 0.0) {
             return ComponentResult(
                 index = 70.0,
                 summary = "历史参考不足",
@@ -344,9 +516,17 @@ class BusinessScoreEngine(
         return ComponentResult(index, summary, reasons, similar.size, ratio)
     }
 
-    private fun scoreWeatherV2(metrics: WeatherMetrics?): ComponentResult {
+    private fun scoreWeatherV2(
+        metrics: WeatherMetrics?,
+        historical: List<HistoricalDay>,
+        baselineRevenue: Double
+    ): ComponentResult {
         if (metrics == null) {
-            return ComponentResult(70.0, "天气数据暂不可用", listOf("缺少天气数据，天气维度按中性处理"))
+            return ComponentResult(
+                70.0,
+                "天气数据暂不可用",
+                listOf("缺少天气数据，天气维度按中性处理")
+            )
         }
         var index = 92.0
         val reasons = mutableListOf<String>()
@@ -392,17 +572,71 @@ class BusinessScoreEngine(
             reasons += "存在天气预警"
         }
 
+        val weatherHistory =
+            historical.filter {
+                it.weather?.evidenceStatus in
+                    setOf("COMPLETE", "PARTIAL") &&
+                    it.record.revenue >= 0.0
+            }
+        val comparableWeather =
+            weatherHistory.filter { day ->
+                val historicalWeather = day.weather ?: return@filter false
+                historicalWeather.rainy == metrics.rainy &&
+                    temperatureBand(historicalWeather.avgTemp) ==
+                    temperatureBand(metrics.avgTemp)
+            }
+        if (comparableWeather.size >= 4 && baselineRevenue > 0.0) {
+            val historicalRevenue = median(comparableWeather.map { it.record.revenue })
+            val learnedRatio = (historicalRevenue / baselineRevenue).coerceIn(0.70, 1.30)
+            val learnedAdjustment = ((learnedRatio - 1.0) * 35.0).coerceIn(-6.0, 6.0)
+            index += learnedAdjustment
+            reasons += "本位置 " + comparableWeather.size +
+                " 个相似天气营业日表现约为基准的 " +
+                (learnedRatio * 100).roundToInt() + "%，位置历史修正 " +
+                (if (learnedAdjustment >= 0) "+" else "") +
+                String.format("%.1f", learnedAdjustment) + "分"
+        } else {
+            reasons += "本位置相似天气样本不足，当前天气判断主要采用经验规则"
+        }
+
+        when (metrics.evidenceStatus) {
+            "PARTIAL" -> {
+                index = min(index, 82.0)
+                reasons += "营业时段逐小时预报覆盖 " +
+                    (metrics.coverageRatio * 100).roundToInt() + "%，天气指数已限制上限"
+            }
+            "SPARSE" -> {
+                index = min(index, 72.0)
+                reasons += "营业时段逐小时预报缺失较多，仅作低可信参考"
+            }
+            "STALE" -> {
+                index = min(index, 70.0)
+                reasons += "天气缓存已过期，等待刷新后再提高天气证据权重"
+            }
+            "MISSING" -> {
+                index = 70.0
+                reasons += "营业时段没有有效逐小时预报，天气维度回归中性"
+            }
+        }
+
         val tempText = metrics.avgTemp?.roundToInt()?.let { "${it}℃" }.orEmpty()
         val rainText = if (metrics.rainy) "有雨风险" else "无雨"
         val headline = metrics.headline.ifBlank { if (metrics.rainy) "天气有波动" else "天气稳定" }
+        val evidenceText = when (metrics.evidenceStatus) {
+            "COMPLETE" -> "预报完整"
+            "PARTIAL" -> "预报部分缺失"
+            "SPARSE" -> "预报缺失较多"
+            "STALE" -> "预报已过期"
+            else -> "天气数据不足"
+        }
         val summary = listOf(
             headline,
             rainText,
-            tempText.takeIf { it.isNotBlank() }?.let { "$it${temperatureLabel(metrics.avgTemp)}" }
+            tempText.takeIf { it.isNotBlank() }?.let { "$it${temperatureLabel(metrics.avgTemp)}" },
+            evidenceText
         ).filterNotNull().joinToString(" · ")
         return ComponentResult(index.coerceIn(20.0, 100.0), summary, reasons)
     }
-
     private fun scoreCalendarV2(
         target: CalendarInfo,
         historical: List<StoreDailyRecord>,
@@ -415,7 +649,7 @@ class BusinessScoreEngine(
         fun medianFor(predicate: (LocalDate) -> Boolean): Pair<Double, Int> {
             val values = historical.mapNotNull { r ->
                 val d = runCatching { LocalDate.parse(r.date) }.getOrNull() ?: return@mapNotNull null
-                r.revenue.takeIf { it > 0 && predicate(d) }
+                r.revenue.takeIf { it >= 0 && predicate(d) }
             }
             return median(values) to values.size
         }
@@ -425,13 +659,13 @@ class BusinessScoreEngine(
         var used = 0
 
         val (sameWeekday, weekdayCount) = medianFor { it.dayOfWeek == target.date.dayOfWeek }
-        if (weekdayCount >= 3 && sameWeekday > 0) {
+        if (weekdayCount >= 3 && sameWeekday >= 0) {
             signals += (sameWeekday / baselineRevenue).coerceIn(0.65, 1.35) to 0.65
             used += weekdayCount
             reasons += "同${target.weekdayLabel}样本 $weekdayCount 个，表现约为基准的 ${(sameWeekday / baselineRevenue * 100).roundToInt()}%"
         } else {
             val (sameWorkType, workCount) = medianFor { calendarInfo(it).isWorkday == target.isWorkday }
-            if (workCount >= 4 && sameWorkType > 0) {
+            if (workCount >= 4 && sameWorkType >= 0) {
                 signals += (sameWorkType / baselineRevenue).coerceIn(0.70, 1.30) to 0.45
                 used += workCount
                 reasons += if (target.isWorkday) "工作日历史已作为补充" else "周末/假日历史已作为补充"
@@ -440,7 +674,7 @@ class BusinessScoreEngine(
 
         if (target.phase != "NORMAL") {
             val (samePhase, phaseCount) = medianFor { calendarInfo(it).phase == target.phase }
-            if (phaseCount >= 2 && samePhase > 0) {
+            if (phaseCount >= 2 && samePhase >= 0) {
                 signals += (samePhase / baselineRevenue).coerceIn(0.65, 1.35) to 0.35
                 used += phaseCount
                 reasons += "${target.phaseLabel}有 $phaseCount 个历史样本"
@@ -536,8 +770,11 @@ class BusinessScoreEngine(
             else -> 0
         }
 
-        if (targetWeather != null && historyWeather != null) {
-            if (targetWeather.rainy == historyWeather.rainy) score += 5
+        if (
+            targetWeather?.evidenceStatus in setOf("COMPLETE", "PARTIAL") &&
+            historyWeather?.evidenceStatus in setOf("COMPLETE", "PARTIAL")
+        ) {
+            if (targetWeather!!.rainy == historyWeather!!.rainy) score += 5
             if (rainBand(targetWeather.preOpenRain) == rainBand(historyWeather.preOpenRain)) score += 2
             val t1 = targetWeather.avgTemp
             val t2 = historyWeather.avgTemp
@@ -575,11 +812,16 @@ class BusinessScoreEngine(
 
     private fun weightedMetric(
         samples: List<HistoricalDay>,
+        allowZero: Boolean = false,
         value: (HistoricalDay) -> Double?
     ): Double {
         val pairs = samples.mapNotNull { sample ->
             val v = value(sample) ?: return@mapNotNull null
-            if (!v.isFinite() || v <= 0.0) null else v to sample.weight
+            if (!v.isFinite() || (if (allowZero) v < 0.0 else v <= 0.0)) {
+                null
+            } else {
+                v to sample.weight
+            }
         }
         if (pairs.isEmpty()) return 0.0
         val totalWeight = pairs.sumOf { it.second }.takeIf { it > 0.0 } ?: return 0.0
@@ -589,7 +831,7 @@ class BusinessScoreEngine(
     private fun evidenceStrength(
         similarCount: Int,
         positionCount: Int,
-        hasWeather: Boolean,
+        weatherStatus: String,
         calibrationCount: Int
     ): Double {
         var strength = 0.38
@@ -601,25 +843,62 @@ class BusinessScoreEngine(
             else -> 0.0
         }
         if (positionCount >= 20) strength += 0.12 else if (positionCount >= 10) strength += 0.07
-        if (hasWeather) strength += 0.07
+        strength += when (weatherStatus) {
+            "COMPLETE" -> 0.07
+            "PARTIAL" -> 0.04
+            "SPARSE" -> 0.01
+            else -> 0.0
+        }
         if (calibrationCount >= 6) strength += 0.05
         return strength.coerceIn(0.38, 1.0)
     }
 
     private fun calibrationAdjustment(storeId: Long, date: String): Pair<Int, Double> {
-        val completed = db.getBusinessScoresBefore(storeId, date, 30)
-            .filter { score ->
-                score.actualRevenue > 0.0 &&
-                    score.baselineRevenue > 0.0 &&
-                    runCatching { JSONObject(score.detailsJson).optString("score_version") }
-                        .getOrDefault("") == "V2_SIMILAR_DAY"
-            }
-            .take(20)
+        data class CalibrationPoint(
+            val predictedScore: Int,
+            val baselineRevenue: Double,
+            val actualRevenue: Double
+        )
+
+        val completed =
+            db.getBusinessScoresBefore(storeId, date, 60)
+                .mapNotNull { score ->
+                    val actualRecord =
+                        db.getStoreDailyRecord(
+                            score.date,
+                            storeId
+                        ) ?: return@mapNotNull null
+                    val snapshots =
+                        runCatching {
+                            JSONArray(score.snapshotsJson.ifBlank { "[]" })
+                        }.getOrNull() ?: return@mapNotNull null
+                    var preOpen: JSONObject? = null
+                    for (i in 0 until snapshots.length()) {
+                        val snapshot = snapshots.optJSONObject(i) ?: continue
+                        if (snapshot.optString("stage") == "PRE_OPEN") {
+                            // Keep the latest pre-open snapshot, but never a LIVE/FINAL update.
+                            preOpen = snapshot
+                        }
+                    }
+                    val frozen = preOpen ?: return@mapNotNull null
+                    val baseline = frozen.optDouble("baseline_revenue", 0.0)
+                    if (baseline <= 0.0) return@mapNotNull null
+                    CalibrationPoint(
+                        predictedScore = frozen.optInt("score", 70),
+                        baselineRevenue = baseline,
+                        actualRevenue = actualRecord.revenue
+                    )
+                }
+                .take(20)
         if (completed.size < 6) return completed.size to 0.0
 
-        val errors = completed.map { score ->
-            val predictedRatio = (1.0 + (score.totalScore - 70.0) / 120.0).coerceIn(0.60, 1.35)
-            val actualRatio = (score.actualRevenue / score.baselineRevenue).coerceIn(0.55, 1.45)
+        val errors = completed.map { point ->
+            val predictedRatio =
+                (1.0 + (point.predictedScore - 70.0) / 120.0)
+                    .coerceIn(0.60, 1.35)
+            val actualRatio =
+                (point.actualRevenue / point.baselineRevenue)
+                    .coerceIn(0.55, 1.45)
             (actualRatio - predictedRatio).coerceIn(-0.20, 0.20)
         }
         val adjustment = (median(errors) * 120.0).coerceIn(-8.0, 8.0)
@@ -630,13 +909,12 @@ class BusinessScoreEngine(
         val count = calibration.first
         val adjustment = calibration.second
         return when {
-            count < 6 -> listOf("已有 $count 个 V2 经营结果复盘；满6个后开始自动校准")
-            abs(adjustment) < 0.5 -> listOf("已用 $count 个历史复盘自动校准，本次无需明显修正")
-            adjustment > 0 -> listOf("已用 $count 个历史复盘自动校准，本位置模型修正 +${String.format("%.1f", adjustment)}")
-            else -> listOf("已用 $count 个历史复盘自动校准，本位置模型修正 ${String.format("%.1f", adjustment)}")
+            count < 6 -> listOf("已有 $count 个“开摊前预测 → 最终实绩”样本；满6个后开始自动校准")
+            abs(adjustment) < 0.5 -> listOf("已用 $count 个开摊前预测与最终实绩校准，本次无需明显修正")
+            adjustment > 0 -> listOf("已用 $count 个开摊前预测与最终实绩校准，本位置模型修正 +${String.format("%.1f", adjustment)}")
+            else -> listOf("已用 $count 个开摊前预测与最终实绩校准，本位置模型修正 ${String.format("%.1f", adjustment)}")
         }
     }
-
     private fun rainBand(value: Double): Int = when {
         value >= 3.0 -> 3
         value >= 0.5 -> 2
@@ -722,34 +1000,87 @@ class BusinessScoreEngine(
         overview: WeatherOverview,
         store: StoreOption,
         actualStartTime: String? = null,
-        actualEndTime: String? = null
+        actualEndTime: String? = null,
+        fetchedAt: Long = 0L,
+        expiresAt: Long = 0L,
+        checkFreshness: Boolean = false
     ): WeatherMetrics {
-        val targetDate = runCatching { LocalDate.parse(overview.date) }.getOrElse { LocalDate.now() }
-        val window = BusinessWeatherWindow.forDay(
-            targetDate,
-            actualStartTime?.takeIf { it.isNotBlank() } ?: store.defaultStartTime,
-            actualEndTime?.takeIf { it.isNotBlank() } ?: store.defaultEndTime
-        )
+        val targetDate =
+            runCatching {
+                LocalDate.parse(overview.date)
+            }.getOrElse { LocalDate.now() }
+        val window =
+            BusinessWeatherWindow.forDay(
+                targetDate,
+                actualStartTime?.takeIf { it.isNotBlank() } ?: store.defaultStartTime,
+                actualEndTime?.takeIf { it.isNotBlank() } ?: store.defaultEndTime
+            )
         val hours = overview.hourly
         val preHours = hours.filter { window.beforeBusiness(it.time) }
         val relevantBusiness = hours.filter { window.duringBusiness(it.time) }
+        val expectedHourCount =
+            ceil(
+                Duration.between(window.start, window.end).toMinutes() / 60.0
+            ).toInt().coerceAtLeast(1)
+        val actualHourCount =
+            relevantBusiness
+                .map { it.time.take(13) }
+                .distinct()
+                .size
+        val coverageRatio =
+            (actualHourCount.toDouble() / expectedHourCount.toDouble())
+                .coerceIn(0.0, 1.0)
+        val stale =
+            checkFreshness &&
+                (
+                    fetchedAt <= 0L ||
+                        (expiresAt > 0L && expiresAt <= System.currentTimeMillis())
+                    )
+        val evidenceStatus =
+            BusinessAdvicePolicy.weatherEvidenceStatus(
+                coverageRatio = coverageRatio,
+                stale = stale
+            )
+
         val day = overview.daily.firstOrNull { it.date == overview.date }
-        val maxPop = relevantBusiness.mapNotNull { it.precipitationProbability }.maxOrNull()
-            ?: day?.precipitationProbability
-            ?: 0.0
+        val maxPop =
+            relevantBusiness.mapNotNull { it.precipitationProbability }.maxOrNull()
+                ?: day?.precipitationProbability
+                ?: 0.0
         val businessRain = relevantBusiness.sumOf { it.precipitation ?: 0.0 }
         val preRain = preHours.sumOf { it.precipitation ?: 0.0 }
         val temps = relevantBusiness.mapNotNull { it.temperature }
         val humidities = relevantBusiness.mapNotNull { it.humidity }
         val winds = relevantBusiness.mapNotNull { it.windSpeed }
-        val avgTemp = temps.averageOrNull() ?: listOfNotNull(day?.tempMin, day?.tempMax).averageOrNull()
+        val avgTemp =
+            temps.averageOrNull()
+                ?: listOfNotNull(day?.tempMin, day?.tempMax).averageOrNull()
         val avgHumidity = humidities.averageOrNull() ?: day?.humidity
         val maxWind = winds.maxOrNull()
-        val headline = overview.current?.text?.takeIf { overview.date == LocalDate.now().toString() }
-            ?: day?.textDay
-            ?: relevantBusiness.firstOrNull()?.text
-            ?: "天气"
-        val rainy = businessRain > 0.05 || preRain > 0.05 || maxPop >= 40 || headline.contains("雨")
+        val headline =
+            overview.current?.text?.takeIf { overview.date == LocalDate.now().toString() }
+                ?: day?.textDay
+                ?: relevantBusiness.firstOrNull()?.text
+                ?: "天气"
+        val rainy =
+            businessRain > 0.05 ||
+                preRain > 0.05 ||
+                maxPop >= 40 ||
+                headline.contains("雨")
+        val wetHours =
+            relevantBusiness
+                .filter {
+                    (it.precipitationProbability ?: 0.0) >= 50.0 ||
+                        (it.precipitation ?: 0.0) >= 0.5
+                }
+                .mapNotNull { hour ->
+                    hour.time
+                        .substringAfter('T', "")
+                        .take(5)
+                        .takeIf { it.length == 5 }
+                }
+                .distinct()
+
         return WeatherMetrics(
             headline = headline,
             maxPop = maxPop,
@@ -759,14 +1090,101 @@ class BusinessScoreEngine(
             avgHumidity = avgHumidity,
             maxWindSpeed = maxWind,
             hasAlert = overview.alerts.any { alert ->
-                // Keep undated warnings, but exclude warnings scoped to other dates.
-                alert.startTime.isBlank() || alert.startTime.take(10) == overview.date ||
+                alert.startTime.isBlank() ||
+                    alert.startTime.take(10) == overview.date ||
                     alert.endTime.take(10) == overview.date
             },
-            rainy = rainy
+            rainy = rainy,
+            expectedHourCount = expectedHourCount,
+            actualHourCount = actualHourCount,
+            coverageRatio = coverageRatio,
+            evidenceStatus = evidenceStatus,
+            fetchedAt = fetchedAt,
+            stale = stale,
+            wetHours = wetHours
         )
     }
 
+    private fun businessDurationRatio(
+        record: StoreDailyRecord,
+        store: StoreOption
+    ): Double? {
+        if (record.actualStartTime.isBlank() || record.actualEndTime.isBlank()) {
+            return null
+        }
+        val recordDate =
+            runCatching {
+                LocalDate.parse(record.date)
+            }.getOrNull() ?: return null
+        val expected =
+            BusinessWeatherWindow.forDay(
+                recordDate,
+                store.defaultStartTime,
+                store.defaultEndTime
+            )
+        val actual =
+            BusinessWeatherWindow.forDay(
+                recordDate,
+                record.actualStartTime,
+                record.actualEndTime
+            )
+        val expectedMinutes = Duration.between(expected.start, expected.end).toMinutes()
+        val actualMinutes = Duration.between(actual.start, actual.end).toMinutes()
+        if (expectedMinutes <= 0L || actualMinutes <= 0L) return null
+        return (actualMinutes.toDouble() / expectedMinutes.toDouble()).coerceIn(0.0, 1.5)
+    }
+
+    private fun inventoryAdvice(
+        dateString: String,
+        baselineRevenue: Double
+    ): String {
+        val items = db.getInventoryDayItems(dateString)
+        val openingCost =
+            items.sumOf { item ->
+                val unitCost = item.effectiveUnitCost ?: 0.0
+                if (unitCost > 0.0 && item.openingQuantity > 0.0) {
+                    unitCost * item.openingQuantity
+                } else {
+                    0.0
+                }
+            }
+        if (baselineRevenue <= 0.0) {
+            return "历史基准不足，备货先按保守量；优先结合现有库存人工判断"
+        }
+        val estimatedNormalCost = baselineRevenue * 0.60
+        return when {
+            openingCost >= estimatedNormalCost * 0.90 ->
+                "结转库存成本估值已接近常规单日货品成本，优先消化库存并减少新增采购"
+            openingCost >= estimatedNormalCost * 0.45 ->
+                "已有一定结转库存，新增采购建议偏保守"
+            else ->
+                "结转库存压力不高，备货可按常规量并结合天气风险微调"
+        }
+    }
+
+    private fun percentile(
+        values: List<Double>,
+        p: Double
+    ): Double {
+        if (values.isEmpty()) return 0.0
+        val sorted = values.sorted()
+        if (sorted.size == 1) return sorted.first()
+        val position = sorted.lastIndex * p.coerceIn(0.0, 1.0)
+        val lower = position.toInt()
+        val upper = ceil(position).toInt().coerceAtMost(sorted.lastIndex)
+        if (lower == upper) return sorted[lower]
+        val fraction = position - lower
+        return sorted[lower] + (sorted[upper] - sorted[lower]) * fraction
+    }
+
+    private fun temperatureBand(temp: Double?): Int = when {
+        temp == null -> -1
+        temp < 16.0 -> 0
+        temp <= 22.0 -> 1
+        temp <= 29.0 -> 2
+        temp <= 33.0 -> 3
+        else -> 4
+    }
     private fun temperatureLabel(temp: Double?): String = when {
         temp == null -> ""
         temp in 20.0..29.0 -> "适中"

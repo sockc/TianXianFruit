@@ -2375,6 +2375,7 @@ private fun businessConfidenceLabel(value: String): String =
     when (value.uppercase(Locale.ROOT)) {
         "HIGH" -> "较高"
         "MEDIUM" -> "中"
+        "INSUFFICIENT" -> "资料不足"
         else -> "低"
     }
 
@@ -2392,11 +2393,15 @@ private fun loadAndSaveBusinessScore(
     }
 
     var overview: WeatherOverview? = null
+    var weatherFetchedAt = 0L
+    var weatherExpiresAt = 0L
     val cached = db.getWeatherCache(dateString, store.id)
     if (cached != null) {
         overview = runCatching {
             WeatherClient.parseOverview(cached.payloadJson, historical = false)
         }.getOrNull()
+        weatherFetchedAt = cached.fetchedAt
+        weatherExpiresAt = cached.expiresAt
     }
 
     val cacheStale = cached == null || cached.expiresAt <= System.currentTimeMillis()
@@ -2411,18 +2416,29 @@ private fun loadAndSaveBusinessScore(
                 WeatherClient(cloudSyncManager).fetchOverview(bookId, store, date, 120)
             }.onSuccess { fresh ->
                 overview = fresh
+                val fetchedAt = System.currentTimeMillis()
+                val ttl = weatherCacheTtl(date)
+                weatherFetchedAt = fetchedAt
+                weatherExpiresAt = fetchedAt + ttl
                 db.saveWeatherCache(
                     dateString,
                     store.id,
                     fresh.rawJson,
-                    weatherCacheTtl(date),
-                    System.currentTimeMillis()
+                    ttl,
+                    fetchedAt
                 )
             }
         }
     }
 
-    val calculated = BusinessScoreEngine(db).calculate(date, store, overview)
+    val calculated =
+        BusinessScoreEngine(db).calculate(
+            date = date,
+            store = store,
+            weather = overview,
+            weatherFetchedAt = weatherFetchedAt,
+            weatherExpiresAt = weatherExpiresAt
+        )
     return db.saveBusinessScore(calculated) ?: calculated
 }
 
@@ -2536,7 +2552,7 @@ private fun HomeBusinessAdviceCard(
                             ) {
                                 Text(store.name, style = MaterialTheme.typography.labelSmall, maxLines = 1)
                                 Text(
-                                    storedScore?.let { "${it.totalScore}%" } ?: "--",
+                                    storedScore?.let { "${it.totalScore}分" } ?: "--",
                                     fontWeight = FontWeight.Bold,
                                     color = if (selected) BrandGreen else Color.DarkGray,
                                     style = MaterialTheme.typography.bodySmall
@@ -2550,34 +2566,45 @@ private fun HomeBusinessAdviceCard(
             when {
                 state.score != null -> {
                     val score = state.score!!
+                    val modelMeta =
+                        remember(score.detailsJson) {
+                            businessScoreModelUi(score.detailsJson)
+                        }
                     Row(
                         Modifier.fillMaxWidth().clickable { onOpenDetail(dateString, score.storeId) },
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            "${score.totalScore}%",
+                            "${score.totalScore}分",
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Bold,
                             color = BrandGreen
                         )
                         Spacer(Modifier.width(8.dp))
-                        val compact = listOf(
-                            score.weatherSummary.takeIf { it.isNotBlank() },
-                            score.historySummary.takeIf { it.isNotBlank() },
-                            score.trendSummary.takeIf { it.contains("偏弱") || it.contains("偏强") }
-                        ).filterNotNull().distinct().joinToString(" · ")
-                        Text(
-                            compact.ifBlank { "正在积累同位置历史数据" },
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.DarkGray,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                modelMeta.recommendation.ifBlank {
+                                    if (score.sampleCount < 3) "资料不足" else "谨慎营业"
+                                },
+                                fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            val compact = listOf(
+                                modelMeta.specialReminder.takeIf { it.isNotBlank() },
+                                score.weatherSummary.takeIf { it.isNotBlank() },
+                                score.historySummary.takeIf { it.isNotBlank() }
+                            ).filterNotNull().distinct().joinToString(" · ")
+                            Text(
+                                compact.ifBlank { "正在积累同位置历史数据" },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.DarkGray,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                         Text("详情 ›", style = MaterialTheme.typography.labelSmall, color = BrandGreen)
                     }
-                }
-                state.loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                }                state.loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
                 else -> Text(
                     state.error.ifBlank { "经营建议暂不可用" },
                     style = MaterialTheme.typography.bodySmall,
@@ -2627,25 +2654,51 @@ private data class BusinessScoreModelUi(
     val version: String = "V1",
     val evidenceStrength: Double = 0.0,
     val calibrationCount: Int = 0,
-    val calibrationAdjustment: Double = 0.0
+    val calibrationAdjustment: Double = 0.0,
+    val recommendation: String = "",
+    val snapshotStage: String = "",
+    val positionSampleCount: Int = 0,
+    val excludedHistoryCount: Int = 0,
+    val weatherCoverage: Double = 0.0,
+    val weatherEvidenceStatus: String = "MISSING",
+    val businessWindowTip: String = "",
+    val inventoryAdvice: String = "",
+    val revenueRangeLow: Double = 0.0,
+    val revenueRangeHigh: Double = 0.0,
+    val specialReminder: String = ""
 )
 
 private fun businessScoreModelUi(detailsJson: String): BusinessScoreModelUi =
     runCatching {
         val root = JSONObject(detailsJson.ifBlank { "{}" })
         val calibration = root.optJSONObject("calibration")
+        val weather = root.optJSONObject("weather")
+        val actions = root.optJSONObject("actions")
         BusinessScoreModelUi(
             version = root.optString("score_version", "V1"),
             evidenceStrength = root.optDouble("evidence_strength", 0.0),
             calibrationCount = calibration?.optInt("sample_count", 0) ?: 0,
-            calibrationAdjustment = calibration?.optDouble("adjustment_points", 0.0) ?: 0.0
+            calibrationAdjustment = calibration?.optDouble("adjustment_points", 0.0) ?: 0.0,
+            recommendation = root.optString("recommendation", ""),
+            snapshotStage = root.optString("snapshot_stage", ""),
+            positionSampleCount = root.optInt("position_sample_count", 0),
+            excludedHistoryCount = root.optInt("excluded_history_count", 0),
+            weatherCoverage = weather?.optDouble("coverage_ratio", 0.0) ?: 0.0,
+            weatherEvidenceStatus = weather?.optString("evidence_status", "MISSING") ?: "MISSING",
+            businessWindowTip = actions?.optString("business_window_tip", "") ?: "",
+            inventoryAdvice = actions?.optString("inventory_advice", "") ?: "",
+            revenueRangeLow = actions?.optDouble("revenue_range_low", 0.0) ?: 0.0,
+            revenueRangeHigh = actions?.optDouble("revenue_range_high", 0.0) ?: 0.0,
+            specialReminder = actions?.optString("special_factor_reminder", "") ?: ""
         )
     }.getOrDefault(BusinessScoreModelUi())
 
 private data class BusinessScoreSnapshotUi(
     val at: Long,
     val score: Int,
-    val summary: String
+    val summary: String,
+    val stage: String = "LEGACY",
+    val recommendation: String = ""
 )
 
 private fun businessScoreSnapshots(raw: String): List<BusinessScoreSnapshotUi> =
@@ -2658,12 +2711,31 @@ private fun businessScoreSnapshots(raw: String): List<BusinessScoreSnapshotUi> =
                     BusinessScoreSnapshotUi(
                         at = o.optLong("at"),
                         score = o.optInt("score"),
-                        summary = o.optString("weather_summary")
+                        summary = o.optString("weather_summary"),
+                        stage = o.optString("stage", "LEGACY"),
+                        recommendation = o.optString("recommendation", "")
                     )
                 )
             }
         }
     }.getOrDefault(emptyList())
+
+private fun businessWeatherEvidenceLabel(value: String): String =
+    when (value.uppercase(Locale.ROOT)) {
+        "COMPLETE" -> "预报完整"
+        "PARTIAL" -> "部分缺失"
+        "SPARSE" -> "缺失较多"
+        "STALE" -> "已过期"
+        else -> "天气数据不足"
+    }
+
+private fun businessSnapshotStageLabel(value: String): String =
+    when (value.uppercase(Locale.ROOT)) {
+        "PRE_OPEN" -> "开摊前"
+        "LIVE" -> "营业中"
+        "FINAL" -> "收摊后"
+        else -> "历史"
+    }
 
 @Composable
 private fun BusinessAdviceDetailContent(
@@ -2761,19 +2833,46 @@ private fun BusinessAdviceDetailContent(
                 when {
                     state.score != null -> {
                         val score = state.score!!
+                        val modelMeta =
+                            remember(score.detailsJson) {
+                                businessScoreModelUi(score.detailsJson)
+                            }
                         Row(verticalAlignment = Alignment.Bottom) {
-                            Text("${score.totalScore}%", fontSize = 42.sp, fontWeight = FontWeight.Bold, color = BrandGreen)
+                            Text(
+                                "${score.totalScore}分",
+                                fontSize = 42.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = BrandGreen
+                            )
                             Spacer(Modifier.width(10.dp))
                             Column(Modifier.padding(bottom = 5.dp)) {
-                                Text("经营指数", fontWeight = FontWeight.Bold)
                                 Text(
-                                    "可信度 ${businessConfidenceLabel(score.confidence)} · 相似样本 ${score.sampleCount} 个",
+                                    modelMeta.recommendation.ifBlank {
+                                        if (score.sampleCount < 3) "资料不足" else "谨慎营业"
+                                    },
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    "经营指数 · 可信度 ${businessConfidenceLabel(score.confidence)} · 相似样本 ${score.sampleCount} 个",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = Color.Gray
                                 )
                             }
                         }
                         Text(score.weatherSummary, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "天气证据 ${businessWeatherEvidenceLabel(modelMeta.weatherEvidenceStatus)} · " +
+                                "营业时段覆盖 ${(modelMeta.weatherCoverage * 100).roundToInt()}%",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.DarkGray
+                        )
+                        if (modelMeta.recommendation == "资料不足") {
+                            Text(
+                                "当前有效历史或天气证据不足，先提供天气与经营提醒，不把分数当成明确营业结论。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFB26A00)
+                            )
+                        }
                         Text(score.historySummary, color = Color.DarkGray)
                     }
                     state.loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -2784,7 +2883,7 @@ private fun BusinessAdviceDetailContent(
 
         state.score?.let { score ->
             val modelMeta = remember(score.detailsJson) { businessScoreModelUi(score.detailsJson) }
-            val isV2 = modelMeta.version.startsWith("V2")
+            val isV2 = modelMeta.version.startsWith("V2") || modelMeta.version.startsWith("V3")
             Card(shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Text(if (isV2) "参考维度" else "指数构成", fontWeight = FontWeight.Bold, fontSize = 17.sp)
@@ -2794,7 +2893,7 @@ private fun BusinessAdviceDetailContent(
                         BusinessScoreBreakdownRow("日期环境", score.calendarScore, 100, score.calendarSummary)
                         BusinessScoreBreakdownRow("近期趋势", score.trendScore, 100, score.trendSummary)
                         Text(
-                            "V2 以同位置相似历史日为核心，四个维度采用动态证据权重；样本不足时总分自动向中性 70 回归，不再把固定权重直接相加。",
+                            "当前模型以同位置相似历史日为核心，并单独检查样本量、天气逐小时覆盖和数据新鲜度；分数是经营指数，不是赚钱概率。",
                             style = MaterialTheme.typography.labelSmall,
                             color = Color.Gray
                         )
@@ -2830,6 +2929,45 @@ private fun BusinessAdviceDetailContent(
                 }
             }
 
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFF3FAF5)),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Text("行动建议", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                    Text(
+                        modelMeta.recommendation.ifBlank { "资料不足" },
+                        fontWeight = FontWeight.SemiBold,
+                        color = BrandGreen
+                    )
+                    if (modelMeta.revenueRangeLow > 0.0 && modelMeta.revenueRangeHigh > 0.0) {
+                        Text(
+                            "历史营业额参考 ${money(modelMeta.revenueRangeLow)} ～ ${money(modelMeta.revenueRangeHigh)}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    } else {
+                        Text(
+                            "历史营业额参考区间暂不可用",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+                    }
+                    if (modelMeta.businessWindowTip.isNotBlank()) {
+                        Text("营业时段：${modelMeta.businessWindowTip}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (modelMeta.inventoryAdvice.isNotBlank()) {
+                        Text("库存/备货：${modelMeta.inventoryAdvice}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (modelMeta.specialReminder.isNotBlank()) {
+                        Text(modelMeta.specialReminder, style = MaterialTheme.typography.bodySmall, color = Color(0xFFB26A00))
+                    }
+                    Text(
+                        "营业建议判断外部经营条件；库存和备货提示独立展示，不参与经营指数。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Gray
+                    )
+                }
+            }
             if (isV2) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F8FA)),
@@ -2843,9 +2981,9 @@ private fun BusinessAdviceDetailContent(
                         )
                         Text(
                             if (modelMeta.calibrationCount >= 6) {
-                                "已使用 ${modelMeta.calibrationCount} 个历史经营结果校准，本次修正 ${if (modelMeta.calibrationAdjustment >= 0) "+" else ""}${String.format(Locale.CHINA, "%.1f", modelMeta.calibrationAdjustment)} 分"
+                                "已使用 ${modelMeta.calibrationCount} 个开摊前预测与最终实绩校准，本次修正 ${if (modelMeta.calibrationAdjustment >= 0) "+" else ""}${String.format(Locale.CHINA, "%.1f", modelMeta.calibrationAdjustment)} 分"
                             } else {
-                                "已有 ${modelMeta.calibrationCount} 个 V2 经营结果复盘；累计到 6 个后自动启用位置级校准"
+                                "已有 ${modelMeta.calibrationCount} 个“开摊前预测 → 最终实绩”样本；累计到 6 个后自动启用位置级校准"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.DarkGray
@@ -2878,7 +3016,18 @@ private fun BusinessAdviceDetailContent(
                 }
             }
 
-            if (score.actualRevenue > 0.0 || score.actualCustomers > 0) {
+            val hasActualRecord =
+                remember(
+                    dataVersion,
+                    score.date,
+                    score.storeId
+                ) {
+                    db.getStoreDailyRecord(
+                        score.date,
+                        score.storeId
+                    ) != null
+                }
+            if (hasActualRecord) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = SoftGreen),
                     shape = RoundedCornerShape(16.dp)
@@ -2909,11 +3058,11 @@ private fun BusinessAdviceDetailContent(
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("特殊因素标记", fontWeight = FontWeight.Bold)
                     Text(
-                        "只作为历史标签保存，V1 暂不直接加减经营指数，避免主观判断污染模型。",
+                        "工厂放假、发薪日等先作为显著提醒；短时营业、提前收摊、缺货、临时换位会从正常历史基准中排除。样本足够后再学习其影响。",
                         style = MaterialTheme.typography.labelSmall,
                         color = Color.Gray
                     )
-                    val tags = listOf("", "工厂放假", "发薪日", "附近活动", "道路施工", "竞争促销", "临时换位", "其他")
+                    val tags = listOf("", "工厂放假", "发薪日", "短时营业", "提前收摊", "缺货", "附近活动", "道路施工", "竞争促销", "临时换位", "其他")
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         tags.chunked(3).forEach { rowTags ->
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -2939,7 +3088,6 @@ private fun BusinessAdviceDetailContent(
                         onClick = {
                             if (db.updateBusinessScoreSpecialTag(score.date, score.storeId, tagDraft, noteDraft)) {
                                 state = BusinessAdviceUiState(score = db.getBusinessScore(score.date, score.storeId))
-                                cloudSyncManager.scheduleAutoSync(currentBook)
                                 onChanged()
                             }
                         }
@@ -2953,12 +3101,20 @@ private fun BusinessAdviceDetailContent(
             if (snapshots.isNotEmpty()) {
                 Card(shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                        Text("今日评分变化", fontWeight = FontWeight.Bold)
+                        Text("预测 / 营业中更新", fontWeight = FontWeight.Bold)
                         snapshots.forEach { snap ->
                             Row(Modifier.fillMaxWidth()) {
                                 Text(compactSyncTime(snap.at), modifier = Modifier.width(58.dp), color = Color.Gray)
-                                Text("${snap.score}%", modifier = Modifier.width(52.dp), fontWeight = FontWeight.Bold)
-                                Text(snap.summary, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                                Text("${snap.score}分", modifier = Modifier.width(58.dp), fontWeight = FontWeight.Bold)
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        businessSnapshotStageLabel(snap.stage) +
+                                            snap.recommendation.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(snap.summary, style = MaterialTheme.typography.bodySmall)
+                                }
                             }
                         }
                     }
@@ -2966,7 +3122,7 @@ private fun BusinessAdviceDetailContent(
             }
 
             Text(
-                "经营指数表示当前条件相对本位置历史基准的有利程度，不是营业额预测值，也不是预测准确率。",
+                "经营指数按“分”展示，只表示当前条件相对本位置历史基准的有利程度；不是赚钱概率。自动校准只使用开摊前快照与最终实绩。",
                 style = MaterialTheme.typography.labelSmall,
                 color = Color.Gray,
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
