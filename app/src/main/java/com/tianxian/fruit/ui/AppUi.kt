@@ -2369,14 +2369,18 @@ private fun weatherWindowLabel(
         window.start.format(formatter)
     val endText =
         window.end.format(formatter)
-    return when {
-        window.start.toLocalDate().isBefore(baseDate) ->
-            "前一日$startText–$endText"
-        window.end.toLocalDate().isAfter(baseDate) ->
-            "$startText–次日$endText"
-        else ->
-            "$startText–$endText"
-    }
+    fun dayPrefix(value: LocalDate): String =
+        when {
+            value.isBefore(baseDate) -> "前一日"
+            value.isAfter(baseDate) -> "次日"
+            else -> ""
+        }
+    return dayPrefix(
+        window.start.toLocalDate()
+    ) + startText + "–" +
+        dayPrefix(
+            window.end.toLocalDate()
+        ) + endText
 }
 
 private fun weatherSegmentRiskText(
@@ -2425,8 +2429,26 @@ private fun weatherSegmentRiskText(
     }
 }
 
-private fun businessTimeLabel(store: StoreOption?): String =
-    "${store?.defaultStartTime ?: "16:00"}–${store?.defaultEndTime ?: "24:00"}"
+private fun businessTimeLabel(
+    store: StoreOption?
+): String {
+    val start =
+        store?.defaultStartTime ?: "16:00"
+    val end =
+        store?.defaultEndTime ?: "24:00"
+    val startMinutes =
+        storeTimeMinutes(start, 16 * 60)
+    val endMinutes =
+        storeTimeMinutes(end, 24 * 60)
+    return if (
+        end != "24:00" &&
+        endMinutes <= startMinutes
+    ) {
+        "$start–次日$end"
+    } else {
+        "$start–$end"
+    }
+}
 
 private fun windSpeedText(value: Double?): String =
     value?.let { String.format(Locale.CHINA, "%.0fkm/h", it) } ?: "—"
