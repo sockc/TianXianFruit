@@ -74,7 +74,7 @@ internal object WeatherDisplayPolicy {
                 today,
                 selectedDate
             )
-        return if (daysAhead in 0..4) {
+        return if (daysAhead in 0L..4L) {
             MODE_HOURLY
         } else {
             MODE_TREND
