@@ -5,6 +5,7 @@ import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.OffsetDateTime
 import java.time.ZoneId
+import kotlin.math.round
 
 /** A business day can extend past midnight; timestamps are compared in China time. */
 internal data class BusinessWeatherWindow(
@@ -127,6 +128,24 @@ internal object DraftRefreshPolicy {
 
 internal object SyncStatusPolicy {
     fun error(globalError: String, tableError: String): String = tableError.ifBlank { globalError }
+}
+
+internal object SyncTablePolicy {
+    // Forecast snapshots and calculated operating advice are disposable local data.
+    // Actual business weather history remains syncable because it is an accounting input.
+    val localOnlyTables = setOf("weather_snapshot", "daily_business_score")
+
+    fun isLocalOnly(table: String): Boolean = table in localOnlyTables
+}
+
+internal object FundBalancePolicy {
+    /**
+     * The settlement center is a clearing account. Its outstanding net balance
+     * must be the exact opposite of all non-center partners, never an independently
+     * accumulated historical balance.
+     */
+    fun centerBalance(counterpartyBalances: Iterable<Double>): Double =
+        round(-counterpartyBalances.sum() * 100.0) / 100.0
 }
 
 internal object SyncQueueSql {
