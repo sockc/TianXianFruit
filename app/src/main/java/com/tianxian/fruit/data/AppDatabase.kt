@@ -12928,14 +12928,14 @@ class AppDatabase(
                     .minOrNull()
                     .orEmpty()
             val lastClearedDate =
-                if (openWindows.isEmpty()) {
-                    endDate
-                } else {
-                    counterpartWindows
-                        .map { it.lastClearedDate }
-                        .filter { it.isNotBlank() }
-                        .minOrNull()
-                        .orEmpty()
+                when {
+                    openWindows.isEmpty() -> endDate
+                    openWindows.any { it.lastClearedDate.isBlank() } -> ""
+                    else ->
+                        openWindows
+                            .map { it.lastClearedDate }
+                            .minOrNull()
+                            .orEmpty()
                 }
             val businessDays =
                 if (rangeStart.isBlank()) {
