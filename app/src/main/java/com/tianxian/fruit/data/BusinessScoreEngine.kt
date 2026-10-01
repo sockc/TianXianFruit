@@ -986,34 +986,87 @@ class BusinessScoreEngine(
         overview: WeatherOverview,
         store: StoreOption,
         actualStartTime: String? = null,
-        actualEndTime: String? = null
+        actualEndTime: String? = null,
+        fetchedAt: Long = 0L,
+        expiresAt: Long = 0L,
+        checkFreshness: Boolean = false
     ): WeatherMetrics {
-        val targetDate = runCatching { LocalDate.parse(overview.date) }.getOrElse { LocalDate.now() }
-        val window = BusinessWeatherWindow.forDay(
-            targetDate,
-            actualStartTime?.takeIf { it.isNotBlank() } ?: store.defaultStartTime,
-            actualEndTime?.takeIf { it.isNotBlank() } ?: store.defaultEndTime
-        )
+        val targetDate =
+            runCatching {
+                LocalDate.parse(overview.date)
+            }.getOrElse { LocalDate.now() }
+        val window =
+            BusinessWeatherWindow.forDay(
+                targetDate,
+                actualStartTime?.takeIf { it.isNotBlank() } ?: store.defaultStartTime,
+                actualEndTime?.takeIf { it.isNotBlank() } ?: store.defaultEndTime
+            )
         val hours = overview.hourly
         val preHours = hours.filter { window.beforeBusiness(it.time) }
         val relevantBusiness = hours.filter { window.duringBusiness(it.time) }
+        val expectedHourCount =
+            ceil(
+                Duration.between(window.start, window.end).toMinutes() / 60.0
+            ).toInt().coerceAtLeast(1)
+        val actualHourCount =
+            relevantBusiness
+                .map { it.time.take(13) }
+                .distinct()
+                .size
+        val coverageRatio =
+            (actualHourCount.toDouble() / expectedHourCount.toDouble())
+                .coerceIn(0.0, 1.0)
+        val stale =
+            checkFreshness &&
+                (
+                    fetchedAt <= 0L ||
+                        (expiresAt > 0L && expiresAt <= System.currentTimeMillis())
+                    )
+        val evidenceStatus =
+            BusinessAdvicePolicy.weatherEvidenceStatus(
+                coverageRatio = coverageRatio,
+                stale = stale
+            )
+
         val day = overview.daily.firstOrNull { it.date == overview.date }
-        val maxPop = relevantBusiness.mapNotNull { it.precipitationProbability }.maxOrNull()
-            ?: day?.precipitationProbability
-            ?: 0.0
+        val maxPop =
+            relevantBusiness.mapNotNull { it.precipitationProbability }.maxOrNull()
+                ?: day?.precipitationProbability
+                ?: 0.0
         val businessRain = relevantBusiness.sumOf { it.precipitation ?: 0.0 }
         val preRain = preHours.sumOf { it.precipitation ?: 0.0 }
         val temps = relevantBusiness.mapNotNull { it.temperature }
         val humidities = relevantBusiness.mapNotNull { it.humidity }
         val winds = relevantBusiness.mapNotNull { it.windSpeed }
-        val avgTemp = temps.averageOrNull() ?: listOfNotNull(day?.tempMin, day?.tempMax).averageOrNull()
+        val avgTemp =
+            temps.averageOrNull()
+                ?: listOfNotNull(day?.tempMin, day?.tempMax).averageOrNull()
         val avgHumidity = humidities.averageOrNull() ?: day?.humidity
         val maxWind = winds.maxOrNull()
-        val headline = overview.current?.text?.takeIf { overview.date == LocalDate.now().toString() }
-            ?: day?.textDay
-            ?: relevantBusiness.firstOrNull()?.text
-            ?: "天气"
-        val rainy = businessRain > 0.05 || preRain > 0.05 || maxPop >= 40 || headline.contains("雨")
+        val headline =
+            overview.current?.text?.takeIf { overview.date == LocalDate.now().toString() }
+                ?: day?.textDay
+                ?: relevantBusiness.firstOrNull()?.text
+                ?: "天气"
+        val rainy =
+            businessRain > 0.05 ||
+                preRain > 0.05 ||
+                maxPop >= 40 ||
+                headline.contains("雨")
+        val wetHours =
+            relevantBusiness
+                .filter {
+                    (it.precipitationProbability ?: 0.0) >= 50.0 ||
+                        (it.precipitation ?: 0.0) >= 0.5
+                }
+                .mapNotNull { hour ->
+                    hour.time
+                        .substringAfter('T', "")
+                        .take(5)
+                        .takeIf { it.length == 5 }
+                }
+                .distinct()
+
         return WeatherMetrics(
             headline = headline,
             maxPop = maxPop,
@@ -1023,14 +1076,101 @@ class BusinessScoreEngine(
             avgHumidity = avgHumidity,
             maxWindSpeed = maxWind,
             hasAlert = overview.alerts.any { alert ->
-                // Keep undated warnings, but exclude warnings scoped to other dates.
-                alert.startTime.isBlank() || alert.startTime.take(10) == overview.date ||
+                alert.startTime.isBlank() ||
+                    alert.startTime.take(10) == overview.date ||
                     alert.endTime.take(10) == overview.date
             },
-            rainy = rainy
+            rainy = rainy,
+            expectedHourCount = expectedHourCount,
+            actualHourCount = actualHourCount,
+            coverageRatio = coverageRatio,
+            evidenceStatus = evidenceStatus,
+            fetchedAt = fetchedAt,
+            stale = stale,
+            wetHours = wetHours
         )
     }
 
+    private fun businessDurationRatio(
+        record: StoreDailyRecord,
+        store: StoreOption
+    ): Double? {
+        if (record.actualStartTime.isBlank() || record.actualEndTime.isBlank()) {
+            return null
+        }
+        val recordDate =
+            runCatching {
+                LocalDate.parse(record.date)
+            }.getOrNull() ?: return null
+        val expected =
+            BusinessWeatherWindow.forDay(
+                recordDate,
+                store.defaultStartTime,
+                store.defaultEndTime
+            )
+        val actual =
+            BusinessWeatherWindow.forDay(
+                recordDate,
+                record.actualStartTime,
+                record.actualEndTime
+            )
+        val expectedMinutes = Duration.between(expected.start, expected.end).toMinutes()
+        val actualMinutes = Duration.between(actual.start, actual.end).toMinutes()
+        if (expectedMinutes <= 0L || actualMinutes <= 0L) return null
+        return (actualMinutes.toDouble() / expectedMinutes.toDouble()).coerceIn(0.0, 1.5)
+    }
+
+    private fun inventoryAdvice(
+        dateString: String,
+        baselineRevenue: Double
+    ): String {
+        val items = db.getInventoryDayItems(dateString)
+        val openingCost =
+            items.sumOf { item ->
+                val unitCost = item.effectiveUnitCost ?: 0.0
+                if (unitCost > 0.0 && item.openingQuantity > 0.0) {
+                    unitCost * item.openingQuantity
+                } else {
+                    0.0
+                }
+            }
+        if (baselineRevenue <= 0.0) {
+            return "历史基准不足，备货先按保守量；优先结合现有库存人工判断"
+        }
+        val estimatedNormalCost = baselineRevenue * 0.60
+        return when {
+            openingCost >= estimatedNormalCost * 0.90 ->
+                "结转库存成本估值已接近常规单日货品成本，优先消化库存并减少新增采购"
+            openingCost >= estimatedNormalCost * 0.45 ->
+                "已有一定结转库存，新增采购建议偏保守"
+            else ->
+                "结转库存压力不高，备货可按常规量并结合天气风险微调"
+        }
+    }
+
+    private fun percentile(
+        values: List<Double>,
+        p: Double
+    ): Double {
+        if (values.isEmpty()) return 0.0
+        val sorted = values.sorted()
+        if (sorted.size == 1) return sorted.first()
+        val position = sorted.lastIndex * p.coerceIn(0.0, 1.0)
+        val lower = position.toInt()
+        val upper = ceil(position).toInt().coerceAtMost(sorted.lastIndex)
+        if (lower == upper) return sorted[lower]
+        val fraction = position - lower
+        return sorted[lower] + (sorted[upper] - sorted[lower]) * fraction
+    }
+
+    private fun temperatureBand(temp: Double?): Int = when {
+        temp == null -> -1
+        temp < 16.0 -> 0
+        temp <= 22.0 -> 1
+        temp <= 29.0 -> 2
+        temp <= 33.0 -> 3
+        else -> 4
+    }
     private fun temperatureLabel(temp: Double?): String = when {
         temp == null -> ""
         temp in 20.0..29.0 -> "适中"
