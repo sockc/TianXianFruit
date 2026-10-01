@@ -4006,10 +4006,6 @@ private fun WeatherDetailContent(
             }
             val todayOverview = forecast15
             if (todayOverview != null) {
-                val stale =
-                    forecast15ExpiresAt > 0L &&
-                        forecast15ExpiresAt <=
-                            System.currentTimeMillis()
                 state = WeatherUiState(
                     overview = todayOverview,
                     refreshing = forecast15Refreshing,
