@@ -10136,6 +10136,23 @@ class AppDatabase(
             existing.historySummary != score.historySummary ||
             existing.calendarSummary != score.calendarSummary ||
             existing.trendSummary != score.trendSummary
+        val scoreDetails =
+            runCatching {
+                JSONObject(score.detailsJson.ifBlank { "{}" })
+            }.getOrElse { JSONObject() }
+        val snapshotStage =
+            scoreDetails.optString("snapshot_stage", "")
+        val latestSnapshotStage =
+            if (snapshots.length() > 0) {
+                snapshots.optJSONObject(snapshots.length() - 1)
+                    ?.optString("stage", "")
+                    .orEmpty()
+            } else {
+                ""
+            }
+        val stageChanged =
+            snapshotStage.isNotBlank() &&
+                snapshotStage != latestSnapshotStage
         val staleSnapshot = existing == null || now - existing.generatedAt >= 30L * 60L * 1000L
         val actualChanged = existing != null && (
             kotlin.math.abs(existing.actualRevenue - actualRevenue) > 0.005 ||
@@ -10147,11 +10164,13 @@ class AppDatabase(
         if (existing != null && !materiallyChanged && !staleSnapshot && !actualChanged) {
             return existing
         }
-        if (materiallyChanged || staleSnapshot) {
+        if (materiallyChanged || staleSnapshot || stageChanged) {
             snapshots.put(
                 JSONObject().apply {
                     put("at", now)
+                    put("stage", snapshotStage.ifBlank { "LEGACY" })
                     put("score", score.totalScore)
+                    put("baseline_revenue", score.baselineRevenue)
                     put("weather_score", score.weatherScore)
                     put("history_score", score.historyScore)
                     put("calendar_score", score.calendarScore)
@@ -10159,6 +10178,22 @@ class AppDatabase(
                     put("weather_summary", score.weatherSummary)
                     put("history_summary", score.historySummary)
                     put("confidence", score.confidence)
+                    put(
+                        "recommendation",
+                        scoreDetails.optString(
+                            "recommendation",
+                            ""
+                        )
+                    )
+                    put(
+                        "weather_evidence_status",
+                        scoreDetails.optJSONObject("weather")
+                            ?.optString(
+                                "evidence_status",
+                                ""
+                            )
+                            .orEmpty()
+                    )
                 }
             )
         }
@@ -10197,7 +10232,14 @@ class AppDatabase(
             put("actual_customers", actualCustomers)
             put("actual_ticket", actualTicket)
             put("actual_profit", actualProfit)
-            put("score_generated_at", if (materiallyChanged || staleSnapshot) now else existing?.generatedAt ?: now)
+            put(
+                "score_generated_at",
+                if (materiallyChanged || staleSnapshot || stageChanged) {
+                    now
+                } else {
+                    existing?.generatedAt ?: now
+                }
+            )
             put("deleted", 0)
             put("sync_status", 0)
             put("updated_at", now)
