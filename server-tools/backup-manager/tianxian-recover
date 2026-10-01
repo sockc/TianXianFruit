@@ -10,6 +10,8 @@ TARGET=/opt/TianXian-Server
 KEY=/root/.tianxian-backup-key
 R2ENV=/root/.tianxian-r2.env
 VENV=/opt/tianxian-recovery-venv
+DEFAULT_BACKEND_PORT=18080
+BACKEND_PORT=$DEFAULT_BACKEND_PORT
 MANAGER_URL='https://raw.githubusercontent.com/sockc/TianXianFruit/main/server-tools/backup-manager/tianxian-manager'
 
 die(){ echo "✗ $*" >&2; exit 1; }
@@ -131,6 +133,46 @@ if [[ -f "$TOOLS/tianxian-backup-check" ]]; then
 fi
 "$TOOLS/tianxian-restore" "$WORK/latest.txb" --password-file "$KEY" --target "$TARGET"
 
+validate_port(){
+  local port="$1"
+  [[ "$port" =~ ^[0-9]+$ ]] || return 1
+  (( port >= 1 && port <= 65535 ))
+}
+
+port_in_use(){
+  local port="$1"
+  ss -H -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]$port$"
+}
+
+echo
+read -r -p "Server 后端端口 [$DEFAULT_BACKEND_PORT]：" BACKEND_PORT
+BACKEND_PORT="${BACKEND_PORT:-$DEFAULT_BACKEND_PORT}"
+validate_port "$BACKEND_PORT" || die "端口无效：$BACKEND_PORT（必须为 1-65535）"
+
+if [[ "$BACKEND_PORT" != "$DEFAULT_BACKEND_PORT" ]]; then
+  port_in_use "$BACKEND_PORT" && die "端口 $BACKEND_PORT 已被占用，请重新选择。"
+
+  python3 - "$TARGET/docker-compose.yml" "$BACKEND_PORT" <<'PY_PORT'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+port = sys.argv[2]
+text = path.read_text(encoding="utf-8")
+pattern = re.compile(r'(?P<host>127\.0\.0\.1|0\.0\.0\.0):(?P<port>\d+):8000')
+new_text, count = pattern.subn(lambda m: f"{m.group('host')}:{port}:8000", text, count=1)
+if count != 1:
+    raise SystemExit("未找到 Backend 端口映射，未修改 docker-compose.yml")
+path.write_text(new_text, encoding="utf-8")
+PY_PORT
+
+  (cd "$TARGET" && docker compose up -d backend)
+  echo "✓ Backend 宿主机端口已改为 $BACKEND_PORT"
+else
+  echo "✓ Backend 继续使用默认端口 $DEFAULT_BACKEND_PORT"
+fi
+
 step 6 '恢复 key 与 R2 配置'
 install -m 0600 "$KEY" "$TARGET/.backup-key"
 
@@ -191,6 +233,7 @@ SERVER_DIR='$TARGET'
 DOMAIN='sync.830888.xyz'
 RESTORE_TARGET='$TARGET'
 BACKUP_KEY='$TARGET/.backup-key'
+BACKEND_PORT='$BACKEND_PORT'
 EOF2
 chmod 600 /etc/tianxian-manager/config.env
 
@@ -198,7 +241,7 @@ step 8 '健康检查'
 (cd "$TARGET" && docker compose ps)
 HEALTH=''
 for _ in $(seq 1 30); do
-  HEALTH="$(curl -fsS --max-time 3 http://127.0.0.1:18080/health 2>/dev/null || true)"
+  HEALTH="$(curl -fsS --max-time 3 "http://127.0.0.1:$BACKEND_PORT/health" 2>/dev/null || true)"
   [[ -n "$HEALTH" ]] && break
   sleep 2
 done
@@ -226,6 +269,7 @@ esac
 echo
 echo '✓ 天鲜账本裸机恢复完成。'
 echo '✓ R2 已复用首次输入参数完成配置。'
+echo "✓ Backend 端口：$BACKEND_PORT"
 if [[ "$AUTO_BACKUP_ENABLED" -eq 1 ]]; then
   echo '✓ 自动备份：已开启。'
 else
