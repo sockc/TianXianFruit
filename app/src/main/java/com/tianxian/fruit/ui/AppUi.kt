@@ -3881,6 +3881,13 @@ private fun WeatherDetailContent(
         var currentExpiresAt =
             cachedForecast?.expiresAt ?: 0L
 
+        if (currentForecast != null) {
+            forecast15 = currentForecast
+            forecast15UpdatedAt = currentUpdatedAt
+            forecast15ExpiresAt = currentExpiresAt
+            forecast15Resolved = true
+        }
+
         if (
             currentForecast == null ||
             cachedForecast == null ||
