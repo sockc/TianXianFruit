@@ -642,7 +642,7 @@ class BusinessScoreEngine(
         fun medianFor(predicate: (LocalDate) -> Boolean): Pair<Double, Int> {
             val values = historical.mapNotNull { r ->
                 val d = runCatching { LocalDate.parse(r.date) }.getOrNull() ?: return@mapNotNull null
-                r.revenue.takeIf { it > 0 && predicate(d) }
+                r.revenue.takeIf { it >= 0 && predicate(d) }
             }
             return median(values) to values.size
         }
@@ -853,7 +853,11 @@ class BusinessScoreEngine(
         val completed =
             db.getBusinessScoresBefore(storeId, date, 60)
                 .mapNotNull { score ->
-                    if (score.actualRevenue < 0.0) return@mapNotNull null
+                    val actualRecord =
+                        db.getStoreDailyRecord(
+                            score.date,
+                            storeId
+                        ) ?: return@mapNotNull null
                     val snapshots =
                         runCatching {
                             JSONArray(score.snapshotsJson.ifBlank { "[]" })
@@ -872,7 +876,7 @@ class BusinessScoreEngine(
                     CalibrationPoint(
                         predictedScore = frozen.optInt("score", 70),
                         baselineRevenue = baseline,
-                        actualRevenue = score.actualRevenue
+                        actualRevenue = actualRecord.revenue
                     )
                 }
                 .take(20)
