@@ -249,16 +249,89 @@ class BusinessScoreEngine(
             .roundToInt()
             .coerceIn(35, 100)
 
-        val confidence = when {
-            similar.size >= 10 && positionHistory.size >= 20 && weatherMetrics != null -> "HIGH"
-            similar.size >= 5 && positionHistory.size >= 10 -> "MEDIUM"
-            else -> "LOW"
-        }
+        val weatherStatus =
+            weatherMetrics?.evidenceStatus ?: "MISSING"
+        val confidence =
+            BusinessAdvicePolicy.confidence(
+                validHistoryCount = positionHistory.size,
+                similarCount = similar.size,
+                weatherStatus = weatherStatus
+            )
+        val recommendation =
+            BusinessAdvicePolicy.recommendation(
+                score = total,
+                validHistoryCount = positionHistory.size,
+                similarCount = similar.size,
+                weatherStatus = weatherStatus
+            )
+        val snapshotStage =
+            BusinessAdvicePolicy.snapshotStage(
+                targetDate = date,
+                now =
+                    LocalDateTime.now(
+                        ZoneId.of("Asia/Shanghai")
+                    ),
+                window =
+                    BusinessWeatherWindow.forDay(
+                        date,
+                        store.defaultStartTime,
+                        store.defaultEndTime
+                    )
+            )
+        val revenueReferencePool =
+            if (similar.size >= 3) {
+                similar.map { it.record.revenue }
+            } else {
+                baselinePool.map { it.revenue }
+            }
+        val revenueRangeLow =
+            if (revenueReferencePool.size >= 3) {
+                percentile(revenueReferencePool, 0.25)
+            } else {
+                0.0
+            }
+        val revenueRangeHigh =
+            if (revenueReferencePool.size >= 3) {
+                percentile(revenueReferencePool, 0.75)
+            } else {
+                0.0
+            }
+        val businessWindowTip =
+            when {
+                weatherMetrics == null ||
+                    weatherMetrics.actualHourCount <= 0 ->
+                    "营业时段逐小时天气不足，先按保守方案安排"
+                weatherMetrics.wetHours.isNotEmpty() ->
+                    "重点关注 " +
+                        weatherMetrics.wetHours
+                            .take(4)
+                            .joinToString("、") +
+                        " 的降雨风险"
+                else ->
+                    "营业时段暂未发现明显降雨时段"
+            }
+        val inventoryAdvice =
+            inventoryAdvice(
+                dateString = dateString,
+                baselineRevenue = baselineRevenue
+            )
+        val specialReminder =
+            targetSpecialTag
+                .takeIf { it.isNotBlank() }
+                ?.let {
+                    "已标记“" + it +
+                        "”，当前先作为经营提醒，不直接加减分"
+                }
+                .orEmpty()
 
         val details = JSONObject().apply {
-            put("score_version", "V2_SIMILAR_DAY")
-            put("model", "STORE_BASELINE_SIMILAR_DAY_CALIBRATED")
+            put("score_version", "V3_DECISION_GUARDRAILS")
+            put("model", "STORE_BASELINE_SIMILAR_DAY_STAGED_CALIBRATION")
+            put("recommendation", recommendation)
+            put("snapshot_stage", snapshotStage)
             put("position_sample_count", positionHistory.size)
+            put("raw_position_sample_count", rawPositionHistory.size)
+            put("excluded_history_count", excludedHistoryCount)
             put("same_store_similar_count", similar.size)
             put("ledger_fallback_count", ledgerFallbackCount)
             put("evidence_strength", evidenceStrength)
@@ -293,12 +366,49 @@ class BusinessScoreEngine(
                     put("max_wind_speed", m.maxWindSpeed)
                     put("has_alert", m.hasAlert)
                     put("rainy", m.rainy)
+                    put("expected_hour_count", m.expectedHourCount)
+                    put("actual_hour_count", m.actualHourCount)
+                    put("coverage_ratio", m.coverageRatio)
+                    put("evidence_status", m.evidenceStatus)
+                    put("fetched_at", m.fetchedAt)
+                    put("stale", m.stale)
+                    put("wet_hours", JSONArray(m.wetHours))
                 }
+            })
+            put("actions", JSONObject().apply {
+                put("business_window_tip", businessWindowTip)
+                put("inventory_advice", inventoryAdvice)
+                put("revenue_range_low", revenueRangeLow)
+                put("revenue_range_high", revenueRangeHigh)
+                put("special_factor_reminder", specialReminder)
             })
             put("reasons", JSONObject().apply {
                 put("weather", JSONArray(weatherPart.reasons))
-                put("history", JSONArray(historyPart.reasons))
-                put("calendar", JSONArray(calendarPart.reasons))
+                put(
+                    "history",
+                    JSONArray(
+                        historyPart.reasons +
+                            if (excludedHistoryCount > 0) {
+                                listOf(
+                                    "已排除 " +
+                                        excludedHistoryCount +
+                                        " 个短时/异常营业样本，避免历史基准失真"
+                                )
+                            } else {
+                                emptyList()
+                            }
+                    )
+                )
+                put(
+                    "calendar",
+                    JSONArray(
+                        calendarPart.reasons +
+                            specialReminder
+                                .takeIf { it.isNotBlank() }
+                                ?.let(::listOf)
+                                .orEmpty()
+                    )
+                )
                 put("trend", JSONArray(trendPart.reasons + calibrationReason(calibration)))
             })
             put("similar_dates", JSONArray().apply {
