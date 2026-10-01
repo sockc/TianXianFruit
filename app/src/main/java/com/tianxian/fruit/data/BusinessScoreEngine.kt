@@ -6,20 +6,24 @@ import com.tianxian.fruit.sync.WeatherOverview
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.DayOfWeek
+import java.time.Duration
 import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * V1.4.7.56 今日经营建议 V2。
+ * V1.4.7.65 经营建议决策版。
  *
  * 核心原则：
- * 1. 每个位置建立自己的经营基准，优先使用最近 60 个有效营业日的中位数。
- * 2. 以“同位置相似历史日”为核心证据，不再把固定权重简单相加。
- * 3. 天气、日期、近期趋势作为相似度/修正证据；样本不足时自动向中性 70 分回归。
- * 4. 当日实绩只用于营业后复盘和后续自动校准，绝不参与当天开摊前评分。
+ * 1. 分数只是综合经营指数，不是赚钱概率；经营结论受样本与天气证据门槛约束。
+ * 2. 历史基准只使用正常营业样本；短时营业、提前收摊、缺货、临时换位不污染基准。
+ * 3. 天气必须检查营业时段逐小时覆盖率和缓存新鲜度，缺失数据优先降低可信度。
+ * 4. PRE_OPEN / LIVE / FINAL 分阶段保存；自动校准只比较 PRE_OPEN 与后续最终实绩。
  */
 class BusinessScoreEngine(
     private val db: AppDatabase
@@ -33,7 +37,14 @@ class BusinessScoreEngine(
         val avgHumidity: Double? = null,
         val maxWindSpeed: Double? = null,
         val hasAlert: Boolean = false,
-        val rainy: Boolean = false
+        val rainy: Boolean = false,
+        val expectedHourCount: Int = 0,
+        val actualHourCount: Int = 0,
+        val coverageRatio: Double = 0.0,
+        val evidenceStatus: String = "MISSING",
+        val fetchedAt: Long = 0L,
+        val stale: Boolean = false,
+        val wetHours: List<String> = emptyList()
     )
 
     data class CalendarInfo(
@@ -66,14 +77,49 @@ class BusinessScoreEngine(
     fun calculate(
         date: LocalDate,
         store: StoreOption,
-        weather: WeatherOverview?
+        weather: WeatherOverview?,
+        weatherFetchedAt: Long = 0L,
+        weatherExpiresAt: Long = 0L
     ): BusinessScoreRecord {
         val dateString = date.toString()
-        val positionHistory = db.getStoreDailyRecordsBefore(store.id, dateString, 180)
-            .filter { it.revenue > 0.0 }
-            .take(180)
+        val rawPositionHistory =
+            db.getStoreDailyRecordsBefore(store.id, dateString, 180)
+                .take(180)
+        val historicalScores =
+            db.getBusinessScoresBefore(store.id, dateString, 180)
+                .associateBy { it.date }
+        val positionHistory =
+            rawPositionHistory.filter { record ->
+                val durationRatio = businessDurationRatio(record, store)
+                val tag = historicalScores[record.date]?.specialTag.orEmpty()
+                val hasOperatingEvidence =
+                    record.revenue > 0.0 ||
+                        record.actualStartTime.isNotBlank() ||
+                        record.actualEndTime.isNotBlank()
+                hasOperatingEvidence &&
+                    BusinessAdvicePolicy.historyUsable(
+                        durationRatio = durationRatio,
+                        specialTag = tag
+                    )
+            }
+        val excludedHistoryCount =
+            (rawPositionHistory.size - positionHistory.size)
+                .coerceAtLeast(0)
         val calendar = calendarInfo(date)
-        val weatherMetrics = weather?.let { weatherMetrics(it, store) }
+        val weatherMetrics =
+            weather?.let {
+                weatherMetrics(
+                    overview = it,
+                    store = store,
+                    fetchedAt = weatherFetchedAt,
+                    expiresAt = weatherExpiresAt,
+                    checkFreshness = true
+                )
+            }
+        val targetSpecialTag =
+            db.getBusinessScore(dateString, store.id)
+                ?.specialTag
+                .orEmpty()
 
         // 位置基准：只用本位置，最近 60 个有效营业日；中位数比平均数更抗异常值。
         val baselinePool = positionHistory.take(60)
