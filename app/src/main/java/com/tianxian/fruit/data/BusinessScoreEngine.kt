@@ -251,16 +251,22 @@ class BusinessScoreEngine(
 
         val weatherStatus =
             weatherMetrics?.evidenceStatus ?: "MISSING"
+        val validHistoryForDecision =
+            if (baselineRevenue > 0.0) {
+                positionHistory.size
+            } else {
+                0
+            }
         val confidence =
             BusinessAdvicePolicy.confidence(
-                validHistoryCount = positionHistory.size,
+                validHistoryCount = validHistoryForDecision,
                 similarCount = similar.size,
                 weatherStatus = weatherStatus
             )
         val recommendation =
             BusinessAdvicePolicy.recommendation(
                 score = total,
-                validHistoryCount = positionHistory.size,
+                validHistoryCount = validHistoryForDecision,
                 similarCount = similar.size,
                 weatherStatus = weatherStatus
             )
@@ -652,13 +658,13 @@ class BusinessScoreEngine(
         var used = 0
 
         val (sameWeekday, weekdayCount) = medianFor { it.dayOfWeek == target.date.dayOfWeek }
-        if (weekdayCount >= 3 && sameWeekday > 0) {
+        if (weekdayCount >= 3 && sameWeekday >= 0) {
             signals += (sameWeekday / baselineRevenue).coerceIn(0.65, 1.35) to 0.65
             used += weekdayCount
             reasons += "同${target.weekdayLabel}样本 $weekdayCount 个，表现约为基准的 ${(sameWeekday / baselineRevenue * 100).roundToInt()}%"
         } else {
             val (sameWorkType, workCount) = medianFor { calendarInfo(it).isWorkday == target.isWorkday }
-            if (workCount >= 4 && sameWorkType > 0) {
+            if (workCount >= 4 && sameWorkType >= 0) {
                 signals += (sameWorkType / baselineRevenue).coerceIn(0.70, 1.30) to 0.45
                 used += workCount
                 reasons += if (target.isWorkday) "工作日历史已作为补充" else "周末/假日历史已作为补充"
@@ -667,7 +673,7 @@ class BusinessScoreEngine(
 
         if (target.phase != "NORMAL") {
             val (samePhase, phaseCount) = medianFor { calendarInfo(it).phase == target.phase }
-            if (phaseCount >= 2 && samePhase > 0) {
+            if (phaseCount >= 2 && samePhase >= 0) {
                 signals += (samePhase / baselineRevenue).coerceIn(0.65, 1.35) to 0.35
                 used += phaseCount
                 reasons += "${target.phaseLabel}有 $phaseCount 个历史样本"
