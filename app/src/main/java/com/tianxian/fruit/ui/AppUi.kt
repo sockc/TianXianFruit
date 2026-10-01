@@ -2357,7 +2357,8 @@ private fun HomeWeatherCard(
                     loading = false,
                     refreshing = stale,
                     snapshotType = "CACHE",
-                    updatedAtMillis = cached.fetchedAt
+                    updatedAtMillis = cached.fetchedAt,
+                    expiresAtMillis = cached.expiresAt
                 )
                 if (!stale) return@LaunchedEffect
             }
@@ -2371,17 +2372,24 @@ private fun HomeWeatherCard(
                 val overview = WeatherClient(cloudSyncManager)
                     .fetchOverview(bookId, store, selectedDate, 120)
                 val fetchedAt = System.currentTimeMillis()
+                val ttl =
+                    weatherCacheTtl(
+                        selectedDate,
+                        store,
+                        overview
+                    )
                 db.saveWeatherCache(
                     dateString,
                     store.id,
                     overview.rawJson,
-                    weatherCacheTtl(selectedDate),
+                    ttl,
                     fetchedAt
                 )
                 WeatherUiState(
                     overview = overview,
                     snapshotType = "CACHE",
-                    updatedAtMillis = fetchedAt
+                    updatedAtMillis = fetchedAt,
+                    expiresAtMillis = fetchedAt + ttl
                 )
             }
         }
@@ -2402,11 +2410,34 @@ private fun HomeWeatherCard(
     val temp = current?.temperature?.takeIf { selectedDate == LocalDate.now() }
         ?: businessHours.firstOrNull()?.temperature
         ?: day?.tempMax
-    val homeAlerts = remember(overview?.rawJson) {
-        overview?.alerts.orEmpty()
-            .filter { weatherAlertLevel(it) >= 2 }
-            .sortedByDescending(::weatherAlertLevel)
-    }
+    val homeAlerts =
+        remember(
+            overview?.rawJson,
+            selectedDate,
+            selectedStore?.id
+        ) {
+            weatherRelevantAlerts(
+                overview?.alerts.orEmpty(),
+                selectedDate,
+                selectedStore
+            )
+                .filter {
+                    weatherAlertLevel(it) >= 2
+                }
+                .sortedByDescending(
+                    ::weatherAlertLevel
+                )
+        }
+    val homeCoverage =
+        weatherCoverageStatus(
+            date = selectedDate,
+            store = selectedStore,
+            hours = overview?.hourly.orEmpty(),
+            stale =
+                state.expiresAtMillis > 0L &&
+                    state.expiresAtMillis <=
+                    System.currentTimeMillis()
+        )
 
     Card(
         modifier = Modifier
@@ -2501,6 +2532,16 @@ private fun HomeWeatherCard(
                             buildString {
                                 append(sourceText)
                                 if (updateText.isNotBlank()) append(" · 更新于 $updateText")
+                                append(
+                                    " · 营业时段 " +
+                                        homeCoverage.first.actual +
+                                        "/" +
+                                        homeCoverage.first.expected +
+                                        "小时 · " +
+                                        weatherEvidenceLabel(
+                                            homeCoverage.second
+                                        )
+                                )
                                 if (state.refreshing) append(" · 后台更新中")
                             },
                             style = MaterialTheme.typography.labelSmall,
