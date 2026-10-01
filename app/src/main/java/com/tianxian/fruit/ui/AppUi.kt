@@ -2369,13 +2369,13 @@ private fun weatherWindowLabel(
         window.start.format(formatter)
     val endText =
         window.end.format(formatter)
-    return if (
-        window.end.toLocalDate() ==
-        baseDate
-    ) {
-        "$startText–$endText"
-    } else {
-        "$startText–次日$endText"
+    return when {
+        window.start.toLocalDate().isBefore(baseDate) ->
+            "前一日$startText–$endText"
+        window.end.toLocalDate().isAfter(baseDate) ->
+            "$startText–次日$endText"
+        else ->
+            "$startText–$endText"
     }
 }
 
