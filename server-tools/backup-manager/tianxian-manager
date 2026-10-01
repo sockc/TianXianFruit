@@ -3,7 +3,7 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 umask 077
 
-VERSION="1.0.5"
+VERSION="1.0.7"
 CONFIG_DIR="/etc/tianxian-manager"
 CONFIG_FILE="$CONFIG_DIR/config.env"
 LOG_DIR="/var/log/tianxian-manager"
@@ -12,7 +12,10 @@ LOCK_FILE="/var/lock/tianxian-manager.lock"
 DEFAULT_DOMAIN="sync.830888.xyz"
 DEFAULT_TARGET="/opt/TianXian-Server"
 DEFAULT_BACKEND_PORT="18080"
+DEFAULT_WEB_PORT="3800"
+DEFAULT_WEB_DIR="/opt/TianXian-Web"
 RECOVER_URL="https://raw.githubusercontent.com/sockc/TianXianFruit/main/server-tools/backup-manager/tianxian-recover"
+WEB_TXB_INSTALL_URL="https://raw.githubusercontent.com/sockc/TianXianFruit/main/server-tools/txb-web/install.sh"
 
 C_RESET='\033[0m'; C_RED='\033[31m'; C_GREEN='\033[32m'; C_YELLOW='\033[33m'; C_BLUE='\033[34m'; C_BOLD='\033[1m'
 
@@ -68,6 +71,50 @@ detect_server_dir() {
   return 1
 }
 
+is_tianxian_web_dir() {
+  local d="$1"
+  [[ -d "$d" && -f "$d/package.json" && -f "$d/docker-compose.yml" ]] || return 1
+  grep -Eq '"name"[[:space:]]*:[[:space:]]*"tianxian-web"' "$d/package.json"
+}
+
+detect_web_dir() {
+  local d=""
+  if [[ -n "${WEB_DIR:-}" ]] && is_tianxian_web_dir "$WEB_DIR"; then
+    printf '%s\n' "$WEB_DIR"
+    return 0
+  fi
+
+  if command -v docker >/dev/null 2>&1 && docker inspect tianxian-web >/dev/null 2>&1; then
+    d="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' tianxian-web 2>/dev/null || true)"
+    if [[ -n "$d" ]] && is_tianxian_web_dir "$d"; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+  fi
+
+  for d in /opt/TianXian-Web /opt/tianxian-web /home/ubuntu/tianxian-web /srv/tianxian-web; do
+    if is_tianxian_web_dir "$d"; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+  done
+
+  while IFS= read -r d; do
+    if is_tianxian_web_dir "$d"; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+  done < <(find /opt /home /root /srv -maxdepth 4 -type f -name package.json -printf '%h\n' 2>/dev/null | sort -u)
+  return 1
+}
+
+detect_web_port() {
+  local d="$1" port=""
+  [[ -f "$d/docker-compose.yml" ]] || { printf '%s\n' "$DEFAULT_WEB_PORT"; return 0; }
+  port="$(sed -nE 's/.*(127\.0\.0\.1|0\.0\.0\.0):([0-9]+):3000.*/\2/p' "$d/docker-compose.yml" | head -n1)"
+  printf '%s\n' "${port:-$DEFAULT_WEB_PORT}"
+}
+
 write_config() {
   mkdir -p "$CONFIG_DIR"
   chmod 700 "$CONFIG_DIR"
@@ -77,6 +124,10 @@ DOMAIN='${DOMAIN}'
 RESTORE_TARGET='${RESTORE_TARGET}'
 BACKUP_KEY='${BACKUP_KEY}'
 BACKEND_PORT='${BACKEND_PORT:-$DEFAULT_BACKEND_PORT}'
+BACKEND_BIND='${BACKEND_BIND:-127.0.0.1}'
+WEB_BIND='${WEB_BIND:-127.0.0.1}'
+WEB_DIR='${WEB_DIR:-}'
+WEB_PORT='${WEB_PORT:-$DEFAULT_WEB_PORT}'
 EOF2
   chmod 600 "$CONFIG_FILE"
 }
@@ -179,6 +230,19 @@ load_config() {
   RESTORE_TARGET="${RESTORE_TARGET:-$DEFAULT_TARGET}"
   BACKUP_KEY="${BACKUP_KEY:-$SERVER_DIR/.backup-key}"
   BACKEND_PORT="${BACKEND_PORT:-$DEFAULT_BACKEND_PORT}"
+  BACKEND_BIND="${BACKEND_BIND:-127.0.0.1}"
+  WEB_BIND="${WEB_BIND:-127.0.0.1}"
+  if [[ -z "${WEB_DIR:-}" ]]; then
+    WEB_DIR="$(detect_web_dir || true)"
+  fi
+  WEB_DIR="${WEB_DIR:-$DEFAULT_WEB_DIR}"
+  if [[ -z "${WEB_PORT:-}" ]]; then
+    if is_tianxian_web_dir "$WEB_DIR"; then
+      WEB_PORT="$(detect_web_port "$WEB_DIR")"
+    else
+      WEB_PORT="$DEFAULT_WEB_PORT"
+    fi
+  fi
 }
 
 require_server_tools() {
@@ -239,14 +303,53 @@ validate_txb() {
   die "TXB 校验失败，禁止继续恢复。"
 }
 
+health_host() {
+  local ips="$1"
+  case ",$ips," in
+    *,127.0.0.1,*|*,0.0.0.0,*) printf '127.0.0.1\n' ;;
+    *) printf '%s\n' "${ips%%,*}" ;;
+  esac
+}
+
 health_check() {
-  local base="http://127.0.0.1:${BACKEND_PORT:-$DEFAULT_BACKEND_PORT}"
+  local base="http://$(health_host "${BACKEND_BIND:-127.0.0.1}"):${BACKEND_PORT:-$DEFAULT_BACKEND_PORT}"
   info "检查本机后端：$base/health"
   local out
   out="$(curl -fsS --max-time 10 "$base/health" 2>/dev/null || true)"
   [[ -n "$out" ]] || return 1
   printf '%s\n' "$out"
   return 0
+}
+
+web_health_check() {
+  [[ -n "${WEB_DIR:-}" && -d "$WEB_DIR" ]] || return 1
+  curl -fsS --max-time 10 -o /dev/null "http://$(health_host "${WEB_BIND:-127.0.0.1}"):${WEB_PORT:-$DEFAULT_WEB_PORT}/" 2>/dev/null
+}
+
+web_txb_supported() {
+  [[ -f "$SERVER_DIR/scripts/tianxian-backup" && -f "$SERVER_DIR/scripts/tianxian-restore" ]] &&
+    grep -q -- '--web-dir DIR' "$SERVER_DIR/scripts/tianxian-backup" &&
+    grep -q -- '--web-port PORT' "$SERVER_DIR/scripts/tianxian-restore"
+}
+
+install_web_txb_support() {
+  local tmp
+  tmp="$(mktemp /tmp/tianxian-web-txb-install.XXXXXX)"
+  curl -fsSL "$WEB_TXB_INSTALL_URL" -o "$tmp"
+  bash -n "$tmp"
+  chmod 0755 "$tmp"
+  TIANXIAN_TOOLS_BRANCH=main "$tmp" "$SERVER_DIR"
+  rm -f "$tmp"
+
+  WEB_DIR="$(detect_web_dir || true)"
+  WEB_DIR="${WEB_DIR:-$DEFAULT_WEB_DIR}"
+  if is_tianxian_web_dir "$WEB_DIR"; then
+    WEB_PORT="$(detect_web_port "$WEB_DIR")"
+  else
+    WEB_PORT="$DEFAULT_WEB_PORT"
+  fi
+  write_config
+  ok "Manager 已记录 Web 配置"
 }
 
 db_check() {
@@ -316,7 +419,23 @@ restore_txb() {
   pre_restore_snapshot
 
   info "调用已验证的 TXB 恢复器。"
-  "$SERVER_DIR/tianxian-restore" "$txb" --password-file "$BACKUP_KEY" --target "$RESTORE_TARGET"
+  local restore_help
+  local -a restore_args
+  restore_help="$("$SERVER_DIR/tianxian-restore" --help 2>&1 || true)"
+  restore_args=("$txb" --password-file "$BACKUP_KEY" --target "$RESTORE_TARGET")
+  if printf '%s' "$restore_help" | grep -q -- '--backend-port'; then
+    restore_args+=(--backend-port "${BACKEND_PORT:-$DEFAULT_BACKEND_PORT}")
+    if printf '%s' "$restore_help" | grep -q -- '--backend-bind'; then
+      restore_args+=(--backend-bind "${BACKEND_BIND:-127.0.0.1}")
+    fi
+  fi
+  if printf '%s' "$restore_help" | grep -q -- '--web-port'; then
+    restore_args+=(--web-target "${WEB_DIR:-$DEFAULT_WEB_DIR}" --web-port "${WEB_PORT:-$DEFAULT_WEB_PORT}")
+    if printf '%s' "$restore_help" | grep -q -- '--web-bind'; then
+      restore_args+=(--web-bind "${WEB_BIND:-127.0.0.1}")
+    fi
+  fi
+  "$SERVER_DIR/tianxian-restore" "${restore_args[@]}"
 
   if health_check; then ok "后端 /health 正常"; else warn "恢复完成，但 /health 检查未通过，请查看容器日志。"; fi
   if db_check; then ok "PostgreSQL accepting connections"; else warn "PostgreSQL 自动检查未完成，请执行 docker compose ps 检查。"; fi
@@ -404,7 +523,11 @@ system_check() {
   printf '%-28s %s\n' "Server dir" "$SERVER_DIR"
   printf '%-28s %s\n' "Restore target" "$RESTORE_TARGET"
   printf '%-28s %s\n' "Backup key" "$BACKUP_KEY"
+  printf '%-28s %s\n' "Backend bind" "${BACKEND_BIND:-127.0.0.1}"
   printf '%-28s %s\n' "Backend port" "${BACKEND_PORT:-$DEFAULT_BACKEND_PORT}"
+  printf '%-28s %s\n' "Web bind" "${WEB_BIND:-127.0.0.1}"
+  printf '%-28s %s\n' "Web dir" "${WEB_DIR:-未检测到}"
+  printf '%-28s %s\n' "Web port" "${WEB_PORT:-$DEFAULT_WEB_PORT}"
 
   command -v docker >/dev/null && ok "Docker：$(docker --version)" || warn "Docker 未安装"
   docker compose version >/dev/null 2>&1 && ok "Docker Compose：$(docker compose version)" || warn "Docker Compose 不可用"
@@ -414,7 +537,13 @@ system_check() {
 
   [[ -f "$BACKUP_KEY" ]] && ok "backup-key 存在 ($(stat -c '%s bytes' "$BACKUP_KEY" 2>/dev/null || true))" || warn "backup-key 不存在"
   [[ -f "$SERVER_DIR/.r2.env" ]] && ok "R2 配置存在" || warn "R2 尚未配置"
+  web_txb_supported && ok "TXB 已支持 Web 快照" || warn "TXB 尚未安装 Web 快照支持"
   health_check && ok "Backend 健康" || warn "Backend /health 不正常"
+  if [[ -d "${WEB_DIR:-}" ]]; then
+    web_health_check && ok "Web 健康" || warn "Web HTTP 检查未通过"
+  else
+    warn "未检测到 Web 部署目录"
+  fi
   (cd "$SERVER_DIR" && docker compose ps) || true
 }
 
@@ -493,7 +622,8 @@ settings_menu() {
     printf '2. 配置/修改 R2\n'
     printf '3. 测试 R2\n'
     printf '4. 自动备份管理\n'
-    printf '5. 查看当前配置\n'
+    printf '5. 安装/刷新 Web TXB 支持\n'
+    printf '6. 查看当前配置\n'
     printf '0. 返回\n'
     read -r -p "请选择：" c
     case "$c" in
@@ -501,9 +631,10 @@ settings_menu() {
       2) r2_configure ;;
       3) r2_test ;;
       4) auto_backup_menu ;;
-      5)
-        printf 'SERVER_DIR=%s\nRESTORE_TARGET=%s\nBACKUP_KEY=%s\nBACKEND_PORT=%s\n' \
-          "$SERVER_DIR" "$RESTORE_TARGET" "$BACKUP_KEY" "${BACKEND_PORT:-$DEFAULT_BACKEND_PORT}"
+      5) install_web_txb_support ;;
+      6)
+        printf 'SERVER_DIR=%s\nRESTORE_TARGET=%s\nBACKUP_KEY=%s\nBACKEND_PORT=%s\nBACKEND_BIND=%s\nWEB_DIR=%s\nWEB_PORT=%s\nWEB_BIND=%s\n' \
+          "$SERVER_DIR" "$RESTORE_TARGET" "$BACKUP_KEY" "${BACKEND_PORT:-$DEFAULT_BACKEND_PORT}" "${BACKEND_BIND:-127.0.0.1}" "${WEB_DIR:-}" "${WEB_PORT:-$DEFAULT_WEB_PORT}" "${WEB_BIND:-127.0.0.1}"
         show_cron_status
         ;;
       0) return 0 ;;
@@ -556,6 +687,7 @@ usage() {
   list                 查看 R2 备份
   check                系统检查
   config               配置管理
+  web-txb-install      安装/刷新 Web TXB 支持
   logs                 查看日志
   version              显示版本
 EOF2
@@ -573,6 +705,7 @@ main() {
     list) r2_list ;;
     check) system_check ;;
     config) settings_menu ;;
+    web-txb-install) install_web_txb_support ;;
     logs) show_logs ;;
     version|-v|--version) printf 'TianXian Manager %s\n' "$VERSION" ;;
     help|-h|--help) usage ;;

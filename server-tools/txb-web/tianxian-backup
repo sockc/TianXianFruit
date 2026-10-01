@@ -1,0 +1,457 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TYPE="manual"
+OUTPUT_DIR=""
+DOMAIN=""
+PASSWORD_FILE=""
+INCLUDE_SERVER=1
+INCLUDE_WEB=1
+WEB_DIR=""
+KEEP_COUNT=""
+R2_MODE=0   # 0=off, 1=require, 2=if configured
+R2_CONFIG=""
+
+usage() {
+  cat <<USAGE
+Usage: tianxian-backup [options]
+
+Options:
+  --type manual|daily|weekly|pre-upgrade   Backup class (default: manual)
+  --output-dir DIR                         Override output directory
+  --domain DOMAIN                          Store public sync domain as metadata
+  --password-file FILE                     Backup encryption key/passphrase file
+  --no-server-snapshot                     Do not embed exact server source snapshot
+  --no-web-snapshot                        Do not embed TianXian Web snapshot
+  --web-dir DIR                            Explicit TianXian Web deployment directory
+  --keep N                                 Keep newest N local/remote backups in this class
+  --r2                                     Require Cloudflare R2 upload after local validation
+  --r2-if-configured                       Upload to R2 only when .r2.env exists
+  --r2-config FILE                         R2 config file (default: .r2.env)
+  -h, --help                               Show help
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --type) TYPE="${2:-}"; shift 2 ;;
+    --output-dir) OUTPUT_DIR="${2:-}"; shift 2 ;;
+    --domain) DOMAIN="${2:-}"; shift 2 ;;
+    --password-file) PASSWORD_FILE="${2:-}"; shift 2 ;;
+    --no-server-snapshot) INCLUDE_SERVER=0; shift ;;
+    --no-web-snapshot) INCLUDE_WEB=0; shift ;;
+    --web-dir) WEB_DIR="${2:-}"; shift 2 ;;
+    --keep) KEEP_COUNT="${2:-}"; shift 2 ;;
+    --r2) R2_MODE=1; shift ;;
+    --r2-if-configured) R2_MODE=2; shift ;;
+    --r2-config) R2_CONFIG="${2:-}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+case "$TYPE" in
+  manual|daily|weekly|pre-upgrade) ;;
+  *) echo "Invalid --type: $TYPE" >&2; exit 2 ;;
+esac
+
+for cmd in docker openssl tar gzip sha256sum awk sed grep date mktemp python3; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "Missing required command: $cmd" >&2; exit 1; }
+done
+docker compose version >/dev/null 2>&1 || { echo "Docker Compose plugin is not available." >&2; exit 1; }
+[[ -f "$ROOT/.env" ]] || { echo "Missing $ROOT/.env" >&2; exit 1; }
+[[ -f "$ROOT/docker-compose.yml" ]] || { echo "Missing $ROOT/docker-compose.yml" >&2; exit 1; }
+
+set -a
+# shellcheck disable=SC1091
+. "$ROOT/.env"
+set +a
+: "${POSTGRES_DB:?POSTGRES_DB missing from .env}"
+: "${POSTGRES_USER:?POSTGRES_USER missing from .env}"
+
+if [[ -z "$PASSWORD_FILE" && -f "$ROOT/.backup-key" ]]; then
+  PASSWORD_FILE="$ROOT/.backup-key"
+fi
+
+BACKUP_PASSWORD="${TIANXIAN_BACKUP_PASSWORD:-}"
+if [[ -z "$BACKUP_PASSWORD" && -n "$PASSWORD_FILE" ]]; then
+  [[ -s "$PASSWORD_FILE" ]] || { echo "Password file missing or empty: $PASSWORD_FILE" >&2; exit 1; }
+  BACKUP_PASSWORD="$(head -n 1 "$PASSWORD_FILE" | tr -d '\r\n')"
+fi
+if [[ -z "$BACKUP_PASSWORD" ]]; then
+  if [[ ! -t 0 ]]; then
+    echo "No backup password available. Set TIANXIAN_BACKUP_PASSWORD or use --password-file." >&2
+    exit 1
+  fi
+  printf "Backup encryption passphrase: " >&2
+  stty -echo
+  IFS= read -r BACKUP_PASSWORD
+  stty echo
+  printf "\nConfirm passphrase: " >&2
+  stty -echo
+  IFS= read -r BACKUP_PASSWORD_2
+  stty echo
+  printf "\n" >&2
+  [[ "$BACKUP_PASSWORD" == "$BACKUP_PASSWORD_2" ]] || { echo "Passphrases do not match." >&2; exit 1; }
+fi
+[[ ${#BACKUP_PASSWORD} -ge 12 ]] || { echo "Backup passphrase must be at least 12 characters." >&2; exit 1; }
+
+if [[ -z "$OUTPUT_DIR" ]]; then OUTPUT_DIR="$ROOT/backups/$TYPE"; fi
+mkdir -p "$OUTPUT_DIR" "$ROOT/backups"
+STATE_FILE="$ROOT/backups/backup-status.json"
+
+case "$TYPE" in
+  daily) : "${KEEP_COUNT:=14}" ;;
+  weekly) : "${KEEP_COUNT:=8}" ;;
+  pre-upgrade) : "${KEEP_COUNT:=20}" ;;
+  manual) : "${KEEP_COUNT:=0}" ;;
+esac
+
+if [[ -z "$R2_CONFIG" ]]; then R2_CONFIG="$ROOT/.r2.env"; fi
+R2_ENABLED=0
+if [[ "$R2_MODE" -eq 1 ]]; then
+  [[ -s "$R2_CONFIG" ]] || { echo "R2 upload requested but config is missing/empty: $R2_CONFIG" >&2; exit 1; }
+  R2_ENABLED=1
+elif [[ "$R2_MODE" -eq 2 && -s "$R2_CONFIG" ]]; then
+  R2_ENABLED=1
+fi
+
+is_tianxian_web_dir() {
+  local d="$1"
+  [[ -d "$d" && -f "$d/package.json" && -f "$d/docker-compose.yml" ]] || return 1
+  grep -Eq '"name"[[:space:]]*:[[:space:]]*"tianxian-web"' "$d/package.json"
+}
+
+detect_web_dir() {
+  local d=""
+  if [[ -n "$WEB_DIR" ]]; then
+    is_tianxian_web_dir "$WEB_DIR" || { echo "Invalid --web-dir: $WEB_DIR" >&2; return 1; }
+    printf '%s\n' "$WEB_DIR"
+    return 0
+  fi
+
+  if docker inspect tianxian-web >/dev/null 2>&1; then
+    d="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' tianxian-web 2>/dev/null || true)"
+    if [[ -n "$d" ]] && is_tianxian_web_dir "$d"; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+  fi
+
+  for d in /opt/TianXian-Web /opt/tianxian-web /home/ubuntu/tianxian-web /srv/tianxian-web; do
+    if is_tianxian_web_dir "$d"; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+  done
+
+  while IFS= read -r d; do
+    if is_tianxian_web_dir "$d"; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+  done < <(find /opt /home /srv /root -maxdepth 4 -type f -name package.json -printf '%h\n' 2>/dev/null | sort -u)
+
+  return 1
+}
+
+# Collect current *actual* Docker host bindings so later backups preserve
+# a custom 192.168.x.x or multi-address configuration.
+detect_listeners() {
+  local compose="$1" container_port="$2" fallback_port="$3"
+  python3 - "$compose" "$container_port" "$fallback_port" <<'PY_DETECT_PORTS'
+import ipaddress
+import re
+import sys
+from pathlib import Path
+
+path, container, fallback = sys.argv[1:]
+text = Path(path).read_text(encoding="utf-8")
+pattern = re.compile(
+    r'^[ \t]*-[ \t]*["\x27]'
+    r'(?:(?P<ip>(?:[0-9]{1,3}\.){3}[0-9]{1,3}):)?'
+    r'(?P<port>[0-9]+):' + re.escape(container) + r'(?:/tcp)?["\x27][ \t]*$',
+    re.MULTILINE,
+)
+matches = list(pattern.finditer(text))
+if not matches:
+    print(fallback + " 127.0.0.1")
+    raise SystemExit(0)
+port = matches[0].group("port")
+ips = []
+for m in matches:
+    if m.group("port") != port:
+        raise SystemExit("Same service has different host ports; TXB currently requires one shared port")
+    ip = str(ipaddress.IPv4Address(m.group("ip") or "0.0.0.0"))
+    if ip not in ips:
+        ips.append(ip)
+if "0.0.0.0" in ips and len(ips) > 1:
+    raise SystemExit("Wildcard listener cannot be mixed with specific host IPs")
+print(port + " " + ",".join(ips))
+PY_DETECT_PORTS
+}
+
+
+TS="$(date '+%Y%m%d-%H%M%S')"
+UTC_ISO="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+HOST="$(hostname 2>/dev/null || echo unknown)"
+SERVER_VERSION="$(sed -n 's/.*version="\([^"]*\)".*/\1/p' "$ROOT/backend/app/main.py" | head -n 1)"
+SERVER_VERSION="${SERVER_VERSION:-unknown}"
+DOMAIN="${DOMAIN:-${TIANXIAN_PUBLIC_DOMAIN:-unknown}}"
+read -r BACKEND_HOST_PORT BACKEND_BIND_LIST <<<"$(detect_listeners "$ROOT/docker-compose.yml" 8000 18080)"
+BACKEND_FIRST_IP="${BACKEND_BIND_LIST%%,*}"
+BACKEND_HEALTH_IP="$BACKEND_FIRST_IP"
+[[ "$BACKEND_BIND_LIST" == *'127.0.0.1'* || "$BACKEND_FIRST_IP" == '0.0.0.0' ]] && BACKEND_HEALTH_IP=127.0.0.1
+NAME="TianXian-Backup-${TS}-${TYPE}.txb"
+TMP_ROOT="$(mktemp -d /tmp/tianxian-backup.XXXXXX)"
+PAYLOAD="$TMP_ROOT/payload"
+trap 'rm -rf "$TMP_ROOT"' EXIT INT TERM
+mkdir -p "$PAYLOAD/database" "$PAYLOAD/config" "$PAYLOAD/server" "$PAYLOAD/web" "$PAYLOAD/metadata" "$PAYLOAD/checksums"
+
+cd "$ROOT"
+
+echo "[1/10] Checking PostgreSQL..."
+docker compose exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null
+
+echo "[2/10] Creating PostgreSQL logical dump..."
+docker compose exec -T postgres pg_dump \
+  -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  --format=custom --no-owner --no-acl > "$PAYLOAD/database/postgres.dump"
+
+SCHEMA_TMP="$TMP_ROOT/schema.sql"
+docker compose exec -T postgres pg_dump \
+  -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  --schema-only --no-owner --no-acl > "$SCHEMA_TMP"
+SCHEMA_SHA256="$(sha256sum "$SCHEMA_TMP" | awk '{print $1}')"
+POSTGRES_VERSION="$(docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc 'SHOW server_version;' | tr -d '\r')"
+DB_DUMP_SHA256="$(sha256sum "$PAYLOAD/database/postgres.dump" | awk '{print $1}')"
+
+echo "[3/10] Encrypting server configuration..."
+openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+  -in "$ROOT/.env" -out "$PAYLOAD/config/env.enc" \
+  -pass fd:3 3<<<"$BACKUP_PASSWORD"
+cp "$ROOT/docker-compose.yml" "$PAYLOAD/config/docker-compose.yml"
+[[ -f "$ROOT/.env.example" ]] && cp "$ROOT/.env.example" "$PAYLOAD/config/.env.example"
+
+if [[ "$INCLUDE_SERVER" -eq 1 ]]; then
+  echo "[4/10] Embedding exact server source snapshot..."
+  tar -czf "$PAYLOAD/server/server-release.tar.gz" \
+    --exclude='./.env' \
+    --exclude='./.backup-key' \
+    --exclude='./.r2.env' \
+    --exclude='./backups' \
+    --exclude='./.git' \
+    --exclude='*/__pycache__/*' \
+    --exclude='*.pyc' \
+    -C "$ROOT" .
+else
+  echo "[4/10] Exact server source snapshot disabled."
+fi
+
+WEB_SNAPSHOT_INCLUDED=0
+WEB_VERSION="unknown"
+WEB_HOST_PORT="3800"
+WEB_BIND_LIST="127.0.0.1"
+WEB_CONTAINER_PORT="3000"
+WEB_ENV_INCLUDED=0
+WEB_SOURCE_DIR=""
+
+if [[ "$INCLUDE_WEB" -eq 1 ]]; then
+  WEB_SOURCE_DIR="$(detect_web_dir || true)"
+fi
+
+if [[ -n "$WEB_SOURCE_DIR" ]]; then
+  echo "[5/10] Embedding TianXian Web snapshot from: $WEB_SOURCE_DIR"
+  WEB_VERSION="$(python3 - "$WEB_SOURCE_DIR/package.json" <<'PY_WEB_VERSION'
+import json
+import sys
+from pathlib import Path
+try:
+    print(json.loads(Path(sys.argv[1]).read_text(encoding='utf-8')).get('version', 'unknown'))
+except Exception:
+    print('unknown')
+PY_WEB_VERSION
+)"
+  read -r WEB_HOST_PORT WEB_BIND_LIST <<<"$(detect_listeners "$WEB_SOURCE_DIR/docker-compose.yml" "$WEB_CONTAINER_PORT" 3800)"
+
+  tar -czf "$PAYLOAD/web/web-release.tar.gz" \
+    --exclude='./.env' \
+    --exclude='./.env.local' \
+    --exclude='./.env.production' \
+    --exclude='./.env.production.local' \
+    --exclude='./node_modules' \
+    --exclude='./.next' \
+    --exclude='./.git' \
+    --exclude='*.log' \
+    -C "$WEB_SOURCE_DIR" .
+
+  if [[ -f "$WEB_SOURCE_DIR/.env" ]]; then
+    openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+      -in "$WEB_SOURCE_DIR/.env" -out "$PAYLOAD/web/web-env.enc" \
+      -pass fd:3 3<<<"$BACKUP_PASSWORD"
+    WEB_ENV_INCLUDED=1
+  fi
+
+  cat > "$PAYLOAD/web/web-metadata.env" <<EOF_WEB_META
+WEB_SNAPSHOT_VERSION=1
+WEB_VERSION=$WEB_VERSION
+WEB_HOST_PORT=$WEB_HOST_PORT
+WEB_BIND_LIST=$WEB_BIND_LIST
+WEB_CONTAINER_PORT=$WEB_CONTAINER_PORT
+WEB_ENV_INCLUDED=$WEB_ENV_INCLUDED
+EOF_WEB_META
+  WEB_SNAPSHOT_INCLUDED=1
+else
+  echo "[5/10] TianXian Web not detected; Web snapshot skipped."
+fi
+
+cat > "$PAYLOAD/metadata/manifest.env" <<EOF_META
+TXB_FORMAT_VERSION=1
+TXB_WEB_EXTENSION_VERSION=1
+SERVER_VERSION=$SERVER_VERSION
+CREATED_AT_UTC=$UTC_ISO
+BACKUP_TYPE=$TYPE
+POSTGRES_VERSION=$POSTGRES_VERSION
+DATABASE_NAME=$POSTGRES_DB
+DATABASE_USER=$POSTGRES_USER
+DB_SCHEMA_SHA256=$SCHEMA_SHA256
+DB_DUMP_SHA256=$DB_DUMP_SHA256
+BACKEND_HOST_PORT=$BACKEND_HOST_PORT
+BACKEND_BIND_LIST=$BACKEND_BIND_LIST
+BACKEND_BIND=$BACKEND_FIRST_IP:$BACKEND_HOST_PORT
+REVERSE_PROXY_TARGET=http://$BACKEND_HEALTH_IP:$BACKEND_HOST_PORT
+PUBLIC_DOMAIN=$DOMAIN
+SERVER_SNAPSHOT_INCLUDED=$INCLUDE_SERVER
+WEB_SNAPSHOT_INCLUDED=$WEB_SNAPSHOT_INCLUDED
+WEB_VERSION=$WEB_VERSION
+WEB_HOST_PORT=$WEB_HOST_PORT
+WEB_BIND_LIST=$WEB_BIND_LIST
+WEB_CONTAINER_PORT=$WEB_CONTAINER_PORT
+WEB_ENV_INCLUDED=$WEB_ENV_INCLUDED
+EOF_META
+
+cat > "$PAYLOAD/manifest.json" <<EOF_JSON
+{
+  "backup_format": 1,
+  "product": "TianXian Sync Server",
+  "server_version": "$SERVER_VERSION",
+  "created_at_utc": "$UTC_ISO",
+  "backup_type": "$TYPE",
+  "host": "$HOST",
+  "postgres_version": "$POSTGRES_VERSION",
+  "database": "$POSTGRES_DB",
+  "schema_sha256": "$SCHEMA_SHA256",
+  "dump_sha256": "$DB_DUMP_SHA256",
+  "backend_bind": "$BACKEND_FIRST_IP:$BACKEND_HOST_PORT",
+  "backend_bind_ips": "$BACKEND_BIND_LIST",
+  "reverse_proxy_target": "http://$BACKEND_HEALTH_IP:$BACKEND_HOST_PORT",
+  "public_domain": "$DOMAIN",
+  "proxy_mode": "external_lucky_or_other",
+  "server_snapshot_included": $([[ "$INCLUDE_SERVER" -eq 1 ]] && echo true || echo false),
+  "web_snapshot_included": $([[ "$WEB_SNAPSHOT_INCLUDED" -eq 1 ]] && echo true || echo false),
+  "web_version": "$WEB_VERSION",
+  "web_host_port": $WEB_HOST_PORT,
+  "web_bind_ips": "$WEB_BIND_LIST",
+  "web_container_port": $WEB_CONTAINER_PORT,
+  "web_env_included": $([[ "$WEB_ENV_INCLUDED" -eq 1 ]] && echo true || echo false),
+  "env_encryption": "AES-256-CBC/PBKDF2-SHA256/200000",
+  "r2_credentials_included": false
+}
+EOF_JSON
+
+cat > "$PAYLOAD/RESTORE_README.txt" <<'EOF_README'
+TianXian Backup Format V1 + Web Snapshot Extension V1
+
+This backup contains:
+- PostgreSQL logical dump
+- Encrypted Server .env
+- Server docker-compose.yml
+- Server release snapshot (unless disabled)
+- TianXian Web release snapshot when detected
+- Encrypted TianXian Web .env when present
+- Manifest and SHA256 checksums
+
+It intentionally does NOT contain:
+- .backup-key
+- .r2.env / Cloudflare R2 credentials
+- Lucky configuration
+- Web node_modules / .next build cache / logs
+
+Old TXB V1 files without web/ remain restorable. New restore tools skip Web when no Web snapshot exists.
+EOF_README
+
+echo "[6/10] Generating internal checksums..."
+(
+  cd "$PAYLOAD"
+  find . -type f ! -path './checksums/*' -print0 \
+    | sort -z \
+    | xargs -0 sha256sum > checksums/SHA256SUMS
+)
+
+echo "[7/10] Building .txb package..."
+TMP_TXB="$TMP_ROOT/$NAME"
+tar -czf "$TMP_TXB" -C "$PAYLOAD" .
+TXB_SHA256="$(sha256sum "$TMP_TXB" | awk '{print $1}')"
+mv "$TMP_TXB" "$OUTPUT_DIR/$NAME"
+FINAL_FILE="$OUTPUT_DIR/$NAME"
+printf '%s  %s\n' "$TXB_SHA256" "$NAME" > "$FINAL_FILE.sha256"
+
+if [[ "$KEEP_COUNT" =~ ^[0-9]+$ ]] && (( KEEP_COUNT > 0 )); then
+  mapfile -t OLD < <(find "$OUTPUT_DIR" -maxdepth 1 -type f -name 'TianXian-Backup-*.txb' -printf '%T@ %p\n' | sort -nr | awk -v keep="$KEEP_COUNT" 'NR>keep {$1=""; sub(/^ /,""); print}')
+  for f in "${OLD[@]:-}"; do
+    [[ -n "$f" ]] || continue
+    rm -f -- "$f" "$f.sha256"
+  done
+fi
+
+echo "[8/10] Validating local .txb package..."
+"$ROOT/scripts/tianxian-backup-check" "$FINAL_FILE" >/dev/null
+python3 "$ROOT/scripts/tianxian_state.py" --file "$STATE_FILE" local-success \
+  --path "$FINAL_FILE" --type "$TYPE" --sha256 "$TXB_SHA256" --size "$(stat -c '%s' "$FINAL_FILE")"
+
+if [[ "$R2_ENABLED" -eq 1 ]]; then
+  echo "[9/10] Encrypting whole TXB, uploading to Cloudflare R2 and verifying metadata..."
+  R2_ENC="$TMP_ROOT/$NAME.enc"
+  openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+    -in "$FINAL_FILE" -out "$R2_ENC" -pass fd:3 3<<<"$BACKUP_PASSWORD"
+  set +e
+  R2_OUT="$(python3 "$ROOT/scripts/tianxian_r2.py" --config "$R2_CONFIG" upload "$R2_ENC" --type "$TYPE" 2>&1)"
+  R2_RC=$?
+  set -e
+  if [[ "$R2_RC" -ne 0 ]]; then
+    python3 "$ROOT/scripts/tianxian_state.py" --file "$STATE_FILE" r2-failure --error "$R2_OUT"
+    echo "$R2_OUT" >&2
+    echo "Local backup is valid, but R2 upload failed." >&2
+    exit 3
+  fi
+  echo "$R2_OUT"
+  R2_KEY="$(printf '%s\n' "$R2_OUT" | sed -n 's/^R2_UPLOAD_KEY=//p' | tail -n1)"
+  R2_SHA="$(printf '%s\n' "$R2_OUT" | sed -n 's/^R2_UPLOAD_SHA256=//p' | tail -n1)"
+  R2_SIZE="$(printf '%s\n' "$R2_OUT" | sed -n 's/^R2_UPLOAD_SIZE=//p' | tail -n1)"
+  python3 "$ROOT/scripts/tianxian_state.py" --file "$STATE_FILE" r2-success \
+    --key "$R2_KEY" --sha256 "$R2_SHA" --size "$R2_SIZE"
+  if [[ "$KEEP_COUNT" =~ ^[0-9]+$ ]] && (( KEEP_COUNT > 0 )); then
+    python3 "$ROOT/scripts/tianxian_r2.py" --config "$R2_CONFIG" prune --type "$TYPE" --keep "$KEEP_COUNT"
+  fi
+else
+  echo "[9/10] R2 upload skipped (not configured/requested)."
+fi
+
+echo "[10/10] Backup completed."
+echo "File: $FINAL_FILE"
+echo "SHA256: $TXB_SHA256"
+echo "Server: $SERVER_VERSION"
+echo "PostgreSQL: $POSTGRES_VERSION"
+echo "Backend port: $BACKEND_HOST_PORT"
+if [[ "$WEB_SNAPSHOT_INCLUDED" -eq 1 ]]; then
+  echo "Web: $WEB_VERSION (port $WEB_HOST_PORT)"
+else
+  echo "Web: not included"
+fi
+if [[ -n "$PASSWORD_FILE" ]]; then
+  echo "Key fingerprint: $(sha256sum "$PASSWORD_FILE" | awk '{print $1}')"
+fi
+if [[ "$R2_ENABLED" -eq 1 ]]; then
+  echo "R2: whole TXB encrypted, uploaded and verified"
+fi
