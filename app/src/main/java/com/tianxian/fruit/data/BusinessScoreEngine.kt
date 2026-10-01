@@ -802,11 +802,16 @@ class BusinessScoreEngine(
 
     private fun weightedMetric(
         samples: List<HistoricalDay>,
+        allowZero: Boolean = false,
         value: (HistoricalDay) -> Double?
     ): Double {
         val pairs = samples.mapNotNull { sample ->
             val v = value(sample) ?: return@mapNotNull null
-            if (!v.isFinite() || v <= 0.0) null else v to sample.weight
+            if (!v.isFinite() || (if (allowZero) v < 0.0 else v <= 0.0)) {
+                null
+            } else {
+                v to sample.weight
+            }
         }
         if (pairs.isEmpty()) return 0.0
         val totalWeight = pairs.sumOf { it.second }.takeIf { it > 0.0 } ?: return 0.0
@@ -816,7 +821,7 @@ class BusinessScoreEngine(
     private fun evidenceStrength(
         similarCount: Int,
         positionCount: Int,
-        hasWeather: Boolean,
+        weatherStatus: String,
         calibrationCount: Int
     ): Double {
         var strength = 0.38
@@ -828,25 +833,58 @@ class BusinessScoreEngine(
             else -> 0.0
         }
         if (positionCount >= 20) strength += 0.12 else if (positionCount >= 10) strength += 0.07
-        if (hasWeather) strength += 0.07
+        strength += when (weatherStatus) {
+            "COMPLETE" -> 0.07
+            "PARTIAL" -> 0.04
+            "SPARSE" -> 0.01
+            else -> 0.0
+        }
         if (calibrationCount >= 6) strength += 0.05
         return strength.coerceIn(0.38, 1.0)
     }
 
     private fun calibrationAdjustment(storeId: Long, date: String): Pair<Int, Double> {
-        val completed = db.getBusinessScoresBefore(storeId, date, 30)
-            .filter { score ->
-                score.actualRevenue > 0.0 &&
-                    score.baselineRevenue > 0.0 &&
-                    runCatching { JSONObject(score.detailsJson).optString("score_version") }
-                        .getOrDefault("") == "V2_SIMILAR_DAY"
-            }
-            .take(20)
+        data class CalibrationPoint(
+            val predictedScore: Int,
+            val baselineRevenue: Double,
+            val actualRevenue: Double
+        )
+
+        val completed =
+            db.getBusinessScoresBefore(storeId, date, 60)
+                .mapNotNull { score ->
+                    if (score.actualRevenue < 0.0) return@mapNotNull null
+                    val snapshots =
+                        runCatching {
+                            JSONArray(score.snapshotsJson.ifBlank { "[]" })
+                        }.getOrNull() ?: return@mapNotNull null
+                    var preOpen: JSONObject? = null
+                    for (i in 0 until snapshots.length()) {
+                        val snapshot = snapshots.optJSONObject(i) ?: continue
+                        if (snapshot.optString("stage") == "PRE_OPEN") {
+                            // Keep the latest pre-open snapshot, but never a LIVE/FINAL update.
+                            preOpen = snapshot
+                        }
+                    }
+                    val frozen = preOpen ?: return@mapNotNull null
+                    val baseline = frozen.optDouble("baseline_revenue", 0.0)
+                    if (baseline <= 0.0) return@mapNotNull null
+                    CalibrationPoint(
+                        predictedScore = frozen.optInt("score", 70),
+                        baselineRevenue = baseline,
+                        actualRevenue = score.actualRevenue
+                    )
+                }
+                .take(20)
         if (completed.size < 6) return completed.size to 0.0
 
-        val errors = completed.map { score ->
-            val predictedRatio = (1.0 + (score.totalScore - 70.0) / 120.0).coerceIn(0.60, 1.35)
-            val actualRatio = (score.actualRevenue / score.baselineRevenue).coerceIn(0.55, 1.45)
+        val errors = completed.map { point ->
+            val predictedRatio =
+                (1.0 + (point.predictedScore - 70.0) / 120.0)
+                    .coerceIn(0.60, 1.35)
+            val actualRatio =
+                (point.actualRevenue / point.baselineRevenue)
+                    .coerceIn(0.55, 1.45)
             (actualRatio - predictedRatio).coerceIn(-0.20, 0.20)
         }
         val adjustment = (median(errors) * 120.0).coerceIn(-8.0, 8.0)
@@ -857,13 +895,12 @@ class BusinessScoreEngine(
         val count = calibration.first
         val adjustment = calibration.second
         return when {
-            count < 6 -> listOf("已有 $count 个 V2 经营结果复盘；满6个后开始自动校准")
-            abs(adjustment) < 0.5 -> listOf("已用 $count 个历史复盘自动校准，本次无需明显修正")
-            adjustment > 0 -> listOf("已用 $count 个历史复盘自动校准，本位置模型修正 +${String.format("%.1f", adjustment)}")
-            else -> listOf("已用 $count 个历史复盘自动校准，本位置模型修正 ${String.format("%.1f", adjustment)}")
+            count < 6 -> listOf("已有 $count 个“开摊前预测 → 最终实绩”样本；满6个后开始自动校准")
+            abs(adjustment) < 0.5 -> listOf("已用 $count 个开摊前预测与最终实绩校准，本次无需明显修正")
+            adjustment > 0 -> listOf("已用 $count 个开摊前预测与最终实绩校准，本位置模型修正 +${String.format("%.1f", adjustment)}")
+            else -> listOf("已用 $count 个开摊前预测与最终实绩校准，本位置模型修正 ${String.format("%.1f", adjustment)}")
         }
     }
-
     private fun rainBand(value: Double): Int = when {
         value >= 3.0 -> 3
         value >= 0.5 -> 2
