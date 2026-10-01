@@ -4279,6 +4279,31 @@ private fun WeatherDetailContent(
     }
     val business = storeBusinessHours(ov?.hourly.orEmpty(), dateString, store)
     val trendHours = hourly24.filter { it.temperature != null }
+    val detailMode =
+        WeatherDisplayPolicy.forecastDetailMode(
+            selectedDate,
+            LocalDate.now()
+        )
+    val trendOnly =
+        state.snapshotType == "TREND" ||
+            detailMode == WeatherDisplayPolicy.MODE_TREND
+    val relevantAlerts =
+        remember(
+            ov?.rawJson,
+            selectedDate,
+            store?.id
+        ) {
+            weatherRelevantAlerts(
+                ov?.alerts.orEmpty(),
+                selectedDate,
+                store
+            )
+        }
+    val weatherStale =
+        ov?.historical != true &&
+            state.expiresAtMillis > 0L &&
+            state.expiresAtMillis <=
+                System.currentTimeMillis()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().pointerInput(selectedDate) {
@@ -4358,6 +4383,7 @@ private fun WeatherDetailContent(
                                             append(if (manualStoreId != null) "指定位置" else weatherLocationSourceText(resolution.source, resolution.confidence, resolution.sampleCount))
                                             val updated = weatherUpdatedText(state.updatedAtMillis)
                                             if (updated.isNotBlank()) append(" · 更新于 $updated")
+                                            if (trendOnly) append(" · 日级趋势")
                                             if (state.refreshing) append(" · 后台更新中")
                                         },
                                         style = MaterialTheme.typography.labelSmall,
@@ -4374,23 +4400,38 @@ private fun WeatherDetailContent(
 
         if (ov != null) {
             item {
-                DetailedWeatherSummaryCard(
+                BusinessWeatherFocusCard(
                     selectedDate = selectedDate,
                     store = store,
-                    day = day,
-                    dayHours = hoursForDate,
-                    businessHours = business,
+                    hours = ov.hourly,
                     historical = ov.historical,
-                    alerts = ov.alerts
+                    stale = weatherStale,
+                    trendOnly = trendOnly,
+                    relevantAlerts = relevantAlerts
                 )
             }
 
-            if (ov.alerts.isNotEmpty()) {
+            if (!trendOnly) {
+                item {
+                    DetailedWeatherSummaryCard(
+                        selectedDate = selectedDate,
+                        store = store,
+                        day = day,
+                        dayHours = hoursForDate,
+                        allHours = ov.hourly,
+                        businessHours = business,
+                        historical = ov.historical,
+                        alerts = relevantAlerts
+                    )
+                }
+            }
+
+            if (relevantAlerts.isNotEmpty()) {
                 item {
                     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFEEEE))) {
                         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text("天气预警", fontWeight = FontWeight.Bold, color = Color(0xFFC62828))
-                            ov.alerts.take(3).forEach { alert ->
+                            relevantAlerts.take(3).forEach { alert ->
                                 Text("⚠ ${alert.title}", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
                                 if (alert.description.isNotBlank()) Text(alert.description, style = MaterialTheme.typography.bodySmall, color = Color.DarkGray, maxLines = 3)
                             }
