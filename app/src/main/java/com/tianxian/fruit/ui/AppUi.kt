@@ -2873,7 +2873,8 @@ private fun BusinessAdviceDetailContent(
                             )
                         }
                         Text(score.historySummary, color = Color.DarkGray)
-                    }                    state.loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                    state.loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
                     else -> Text(state.error, color = Color.Gray)
                 }
             }
