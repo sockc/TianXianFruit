@@ -574,7 +574,8 @@ class BusinessScoreEngine(
 
         val weatherHistory =
             historical.filter {
-                it.weather != null &&
+                it.weather?.evidenceStatus in
+                    setOf("COMPLETE", "PARTIAL") &&
                     it.record.revenue >= 0.0
             }
         val comparableWeather =
@@ -769,8 +770,11 @@ class BusinessScoreEngine(
             else -> 0
         }
 
-        if (targetWeather != null && historyWeather != null) {
-            if (targetWeather.rainy == historyWeather.rainy) score += 5
+        if (
+            targetWeather?.evidenceStatus in setOf("COMPLETE", "PARTIAL") &&
+            historyWeather?.evidenceStatus in setOf("COMPLETE", "PARTIAL")
+        ) {
+            if (targetWeather!!.rainy == historyWeather!!.rainy) score += 5
             if (rainBand(targetWeather.preOpenRain) == rainBand(historyWeather.preOpenRain)) score += 2
             val t1 = targetWeather.avgTemp
             val t2 = historyWeather.avgTemp
