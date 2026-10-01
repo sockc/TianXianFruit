@@ -3837,13 +3837,25 @@ private fun WeatherDetailContent(
     var state by remember(selectedDate, store?.id) { mutableStateOf(WeatherUiState(loading = true)) }
     var forecast15 by remember(store?.id) { mutableStateOf<WeatherOverview?>(null) }
     var forecast15UpdatedAt by remember(store?.id) { mutableStateOf(0L) }
+    var forecast15ExpiresAt by remember(store?.id) { mutableStateOf(0L) }
+    var forecast15Resolved by remember(store?.id) { mutableStateOf(false) }
     var recent7History by remember(store?.id) { mutableStateOf<Map<String, WeatherOverview>>(emptyMap()) }
 
     LaunchedEffect(store?.id, store?.latitude, store?.longitude, currentBook.cloudBookId, dataVersion) {
-        val s = store ?: return@LaunchedEffect
+        forecast15Resolved = false
+        val s = store
+        if (s == null) {
+            forecast15 = null
+            forecast15UpdatedAt = 0L
+            forecast15ExpiresAt = 0L
+            forecast15Resolved = true
+            return@LaunchedEffect
+        }
         if (s.latitude == null || s.longitude == null) {
             forecast15 = null
             forecast15UpdatedAt = 0L
+            forecast15ExpiresAt = 0L
+            forecast15Resolved = true
             recent7History = emptyMap()
             return@LaunchedEffect
         }
@@ -3866,6 +3878,8 @@ private fun WeatherDetailContent(
             }
         var currentUpdatedAt =
             cachedForecast?.fetchedAt ?: 0L
+        var currentExpiresAt =
+            cachedForecast?.expiresAt ?: 0L
 
         if (
             currentForecast == null ||
@@ -3900,12 +3914,15 @@ private fun WeatherDetailContent(
                     }
                     currentForecast = fresh
                     currentUpdatedAt = fetchedAt
+                    currentExpiresAt = fetchedAt + ttl
                 }
             }
         }
 
         forecast15 = currentForecast
         forecast15UpdatedAt = currentUpdatedAt
+        forecast15ExpiresAt = currentExpiresAt
+        forecast15Resolved = true
 
         // 最近 7 天卡片只读本地已有数据；用户真正点进某天时再按需请求服务器，
         // 避免打开天气页就连续请求 6 个历史日期。
@@ -3953,7 +3970,9 @@ private fun WeatherDetailContent(
         store?.latitude,
         store?.longitude,
         currentBook.cloudBookId,
-        forecast15?.rawJson
+        forecast15?.rawJson,
+        forecast15Resolved,
+        forecast15ExpiresAt
     ) {
         val s = store
         if (s == null) {
@@ -3967,6 +3986,28 @@ private fun WeatherDetailContent(
                 selectedDate,
                 today
             )
+
+        if (selectedDate == today) {
+            if (!forecast15Resolved) {
+                state = WeatherUiState(loading = true)
+                return@LaunchedEffect
+            }
+            val todayOverview = forecast15
+            if (todayOverview != null) {
+                val stale =
+                    forecast15ExpiresAt > 0L &&
+                        forecast15ExpiresAt <=
+                            System.currentTimeMillis()
+                state = WeatherUiState(
+                    overview = todayOverview,
+                    refreshing = stale,
+                    snapshotType = "CACHE",
+                    updatedAtMillis = forecast15UpdatedAt,
+                    expiresAtMillis = forecast15ExpiresAt
+                )
+                return@LaunchedEffect
+            }
+        }
 
         if (detailMode == WeatherDisplayPolicy.MODE_TREND) {
             val trendDay =
@@ -4243,6 +4284,12 @@ private fun WeatherDetailContent(
                         ttl,
                         fetchedAt
                     )
+                    if (selectedDate == today) {
+                        forecast15 = overview
+                        forecast15UpdatedAt = fetchedAt
+                        forecast15ExpiresAt = fetchedAt + ttl
+                        forecast15Resolved = true
+                    }
                     WeatherUiState(
                         overview,
                         snapshotType = "CACHE",
