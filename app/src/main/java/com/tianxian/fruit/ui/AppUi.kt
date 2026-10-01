@@ -1706,6 +1706,7 @@ private fun DetailedWeatherSummaryCard(
     store: StoreOption?,
     day: WeatherDay?,
     dayHours: List<WeatherHour>,
+    allHours: List<WeatherHour>,
     businessHours: List<WeatherHour>,
     historical: Boolean,
     alerts: List<WeatherAlert>
@@ -1730,11 +1731,19 @@ private fun DetailedWeatherSummaryCard(
     val rainPeriods = weatherRainPeriodSummary(availableHours)
     val businessRain = businessHours.sumOf { it.precipitation ?: 0.0 }
     val businessPop = businessHours.mapNotNull { it.precipitationProbability }.maxOrNull()
-    val businessStart = storeTimeMinutes(store?.defaultStartTime.orEmpty(), 16 * 60)
-    val before3 = availableHours.filter {
-        val minute = weatherClockMinutes(it.time) ?: return@filter false
-        minute in maxOf(0, businessStart - 180) until businessStart
-    }
+    val businessWindow =
+        BusinessWeatherWindow.forDay(
+            selectedDate,
+            store?.defaultStartTime ?: "16:00",
+            store?.defaultEndTime ?: "24:00"
+        )
+    val before3 =
+        allHours.filter {
+            WeatherDisplayPolicy.preOpenHourBucketOverlaps(
+                businessWindow,
+                it.time
+            )
+        }
     val before3Rain = before3.sumOf { it.precipitation ?: 0.0 }
     val before3Pop = before3.mapNotNull { it.precipitationProbability }.maxOrNull()
     val dayText = day?.textDay.orEmpty().ifBlank { weatherDominantText(availableHours.filter { !weatherHourIsNight(it.time, day, it.code) }) }
@@ -1927,6 +1936,234 @@ private fun DetailedWeatherSummaryCard(
     }
 }
 
+@Composable
+private fun BusinessWeatherFocusCard(
+    selectedDate: LocalDate,
+    store: StoreOption?,
+    hours: List<WeatherHour>,
+    historical: Boolean,
+    stale: Boolean,
+    trendOnly: Boolean,
+    relevantAlerts: List<WeatherAlert>
+) {
+    val window =
+        BusinessWeatherWindow.forDay(
+            selectedDate,
+            store?.defaultStartTime ?: "16:00",
+            store?.defaultEndTime ?: "24:00"
+        )
+    val (firstHalf, secondHalf) =
+        WeatherDisplayPolicy.splitBusinessWindow(
+            window
+        )
+    val preWindow =
+        BusinessWeatherWindow(
+            window.preStart,
+            window.start
+        )
+    val preHours =
+        hours.filter {
+            WeatherDisplayPolicy.preOpenHourBucketOverlaps(
+                window,
+                it.time
+            )
+        }
+    val firstHours =
+        hours.filter {
+            WeatherDisplayPolicy.hourBucketOverlaps(
+                firstHalf,
+                it.time
+            )
+        }
+    val secondHours =
+        hours.filter {
+            WeatherDisplayPolicy.hourBucketOverlaps(
+                secondHalf,
+                it.time
+            )
+        }
+    val coverage =
+        WeatherDisplayPolicy.hourlyCoverage(
+            window,
+            hours.map { it.time }
+        )
+    val evidence =
+        BusinessAdvicePolicy.weatherEvidenceStatus(
+            coverageRatio = coverage.ratio,
+            stale = stale
+        )
+
+    Card(
+        colors =
+            CardDefaults.cardColors(
+                containerColor =
+                    if (trendOnly) {
+                        Color(0xFFFFF8E7)
+                    } else {
+                        Color(0xFFF3FAF5)
+                    }
+            ),
+        border =
+            BorderStroke(
+                1.dp,
+                if (trendOnly) {
+                    Color(0xFFE7C66C)
+                } else {
+                    Color(0xFFB8DFC7)
+                }
+            ),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(13.dp),
+            verticalArrangement =
+                Arrangement.spacedBy(7.dp)
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment =
+                    Alignment.CenterVertically
+            ) {
+                Text(
+                    "经营时段天气",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    if (trendOnly) {
+                        "趋势预报"
+                    } else {
+                        weatherEvidenceLabel(
+                            evidence
+                        )
+                    },
+                    style =
+                        MaterialTheme.typography.labelMedium,
+                    color =
+                        if (trendOnly) {
+                            Color(0xFF8A6D00)
+                        } else {
+                            BrandGreen
+                        }
+                )
+            }
+
+            if (trendOnly) {
+                Text(
+                    "该日期超出当前逐小时可靠范围，只显示日级趋势；不生成具体小时段结论。",
+                    style =
+                        MaterialTheme.typography.bodySmall,
+                    color = Color.DarkGray
+                )
+                Text(
+                    "未来5个日历日支持逐小时查看，第6–15天作为趋势参考。",
+                    style =
+                        MaterialTheme.typography.labelSmall,
+                    color = Color.Gray
+                )
+            } else {
+                Text(
+                    "逐小时数据 ${coverage.actual}/${coverage.expected}小时 · ${weatherEvidenceLabel(evidence)}",
+                    style =
+                        MaterialTheme.typography.bodySmall,
+                    color =
+                        if (evidence == "COMPLETE") {
+                            BrandGreen
+                        } else {
+                            Color(0xFFB26A00)
+                        }
+                )
+
+                val rows =
+                    listOf(
+                        Triple(
+                            "开摊前3小时",
+                            weatherWindowLabel(
+                                preWindow,
+                                selectedDate
+                            ),
+                            weatherSegmentRiskText(
+                                preHours,
+                                historical
+                            )
+                        ),
+                        Triple(
+                            "前半段",
+                            weatherWindowLabel(
+                                firstHalf,
+                                selectedDate
+                            ),
+                            weatherSegmentRiskText(
+                                firstHours,
+                                historical
+                            )
+                        ),
+                        Triple(
+                            "后半段",
+                            weatherWindowLabel(
+                                secondHalf,
+                                selectedDate
+                            ),
+                            weatherSegmentRiskText(
+                                secondHours,
+                                historical
+                            )
+                        )
+                    )
+                rows.forEach {
+                        (title, range, summary) ->
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment =
+                            Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "$title $range",
+                            modifier =
+                                Modifier.weight(1f),
+                            style =
+                                MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            summary,
+                            style =
+                                MaterialTheme.typography.bodySmall,
+                            fontWeight =
+                                FontWeight.SemiBold,
+                            color =
+                                when {
+                                    summary.contains("明显") ||
+                                        summary.contains("高温") ||
+                                        summary.contains("风力") ->
+                                        Color(0xFFC62828)
+                                    summary.contains("雨") ->
+                                        Color(0xFFB26A00)
+                                    summary.contains("稳定") ->
+                                        BrandGreen
+                                    else ->
+                                        Color.Gray
+                                }
+                        )
+                    }
+                }
+
+                if (relevantAlerts.isNotEmpty()) {
+                    Text(
+                        "⚠ 营业前后相关预警 ${relevantAlerts.size} 条，查看下方预警详情",
+                        style =
+                            MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFC62828),
+                        fontWeight =
+                            FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+    }
+}
 private fun weatherTemp(value: Double?): String =
     value?.let { "${String.format(Locale.CHINA, "%.0f", it)}°" } ?: "—"
 
