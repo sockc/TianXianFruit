@@ -5,6 +5,7 @@ import com.tianxian.fruit.sync.LedgerBook
 import org.junit.Assert.*
 import org.junit.Test
 import java.time.LocalDate
+import java.time.LocalDateTime
 
 class StabilityPoliciesTest {
     @Test fun todayDoesNotIncludeTomorrowRain() {
@@ -111,6 +112,79 @@ class StabilityPoliciesTest {
         assertEquals("库存表不兼容", SyncStatusPolicy.error("网络失败", "库存表不兼容"))
     }
 
+    @Test fun highIndexWithoutHistoryDoesNotBecomeAConfidentRecommendation() {
+        assertEquals(
+            "资料不足",
+            BusinessAdvicePolicy.recommendation(
+                score = 92,
+                validHistoryCount = 0,
+                similarCount = 0,
+                weatherStatus = "COMPLETE"
+            )
+        )
+        assertEquals(
+            "INSUFFICIENT",
+            BusinessAdvicePolicy.confidence(
+                validHistoryCount = 2,
+                similarCount = 2,
+                weatherStatus = "COMPLETE"
+            )
+        )
+        assertEquals(
+            "建议正常营业",
+            BusinessAdvicePolicy.recommendation(
+                score = 82,
+                validHistoryCount = 12,
+                similarCount = 6,
+                weatherStatus = "COMPLETE"
+            )
+        )
+    }
+
+    @Test fun hourlyWeatherCoverageControlsEvidenceStatus() {
+        assertEquals("COMPLETE", BusinessAdvicePolicy.weatherEvidenceStatus(0.90, false))
+        assertEquals("PARTIAL", BusinessAdvicePolicy.weatherEvidenceStatus(0.60, false))
+        assertEquals("SPARSE", BusinessAdvicePolicy.weatherEvidenceStatus(0.25, false))
+        assertEquals("MISSING", BusinessAdvicePolicy.weatherEvidenceStatus(0.0, false))
+        assertEquals("STALE", BusinessAdvicePolicy.weatherEvidenceStatus(1.0, true))
+    }
+
+    @Test fun abnormalOperatingDaysDoNotEnterNormalHistoryBaseline() {
+        assertFalse(BusinessAdvicePolicy.historyUsable(0.45, ""))
+        assertFalse(BusinessAdvicePolicy.historyUsable(1.0, "缺货"))
+        assertFalse(BusinessAdvicePolicy.historyUsable(1.0, "临时换位"))
+        assertTrue(BusinessAdvicePolicy.historyUsable(0.95, "工厂放假"))
+        assertTrue(BusinessAdvicePolicy.historyUsable(null, "发薪日"))
+    }
+
+    @Test fun businessAdviceSnapshotsHavePreOpenLiveAndFinalStages() {
+        val date = LocalDate.parse("2026-10-01")
+        val window = BusinessWeatherWindow.forDay(date, "16:00", "24:00")
+        assertEquals(
+            "PRE_OPEN",
+            BusinessAdvicePolicy.snapshotStage(
+                date,
+                LocalDateTime.parse("2026-10-01T15:30:00"),
+                window
+            )
+        )
+        assertEquals(
+            "LIVE",
+            BusinessAdvicePolicy.snapshotStage(
+                date,
+                LocalDateTime.parse("2026-10-01T20:00:00"),
+                window
+            )
+        )
+        assertEquals(
+            "FINAL",
+            BusinessAdvicePolicy.snapshotStage(
+                date,
+                LocalDateTime.parse("2026-10-02T00:30:00"),
+                window
+            )
+        )
+    }
     @Test fun forecastAndBusinessAdviceStayLocalOnly() {
         assertTrue(SyncTablePolicy.isLocalOnly("weather_snapshot"))
         assertTrue(SyncTablePolicy.isLocalOnly("daily_business_score"))
