@@ -2375,6 +2375,7 @@ private fun businessConfidenceLabel(value: String): String =
     when (value.uppercase(Locale.ROOT)) {
         "HIGH" -> "较高"
         "MEDIUM" -> "中"
+        "INSUFFICIENT" -> "资料不足"
         else -> "低"
     }
 
@@ -2392,11 +2393,15 @@ private fun loadAndSaveBusinessScore(
     }
 
     var overview: WeatherOverview? = null
+    var weatherFetchedAt = 0L
+    var weatherExpiresAt = 0L
     val cached = db.getWeatherCache(dateString, store.id)
     if (cached != null) {
         overview = runCatching {
             WeatherClient.parseOverview(cached.payloadJson, historical = false)
         }.getOrNull()
+        weatherFetchedAt = cached.fetchedAt
+        weatherExpiresAt = cached.expiresAt
     }
 
     val cacheStale = cached == null || cached.expiresAt <= System.currentTimeMillis()
@@ -2411,18 +2416,29 @@ private fun loadAndSaveBusinessScore(
                 WeatherClient(cloudSyncManager).fetchOverview(bookId, store, date, 120)
             }.onSuccess { fresh ->
                 overview = fresh
+                val fetchedAt = System.currentTimeMillis()
+                val ttl = weatherCacheTtl(date)
+                weatherFetchedAt = fetchedAt
+                weatherExpiresAt = fetchedAt + ttl
                 db.saveWeatherCache(
                     dateString,
                     store.id,
                     fresh.rawJson,
-                    weatherCacheTtl(date),
-                    System.currentTimeMillis()
+                    ttl,
+                    fetchedAt
                 )
             }
         }
     }
 
-    val calculated = BusinessScoreEngine(db).calculate(date, store, overview)
+    val calculated =
+        BusinessScoreEngine(db).calculate(
+            date = date,
+            store = store,
+            weather = overview,
+            weatherFetchedAt = weatherFetchedAt,
+            weatherExpiresAt = weatherExpiresAt
+        )
     return db.saveBusinessScore(calculated) ?: calculated
 }
 
