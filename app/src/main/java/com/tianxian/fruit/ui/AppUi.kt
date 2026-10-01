@@ -1967,12 +1967,52 @@ private fun weatherLocationSourceText(source: String, confidence: Double, sample
 private fun weatherBookId(book: LedgerBook): String =
     book.cloudBookId.ifBlank { book.id.takeIf { it.contains('-') }.orEmpty() }
 
-private const val WEATHER_CACHE_TODAY_MS = 10 * 60 * 1000L
-private const val WEATHER_CACHE_FUTURE_MS = 30 * 60 * 1000L
 private const val WEATHER_CACHE_ARCHIVE_MS = 24 * 60 * 60 * 1000L
 
-private fun weatherCacheTtl(date: LocalDate): Long =
-    if (date == LocalDate.now()) WEATHER_CACHE_TODAY_MS else WEATHER_CACHE_FUTURE_MS
+private fun weatherCacheTtl(
+    date: LocalDate,
+    store: StoreOption? = null,
+    overview: WeatherOverview? = null
+): Long {
+    val window =
+        BusinessWeatherWindow.forDay(
+            date,
+            store?.defaultStartTime ?: "16:00",
+            store?.defaultEndTime ?: "24:00"
+        )
+    val businessHours =
+        overview?.hourly.orEmpty()
+            .filter {
+                WeatherDisplayPolicy.hourBucketOverlaps(
+                    window,
+                    it.time
+                )
+            }
+    val rainRisk =
+        businessHours.any {
+            (it.precipitationProbability ?: 0.0) >= 40.0 ||
+                (it.precipitation ?: 0.0) > 0.05
+        }
+    val hasAlert =
+        overview?.alerts.orEmpty()
+            .any {
+                WeatherDisplayPolicy.alertRelevant(
+                    it.startTime,
+                    it.endTime,
+                    window
+                )
+            }
+    return WeatherDisplayPolicy.cacheTtlMillis(
+        date = date,
+        today = LocalDate.now(),
+        now = LocalDateTime.now(
+            ZoneId.of("Asia/Shanghai")
+        ),
+        window = window,
+        rainRisk = rainRisk,
+        hasAlert = hasAlert
+    )
+}
 
 private fun storeTimeMinutes(value: String, fallback: Int): Int {
     if (value == "24:00") return 24 * 60
@@ -1989,14 +2029,162 @@ private fun storeBusinessHours(
     date: String,
     store: StoreOption?
 ): List<WeatherHour> {
-    val start = storeTimeMinutes(store?.defaultStartTime ?: "16:00", 16 * 60)
-    val end = storeTimeMinutes(store?.defaultEndTime ?: "24:00", 24 * 60)
-    return hours.filter { h ->
-        if (!h.time.startsWith(date)) return@filter false
-        val hour = h.time.substringAfter('T', "").take(2).toIntOrNull() ?: return@filter false
-        val bucketStart = hour * 60
-        val bucketEnd = bucketStart + 60
-        bucketEnd > start && bucketStart < end
+    val parsedDate =
+        runCatching {
+            LocalDate.parse(date)
+        }.getOrElse {
+            return emptyList()
+        }
+    val window =
+        BusinessWeatherWindow.forDay(
+            parsedDate,
+            store?.defaultStartTime ?: "16:00",
+            store?.defaultEndTime ?: "24:00"
+        )
+    return hours.filter {
+        WeatherDisplayPolicy.hourBucketOverlaps(
+            window,
+            it.time
+        )
+    }
+}
+
+private fun storePreBusinessHours(
+    hours: List<WeatherHour>,
+    date: LocalDate,
+    store: StoreOption?
+): List<WeatherHour> {
+    val window =
+        BusinessWeatherWindow.forDay(
+            date,
+            store?.defaultStartTime ?: "16:00",
+            store?.defaultEndTime ?: "24:00"
+        )
+    return hours.filter {
+        WeatherDisplayPolicy.preOpenHourBucketOverlaps(
+            window,
+            it.time
+        )
+    }
+}
+
+private fun weatherRelevantAlerts(
+    alerts: List<WeatherAlert>,
+    date: LocalDate,
+    store: StoreOption?
+): List<WeatherAlert> {
+    val window =
+        BusinessWeatherWindow.forDay(
+            date,
+            store?.defaultStartTime ?: "16:00",
+            store?.defaultEndTime ?: "24:00"
+        )
+    return alerts.filter {
+        WeatherDisplayPolicy.alertRelevant(
+            it.startTime,
+            it.endTime,
+            window
+        )
+    }
+}
+
+private fun weatherCoverageStatus(
+    date: LocalDate,
+    store: StoreOption?,
+    hours: List<WeatherHour>,
+    stale: Boolean
+): Pair<WeatherDisplayPolicy.HourlyCoverage, String> {
+    val window =
+        BusinessWeatherWindow.forDay(
+            date,
+            store?.defaultStartTime ?: "16:00",
+            store?.defaultEndTime ?: "24:00"
+        )
+    val coverage =
+        WeatherDisplayPolicy.hourlyCoverage(
+            window,
+            hours.map { it.time }
+        )
+    val status =
+        BusinessAdvicePolicy.weatherEvidenceStatus(
+            coverageRatio = coverage.ratio,
+            stale = stale
+        )
+    return coverage to status
+}
+
+private fun weatherEvidenceLabel(value: String): String =
+    when (value.uppercase(Locale.ROOT)) {
+        "COMPLETE" -> "完整"
+        "PARTIAL" -> "部分缺失"
+        "SPARSE" -> "缺失较多"
+        "STALE" -> "已过期"
+        else -> "无逐小时数据"
+    }
+
+private fun weatherWindowLabel(
+    window: BusinessWeatherWindow,
+    baseDate: LocalDate
+): String {
+    val formatter =
+        DateTimeFormatter.ofPattern("HH:mm")
+    val startText =
+        window.start.format(formatter)
+    val endText =
+        window.end.format(formatter)
+    return if (
+        window.end.toLocalDate() ==
+        baseDate
+    ) {
+        "$startText–$endText"
+    } else {
+        "$startText–次日$endText"
+    }
+}
+
+private fun weatherSegmentRiskText(
+    hours: List<WeatherHour>,
+    historical: Boolean
+): String {
+    if (hours.isEmpty()) {
+        return "逐小时数据不足"
+    }
+    val maxPop =
+        hours.mapNotNull {
+            it.precipitationProbability
+        }.maxOrNull() ?: 0.0
+    val rain =
+        hours.sumOf {
+            it.precipitation ?: 0.0
+        }
+    val wind =
+        hours.mapNotNull {
+            it.windSpeed
+        }.maxOrNull() ?: 0.0
+    val maxTemp =
+        hours.mapNotNull {
+            it.temperature
+        }.maxOrNull()
+
+    return when {
+        rain >= 2.0 || maxPop >= 60.0 ->
+            if (historical) {
+                "有明显降雨"
+            } else {
+                "有明显降雨风险"
+            }
+        rain > 0.05 || maxPop >= 40.0 ->
+            if (historical) {
+                "有降雨"
+            } else {
+                "有雨风险"
+            }
+        wind >= 25.0 ->
+            "风力偏大"
+        (maxTemp ?: 0.0) >= 34.0 ->
+            "高温偏热"
+        else ->
+            "天气较稳定"
     }
 }
 
@@ -2019,7 +2207,8 @@ private data class WeatherUiState(
     val refreshing: Boolean = false,
     val error: String = "",
     val snapshotType: String = "",
-    val updatedAtMillis: Long = 0L
+    val updatedAtMillis: Long = 0L,
+    val expiresAtMillis: Long = 0L
 )
 
 private fun weatherAlertLevel(alert: WeatherAlert): Int {
