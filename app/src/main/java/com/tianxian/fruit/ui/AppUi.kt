@@ -3839,10 +3839,12 @@ private fun WeatherDetailContent(
     var forecast15UpdatedAt by remember(store?.id) { mutableStateOf(0L) }
     var forecast15ExpiresAt by remember(store?.id) { mutableStateOf(0L) }
     var forecast15Resolved by remember(store?.id) { mutableStateOf(false) }
+    var forecast15Refreshing by remember(store?.id) { mutableStateOf(false) }
     var recent7History by remember(store?.id) { mutableStateOf<Map<String, WeatherOverview>>(emptyMap()) }
 
     LaunchedEffect(store?.id, store?.latitude, store?.longitude, currentBook.cloudBookId, dataVersion) {
         forecast15Resolved = false
+        forecast15Refreshing = false
         val s = store
         if (s == null) {
             forecast15 = null
@@ -3895,6 +3897,7 @@ private fun WeatherDetailContent(
         ) {
             val bookId = weatherBookId(currentBook)
             if (bookId.isNotBlank()) {
+                forecast15Refreshing = true
                 val fresh =
                     withContext(Dispatchers.IO) {
                         runCatching {
@@ -3923,6 +3926,7 @@ private fun WeatherDetailContent(
                     currentUpdatedAt = fetchedAt
                     currentExpiresAt = fetchedAt + ttl
                 }
+                forecast15Refreshing = false
             }
         }
 
@@ -3979,7 +3983,8 @@ private fun WeatherDetailContent(
         currentBook.cloudBookId,
         forecast15?.rawJson,
         forecast15Resolved,
-        forecast15ExpiresAt
+        forecast15ExpiresAt,
+        forecast15Refreshing
     ) {
         val s = store
         if (s == null) {
@@ -4007,7 +4012,7 @@ private fun WeatherDetailContent(
                             System.currentTimeMillis()
                 state = WeatherUiState(
                     overview = todayOverview,
-                    refreshing = stale,
+                    refreshing = forecast15Refreshing,
                     snapshotType = "CACHE",
                     updatedAtMillis = forecast15UpdatedAt,
                     expiresAtMillis = forecast15ExpiresAt
