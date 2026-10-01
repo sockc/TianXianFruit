@@ -439,6 +439,10 @@ private fun compactSyncTime(
 private fun PageSyncStatus(
     pageTitle: String
 ) {
+    if (pageTitle.contains("经营建议")) {
+        return
+    }
+
     val syncContext =
         LocalPageSyncUiContext.current
             ?: return
