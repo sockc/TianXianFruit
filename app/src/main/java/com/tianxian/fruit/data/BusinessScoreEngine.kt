@@ -181,11 +181,11 @@ class BusinessScoreEngine(
         // 只作“资料补充”的全账本样本，不参与正式总分，避免不同位置串位误导。
         val ledgerFallbackCount = if (positionHistory.size < 4) {
             db.getRecentDailyRecords(180)
-                .count { it.date < dateString && it.storeId != store.id && it.revenue > 0.0 }
+                .count { it.date < dateString && it.storeId != store.id && it.revenue >= 0.0 }
                 .coerceAtMost(99)
         } else 0
 
-        val similarRevenue = weightedMetric(similar) { it.record.revenue }
+        val similarRevenue = weightedMetric(similar, allowZero = true) { it.record.revenue }
         val similarCustomers = weightedMetric(similar) {
             it.record.customerTotal.toDouble().takeIf { v -> v > 0.0 }
         }
@@ -202,7 +202,12 @@ class BusinessScoreEngine(
             similarTicket = similarTicket,
             similar = similar
         )
-        val weatherPart = scoreWeatherV2(weatherMetrics)
+        val weatherPart =
+            scoreWeatherV2(
+                metrics = weatherMetrics,
+                historical = historical,
+                baselineRevenue = baselineRevenue
+            )
         val calendarPart = scoreCalendarV2(calendar, positionHistory, baselineRevenue)
         val trendPart = scoreTrendV2(positionHistory, baselineRevenue, baselineCustomers, baselineTicket)
 
@@ -214,7 +219,12 @@ class BusinessScoreEngine(
             similar.isNotEmpty() -> 0.22
             else -> 0.08
         }
-        val weatherWeight = if (weatherMetrics != null) 0.24 else 0.06
+        val weatherWeight = when (weatherMetrics?.evidenceStatus) {
+            "COMPLETE" -> 0.24
+            "PARTIAL" -> 0.16
+            "SPARSE", "STALE" -> 0.08
+            else -> 0.04
+        }
         val calendarWeight = if (positionHistory.size >= 8) 0.14 else 0.09
         val trendWeight = if (positionHistory.size >= 3) 0.16 else 0.08
         val totalWeight = historyWeight + weatherWeight + calendarWeight + trendWeight
@@ -232,7 +242,7 @@ class BusinessScoreEngine(
         val evidenceStrength = evidenceStrength(
             similarCount = similar.size,
             positionCount = positionHistory.size,
-            hasWeather = weatherMetrics != null,
+            weatherStatus = weatherMetrics?.evidenceStatus ?: "MISSING",
             calibrationCount = calibration.first
         )
         val total = (70.0 + (calibratedRaw - 70.0) * evidenceStrength)
