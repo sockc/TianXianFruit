@@ -368,11 +368,14 @@ private fun syncTablesForPageTitle(
                 "purchase_collaboration"
             )
 
-        title.contains("首页") || title.contains("经营建议") ->
-            setOf("store_daily_record", "business_weather_history", "daily_business_score")
+        title.contains("经营建议") ->
+            emptySet()
+
+        title.contains("首页") ->
+            setOf("store_daily_record", "business_weather_history")
 
         title.contains("营业") ->
-            setOf("store_daily_record", "business_weather_history", "daily_business_score")
+            setOf("store_daily_record", "business_weather_history")
 
         title.contains("经营分析") ->
             setOf(
@@ -382,8 +385,7 @@ private fun syncTablesForPageTitle(
                 "inventory_snapshot",
                 "product_cost_reference",
                 "daily_retail_price",
-                "business_weather_history",
-                "daily_business_score"
+                "business_weather_history"
             )
 
         title.contains("结算") ||
@@ -437,6 +439,10 @@ private fun compactSyncTime(
 private fun PageSyncStatus(
     pageTitle: String
 ) {
+    if (pageTitle.contains("经营建议")) {
+        return
+    }
+
     val syncContext =
         LocalPageSyncUiContext.current
             ?: return
@@ -2041,7 +2047,8 @@ private fun HomeWeatherCard(
     currentBook: LedgerBook,
     cloudSyncManager: CloudSyncManager,
     onOpenDetail: (String, Long?) -> Unit,
-    onStoreResolved: (Long?) -> Unit = {}
+    onStoreResolved: (Long?) -> Unit = {},
+    onDateResolved: (LocalDate) -> Unit = {}
 ) {
     val context = LocalContext.current
     val plannedPrefs = remember(currentBook.id) {
@@ -2050,6 +2057,10 @@ private fun HomeWeatherCard(
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     var temporaryStoreId by remember(selectedDate) { mutableStateOf<Long?>(null) }
     var storeMenu by remember { mutableStateOf(false) }
+
+    LaunchedEffect(selectedDate) {
+        onDateResolved(selectedDate)
+    }
 
     val stores = remember(dataVersion) {
         db.getStores()
@@ -2412,14 +2423,7 @@ private fun loadAndSaveBusinessScore(
     }
 
     val calculated = BusinessScoreEngine(db).calculate(date, store, overview)
-    val previous = db.getBusinessScore(dateString, store.id)
-    val saved = db.saveBusinessScore(calculated) ?: return calculated
-    if (saved.updatedAt != previous?.updatedAt && BookPermissions.has(
-            currentBook, cloudSyncManager.session()?.systemRole.orEmpty(), BookPermissions.BUSINESS_EDIT
-        )) {
-        cloudSyncManager.scheduleAutoSync(currentBook)
-    }
-    return saved
+    return db.saveBusinessScore(calculated) ?: calculated
 }
 
 @Composable
@@ -2428,10 +2432,11 @@ private fun HomeBusinessAdviceCard(
     dataVersion: Int,
     currentBook: LedgerBook,
     cloudSyncManager: CloudSyncManager,
+    date: LocalDate,
     storeId: Long?,
     onOpenDetail: (String, Long) -> Unit
 ) {
-    val today = LocalDate.now()
+    val today = date
     val dateString = today.toString()
     val stores = remember(dataVersion, currentBook.id) { db.getStores() }
     var selectedStoreId by remember(currentBook.id, storeId) {
@@ -2442,10 +2447,10 @@ private fun HomeBusinessAdviceCard(
             selectedStoreId = stores.firstOrNull()?.id
         }
     }
-    var state by remember(currentBook.id, selectedStoreId) {
+    var state by remember(currentBook.id, selectedStoreId, dateString) {
         mutableStateOf(BusinessAdviceUiState(loading = true))
     }
-    var refreshTick by remember(currentBook.id, selectedStoreId) { mutableStateOf(0) }
+    var refreshTick by remember(currentBook.id, selectedStoreId, dateString) { mutableStateOf(0) }
 
     LaunchedEffect(currentBook.id, selectedStoreId, dateString) {
         while (true) {
@@ -3846,6 +3851,9 @@ private fun HomeScreen(
             LocalDate.now()
         )
     }
+    var adviceDate by remember(currentBook.id) {
+        mutableStateOf(LocalDate.now())
+    }
     var adviceStoreId by remember(currentBook.id) {
         mutableStateOf(
             db.resolveWeatherStore(LocalDate.now().toString()).store?.id
@@ -4352,7 +4360,8 @@ private fun HomeScreen(
                 currentBook = currentBook,
                 cloudSyncManager = cloudSyncManager,
                 onOpenDetail = onOpenWeather,
-                onStoreResolved = { adviceStoreId = it }
+                onStoreResolved = { adviceStoreId = it },
+                onDateResolved = { adviceDate = it }
             )
         }
 
@@ -4362,6 +4371,7 @@ private fun HomeScreen(
                 dataVersion = dataVersion,
                 currentBook = currentBook,
                 cloudSyncManager = cloudSyncManager,
+                date = adviceDate,
                 storeId = adviceStoreId,
                 onOpenDetail = onOpenBusinessAdvice
             )

@@ -6,6 +6,7 @@ import com.tianxian.fruit.data.AppDatabase
 import com.tianxian.fruit.data.SyncChangeRecord
 import com.tianxian.fruit.data.SyncConflictRecord
 import com.tianxian.fruit.data.SyncDeletePolicy
+import com.tianxian.fruit.data.SyncTablePolicy
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -1236,8 +1237,7 @@ class CloudSyncManager(
                         BookPermissions.BUSINESS_EDIT
                     )
 
-                "business_weather_history",
-                "daily_business_score" ->
+                "business_weather_history" ->
                     setOf(
                         BookPermissions.BUSINESS_EDIT
                     )
@@ -2328,6 +2328,13 @@ class CloudSyncManager(
 
             pull.events.forEach {
                 event ->
+                if (SyncTablePolicy.isLocalOnly(event.tableName)) {
+                    // Old server rows may still exist from earlier app versions.
+                    // Advance the cursor but do not let derived/cache data
+                    // overwrite this device's local calculation.
+                    return@forEach
+                }
+
                 val key =
                     event.tableName +
                         "|" +

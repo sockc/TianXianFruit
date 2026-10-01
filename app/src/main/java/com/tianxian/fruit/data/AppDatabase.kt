@@ -1065,6 +1065,11 @@ class AppDatabase(
         if (oldVersion < 34) {
             createSyncTriggers(db)
         }
+        if (oldVersion < 35) {
+            // V35: operating advice is local-only; rebuild sync triggers and
+            // purge any legacy queued/conflict rows for local-only tables.
+            createSyncTriggers(db)
+        }
     }
 
     private fun createV29InventoryLoss(
@@ -3332,6 +3337,24 @@ class AppDatabase(
     ) {
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_sync_change_record_pending " +
             "ON sync_change_log(uploaded,table_name,record_sync_id,id)")
+
+        // These tables are device-local derived/cache data. Rebuilding triggers
+        // removes old queued changes/conflicts and prevents legacy sync triggers
+        // from recreating them.
+        SyncTablePolicy.localOnlyTables.forEach { table ->
+            db.execSQL("DROP TRIGGER IF EXISTS sync_${table}_ai")
+            db.execSQL("DROP TRIGGER IF EXISTS sync_${table}_au")
+            if (tableExists(db, "sync_change_log")) {
+                db.delete("sync_change_log", "table_name=?", arrayOf(table))
+            }
+            if (tableExists(db, "sync_conflict")) {
+                db.delete("sync_conflict", "table_name=?", arrayOf(table))
+            }
+            if (tableExists(db, table) && columnExists(db, table, "sync_status")) {
+                db.execSQL("UPDATE $table SET sync_status=0")
+            }
+        }
+
         syncableTables().filter { tableExists(db, it) }.forEach {
             table ->
             db.execSQL(
@@ -3489,7 +3512,6 @@ class AppDatabase(
             "product_cost_reference",
             "daily_retail_price",
             "business_weather_history",
-            "daily_business_score",
             "fruit_season_catalog",
             "fruit_alias",
             "fruit_season_region",
@@ -10121,7 +10143,7 @@ class AppDatabase(
                 kotlin.math.abs(existing.actualTicket - actualTicket) > 0.005 ||
                 kotlin.math.abs(existing.actualProfit - actualProfit) > 0.005
             )
-        // 首页会多次进入；评分和实绩都没有变化时直接复用，避免制造无意义同步记录。
+        // 首页会多次进入；评分和实绩都没有变化时直接复用，避免无意义本地重复写入。
         if (existing != null && !materiallyChanged && !staleSnapshot && !actualChanged) {
             return existing
         }
@@ -10177,7 +10199,7 @@ class AppDatabase(
             put("actual_profit", actualProfit)
             put("score_generated_at", if (materiallyChanged || staleSnapshot) now else existing?.generatedAt ?: now)
             put("deleted", 0)
-            put("sync_status", if (existing == null) 0 else 2)
+            put("sync_status", 0)
             put("updated_at", now)
         }
 
@@ -10211,7 +10233,7 @@ class AppDatabase(
             ContentValues().apply {
                 put("special_tag", tag.trim())
                 put("special_note", note.trim())
-                put("sync_status", 2)
+                put("sync_status", 0)
                 put("updated_at", System.currentTimeMillis())
             },
             "date=? AND store_sync_id=?",
@@ -10247,7 +10269,7 @@ class AppDatabase(
                 put("actual_customers", customers)
                 put("actual_ticket", ticket)
                 put("actual_profit", profit)
-                put("sync_status", 2)
+                put("sync_status", 0)
                 put("updated_at", System.currentTimeMillis())
             },
             "date=? AND store_id=? AND deleted=0",
@@ -12572,26 +12594,43 @@ class AppDatabase(
 
         getPartners().forEach { acc(it.id, it.name) }
 
-        return partnerIds.map { id ->
-            val a = map.getOrPut(id) { Acc() }
-            val ledger = buildPartnerFundLedger(id, actualEnd)
-            val current = ledger.lastOrNull()?.endBalance ?: 0.0
-            val latestName = ledger.lastOrNull()?.partnerName.orEmpty()
+        val summaries =
+            partnerIds.map { id ->
+                val a = map.getOrPut(id) { Acc() }
+                val ledger = buildPartnerFundLedger(id, actualEnd)
+                val current = ledger.lastOrNull()?.endBalance ?: 0.0
+                val latestName = ledger.lastOrNull()?.partnerName.orEmpty()
 
-            PartnerFundBalanceSummary(
-                partnerId = id,
-                partnerName = latestName.ifBlank {
-                    a.name.ifBlank { "合伙人$id" }
-                },
-                purchasePaid = roundMoney(a.purchase),
-                expensePaid = roundMoney(a.expense),
-                revenueReceived = roundMoney(a.receipt),
-                profitShare = roundMoney(a.profit),
-                settlementSent = roundMoney(a.sent),
-                settlementReceived = roundMoney(a.received),
-                currentBalance = roundMoney(current)
+                PartnerFundBalanceSummary(
+                    partnerId = id,
+                    partnerName = latestName.ifBlank {
+                        a.name.ifBlank { "合伙人$id" }
+                    },
+                    purchasePaid = roundMoney(a.purchase),
+                    expensePaid = roundMoney(a.expense),
+                    revenueReceived = roundMoney(a.receipt),
+                    profitShare = roundMoney(a.profit),
+                    settlementSent = roundMoney(a.sent),
+                    settlementReceived = roundMoney(a.received),
+                    currentBalance = roundMoney(current)
+                )
+            }.sortedBy { it.partnerId }
+
+        val centerId = getSettlementCenter()?.id ?: return summaries
+        val centerCurrent =
+            FundBalancePolicy.centerBalance(
+                summaries
+                    .filter { it.partnerId != centerId }
+                    .map { it.currentBalance }
             )
-        }.sortedBy { it.partnerId }
+
+        return summaries.map { summary ->
+            if (summary.partnerId == centerId) {
+                summary.copy(currentBalance = centerCurrent)
+            } else {
+                summary
+            }
+        }
     }
 
     fun getFundPeriodSummary(
@@ -12863,6 +12902,67 @@ class AppDatabase(
         partnerId: Long,
         endDate: String = LocalDate.now().toString()
     ): PartnerOutstandingWindow? {
+        val center = getSettlementCenter()
+        if (center?.id == partnerId) {
+            val counterpartWindows =
+                getPartners()
+                    .filter { it.id != partnerId }
+                    .mapNotNull {
+                        getPartnerOutstandingWindow(
+                            it.id,
+                            endDate
+                        )
+                    }
+            val current =
+                FundBalancePolicy.centerBalance(
+                    counterpartWindows.map { it.currentBalance }
+                )
+            val openWindows =
+                counterpartWindows.filter {
+                    kotlin.math.abs(it.currentBalance) > 0.005
+                }
+            val rangeStart =
+                openWindows
+                    .map { it.rangeStartDate }
+                    .filter { it.isNotBlank() }
+                    .minOrNull()
+                    .orEmpty()
+            val lastClearedDate =
+                when {
+                    openWindows.isEmpty() -> endDate
+                    openWindows.any { it.lastClearedDate.isBlank() } -> ""
+                    else ->
+                        openWindows
+                            .map { it.lastClearedDate }
+                            .minOrNull()
+                            .orEmpty()
+                }
+            val businessDays =
+                if (rangeStart.isBlank()) {
+                    0
+                } else {
+                    countBusinessDays(rangeStart, endDate)
+                }
+
+            return PartnerOutstandingWindow(
+                partnerId = partnerId,
+                partnerName = center.name,
+                endDate = endDate,
+                currentBalance = roundMoney(current),
+                rangeStartDate = rangeStart,
+                rangeEndDate =
+                    if (rangeStart.isBlank()) "" else endDate,
+                businessDayCount = businessDays,
+                lastClearedDate = lastClearedDate,
+                settledTransferAmount =
+                    roundMoney(
+                        counterpartWindows.sumOf {
+                            it.settledTransferAmount
+                        }
+                    )
+            )
+        }
+
         val ledger = buildPartnerFundLedger(partnerId, endDate)
         val partner = getPartners().firstOrNull { it.id == partnerId }
         if (ledger.isEmpty() && partner == null) return null
@@ -14617,7 +14717,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 34
+        const val DB_VERSION = 35
     }
 }
 

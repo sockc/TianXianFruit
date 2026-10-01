@@ -111,6 +111,26 @@ class StabilityPoliciesTest {
         assertEquals("库存表不兼容", SyncStatusPolicy.error("网络失败", "库存表不兼容"))
     }
 
+    @Test fun forecastAndBusinessAdviceStayLocalOnly() {
+        assertTrue(SyncTablePolicy.isLocalOnly("weather_snapshot"))
+        assertTrue(SyncTablePolicy.isLocalOnly("daily_business_score"))
+        assertFalse(SyncTablePolicy.isLocalOnly("business_weather_history"))
+    }
+
+    @Test fun settlementCenterMirrorsCounterpartyOutstandingBalances() {
+        assertEquals(0.0, FundBalancePolicy.centerBalance(emptyList()), 0.000001)
+        assertEquals(
+            2264.68,
+            FundBalancePolicy.centerBalance(listOf(-1936.98, -327.70)),
+            0.000001
+        )
+        assertEquals(
+            -100.0,
+            FundBalancePolicy.centerBalance(listOf(250.0, -150.0)),
+            0.000001
+        )
+    }
+
     @Test fun explicitEmptyEditorPermissionsDenyViewAndWrite() {
         val book = LedgerBook("book", "test", "test.db", "", permission = "EDITOR",
             permissionTemplate = "CUSTOM", permissions = emptySet(), createdAt = 0L, updatedAt = 0L)
