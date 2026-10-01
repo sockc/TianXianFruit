@@ -2794,7 +2794,7 @@ private fun HomeWeatherCard(
                             color = BrandGreen
                         )
                     }
-                    if (selectedDate == LocalDate.now() && homeAlerts.isNotEmpty()) {
+                    if (homeAlerts.isNotEmpty()) {
                         val alert = homeAlerts.first()
                         val level = weatherAlertLevel(alert)
                         Surface(
