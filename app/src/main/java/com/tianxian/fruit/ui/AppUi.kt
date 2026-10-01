@@ -2647,7 +2647,12 @@ private fun loadAndSaveBusinessScore(
             }.onSuccess { fresh ->
                 overview = fresh
                 val fetchedAt = System.currentTimeMillis()
-                val ttl = weatherCacheTtl(date)
+                val ttl =
+                    weatherCacheTtl(
+                        date,
+                        store,
+                        fresh
+                    )
                 weatherFetchedAt = fetchedAt
                 weatherExpiresAt = fetchedAt + ttl
                 db.saveWeatherCache(
@@ -3406,7 +3411,14 @@ private fun BusinessWeatherCard(
             if (parsed != null) {
                 hasCache = true
                 val stale = cached.expiresAt <= now
-                state = WeatherUiState(parsed, refreshing = stale, snapshotType = "CACHE", updatedAtMillis = cached.fetchedAt)
+                state =
+                    WeatherUiState(
+                        parsed,
+                        refreshing = stale,
+                        snapshotType = "CACHE",
+                        updatedAtMillis = cached.fetchedAt,
+                        expiresAtMillis = cached.expiresAt
+                    )
                 if (!stale) return@LaunchedEffect
             }
         }
@@ -3415,10 +3427,18 @@ private fun BusinessWeatherCard(
             runCatching {
                 val bookId = weatherBookId(currentBook)
                 if (bookId.isBlank()) throw IllegalStateException("账本尚未连接云端天气服务")
-                val overview = WeatherClient(cloudSyncManager).fetchOverview(bookId, selectedStore, selectedDate, 120)
+                val overview =
+                    WeatherClient(cloudSyncManager)
+                        .fetchOverview(bookId, selectedStore, selectedDate, 120)
                 val fetchedAt = System.currentTimeMillis()
-                db.saveWeatherCache(date, selectedStore.id, overview.rawJson, weatherCacheTtl(selectedDate), fetchedAt)
-                WeatherUiState(overview, snapshotType = "CACHE", updatedAtMillis = fetchedAt)
+                val ttl = weatherCacheTtl(selectedDate, selectedStore, overview)
+                db.saveWeatherCache(date, selectedStore.id, overview.rawJson, ttl, fetchedAt)
+                WeatherUiState(
+                    overview,
+                    snapshotType = "CACHE",
+                    updatedAtMillis = fetchedAt,
+                    expiresAtMillis = fetchedAt + ttl
+                )
             }
         }
         state = refreshed.getOrElse { error ->
@@ -3428,6 +3448,15 @@ private fun BusinessWeatherCard(
 
     val ov = state.overview
     val bh = storeBusinessHours(ov?.hourly.orEmpty(), date, store)
+    val coverage =
+        weatherCoverageStatus(
+            date = selectedDate,
+            store = store,
+            hours = ov?.hourly.orEmpty(),
+            stale =
+                state.expiresAtMillis > 0L &&
+                    state.expiresAtMillis <= System.currentTimeMillis()
+        )
     val pop = bh.mapNotNull { it.precipitationProbability }.maxOrNull()
     val day = ov?.daily?.firstOrNull { it.date == date } ?: ov?.selectedDay()
     val text = ov?.current?.text?.takeIf { selectedDate == LocalDate.now() } ?: day?.textDay.orEmpty().ifBlank { bh.firstOrNull()?.text.orEmpty() }
@@ -3455,7 +3484,9 @@ private fun BusinessWeatherCard(
             }
             if (ov != null) {
                 Text(
-                    "${businessTimeLabel(store)} · 降雨概率${weatherPercent(pop)} · 风 ${bh.firstOrNull()?.windDirection.orEmpty()} ${bh.firstOrNull()?.windScale.orEmpty()}级",
+                    "${businessTimeLabel(store)} · 降雨概率${weatherPercent(pop)} · " +
+                        "时段 ${coverage.first.actual}/${coverage.first.expected}小时 ${weatherEvidenceLabel(coverage.second)} · " +
+                        "风 ${bh.firstOrNull()?.windDirection.orEmpty()} ${bh.firstOrNull()?.windScale.orEmpty()}级",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.DarkGray
                 )
