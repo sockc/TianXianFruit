@@ -471,7 +471,7 @@ class BusinessScoreEngine(
         similarTicket: Double,
         similar: List<HistoricalDay>
     ): ComponentResult {
-        if (similar.isEmpty() || baselineRevenue <= 0.0 || similarRevenue <= 0.0) {
+        if (similar.isEmpty() || baselineRevenue <= 0.0 || similarRevenue < 0.0) {
             return ComponentResult(
                 index = 70.0,
                 summary = "历史参考不足",
@@ -510,9 +510,17 @@ class BusinessScoreEngine(
         return ComponentResult(index, summary, reasons, similar.size, ratio)
     }
 
-    private fun scoreWeatherV2(metrics: WeatherMetrics?): ComponentResult {
+    private fun scoreWeatherV2(
+        metrics: WeatherMetrics?,
+        historical: List<HistoricalDay>,
+        baselineRevenue: Double
+    ): ComponentResult {
         if (metrics == null) {
-            return ComponentResult(70.0, "天气数据暂不可用", listOf("缺少天气数据，天气维度按中性处理"))
+            return ComponentResult(
+                70.0,
+                "天气数据暂不可用",
+                listOf("缺少天气数据，天气维度按中性处理")
+            )
         }
         var index = 92.0
         val reasons = mutableListOf<String>()
@@ -558,17 +566,70 @@ class BusinessScoreEngine(
             reasons += "存在天气预警"
         }
 
+        val weatherHistory =
+            historical.filter {
+                it.weather != null &&
+                    it.record.revenue >= 0.0
+            }
+        val comparableWeather =
+            weatherHistory.filter { day ->
+                val historicalWeather = day.weather ?: return@filter false
+                historicalWeather.rainy == metrics.rainy &&
+                    temperatureBand(historicalWeather.avgTemp) ==
+                    temperatureBand(metrics.avgTemp)
+            }
+        if (comparableWeather.size >= 4 && baselineRevenue > 0.0) {
+            val historicalRevenue = median(comparableWeather.map { it.record.revenue })
+            val learnedRatio = (historicalRevenue / baselineRevenue).coerceIn(0.70, 1.30)
+            val learnedAdjustment = ((learnedRatio - 1.0) * 35.0).coerceIn(-6.0, 6.0)
+            index += learnedAdjustment
+            reasons += "本位置 " + comparableWeather.size +
+                " 个相似天气营业日表现约为基准的 " +
+                (learnedRatio * 100).roundToInt() + "%，位置历史修正 " +
+                (if (learnedAdjustment >= 0) "+" else "") +
+                String.format("%.1f", learnedAdjustment) + "分"
+        } else {
+            reasons += "本位置相似天气样本不足，当前天气判断主要采用经验规则"
+        }
+
+        when (metrics.evidenceStatus) {
+            "PARTIAL" -> {
+                index = min(index, 82.0)
+                reasons += "营业时段逐小时预报覆盖 " +
+                    (metrics.coverageRatio * 100).roundToInt() + "%，天气指数已限制上限"
+            }
+            "SPARSE" -> {
+                index = min(index, 72.0)
+                reasons += "营业时段逐小时预报缺失较多，仅作低可信参考"
+            }
+            "STALE" -> {
+                index = min(index, 70.0)
+                reasons += "天气缓存已过期，等待刷新后再提高天气证据权重"
+            }
+            "MISSING" -> {
+                index = 70.0
+                reasons += "营业时段没有有效逐小时预报，天气维度回归中性"
+            }
+        }
+
         val tempText = metrics.avgTemp?.roundToInt()?.let { "${it}℃" }.orEmpty()
         val rainText = if (metrics.rainy) "有雨风险" else "无雨"
         val headline = metrics.headline.ifBlank { if (metrics.rainy) "天气有波动" else "天气稳定" }
+        val evidenceText = when (metrics.evidenceStatus) {
+            "COMPLETE" -> "预报完整"
+            "PARTIAL" -> "预报部分缺失"
+            "SPARSE" -> "预报缺失较多"
+            "STALE" -> "预报已过期"
+            else -> "天气数据不足"
+        }
         val summary = listOf(
             headline,
             rainText,
-            tempText.takeIf { it.isNotBlank() }?.let { "$it${temperatureLabel(metrics.avgTemp)}" }
+            tempText.takeIf { it.isNotBlank() }?.let { "$it${temperatureLabel(metrics.avgTemp)}" },
+            evidenceText
         ).filterNotNull().joinToString(" · ")
         return ComponentResult(index.coerceIn(20.0, 100.0), summary, reasons)
     }
-
     private fun scoreCalendarV2(
         target: CalendarInfo,
         historical: List<StoreDailyRecord>,
