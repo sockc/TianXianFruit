@@ -4775,22 +4775,24 @@ private fun WeatherDetailContent(
                 }
             }
 
-            item {
-                val maxPop = business.mapNotNull { it.precipitationProbability }.maxOrNull()
-                val amount = business.sumOf { it.precipitation ?: 0.0 }
-                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF6FBFF))) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Text("经营时段 ${businessTimeLabel(store)}", fontWeight = FontWeight.Bold)
-                        Text(
-                            if (ov.historical)
-                                "当时预报最高降雨概率 ${weatherPercent(maxPop)} · 实况降雨 ${weatherAmount(amount)}"
-                            else
-                                "最高降雨概率 ${weatherPercent(maxPop)} · 预计降雨 ${weatherAmount(amount)}"
-                        )
-                        val wet = business.filter { (it.precipitationProbability ?: 0.0) >= 40 || (it.precipitation ?: 0.0) > 0.05 }
-                        if (wet.isNotEmpty()) {
-                            Text("重点时段：${wet.joinToString("、") { weatherHourLabel(it.time) }}", color = Color(0xFF2C6E9B), style = MaterialTheme.typography.bodySmall)
-                        } else Text("经营时段暂无明显降雨信号", color = BrandGreen, style = MaterialTheme.typography.bodySmall)
+            if (!trendOnly) {
+                item {
+                    val maxPop = business.mapNotNull { it.precipitationProbability }.maxOrNull()
+                    val amount = business.sumOf { it.precipitation ?: 0.0 }
+                    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF6FBFF))) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Text("经营时段 ${businessTimeLabel(store)}", fontWeight = FontWeight.Bold)
+                            Text(
+                                if (ov.historical)
+                                    "当时预报最高降雨概率 ${weatherPercent(maxPop)} · 实况降雨 ${weatherAmount(amount)}"
+                                else
+                                    "最高降雨概率 ${weatherPercent(maxPop)} · 预计降雨 ${weatherAmount(amount)}"
+                            )
+                            val wet = business.filter { (it.precipitationProbability ?: 0.0) >= 40 || (it.precipitation ?: 0.0) > 0.05 }
+                            if (wet.isNotEmpty()) {
+                                Text("重点时段：${wet.joinToString("、") { weatherHourLabel(it.time) }}", color = Color(0xFF2C6E9B), style = MaterialTheme.typography.bodySmall)
+                            } else Text("经营时段暂无明显降雨信号", color = BrandGreen, style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
             }
