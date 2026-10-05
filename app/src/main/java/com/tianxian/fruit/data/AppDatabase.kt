@@ -930,6 +930,7 @@ class AppDatabase(
         createV31BusinessScore(db)
         createV32FruitSeasonLibrary(db)
         createV36CustomerPayments(db)
+        createV37HistoricalPurchaseAssist(db)
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -1078,6 +1079,11 @@ class AppDatabase(
             // V36: imported payment receipts are local analysis data only.
             // They never alter business revenue, settlement or profit distribution.
             createV36CustomerPayments(db)
+        }
+        if (oldVersion < 37) {
+            // V37: historical purchase recognition stays local-only and never
+            // writes formal purchase orders, inventory, profit or settlement.
+            createV37HistoricalPurchaseAssist(db)
         }
     }
 
@@ -3351,6 +3357,61 @@ class AppDatabase(
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS idx_payment_import_time " +
                 "ON payment_import_batch(imported_at)"
+        )
+    }
+
+    private fun createV37HistoricalPurchaseAssist(
+        db: SQLiteDatabase
+    ) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS historical_purchase_candidate(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL UNIQUE,
+                transaction_ref TEXT NOT NULL DEFAULT '',
+                trade_time TEXT NOT NULL,
+                business_date TEXT NOT NULL,
+                amount REAL NOT NULL DEFAULT 0,
+                counterparty_key TEXT NOT NULL,
+                counterparty_name TEXT NOT NULL DEFAULT '',
+                identity_confidence TEXT NOT NULL DEFAULT 'LOW',
+                transaction_type TEXT NOT NULL DEFAULT '',
+                trade_status TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                source_batch_id INTEGER NOT NULL DEFAULT 0,
+                source_file TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent()
+        )
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS purchase_supplier_identity(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform TEXT NOT NULL DEFAULT '',
+                counterparty_key TEXT NOT NULL UNIQUE,
+                counterparty_name TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent()
+        )
+
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_historical_purchase_date " +
+                "ON historical_purchase_candidate(business_date,status,trade_time)"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_historical_purchase_counterparty " +
+                "ON historical_purchase_candidate(counterparty_key,status,business_date)"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_purchase_supplier_key " +
+                "ON purchase_supplier_identity(counterparty_key,enabled)"
         )
     }
 
@@ -14579,6 +14640,49 @@ class AppDatabase(
         }
     }
 
+    private fun saveHistoricalPurchaseCandidates(
+        batchId: Long,
+        fileName: String,
+        candidates: List<ParsedPurchaseCandidate>
+    ): Pair<Int, Int> {
+        if (candidates.isEmpty()) return 0 to 0
+
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        var inserted = 0
+        var duplicates = 0
+
+        candidates.forEach { candidate ->
+            val rowId =
+                db.insertWithOnConflict(
+                    "historical_purchase_candidate",
+                    null,
+                    ContentValues().apply {
+                        put("platform", candidate.platform.name)
+                        put("dedupe_key", candidate.dedupeKey)
+                        put("transaction_ref", candidate.transactionRef)
+                        put("trade_time", candidate.tradeTime)
+                        put("business_date", candidate.businessDate)
+                        put("amount", candidate.amount)
+                        put("counterparty_key", candidate.counterpartyKey)
+                        put("counterparty_name", candidate.counterpartyName)
+                        put("identity_confidence", candidate.identityConfidence)
+                        put("transaction_type", candidate.transactionType)
+                        put("trade_status", candidate.tradeStatus)
+                        put("status", "PENDING")
+                        put("source_batch_id", batchId)
+                        put("source_file", fileName)
+                        put("created_at", now)
+                        put("updated_at", now)
+                    },
+                    SQLiteDatabase.CONFLICT_IGNORE
+                )
+            if (rowId > 0L) inserted += 1 else duplicates += 1
+        }
+
+        return inserted to duplicates
+    }
+
     fun importCustomerPaymentBill(
         fileName: String,
         fileHash: String,
@@ -14611,6 +14715,12 @@ class AppDatabase(
             }
 
         if (existing != null) {
+            val purchaseImport =
+                saveHistoricalPurchaseCandidates(
+                    batchId = existing.id,
+                    fileName = existing.fileName,
+                    candidates = parsed.purchaseCandidates
+                )
             return PaymentImportOutcome(
                 batchId = existing.id,
                 platform = existing.platform,
@@ -14623,7 +14733,10 @@ class AppDatabase(
                 refundRows = existing.refundRows,
                 errorRows = existing.errorRows,
                 unmatchedStoreRows = 0,
-                duplicateFile = true
+                duplicateFile = true,
+                purchaseCandidateRows = parsed.purchaseCandidates.size,
+                purchaseCandidateInsertedRows = purchaseImport.first,
+                purchaseCandidateDuplicateRows = purchaseImport.second
             )
         }
 
@@ -14744,6 +14857,13 @@ class AppDatabase(
                     }
                 }
 
+            val purchaseImport =
+                saveHistoricalPurchaseCandidates(
+                    batchId = batchId,
+                    fileName = fileName,
+                    candidates = parsed.purchaseCandidates
+                )
+
             val effectiveIgnored =
                 parsed.ignoredRows +
                     orphanRefunds
@@ -14774,7 +14894,10 @@ class AppDatabase(
                 refundRows = parsed.refundRows,
                 errorRows = parsed.errorRows,
                 unmatchedStoreRows = unmatched,
-                duplicateFile = false
+                duplicateFile = false,
+                purchaseCandidateRows = parsed.purchaseCandidates.size,
+                purchaseCandidateInsertedRows = purchaseImport.first,
+                purchaseCandidateDuplicateRows = purchaseImport.second
             )
         } finally {
             db.endTransaction()
@@ -15092,6 +15215,293 @@ class AppDatabase(
             if (c.moveToFirst()) c.int("c") else 0
         }
 
+    fun getHistoricalPurchaseCandidates(
+        date: String,
+        includeIgnored: Boolean = false
+    ): List<HistoricalPurchaseCandidateAnalysis> {
+        val raw =
+            readableDatabase.rawQuery(
+                """
+                SELECT *
+                FROM historical_purchase_candidate
+                WHERE business_date=?
+                  ${if (includeIgnored) "" else "AND status<>'IGNORED'"}
+                ORDER BY trade_time ASC,id ASC
+                """.trimIndent(),
+                arrayOf(date)
+            ).use { c ->
+                buildList {
+                    while (c.moveToNext()) {
+                        add(
+                            HistoricalPurchaseCandidateRecord(
+                                id = c.long("id"),
+                                platform = c.str("platform"),
+                                tradeTime = c.str("trade_time"),
+                                businessDate = c.str("business_date"),
+                                amount = c.dbl("amount"),
+                                transactionRef = c.str("transaction_ref"),
+                                counterpartyKey = c.str("counterparty_key"),
+                                counterpartyName = c.str("counterparty_name"),
+                                identityConfidence = c.str("identity_confidence"),
+                                transactionType = c.str("transaction_type"),
+                                tradeStatus = c.str("trade_status"),
+                                status = c.str("status"),
+                                sourceFile = c.str("source_file"),
+                                createdAt = c.long("created_at"),
+                                updatedAt = c.long("updated_at")
+                            )
+                        )
+                    }
+                }
+            }
+
+        if (raw.isEmpty()) return emptyList()
+
+        val hasBusinessEvidence =
+            hasBusinessEvidenceForHistoricalPurchase(date)
+
+        val supplierKeys =
+            readableDatabase.rawQuery(
+                "SELECT counterparty_key FROM purchase_supplier_identity WHERE enabled=1",
+                null
+            ).use { c ->
+                buildSet {
+                    while (c.moveToNext()) add(c.getString(0))
+                }
+            }
+
+        val occurrence =
+            readableDatabase.rawQuery(
+                """
+                SELECT counterparty_key,COUNT(*) AS c
+                FROM historical_purchase_candidate
+                WHERE status<>'IGNORED'
+                GROUP BY counterparty_key
+                """.trimIndent(),
+                null
+            ).use { c ->
+                buildMap {
+                    while (c.moveToNext()) put(c.str("counterparty_key"), c.int("c"))
+                }
+            }
+
+        val confirmed =
+            readableDatabase.rawQuery(
+                """
+                SELECT counterparty_key,COUNT(*) AS c
+                FROM historical_purchase_candidate
+                WHERE status='CONFIRMED'
+                GROUP BY counterparty_key
+                """.trimIndent(),
+                null
+            ).use { c ->
+                buildMap {
+                    while (c.moveToNext()) put(c.str("counterparty_key"), c.int("c"))
+                }
+            }
+
+        return raw
+            .map { record ->
+                HistoricalPurchaseScoring.score(
+                    record = record,
+                    hasBusinessEvidence = hasBusinessEvidence,
+                    knownSupplier = record.counterpartyKey in supplierKeys,
+                    confirmedHistoryCount = confirmed[record.counterpartyKey] ?: 0,
+                    occurrenceCount = occurrence[record.counterpartyKey] ?: 0
+                )
+            }
+            .sortedWith(
+                compareBy<HistoricalPurchaseCandidateAnalysis> {
+                    when (it.record.status) {
+                        "PENDING" -> 0
+                        "CONFIRMED" -> 1
+                        else -> 2
+                    }
+                }
+                    .thenByDescending { it.score }
+                    .thenBy { it.record.tradeTime }
+            )
+    }
+
+    private fun hasBusinessEvidenceForHistoricalPurchase(
+        date: String
+    ): Boolean {
+        val manual =
+            readableDatabase.rawQuery(
+                "SELECT 1 FROM store_daily_record WHERE date=? AND deleted=0 LIMIT 1",
+                arrayOf(date)
+            ).use { it.moveToFirst() }
+        if (manual) return true
+
+        return readableDatabase.rawQuery(
+            """
+            SELECT 1
+            FROM customer_payment_transaction
+            WHERE business_date=? AND net_amount>0.005
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(date)
+        ).use { it.moveToFirst() }
+    }
+
+    fun getHistoricalPurchaseDaySummary(
+        date: String
+    ): HistoricalPurchaseDaySummary {
+        val rows =
+            getHistoricalPurchaseCandidates(
+                date = date,
+                includeIgnored = true
+            )
+        val pending =
+            rows.filter { it.record.status == "PENDING" }
+        val high =
+            pending.filter { it.confidence == "HIGH" }
+        val confirmed =
+            rows.filter { it.record.status == "CONFIRMED" }
+
+        return HistoricalPurchaseDaySummary(
+            date = date,
+            pendingCount = pending.size,
+            pendingAmount = HistoricalPurchaseScoring.roundMoney(
+                pending.sumOf { it.record.amount }
+            ),
+            highConfidenceCount = high.size,
+            highConfidenceAmount = HistoricalPurchaseScoring.roundMoney(
+                high.sumOf { it.record.amount }
+            ),
+            confirmedCount = confirmed.size,
+            confirmedAmount = HistoricalPurchaseScoring.roundMoney(
+                confirmed.sumOf { it.record.amount }
+            ),
+            ignoredCount =
+                rows.count { it.record.status == "IGNORED" }
+        )
+    }
+
+    fun setHistoricalPurchaseCandidateStatus(
+        id: Long,
+        status: String
+    ): Boolean {
+        if (status !in setOf("PENDING", "CONFIRMED", "IGNORED")) return false
+
+        return writableDatabase.update(
+            "historical_purchase_candidate",
+            ContentValues().apply {
+                put("status", status)
+                put("updated_at", System.currentTimeMillis())
+            },
+            "id=?",
+            arrayOf(id.toString())
+        ) > 0
+    }
+
+    fun confirmHighConfidenceHistoricalPurchases(
+        date: String
+    ): Int {
+        val ids =
+            getHistoricalPurchaseCandidates(date)
+                .filter {
+                    it.record.status == "PENDING" &&
+                        it.confidence == "HIGH"
+                }
+                .map { it.record.id }
+
+        if (ids.isEmpty()) return 0
+
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val now = System.currentTimeMillis()
+            var changed = 0
+            ids.forEach { id ->
+                changed +=
+                    db.update(
+                        "historical_purchase_candidate",
+                        ContentValues().apply {
+                            put("status", "CONFIRMED")
+                            put("updated_at", now)
+                        },
+                        "id=? AND status='PENDING'",
+                        arrayOf(id.toString())
+                    )
+            }
+            db.setTransactionSuccessful()
+            return changed
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun markHistoricalPurchaseSupplier(
+        candidateId: Long
+    ): Boolean {
+        val candidate =
+            readableDatabase.rawQuery(
+                """
+                SELECT platform,counterparty_key,counterparty_name
+                FROM historical_purchase_candidate
+                WHERE id=?
+                LIMIT 1
+                """.trimIndent(),
+                arrayOf(candidateId.toString())
+            ).use { c ->
+                if (!c.moveToFirst()) null
+                else Triple(
+                    c.str("platform"),
+                    c.str("counterparty_key"),
+                    c.str("counterparty_name")
+                )
+            } ?: return false
+
+        val now = System.currentTimeMillis()
+        val db = writableDatabase
+        val updated =
+            db.update(
+                "purchase_supplier_identity",
+                ContentValues().apply {
+                    put("platform", candidate.first)
+                    put("counterparty_name", candidate.third)
+                    put("enabled", 1)
+                    put("updated_at", now)
+                },
+                "counterparty_key=?",
+                arrayOf(candidate.second)
+            )
+
+        if (updated > 0) return true
+
+        return db.insert(
+            "purchase_supplier_identity",
+            null,
+            ContentValues().apply {
+                put("platform", candidate.first)
+                put("counterparty_key", candidate.second)
+                put("counterparty_name", candidate.third)
+                put("enabled", 1)
+                put("created_at", now)
+                put("updated_at", now)
+            }
+        ) > 0L
+    }
+
+    fun getConfirmedHistoricalPurchaseTotal(
+        date: String
+    ): Double =
+        readableDatabase.rawQuery(
+            """
+            SELECT COALESCE(SUM(amount),0) AS total
+            FROM historical_purchase_candidate
+            WHERE business_date=? AND status='CONFIRMED'
+            """.trimIndent(),
+            arrayOf(date)
+        ).use { c ->
+            if (c.moveToFirst()) {
+                HistoricalPurchaseScoring.roundMoney(c.dbl("total"))
+            } else {
+                0.0
+            }
+        }
+
     fun exportJson(): String {
         val root = JSONObject()
         root.put("schemaVersion", DB_VERSION)
@@ -15104,7 +15514,7 @@ class AppDatabase(
             getSyncFoundationStatus()
                 .pendingChanges
         )
-        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot", "product_cost_reference", "daily_retail_price", "business_weather_history", "daily_business_score", "fruit_season_catalog", "fruit_alias", "fruit_season_region", "fruit_profile", "payment_import_batch", "customer_payment_transaction", "weather_snapshot").forEach { table ->
+        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot", "product_cost_reference", "daily_retail_price", "business_weather_history", "daily_business_score", "fruit_season_catalog", "fruit_alias", "fruit_season_region", "fruit_profile", "payment_import_batch", "customer_payment_transaction", "historical_purchase_candidate", "purchase_supplier_identity", "weather_snapshot").forEach { table ->
             root.put(table, tableAsJson(table))
         }
         return root.toString(2)
@@ -15346,7 +15756,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 36
+        const val DB_VERSION = 37
 
         private val CUSTOMER_PAYMENT_DATE_TIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")

@@ -49,6 +49,7 @@ data class PaymentBillParseResult(
     val refundRows: Int,
     val errorRows: Int,
     val transactions: List<ParsedBusinessReceipt>,
+    val purchaseCandidates: List<ParsedPurchaseCandidate> = emptyList(),
     val warnings: List<String> = emptyList()
 )
 
@@ -149,6 +150,10 @@ internal object PaymentBillParser {
             mutableListOf<
                 ParsedBusinessReceipt
             >()
+        val purchaseCandidates =
+            mutableListOf<
+                ParsedPurchaseCandidate
+            >()
 
         table
             .drop(headerIndex + 1)
@@ -187,6 +192,17 @@ internal object PaymentBillParser {
                 }.onFailure {
                     errorRows += 1
                 }
+
+                runCatching {
+                    parsePurchaseCandidate(
+                        platform = platform,
+                        headers = headerMap,
+                        row = row
+                    )
+                }.getOrNull()
+                    ?.let {
+                        purchaseCandidates += it
+                    }
             }
 
         return PaymentBillParseResult(
@@ -202,6 +218,8 @@ internal object PaymentBillParser {
                 errorRows,
             transactions =
                 accepted,
+            purchaseCandidates =
+                purchaseCandidates,
             warnings =
                 buildList {
                     if (
@@ -646,6 +664,330 @@ internal object PaymentBillParser {
                         "成功"
                     }
                 }
+        )
+    }
+
+    private fun parsePurchaseCandidate(
+        platform: PaymentBillPlatform,
+        headers: Map<String, Int>,
+        row: List<String>
+    ): ParsedPurchaseCandidate? {
+        fun value(
+            vararg aliases: String
+        ): String {
+            aliases.forEach { alias ->
+                val index =
+                    headers[
+                        normalizeHeader(
+                            alias
+                        )
+                    ] ?: return@forEach
+                if (index in row.indices) {
+                    val v =
+                        cleanCell(
+                            row[index]
+                        )
+                    if (v.isNotBlank()) {
+                        return v
+                    }
+                }
+            }
+            return ""
+        }
+
+        val direction =
+            value(
+                "收/支",
+                "收支",
+                "资金方向",
+                "收入/支出",
+                "账务类型"
+            )
+
+        val outgoing =
+            direction.contains("支出") ||
+                direction.equals("支", ignoreCase = true) ||
+                direction.contains("付款")
+
+        if (!outgoing) {
+            return null
+        }
+
+        val type =
+            value(
+                "交易类型",
+                "交易分类",
+                "业务类型",
+                "交易方式",
+                "收款类型",
+                "资金类型"
+            )
+        val product =
+            value(
+                "商品",
+                "商品名称",
+                "商品说明",
+                "名称",
+                "业务名称"
+            )
+        val remark =
+            value(
+                "备注",
+                "付款备注",
+                "商户数据包"
+            )
+        val status =
+            value(
+                "交易状态",
+                "当前状态",
+                "状态",
+                "资金状态"
+            )
+
+        if (isRejectedStatus(status)) {
+            return null
+        }
+
+        val evidence =
+            listOf(
+                type,
+                product,
+                remark,
+                status
+            )
+                .joinToString("|")
+                .lowercase(Locale.ROOT)
+
+        if (
+            PURCHASE_EXCLUDE_TOKENS.any {
+                evidence.contains(
+                    it.lowercase(Locale.ROOT)
+                )
+            }
+        ) {
+            return null
+        }
+
+        val amount =
+            money(
+                value(
+                    "支出金额",
+                    "订单金额(元)",
+                    "订单金额",
+                    "金额(元)",
+                    "金额",
+                    "交易金额",
+                    "总金额",
+                    "实付金额"
+                )
+            )
+
+        if (amount < 40.0) {
+            return null
+        }
+
+        val tradeTime =
+            normalizeDateTime(
+                value(
+                    "交易时间",
+                    "创建时间",
+                    "支付时间",
+                    "付款时间",
+                    "时间",
+                    "入账时间"
+                )
+            ) ?: return null
+
+        val localTime =
+            runCatching {
+                LocalTime.parse(
+                    tradeTime.substring(
+                        11,
+                        19
+                    )
+                )
+            }.getOrNull() ?: return null
+
+        val minuteOfDay =
+            localTime.hour * 60 +
+                localTime.minute
+
+        if (
+            minuteOfDay <
+            6 * 60 ||
+            minuteOfDay >
+            14 * 60
+        ) {
+            return null
+        }
+
+        val businessDate =
+            tradeTime.take(10)
+
+        val transactionRef =
+            value(
+                "微信订单号",
+                "微信支付订单号",
+                "支付宝交易号",
+                "交易订单号",
+                "交易单号",
+                "订单号",
+                "商户订单号",
+                "商家订单号"
+            )
+                .ifBlank {
+                    sha256Hex(
+                        (
+                            platform.name +
+                                "|PURCHASE|" +
+                                tradeTime +
+                                "|" +
+                                amount +
+                                "|" +
+                                evidence
+                            )
+                            .toByteArray(
+                                Charsets.UTF_8
+                            )
+                    ).take(24)
+                }
+
+        val stableIdentity =
+            value(
+                "对方账号",
+                "对方支付宝账号",
+                "支付宝账号",
+                "收款方账号",
+                "商户号",
+                "商户编号",
+                "交易对方账号"
+            )
+
+        val counterpartyDisplay =
+            value(
+                "交易对方",
+                "收款方",
+                "收款方名称",
+                "对方名称",
+                "对方昵称",
+                "商户全称",
+                "商户名称",
+                "卖家名称",
+                "卖家"
+            )
+                .ifBlank {
+                    product
+                }
+                .ifBlank {
+                    "未命名收款方"
+                }
+
+        val identity =
+            when {
+                stableIdentity.isNotBlank() ->
+                    Triple(
+                        sha256Hex(
+                            (
+                                platform.name +
+                                    "|PAYEE_ID|" +
+                                    normalizeIdentity(
+                                        stableIdentity
+                                    )
+                                )
+                                .toByteArray(
+                                    Charsets.UTF_8
+                                )
+                        ),
+                        counterpartyDisplay,
+                        "HIGH"
+                    )
+
+                counterpartyDisplay != "未命名收款方" ->
+                    Triple(
+                        sha256Hex(
+                            (
+                                platform.name +
+                                    "|PAYEE_NAME|" +
+                                    normalizeIdentity(
+                                        counterpartyDisplay
+                                    )
+                                )
+                                .toByteArray(
+                                    Charsets.UTF_8
+                                )
+                        ),
+                        counterpartyDisplay,
+                        "MEDIUM"
+                    )
+
+                else ->
+                    Triple(
+                        sha256Hex(
+                            (
+                                platform.name +
+                                    "|PAYEE_ANON|" +
+                                    transactionRef
+                                )
+                                .toByteArray(
+                                    Charsets.UTF_8
+                                )
+                        ),
+                        counterpartyDisplay,
+                        "LOW"
+                    )
+            }
+
+        val dedupeKey =
+            sha256Hex(
+                (
+                    platform.name +
+                        "|PURCHASE|" +
+                        transactionRef +
+                        "|" +
+                        tradeTime +
+                        "|" +
+                        roundMoneyLocal(
+                            amount
+                        ) +
+                        "|" +
+                        identity.first
+                    )
+                    .toByteArray(
+                        Charsets.UTF_8
+                    )
+            )
+
+        return ParsedPurchaseCandidate(
+            platform = platform,
+            tradeTime = tradeTime,
+            businessDate = businessDate,
+            amount =
+                roundMoneyLocal(
+                    amount
+                ),
+            transactionRef =
+                transactionRef,
+            dedupeKey =
+                dedupeKey,
+            counterpartyKey =
+                identity.first,
+            counterpartyName =
+                identity.second,
+            identityConfidence =
+                identity.third,
+            transactionType =
+                type
+                    .ifBlank {
+                        product
+                    }
+                    .ifBlank {
+                        "付款"
+                    },
+            tradeStatus =
+                status
+                    .ifBlank {
+                        "成功"
+                    }
         )
     }
 
@@ -1725,6 +2067,28 @@ internal object PaymentBillParser {
             "商家收款",
             "扫码收款",
             "二维码经营收款"
+        )
+
+    private val PURCHASE_EXCLUDE_TOKENS =
+        listOf(
+            "红包",
+            "提现",
+            "充值",
+            "还款",
+            "信用卡",
+            "花呗",
+            "借呗",
+            "理财",
+            "基金",
+            "保险",
+            "退款",
+            "缴费",
+            "话费",
+            "流量",
+            "公益",
+            "捐赠",
+            "余额宝",
+            "零钱通"
         )
 
     private val REJECTED_STATUS_TOKENS =

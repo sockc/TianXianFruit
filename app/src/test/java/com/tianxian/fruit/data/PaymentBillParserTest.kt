@@ -303,6 +303,120 @@ class PaymentBillParserTest {
         )
     }
 
+    @Test
+    fun morningOutgoingPaymentsBecomePurchaseCandidatesOnlyWithinRules() {
+        val csv =
+            """
+            微信支付账单
+            交易时间,交易类型,交易对方,对方账号,收/支,金额(元),当前状态,交易单号
+            2026-10-05 06:20:00,二维码付款,江南果品,supplier-1,支出,320.00,支付成功,p-1
+            2026-10-05 09:10:00,转账,阿强,supplier-2,支出,200.00,支付成功,p-2
+            2026-10-05 05:59:00,二维码付款,早餐店,food-1,支出,50.00,支付成功,p-3
+            2026-10-05 14:01:00,二维码付款,市场,market-1,支出,500.00,支付成功,p-4
+            2026-10-05 08:30:00,红包,朋友,friend-1,支出,80.00,支付成功,p-5
+            2026-10-05 10:00:00,信用卡还款,银行,bank-1,支出,600.00,支付成功,p-6
+            2026-10-05 18:00:00,二维码收款,客户A,buyer-1,收入,25.00,支付成功,r-1
+            """.trimIndent()
+
+        val result =
+            PaymentBillParser.parse(
+                "微信支付账单.csv",
+                csv.toByteArray(Charsets.UTF_8)
+            )
+
+        assertEquals(
+            1,
+            result.acceptedRows
+        )
+        assertEquals(
+            2,
+            result.purchaseCandidates.size
+        )
+        assertEquals(
+            listOf("江南果品", "阿强"),
+            result.purchaseCandidates.map {
+                it.counterpartyName
+            }
+        )
+        assertEquals(
+            listOf(320.0, 200.0),
+            result.purchaseCandidates.map {
+                it.amount
+            }
+        )
+    }
+
+    @Test
+    fun purchaseScoringUsesBusinessEvidenceAndSupplierLearning() {
+        val qr =
+            HistoricalPurchaseCandidateRecord(
+                id = 1,
+                platform = "WECHAT",
+                tradeTime = "2026-10-05 07:00:00",
+                businessDate = "2026-10-05",
+                amount = 320.0,
+                transactionRef = "p-1",
+                counterpartyKey = "supplier",
+                counterpartyName = "江南果品",
+                identityConfidence = "HIGH",
+                transactionType = "二维码付款",
+                tradeStatus = "支付成功",
+                status = "PENDING",
+                sourceFile = "bill.csv",
+                createdAt = 0,
+                updatedAt = 0
+            )
+
+        val withBusiness =
+            HistoricalPurchaseScoring.score(
+                record = qr,
+                hasBusinessEvidence = true,
+                knownSupplier = false,
+                confirmedHistoryCount = 0,
+                occurrenceCount = 1
+            )
+
+        assertEquals(
+            "HIGH",
+            withBusiness.confidence
+        )
+        assertTrue(
+            withBusiness.score >=
+                HistoricalPurchaseScoring.HIGH_SCORE
+        )
+
+        val transfer =
+            qr.copy(
+                amount = 120.0,
+                transactionType = "转账"
+            )
+
+        val unknown =
+            HistoricalPurchaseScoring.score(
+                record = transfer,
+                hasBusinessEvidence = false,
+                knownSupplier = false,
+                confirmedHistoryCount = 0,
+                occurrenceCount = 1
+            )
+        val supplier =
+            HistoricalPurchaseScoring.score(
+                record = transfer,
+                hasBusinessEvidence = false,
+                knownSupplier = true,
+                confirmedHistoryCount = 0,
+                occurrenceCount = 1
+            )
+
+        assertTrue(
+            supplier.score > unknown.score
+        )
+        assertEquals(
+            "HIGH",
+            supplier.confidence
+        )
+    }
+
     private fun payment(
         id: Long,
         customer: String,
