@@ -930,6 +930,7 @@ class AppDatabase(
         createV31BusinessScore(db)
         createV32FruitSeasonLibrary(db)
         createV36CustomerPayments(db)
+        createV37HistoricalPurchaseAssist(db)
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -1078,6 +1079,11 @@ class AppDatabase(
             // V36: imported payment receipts are local analysis data only.
             // They never alter business revenue, settlement or profit distribution.
             createV36CustomerPayments(db)
+        }
+        if (oldVersion < 37) {
+            // V37: historical purchase recognition stays local-only and never
+            // writes formal purchase orders, inventory, profit or settlement.
+            createV37HistoricalPurchaseAssist(db)
         }
     }
 
@@ -3351,6 +3357,61 @@ class AppDatabase(
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS idx_payment_import_time " +
                 "ON payment_import_batch(imported_at)"
+        )
+    }
+
+    private fun createV37HistoricalPurchaseAssist(
+        db: SQLiteDatabase
+    ) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS historical_purchase_candidate(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL UNIQUE,
+                transaction_ref TEXT NOT NULL DEFAULT '',
+                trade_time TEXT NOT NULL,
+                business_date TEXT NOT NULL,
+                amount REAL NOT NULL DEFAULT 0,
+                counterparty_key TEXT NOT NULL,
+                counterparty_name TEXT NOT NULL DEFAULT '',
+                identity_confidence TEXT NOT NULL DEFAULT 'LOW',
+                transaction_type TEXT NOT NULL DEFAULT '',
+                trade_status TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                source_batch_id INTEGER NOT NULL DEFAULT 0,
+                source_file TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent()
+        )
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS purchase_supplier_identity(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform TEXT NOT NULL DEFAULT '',
+                counterparty_key TEXT NOT NULL UNIQUE,
+                counterparty_name TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent()
+        )
+
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_historical_purchase_date " +
+                "ON historical_purchase_candidate(business_date,status,trade_time)"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_historical_purchase_counterparty " +
+                "ON historical_purchase_candidate(counterparty_key,status,business_date)"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_purchase_supplier_key " +
+                "ON purchase_supplier_identity(counterparty_key,enabled)"
         )
     }
 
@@ -15104,7 +15165,7 @@ class AppDatabase(
             getSyncFoundationStatus()
                 .pendingChanges
         )
-        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot", "product_cost_reference", "daily_retail_price", "business_weather_history", "daily_business_score", "fruit_season_catalog", "fruit_alias", "fruit_season_region", "fruit_profile", "payment_import_batch", "customer_payment_transaction", "weather_snapshot").forEach { table ->
+        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot", "product_cost_reference", "daily_retail_price", "business_weather_history", "daily_business_score", "fruit_season_catalog", "fruit_alias", "fruit_season_region", "fruit_profile", "payment_import_batch", "customer_payment_transaction", "historical_purchase_candidate", "purchase_supplier_identity", "weather_snapshot").forEach { table ->
             root.put(table, tableAsJson(table))
         }
         return root.toString(2)
@@ -15346,7 +15407,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 36
+        const val DB_VERSION = 37
 
         private val CUSTOMER_PAYMENT_DATE_TIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
