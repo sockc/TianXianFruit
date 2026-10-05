@@ -14640,6 +14640,49 @@ class AppDatabase(
         }
     }
 
+    private fun saveHistoricalPurchaseCandidates(
+        batchId: Long,
+        fileName: String,
+        candidates: List<ParsedPurchaseCandidate>
+    ): Pair<Int, Int> {
+        if (candidates.isEmpty()) return 0 to 0
+
+        val db = writableDatabase
+        val now = System.currentTimeMillis()
+        var inserted = 0
+        var duplicates = 0
+
+        candidates.forEach { candidate ->
+            val rowId =
+                db.insertWithOnConflict(
+                    "historical_purchase_candidate",
+                    null,
+                    ContentValues().apply {
+                        put("platform", candidate.platform.name)
+                        put("dedupe_key", candidate.dedupeKey)
+                        put("transaction_ref", candidate.transactionRef)
+                        put("trade_time", candidate.tradeTime)
+                        put("business_date", candidate.businessDate)
+                        put("amount", candidate.amount)
+                        put("counterparty_key", candidate.counterpartyKey)
+                        put("counterparty_name", candidate.counterpartyName)
+                        put("identity_confidence", candidate.identityConfidence)
+                        put("transaction_type", candidate.transactionType)
+                        put("trade_status", candidate.tradeStatus)
+                        put("status", "PENDING")
+                        put("source_batch_id", batchId)
+                        put("source_file", fileName)
+                        put("created_at", now)
+                        put("updated_at", now)
+                    },
+                    SQLiteDatabase.CONFLICT_IGNORE
+                )
+            if (rowId > 0L) inserted += 1 else duplicates += 1
+        }
+
+        return inserted to duplicates
+    }
+
     fun importCustomerPaymentBill(
         fileName: String,
         fileHash: String,
