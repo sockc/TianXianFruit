@@ -51,7 +51,10 @@ data class PaymentImportOutcome(
     val refundRows: Int,
     val errorRows: Int,
     val unmatchedStoreRows: Int,
-    val duplicateFile: Boolean
+    val duplicateFile: Boolean,
+    val purchaseCandidateRows: Int = 0,
+    val purchaseCandidateInsertedRows: Int = 0,
+    val purchaseCandidateDuplicateRows: Int = 0
 )
 
 data class CustomerAnalysisSummary(
