@@ -404,7 +404,7 @@ private fun CustomerOverview(result: CustomerAnalysisResult) {
 private fun RevenueChangeCard(change: CustomerChangeBreakdown) {
     Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Text("营业额变化拆解", fontWeight = FontWeight.Bold)
+            Text("经营收款变化拆解", fontWeight = FontWeight.Bold)
             Text(change.mainReason, color = Color(0xFF087D4E), fontWeight = FontWeight.SemiBold)
             Text(
                 "经营收款 ${signedMoney(change.revenueChange)}；客户 ${signedInt(change.customerChange)} 人。",
