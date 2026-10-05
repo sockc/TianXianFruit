@@ -220,6 +220,88 @@ class PaymentBillParserTest {
         )
     }
 
+    @Test
+    fun refundsReduceCustomerAndStoreRevenueWithoutAddingVisits() {
+        val records =
+            listOf(
+                payment(
+                    id = 1,
+                    customer = "A",
+                    name = "老客A",
+                    date = "2026-10-02",
+                    amount = 100.0
+                ),
+                CustomerPaymentRecord(
+                    id = 2,
+                    platform = "WECHAT",
+                    tradeTime = "2026-10-03 12:00:00",
+                    businessDate = "2026-10-03",
+                    amount = 0.0,
+                    refundAmount = 20.0,
+                    netAmount = -20.0,
+                    customerKey = "A",
+                    customerName = "老客A",
+                    identityConfidence = "HIGH",
+                    transactionType = "二维码收款",
+                    tradeStatus = "退款",
+                    storeId = 1,
+                    storeName = "测试位置"
+                )
+            )
+
+        val result =
+            CustomerAnalyticsEngine.analyze(
+                allRecords = records,
+                startDate = "2026-10-01",
+                endDate = "2026-10-06",
+                today = LocalDate.of(
+                    2026,
+                    10,
+                    6
+                )
+            )
+
+        assertEquals(
+            80.0,
+            result.summary.netRevenue,
+            0.001
+        )
+        assertEquals(
+            1,
+            result.summary.paymentCount
+        )
+
+        val profile =
+            result.profiles.single()
+
+        assertEquals(
+            80.0,
+            profile.periodAmount,
+            0.001
+        )
+        assertEquals(
+            1,
+            profile.periodPayments
+        )
+        assertEquals(
+            1,
+            profile.periodVisits
+        )
+
+        val store =
+            result.stores.single()
+
+        assertEquals(
+            80.0,
+            store.netRevenue,
+            0.001
+        )
+        assertEquals(
+            1,
+            store.paymentCount
+        )
+    }
+
     private fun payment(
         id: Long,
         customer: String,
