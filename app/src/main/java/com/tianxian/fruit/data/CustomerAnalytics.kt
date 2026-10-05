@@ -1,0 +1,1188 @@
+package com.tianxian.fruit.data
+
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
+import kotlin.math.abs
+import kotlin.math.roundToInt
+import kotlin.math.sqrt
+
+data class CustomerPaymentRecord(
+    val id: Long,
+    val platform: String,
+    val tradeTime: String,
+    val businessDate: String,
+    val amount: Double,
+    val refundAmount: Double,
+    val netAmount: Double,
+    val customerKey: String,
+    val customerName: String,
+    val identityConfidence: String,
+    val transactionType: String,
+    val tradeStatus: String,
+    val storeId: Long,
+    val storeName: String
+)
+
+data class PaymentImportBatchRecord(
+    val id: Long,
+    val platform: String,
+    val fileName: String,
+    val fileHash: String,
+    val totalRows: Int,
+    val acceptedRows: Int,
+    val duplicateRows: Int,
+    val ignoredRows: Int,
+    val refundRows: Int,
+    val errorRows: Int,
+    val importedAt: Long
+)
+
+data class PaymentImportOutcome(
+    val batchId: Long,
+    val platform: String,
+    val fileName: String,
+    val totalRows: Int,
+    val acceptedRows: Int,
+    val insertedRows: Int,
+    val duplicateRows: Int,
+    val ignoredRows: Int,
+    val refundRows: Int,
+    val errorRows: Int,
+    val unmatchedStoreRows: Int,
+    val duplicateFile: Boolean
+)
+
+data class CustomerAnalysisSummary(
+    val netRevenue: Double,
+    val paymentCount: Int,
+    val customerCount: Int,
+    val identifiedCustomerCount: Int,
+    val newCustomerCount: Int,
+    val oldCustomerCount: Int,
+    val repeatCustomerCount: Int,
+    val repeatRate: Double,
+    val averageTicket: Double,
+    val averageCustomerValue: Double,
+    val unmatchedStoreCount: Int,
+    val highConfidenceCount: Int,
+    val mediumConfidenceCount: Int,
+    val lowConfidenceCount: Int
+)
+
+data class CustomerProfileAnalysis(
+    val customerKey: String,
+    val customerName: String,
+    val platformLabel: String,
+    val identityConfidence: String,
+    val periodAmount: Double,
+    val periodPayments: Int,
+    val periodVisits: Int,
+    val lifetimeAmount: Double,
+    val lifetimePayments: Int,
+    val lifetimeVisits: Int,
+    val firstDate: String,
+    val lastDate: String,
+    val daysSinceLast: Long,
+    val averageTicket: Double,
+    val averageIntervalDays: Double?,
+    val commonStore: String,
+    val lifecycle: String,
+    val stabilityScore: Int
+)
+
+data class CustomerStoreAnalysis(
+    val storeName: String,
+    val netRevenue: Double,
+    val paymentCount: Int,
+    val customerCount: Int,
+    val repeatCustomerCount: Int,
+    val repeatRate: Double,
+    val averageTicket: Double
+)
+
+data class CustomerLifecycleCount(
+    val label: String,
+    val count: Int
+)
+
+data class CustomerChangeBreakdown(
+    val available: Boolean,
+    val currentRevenue: Double = 0.0,
+    val previousRevenue: Double = 0.0,
+    val revenueChange: Double = 0.0,
+    val currentCustomers: Int = 0,
+    val previousCustomers: Int = 0,
+    val customerChange: Int = 0,
+    val currentAverageCustomerValue: Double = 0.0,
+    val previousAverageCustomerValue: Double = 0.0,
+    val customerCountEffect: Double = 0.0,
+    val customerValueEffect: Double = 0.0,
+    val mainReason: String = ""
+)
+
+data class CustomerAnalysisResult(
+    val summary: CustomerAnalysisSummary,
+    val profiles: List<CustomerProfileAnalysis>,
+    val stores: List<CustomerStoreAnalysis>,
+    val lifecycles: List<CustomerLifecycleCount>,
+    val change: CustomerChangeBreakdown
+)
+
+internal object CustomerAnalyticsEngine {
+    fun analyze(
+        allRecords: List<CustomerPaymentRecord>,
+        startDate: String?,
+        endDate: String?,
+        today: LocalDate = LocalDate.now()
+    ): CustomerAnalysisResult {
+        val positiveAll =
+            allRecords
+                .filter {
+                    it.netAmount >
+                        0.005
+                }
+
+        val filtered =
+            allRecords
+                .filter {
+                    record ->
+                    (
+                        startDate == null ||
+                            record.businessDate >=
+                            startDate
+                        ) &&
+                        (
+                            endDate == null ||
+                                record.businessDate <=
+                                endDate
+                            )
+                }
+
+        val positive =
+            filtered
+                .filter {
+                    it.netAmount >
+                        0.005
+                }
+
+        val allByCustomer =
+            positiveAll.groupBy {
+                it.customerKey
+            }
+
+        val periodByCustomer =
+            positive.groupBy {
+                it.customerKey
+            }
+
+        val firstDateByCustomer =
+            allByCustomer.mapValues {
+                (_, records) ->
+                records.minOf {
+                    it.businessDate
+                }
+            }
+
+        val periodCustomers =
+            periodByCustomer.keys
+
+        val newCustomers =
+            if (
+                startDate ==
+                null
+            ) {
+                emptySet()
+            } else {
+                periodCustomers
+                    .filter {
+                        firstDateByCustomer[it]
+                            ?.let {
+                                first ->
+                                first >=
+                                    startDate
+                            } ==
+                            true
+                    }
+                    .toSet()
+            }
+
+        val oldCustomers =
+            periodCustomers -
+                newCustomers
+
+        val repeatCustomers =
+            periodCustomers
+                .filter {
+                    key ->
+                    allByCustomer[
+                        key
+                    ]
+                        .orEmpty()
+                        .map {
+                            it.businessDate
+                        }
+                        .distinct()
+                        .size >=
+                        2
+                }
+                .toSet()
+
+        val netRevenue =
+            roundMoney(
+                filtered.sumOf {
+                    it.netAmount
+                }
+            )
+
+        val paymentCount =
+            positive.size
+
+        val averageTicket =
+            if (
+                paymentCount >
+                0
+            ) {
+                roundMoney(
+                    netRevenue /
+                        paymentCount
+                )
+            } else {
+                0.0
+            }
+
+        val customerCount =
+            periodCustomers.size
+
+        val averageCustomerValue =
+            if (
+                customerCount >
+                0
+            ) {
+                roundMoney(
+                    netRevenue /
+                        customerCount
+                )
+            } else {
+                0.0
+            }
+
+        val confidenceByCustomer =
+            periodByCustomer.mapValues {
+                (_, records) ->
+                when {
+                    records.any {
+                        it.identityConfidence ==
+                            "HIGH"
+                    } ->
+                        "HIGH"
+
+                    records.any {
+                        it.identityConfidence ==
+                            "MEDIUM"
+                    } ->
+                        "MEDIUM"
+
+                    else ->
+                        "LOW"
+                }
+            }
+
+        val amount90ByCustomer =
+            positiveAll
+                .filter {
+                    runCatching {
+                        LocalDate.parse(
+                            it.businessDate
+                        )
+                    }.getOrNull()
+                        ?.let {
+                            date ->
+                            !date.isBefore(
+                                today.minusDays(
+                                    89
+                                )
+                            )
+                        } ==
+                        true
+                }
+                .groupBy {
+                    it.customerKey
+                }
+                .mapValues {
+                    (_, records) ->
+                    records.sumOf {
+                        it.netAmount
+                    }
+                }
+
+        val highValueThreshold =
+            percentile80(
+                amount90ByCustomer
+                    .values
+                    .filter {
+                        it >
+                            0.005
+                    }
+            )
+
+        val profiles =
+            periodByCustomer
+                .map {
+                    (key, periodRecords) ->
+                    buildProfile(
+                        customerKey = key,
+                        periodRecords =
+                            periodRecords,
+                        lifetimeRecords =
+                            allByCustomer[
+                                key
+                            ].orEmpty(),
+                        today = today,
+                        highValueThreshold =
+                            highValueThreshold,
+                        amount90 =
+                            amount90ByCustomer[
+                                key
+                            ] ?: 0.0
+                    )
+                }
+                .sortedWith(
+                    compareByDescending<
+                        CustomerProfileAnalysis
+                    > {
+                        it.periodAmount
+                    }
+                        .thenByDescending {
+                            it.periodVisits
+                        }
+                )
+
+        val stores =
+            positive
+                .groupBy {
+                    it.storeName
+                        .ifBlank {
+                            "未匹配位置"
+                        }
+                }
+                .map {
+                    (
+                        storeName,
+                        records
+                    ) ->
+                    val keys =
+                        records.map {
+                            it.customerKey
+                        }
+                            .toSet()
+
+                    val repeat =
+                        keys.count {
+                            key ->
+                            records
+                                .filter {
+                                    it.customerKey ==
+                                        key
+                                }
+                                .map {
+                                    it.businessDate
+                                }
+                                .distinct()
+                                .size >=
+                                2
+                        }
+
+                    val amount =
+                        roundMoney(
+                            records.sumOf {
+                                it.netAmount
+                            }
+                        )
+
+                    CustomerStoreAnalysis(
+                        storeName =
+                            storeName,
+                        netRevenue =
+                            amount,
+                        paymentCount =
+                            records.size,
+                        customerCount =
+                            keys.size,
+                        repeatCustomerCount =
+                            repeat,
+                        repeatRate =
+                            if (
+                                keys.isNotEmpty()
+                            ) {
+                                repeat.toDouble() /
+                                    keys.size
+                            } else {
+                                0.0
+                            },
+                        averageTicket =
+                            if (
+                                records.isNotEmpty()
+                            ) {
+                                roundMoney(
+                                    amount /
+                                        records.size
+                                )
+                            } else {
+                                0.0
+                            }
+                    )
+                }
+                .sortedByDescending {
+                    it.netRevenue
+                }
+
+        val lifecycles =
+            LIFECYCLE_ORDER
+                .map {
+                    label ->
+                    CustomerLifecycleCount(
+                        label =
+                            label,
+                        count =
+                            profiles.count {
+                                it.lifecycle ==
+                                    label
+                            }
+                    )
+                }
+
+        val summary =
+            CustomerAnalysisSummary(
+                netRevenue =
+                    netRevenue,
+                paymentCount =
+                    paymentCount,
+                customerCount =
+                    customerCount,
+                identifiedCustomerCount =
+                    confidenceByCustomer.count {
+                        it.value !=
+                            "LOW"
+                    },
+                newCustomerCount =
+                    newCustomers.size,
+                oldCustomerCount =
+                    oldCustomers.size,
+                repeatCustomerCount =
+                    repeatCustomers.size,
+                repeatRate =
+                    if (
+                        customerCount >
+                        0
+                    ) {
+                        repeatCustomers.size
+                            .toDouble() /
+                            customerCount
+                    } else {
+                        0.0
+                    },
+                averageTicket =
+                    averageTicket,
+                averageCustomerValue =
+                    averageCustomerValue,
+                unmatchedStoreCount =
+                    positive.count {
+                        it.storeName
+                            .isBlank()
+                    },
+                highConfidenceCount =
+                    confidenceByCustomer.count {
+                        it.value ==
+                            "HIGH"
+                    },
+                mediumConfidenceCount =
+                    confidenceByCustomer.count {
+                        it.value ==
+                            "MEDIUM"
+                    },
+                lowConfidenceCount =
+                    confidenceByCustomer.count {
+                        it.value ==
+                            "LOW"
+                    }
+            )
+
+        return CustomerAnalysisResult(
+            summary = summary,
+            profiles = profiles,
+            stores = stores,
+            lifecycles = lifecycles,
+            change =
+                buildChange(
+                    allRecords =
+                        allRecords,
+                    startDate =
+                        startDate,
+                    endDate =
+                        endDate
+                )
+        )
+    }
+
+    private fun buildProfile(
+        customerKey: String,
+        periodRecords: List<CustomerPaymentRecord>,
+        lifetimeRecords: List<CustomerPaymentRecord>,
+        today: LocalDate,
+        highValueThreshold: Double,
+        amount90: Double
+    ): CustomerProfileAnalysis {
+        val lifetimeSorted =
+            lifetimeRecords.sortedBy {
+                it.tradeTime
+            }
+
+        val dates =
+            lifetimeSorted
+                .map {
+                    it.businessDate
+                }
+                .distinct()
+                .sorted()
+
+        val firstDate =
+            dates.firstOrNull()
+                .orEmpty()
+
+        val lastDate =
+            dates.lastOrNull()
+                .orEmpty()
+
+        val daysSinceLast =
+            runCatching {
+                ChronoUnit.DAYS
+                    .between(
+                        LocalDate.parse(
+                            lastDate
+                        ),
+                        today
+                    )
+            }
+                .getOrDefault(
+                    0L
+                )
+                .coerceAtLeast(
+                    0L
+                )
+
+        val intervals =
+            dates.zipWithNext {
+                left,
+                right ->
+                ChronoUnit.DAYS
+                    .between(
+                        LocalDate.parse(
+                            left
+                        ),
+                        LocalDate.parse(
+                            right
+                        )
+                    )
+                    .toDouble()
+            }
+                .filter {
+                    it >
+                        0.0
+                }
+
+        val averageInterval =
+            intervals
+                .takeIf {
+                    it.isNotEmpty()
+                }
+                ?.average()
+
+        val visits30 =
+            lifetimeSorted
+                .filter {
+                    runCatching {
+                        LocalDate.parse(
+                            it.businessDate
+                        )
+                    }.getOrNull()
+                        ?.let {
+                            date ->
+                            !date.isBefore(
+                                today.minusDays(
+                                    29
+                                )
+                            )
+                        } ==
+                        true
+                }
+                .map {
+                    it.businessDate
+                }
+                .distinct()
+                .size
+
+        val lifecycle =
+            when {
+                firstDate.isNotBlank() &&
+                    runCatching {
+                        LocalDate.parse(
+                            firstDate
+                        )
+                    }.getOrNull()
+                        ?.let {
+                            !it.isBefore(
+                                today.minusDays(
+                                    7
+                                )
+                            )
+                        } ==
+                        true &&
+                    dates.size <=
+                    1 ->
+                    "新客"
+
+                daysSinceLast >=
+                    45 &&
+                    dates.size >=
+                    3 ->
+                    "沉睡客"
+
+                dates.size >=
+                    3 &&
+                    averageInterval !=
+                    null &&
+                    daysSinceLast >
+                    maxOf(
+                        14.0,
+                        averageInterval *
+                            2.0
+                    ) ->
+                    "可能流失"
+
+                visits30 >=
+                    8 ->
+                    "高频客"
+
+                highValueThreshold >
+                    0.005 &&
+                    amount90 >=
+                    highValueThreshold &&
+                    dates.size >=
+                    2 ->
+                    "高价值客"
+
+                dates.size >=
+                    2 &&
+                    daysSinceLast <=
+                    30 ->
+                    "活跃老客"
+
+                dates.size >=
+                    2 ->
+                    "普通老客"
+
+                else ->
+                    "新客"
+            }
+
+        val commonStore =
+            lifetimeSorted
+                .filter {
+                    it.storeName
+                        .isNotBlank()
+                }
+                .groupingBy {
+                    it.storeName
+                }
+                .eachCount()
+                .maxByOrNull {
+                    it.value
+                }
+                ?.key
+                .orEmpty()
+
+        val lifetimeAmount =
+            roundMoney(
+                lifetimeSorted.sumOf {
+                    it.netAmount
+                }
+            )
+
+        val periodAmount =
+            roundMoney(
+                periodRecords.sumOf {
+                    it.netAmount
+                }
+            )
+
+        val displayName =
+            lifetimeSorted
+                .lastOrNull {
+                    it.customerName
+                        .isNotBlank()
+                }
+                ?.customerName
+                ?: "匿名客户"
+
+        val confidence =
+            when {
+                lifetimeSorted.any {
+                    it.identityConfidence ==
+                        "HIGH"
+                } ->
+                    "HIGH"
+
+                lifetimeSorted.any {
+                    it.identityConfidence ==
+                        "MEDIUM"
+                } ->
+                    "MEDIUM"
+
+                else ->
+                    "LOW"
+            }
+
+        return CustomerProfileAnalysis(
+            customerKey =
+                customerKey,
+            customerName =
+                displayName,
+            platformLabel =
+                lifetimeSorted
+                    .map {
+                        when (
+                            it.platform
+                        ) {
+                            "WECHAT" ->
+                                "微信"
+
+                            "ALIPAY" ->
+                                "支付宝"
+
+                            else ->
+                                it.platform
+                        }
+                    }
+                    .distinct()
+                    .joinToString(
+                        "+"
+                    ),
+            identityConfidence =
+                confidence,
+            periodAmount =
+                periodAmount,
+            periodPayments =
+                periodRecords.size,
+            periodVisits =
+                periodRecords
+                    .map {
+                        it.businessDate
+                    }
+                    .distinct()
+                    .size,
+            lifetimeAmount =
+                lifetimeAmount,
+            lifetimePayments =
+                lifetimeSorted.size,
+            lifetimeVisits =
+                dates.size,
+            firstDate =
+                firstDate,
+            lastDate =
+                lastDate,
+            daysSinceLast =
+                daysSinceLast,
+            averageTicket =
+                if (
+                    lifetimeSorted.isNotEmpty()
+                ) {
+                    roundMoney(
+                        lifetimeAmount /
+                            lifetimeSorted.size
+                    )
+                } else {
+                    0.0
+                },
+            averageIntervalDays =
+                averageInterval,
+            commonStore =
+                commonStore,
+            lifecycle =
+                lifecycle,
+            stabilityScore =
+                stabilityScore(
+                    daysSinceLast =
+                        daysSinceLast,
+                    visits30 =
+                        visits30,
+                    intervals =
+                        intervals,
+                    averageInterval =
+                        averageInterval
+                )
+        )
+    }
+
+    private fun stabilityScore(
+        daysSinceLast: Long,
+        visits30: Int,
+        intervals: List<Double>,
+        averageInterval: Double?
+    ): Int {
+        val expectedInterval =
+            averageInterval
+                ?.coerceAtLeast(
+                    1.0
+                ) ?: 30.0
+
+        val recency =
+            (
+                1.0 -
+                    (
+                        daysSinceLast /
+                            (
+                                expectedInterval *
+                                    2.0
+                                )
+                        )
+                        .coerceIn(
+                            0.0,
+                            1.0
+                        )
+                ) *
+                40.0
+
+        val frequency =
+            (
+                visits30 /
+                    8.0
+                )
+                .coerceIn(
+                    0.0,
+                    1.0
+                ) *
+                30.0
+
+        val regularity =
+            if (
+                intervals.size >=
+                2
+            ) {
+                val mean =
+                    intervals.average()
+                        .coerceAtLeast(
+                            1.0
+                        )
+
+                val variance =
+                    intervals.sumOf {
+                        value ->
+                        val d =
+                            value -
+                                mean
+
+                        d *
+                            d
+                    } /
+                        intervals.size
+
+                val cv =
+                    sqrt(
+                        variance
+                    ) /
+                        mean
+
+                (
+                    1.0 -
+                        cv.coerceIn(
+                            0.0,
+                            1.0
+                        )
+                    ) *
+                    30.0
+            } else {
+                10.0
+            }
+
+        return (
+            recency +
+                frequency +
+                regularity
+            )
+            .roundToInt()
+            .coerceIn(
+                0,
+                100
+            )
+    }
+
+    private fun buildChange(
+        allRecords: List<CustomerPaymentRecord>,
+        startDate: String?,
+        endDate: String?
+    ): CustomerChangeBreakdown {
+        if (
+            startDate ==
+            null ||
+            endDate ==
+            null
+        ) {
+            return CustomerChangeBreakdown(
+                available = false
+            )
+        }
+
+        val start =
+            runCatching {
+                LocalDate.parse(
+                    startDate
+                )
+            }.getOrNull()
+                ?: return CustomerChangeBreakdown(
+                    available = false
+                )
+
+        val end =
+            runCatching {
+                LocalDate.parse(
+                    endDate
+                )
+            }.getOrNull()
+                ?: return CustomerChangeBreakdown(
+                    available = false
+                )
+
+        val days =
+            ChronoUnit.DAYS
+                .between(
+                    start,
+                    end
+                ) +
+                1
+
+        if (
+            days <=
+            0
+        ) {
+            return CustomerChangeBreakdown(
+                available = false
+            )
+        }
+
+        val previousEnd =
+            start.minusDays(
+                1
+            )
+
+        val previousStart =
+            previousEnd.minusDays(
+                days -
+                    1
+            )
+
+        val current =
+            compactSummary(
+                allRecords.filter {
+                    it.businessDate >=
+                        start.toString() &&
+                        it.businessDate <=
+                        end.toString()
+                }
+            )
+
+        val previous =
+            compactSummary(
+                allRecords.filter {
+                    it.businessDate >=
+                        previousStart.toString() &&
+                        it.businessDate <=
+                        previousEnd.toString()
+                }
+            )
+
+        if (
+            current.customers ==
+            0 &&
+            previous.customers ==
+            0
+        ) {
+            return CustomerChangeBreakdown(
+                available = false
+            )
+        }
+
+        val customerCountEffect =
+            roundMoney(
+                (
+                    current.customers -
+                        previous.customers
+                    ) *
+                    previous.averageCustomerValue
+            )
+
+        val customerValueEffect =
+            roundMoney(
+                current.customers *
+                    (
+                        current.averageCustomerValue -
+                            previous.averageCustomerValue
+                        )
+            )
+
+        val mainReason =
+            when {
+                abs(
+                    customerCountEffect
+                ) >
+                    abs(
+                        customerValueEffect
+                    ) *
+                    1.15 ->
+                    "主要由客户数变化"
+
+                abs(
+                    customerValueEffect
+                ) >
+                    abs(
+                        customerCountEffect
+                    ) *
+                    1.15 ->
+                    "主要由客均贡献变化"
+
+                else ->
+                    "客户数与客均贡献共同影响"
+            }
+
+        return CustomerChangeBreakdown(
+            available = true,
+            currentRevenue =
+                current.revenue,
+            previousRevenue =
+                previous.revenue,
+            revenueChange =
+                roundMoney(
+                    current.revenue -
+                        previous.revenue
+                ),
+            currentCustomers =
+                current.customers,
+            previousCustomers =
+                previous.customers,
+            customerChange =
+                current.customers -
+                    previous.customers,
+            currentAverageCustomerValue =
+                current.averageCustomerValue,
+            previousAverageCustomerValue =
+                previous.averageCustomerValue,
+            customerCountEffect =
+                customerCountEffect,
+            customerValueEffect =
+                customerValueEffect,
+            mainReason =
+                mainReason
+        )
+    }
+
+    private data class CompactSummary(
+        val revenue: Double,
+        val customers: Int,
+        val averageCustomerValue: Double
+    )
+
+    private fun compactSummary(
+        records: List<CustomerPaymentRecord>
+    ): CompactSummary {
+        val positives =
+            records.filter {
+                it.netAmount >
+                    0.005
+            }
+
+        val revenue =
+            roundMoney(
+                records.sumOf {
+                    it.netAmount
+                }
+            )
+
+        val customers =
+            positives.map {
+                it.customerKey
+            }
+                .toSet()
+                .size
+
+        return CompactSummary(
+            revenue =
+                revenue,
+            customers =
+                customers,
+            averageCustomerValue =
+                if (
+                    customers >
+                    0
+                ) {
+                    roundMoney(
+                        revenue /
+                            customers
+                    )
+                } else {
+                    0.0
+                }
+        )
+    }
+
+    private fun percentile80(
+        values: Collection<Double>
+    ): Double {
+        if (
+            values.isEmpty()
+        ) {
+            return 0.0
+        }
+
+        val sorted =
+            values.sorted()
+
+        val index =
+            (
+                (
+                    sorted.size -
+                        1
+                    ) *
+                    0.8
+                )
+                .roundToInt()
+                .coerceIn(
+                    0,
+                    sorted.lastIndex
+                )
+
+        return sorted[
+            index
+        ]
+    }
+
+    private fun roundMoney(
+        value: Double
+    ): Double =
+        kotlin.math.round(
+            value *
+                100.0
+        ) /
+            100.0
+
+    private val LIFECYCLE_ORDER =
+        listOf(
+            "新客",
+            "活跃老客",
+            "高频客",
+            "高价值客",
+            "可能流失",
+            "沉睡客",
+            "普通老客"
+        )
+}
