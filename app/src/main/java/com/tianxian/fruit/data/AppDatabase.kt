@@ -14857,6 +14857,13 @@ class AppDatabase(
                     }
                 }
 
+            val purchaseImport =
+                saveHistoricalPurchaseCandidates(
+                    batchId = batchId,
+                    fileName = fileName,
+                    candidates = parsed.purchaseCandidates
+                )
+
             val effectiveIgnored =
                 parsed.ignoredRows +
                     orphanRefunds
@@ -14887,7 +14894,10 @@ class AppDatabase(
                 refundRows = parsed.refundRows,
                 errorRows = parsed.errorRows,
                 unmatchedStoreRows = unmatched,
-                duplicateFile = false
+                duplicateFile = false,
+                purchaseCandidateRows = parsed.purchaseCandidates.size,
+                purchaseCandidateInsertedRows = purchaseImport.first,
+                purchaseCandidateDuplicateRows = purchaseImport.second
             )
         } finally {
             db.endTransaction()
