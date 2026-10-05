@@ -220,6 +220,7 @@ class PaymentBillParserTest {
         )
     }
 
+    // Linked refunds change money only; they must never create an extra customer visit.
     @Test
     fun refundsReduceCustomerAndStoreRevenueWithoutAddingVisits() {
         val records =
