@@ -9,6 +9,9 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.round
@@ -926,6 +929,7 @@ class AppDatabase(
         createV30AnalysisFoundation(db)
         createV31BusinessScore(db)
         createV32FruitSeasonLibrary(db)
+        createV36CustomerPayments(db)
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -1069,6 +1073,11 @@ class AppDatabase(
             // V35: operating advice is local-only; rebuild sync triggers and
             // purge any legacy queued/conflict rows for local-only tables.
             createSyncTriggers(db)
+        }
+        if (oldVersion < 36) {
+            // V36: imported payment receipts are local analysis data only.
+            // They never alter business revenue, settlement or profit distribution.
+            createV36CustomerPayments(db)
         }
     }
 
@@ -3277,6 +3286,71 @@ class AppDatabase(
             "CREATE INDEX IF NOT EXISTS " +
                 "idx_sync_conflict_detected " +
                 "ON sync_conflict(detected_at)"
+        )
+    }
+
+    private fun createV36CustomerPayments(
+        db: SQLiteDatabase
+    ) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS payment_import_batch(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform TEXT NOT NULL DEFAULT '',
+                file_name TEXT NOT NULL DEFAULT '',
+                file_hash TEXT NOT NULL UNIQUE,
+                total_rows INTEGER NOT NULL DEFAULT 0,
+                accepted_rows INTEGER NOT NULL DEFAULT 0,
+                duplicate_rows INTEGER NOT NULL DEFAULT 0,
+                ignored_rows INTEGER NOT NULL DEFAULT 0,
+                refund_rows INTEGER NOT NULL DEFAULT 0,
+                error_rows INTEGER NOT NULL DEFAULT 0,
+                imported_at INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent()
+        )
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS customer_payment_transaction(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL UNIQUE,
+                transaction_ref TEXT NOT NULL DEFAULT '',
+                trade_time TEXT NOT NULL,
+                business_date TEXT NOT NULL,
+                amount REAL NOT NULL DEFAULT 0,
+                refund_amount REAL NOT NULL DEFAULT 0,
+                net_amount REAL NOT NULL DEFAULT 0,
+                customer_key TEXT NOT NULL,
+                customer_name TEXT NOT NULL DEFAULT '',
+                identity_confidence TEXT NOT NULL DEFAULT 'LOW',
+                transaction_type TEXT NOT NULL DEFAULT '',
+                trade_status TEXT NOT NULL DEFAULT '',
+                store_id INTEGER NOT NULL DEFAULT 0,
+                store_name TEXT NOT NULL DEFAULT '',
+                source_batch_id INTEGER NOT NULL DEFAULT 0,
+                source_file TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent()
+        )
+
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_customer_payment_date " +
+                "ON customer_payment_transaction(business_date,trade_time)"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_customer_payment_customer " +
+                "ON customer_payment_transaction(customer_key,business_date)"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_customer_payment_store " +
+                "ON customer_payment_transaction(store_id,business_date)"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_payment_import_time " +
+                "ON payment_import_batch(imported_at)"
         )
     }
 
@@ -14505,6 +14579,519 @@ class AppDatabase(
         }
     }
 
+    fun importCustomerPaymentBill(
+        fileName: String,
+        fileHash: String,
+        parsed: PaymentBillParseResult
+    ): PaymentImportOutcome {
+        val db = writableDatabase
+
+        val existing =
+            db.rawQuery(
+                "SELECT * FROM payment_import_batch WHERE file_hash=? LIMIT 1",
+                arrayOf(fileHash)
+            ).use { c ->
+                if (!c.moveToFirst()) {
+                    null
+                } else {
+                    PaymentImportBatchRecord(
+                        id = c.long("id"),
+                        platform = c.str("platform"),
+                        fileName = c.str("file_name"),
+                        fileHash = c.str("file_hash"),
+                        totalRows = c.int("total_rows"),
+                        acceptedRows = c.int("accepted_rows"),
+                        duplicateRows = c.int("duplicate_rows"),
+                        ignoredRows = c.int("ignored_rows"),
+                        refundRows = c.int("refund_rows"),
+                        errorRows = c.int("error_rows"),
+                        importedAt = c.long("imported_at")
+                    )
+                }
+            }
+
+        if (existing != null) {
+            return PaymentImportOutcome(
+                batchId = existing.id,
+                platform = existing.platform,
+                fileName = existing.fileName,
+                totalRows = existing.totalRows,
+                acceptedRows = existing.acceptedRows,
+                insertedRows = 0,
+                duplicateRows = existing.acceptedRows,
+                ignoredRows = existing.ignoredRows,
+                refundRows = existing.refundRows,
+                errorRows = existing.errorRows,
+                unmatchedStoreRows = 0,
+                duplicateFile = true
+            )
+        }
+
+        db.beginTransaction()
+        try {
+            val now = System.currentTimeMillis()
+            val batchId =
+                db.insertOrThrow(
+                    "payment_import_batch",
+                    null,
+                    ContentValues().apply {
+                        put("platform", parsed.platform.name)
+                        put("file_name", fileName)
+                        put("file_hash", fileHash)
+                        put("total_rows", parsed.totalRows)
+                        put("accepted_rows", parsed.acceptedRows)
+                        put("duplicate_rows", 0)
+                        put("ignored_rows", parsed.ignoredRows)
+                        put("refund_rows", parsed.refundRows)
+                        put("error_rows", parsed.errorRows)
+                        put("imported_at", now)
+                    }
+                )
+
+            var inserted = 0
+            var duplicates = 0
+            var unmatched = 0
+            var orphanRefunds = 0
+
+            // Insert payment rows before pure refund rows so a refund in the same
+            // exported file can resolve its original QR/business receipt.
+            parsed.transactions
+                .sortedBy { receipt ->
+                    if (receipt.amount > 0.005) 0 else 1
+                }
+                .forEach { receipt ->
+                    val original =
+                        if (
+                            receipt.amount <= 0.005 &&
+                            receipt.refundAmount > 0.005
+                        ) {
+                            findOriginalCustomerPayment(
+                                db = db,
+                                platform = receipt.platform.name,
+                                transactionRef = receipt.transactionRef
+                            )
+                        } else {
+                            null
+                        }
+
+                    // A standalone refund is customer data only when the original
+                    // QR/business receipt is already known. Never infer an
+                    // operating customer from an orphan refund.
+                    if (
+                        receipt.amount <= 0.005 &&
+                        receipt.refundAmount > 0.005 &&
+                        original == null
+                    ) {
+                        orphanRefunds += 1
+                        return@forEach
+                    }
+
+                    val store =
+                        if (original != null) {
+                            original.store
+                        } else {
+                            resolveCustomerPaymentStore(
+                                db = db,
+                                tradeTime = receipt.tradeTime,
+                                businessDate = receipt.businessDate
+                            )
+                        }
+
+                    val customerKey =
+                        original?.customerKey
+                            ?: receipt.customerKey
+                    val customerName =
+                        original?.customerName
+                            ?: receipt.customerName
+                    val identityConfidence =
+                        original?.identityConfidence
+                            ?: receipt.identityConfidence
+
+                    val rowId =
+                        db.insertWithOnConflict(
+                            "customer_payment_transaction",
+                            null,
+                            ContentValues().apply {
+                                put("platform", receipt.platform.name)
+                                put("dedupe_key", receipt.dedupeKey)
+                                put("transaction_ref", receipt.transactionRef)
+                                put("trade_time", receipt.tradeTime)
+                                put("business_date", receipt.businessDate)
+                                put("amount", receipt.amount)
+                                put("refund_amount", receipt.refundAmount)
+                                put("net_amount", receipt.netAmount)
+                                put("customer_key", customerKey)
+                                put("customer_name", customerName)
+                                put("identity_confidence", identityConfidence)
+                                put("transaction_type", receipt.transactionType)
+                                put("trade_status", receipt.tradeStatus)
+                                put("store_id", store?.id ?: 0L)
+                                put("store_name", store?.name.orEmpty())
+                                put("source_batch_id", batchId)
+                                put("source_file", fileName)
+                                put("created_at", now)
+                            },
+                            SQLiteDatabase.CONFLICT_IGNORE
+                        )
+
+                    if (rowId > 0L) {
+                        inserted += 1
+                        if (store == null) {
+                            unmatched += 1
+                        }
+                    } else {
+                        duplicates += 1
+                    }
+                }
+
+            val effectiveIgnored =
+                parsed.ignoredRows +
+                    orphanRefunds
+
+            db.update(
+                "payment_import_batch",
+                ContentValues().apply {
+                    put("duplicate_rows", duplicates)
+                    put("ignored_rows", effectiveIgnored)
+                },
+                "id=?",
+                arrayOf(batchId.toString())
+            )
+
+            db.setTransactionSuccessful()
+
+            return PaymentImportOutcome(
+                batchId = batchId,
+                platform = parsed.platform.name,
+                fileName = fileName,
+                totalRows = parsed.totalRows,
+                acceptedRows = parsed.acceptedRows,
+                insertedRows = inserted,
+                duplicateRows = duplicates,
+                ignoredRows =
+                    parsed.ignoredRows +
+                        orphanRefunds,
+                refundRows = parsed.refundRows,
+                errorRows = parsed.errorRows,
+                unmatchedStoreRows = unmatched,
+                duplicateFile = false
+            )
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    private data class OriginalCustomerPayment(
+        val customerKey: String,
+        val customerName: String,
+        val identityConfidence: String,
+        val store: StoreOption?
+    )
+
+    private fun findOriginalCustomerPayment(
+        db: SQLiteDatabase,
+        platform: String,
+        transactionRef: String
+    ): OriginalCustomerPayment? {
+        if (transactionRef.isBlank()) return null
+
+        return db.rawQuery(
+            """
+            SELECT
+                t.customer_key,
+                t.customer_name,
+                t.identity_confidence,
+                t.store_id,
+                t.store_name,
+                s.address,
+                s.latitude,
+                s.longitude,
+                s.sync_id,
+                s.default_start_time,
+                s.default_end_time
+            FROM customer_payment_transaction t
+            LEFT JOIN store s ON s.id=t.store_id
+            WHERE
+                t.platform=?
+                AND t.transaction_ref=?
+                AND t.amount>0.005
+            ORDER BY t.trade_time ASC,t.id ASC
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(
+                platform,
+                transactionRef
+            )
+        ).use { c ->
+            if (!c.moveToFirst()) {
+                null
+            } else {
+                val storeId = c.long("store_id")
+                OriginalCustomerPayment(
+                    customerKey = c.str("customer_key"),
+                    customerName = c.str("customer_name"),
+                    identityConfidence = c.str("identity_confidence"),
+                    store =
+                        if (storeId > 0L) {
+                            StoreOption(
+                                id = storeId,
+                                name = c.str("store_name"),
+                                address =
+                                    if (c.getColumnIndex("address") >= 0) c.str("address") else "",
+                                latitude =
+                                    c.getColumnIndex("latitude")
+                                        .takeIf { it >= 0 && !c.isNull(it) }
+                                        ?.let { c.getDouble(it) },
+                                longitude =
+                                    c.getColumnIndex("longitude")
+                                        .takeIf { it >= 0 && !c.isNull(it) }
+                                        ?.let { c.getDouble(it) },
+                                syncId =
+                                    if (c.getColumnIndex("sync_id") >= 0) c.str("sync_id") else "",
+                                defaultStartTime =
+                                    if (c.getColumnIndex("default_start_time") >= 0) {
+                                        c.str("default_start_time").ifBlank { "16:00" }
+                                    } else {
+                                        "16:00"
+                                    },
+                                defaultEndTime =
+                                    if (c.getColumnIndex("default_end_time") >= 0) {
+                                        c.str("default_end_time").ifBlank { "24:00" }
+                                    } else {
+                                        "24:00"
+                                    }
+                            )
+                        } else {
+                            null
+                        }
+                )
+            }
+        }
+    }
+
+    private fun resolveCustomerPaymentStore(
+        db: SQLiteDatabase,
+        tradeTime: String,
+        businessDate: String
+    ): StoreOption? {
+        val records =
+            db.rawQuery(
+                """
+                SELECT
+                    d.store_id,
+                    d.store_name,
+                    d.actual_start_time,
+                    d.actual_end_time,
+                    s.address,
+                    s.latitude,
+                    s.longitude,
+                    s.sync_id,
+                    s.default_start_time,
+                    s.default_end_time
+                FROM store_daily_record d
+                LEFT JOIN store s ON s.id=d.store_id
+                WHERE d.deleted=0 AND d.date=?
+                ORDER BY d.id
+                """.trimIndent(),
+                arrayOf(businessDate)
+            ).use { c ->
+                buildList {
+                    while (c.moveToNext()) {
+                        add(
+                            Triple(
+                                StoreOption(
+                                    id = c.long("store_id"),
+                                    name = c.str("store_name"),
+                                    address =
+                                        if (c.getColumnIndex("address") >= 0) c.str("address") else "",
+                                    latitude =
+                                        c.getColumnIndex("latitude")
+                                            .takeIf { it >= 0 && !c.isNull(it) }
+                                            ?.let { c.getDouble(it) },
+                                    longitude =
+                                        c.getColumnIndex("longitude")
+                                            .takeIf { it >= 0 && !c.isNull(it) }
+                                            ?.let { c.getDouble(it) },
+                                    syncId =
+                                        if (c.getColumnIndex("sync_id") >= 0) c.str("sync_id") else "",
+                                    defaultStartTime =
+                                        if (c.getColumnIndex("default_start_time") >= 0) {
+                                            c.str("default_start_time").ifBlank { "16:00" }
+                                        } else {
+                                            "16:00"
+                                        },
+                                    defaultEndTime =
+                                        if (c.getColumnIndex("default_end_time") >= 0) {
+                                            c.str("default_end_time").ifBlank { "24:00" }
+                                        } else {
+                                            "24:00"
+                                        }
+                                ),
+                                c.str("actual_start_time"),
+                                c.str("actual_end_time")
+                            )
+                        )
+                    }
+                }
+            }
+
+        if (records.isEmpty()) return null
+        if (records.size == 1) return records.first().first
+
+        val moment =
+            runCatching {
+                LocalDateTime.parse(
+                    tradeTime,
+                    CUSTOMER_PAYMENT_DATE_TIME
+                )
+            }.getOrNull() ?: return null
+
+        val day =
+            runCatching {
+                LocalDate.parse(businessDate)
+            }.getOrNull() ?: return null
+
+        val candidates =
+            records.filter { (_, actualStart, actualEnd) ->
+                val startText =
+                    actualStart.ifBlank { "16:00" }
+                val endText =
+                    actualEnd.ifBlank { "24:00" }
+
+                val start =
+                    runCatching {
+                        day.atTime(
+                            LocalTime.parse(startText)
+                        )
+                    }.getOrElse {
+                        day.atTime(16, 0)
+                    }
+
+                val end =
+                    if (endText == "24:00") {
+                        day.plusDays(1).atStartOfDay()
+                    } else {
+                        runCatching {
+                            day.atTime(
+                                LocalTime.parse(endText)
+                            )
+                        }.getOrElse {
+                            day.plusDays(1).atStartOfDay()
+                        }.let {
+                            if (it.isAfter(start)) it else it.plusDays(1)
+                        }
+                    }
+
+                !moment.isBefore(start) && moment.isBefore(end)
+            }
+
+        return if (candidates.size == 1) {
+            candidates.first().first
+        } else {
+            null
+        }
+    }
+
+    fun getCustomerPayments(
+        startDate: String? = null,
+        endDate: String? = null
+    ): List<CustomerPaymentRecord> {
+        val clauses =
+            mutableListOf<String>()
+        val args =
+            mutableListOf<String>()
+
+        if (!startDate.isNullOrBlank()) {
+            clauses += "business_date>=?"
+            args += startDate
+        }
+        if (!endDate.isNullOrBlank()) {
+            clauses += "business_date<=?"
+            args += endDate
+        }
+
+        val where =
+            if (clauses.isEmpty()) {
+                ""
+            } else {
+                "WHERE " + clauses.joinToString(" AND ")
+            }
+
+        return readableDatabase.rawQuery(
+            """
+            SELECT *
+            FROM customer_payment_transaction
+            $where
+            ORDER BY trade_time DESC,id DESC
+            """.trimIndent(),
+            args.toTypedArray()
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    add(
+                        CustomerPaymentRecord(
+                            id = c.long("id"),
+                            platform = c.str("platform"),
+                            tradeTime = c.str("trade_time"),
+                            businessDate = c.str("business_date"),
+                            amount = c.dbl("amount"),
+                            refundAmount = c.dbl("refund_amount"),
+                            netAmount = c.dbl("net_amount"),
+                            customerKey = c.str("customer_key"),
+                            customerName = c.str("customer_name"),
+                            identityConfidence = c.str("identity_confidence"),
+                            transactionType = c.str("transaction_type"),
+                            tradeStatus = c.str("trade_status"),
+                            storeId = c.long("store_id"),
+                            storeName = c.str("store_name")
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun getPaymentImportBatches(
+        limit: Int = 20
+    ): List<PaymentImportBatchRecord> =
+        readableDatabase.rawQuery(
+            """
+            SELECT *
+            FROM payment_import_batch
+            ORDER BY imported_at DESC,id DESC
+            LIMIT ?
+            """.trimIndent(),
+            arrayOf(limit.coerceAtLeast(1).toString())
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    add(
+                        PaymentImportBatchRecord(
+                            id = c.long("id"),
+                            platform = c.str("platform"),
+                            fileName = c.str("file_name"),
+                            fileHash = c.str("file_hash"),
+                            totalRows = c.int("total_rows"),
+                            acceptedRows = c.int("accepted_rows"),
+                            duplicateRows = c.int("duplicate_rows"),
+                            ignoredRows = c.int("ignored_rows"),
+                            refundRows = c.int("refund_rows"),
+                            errorRows = c.int("error_rows"),
+                            importedAt = c.long("imported_at")
+                        )
+                    )
+                }
+            }
+        }
+
+    fun customerPaymentCount(): Int =
+        readableDatabase.rawQuery(
+            "SELECT COUNT(*) AS c FROM customer_payment_transaction",
+            null
+        ).use { c ->
+            if (c.moveToFirst()) c.int("c") else 0
+        }
+
     fun exportJson(): String {
         val root = JSONObject()
         root.put("schemaVersion", DB_VERSION)
@@ -14517,7 +15104,7 @@ class AppDatabase(
             getSyncFoundationStatus()
                 .pendingChanges
         )
-        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot", "product_cost_reference", "daily_retail_price", "business_weather_history", "daily_business_score", "fruit_season_catalog", "fruit_alias", "fruit_season_region", "fruit_profile", "weather_snapshot").forEach { table ->
+        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot", "product_cost_reference", "daily_retail_price", "business_weather_history", "daily_business_score", "fruit_season_catalog", "fruit_alias", "fruit_season_region", "fruit_profile", "payment_import_batch", "customer_payment_transaction", "weather_snapshot").forEach { table ->
             root.put(table, tableAsJson(table))
         }
         return root.toString(2)
@@ -14759,7 +15346,10 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 35
+        const val DB_VERSION = 36
+
+        private val CUSTOMER_PAYMENT_DATE_TIME =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
     }
 }
 

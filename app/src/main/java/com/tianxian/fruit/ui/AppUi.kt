@@ -13656,7 +13656,7 @@ private fun MoreScreen(
                             SettingsRow(
                                 "📊",
                                 "经营分析中心",
-                                trailing = "统计 · 分析 · 天气 · 个人"
+                                trailing = "统计 · 天气 · 客户 · 个人"
                             ) {
                                 sub =
                                     MorePage.BUSINESS_CENTER
@@ -13902,7 +13902,14 @@ private fun MoreScreen(
                     db = db,
                     dataVersion = dataVersion,
                     currentBook = currentBook,
-                    cloudSyncManager = cloudSyncManager
+                    cloudSyncManager = cloudSyncManager,
+                    canImportCustomerPayments =
+                        BookPermissions.has(
+                            currentBook,
+                            systemRole,
+                            BookPermissions.BASIC_EDIT
+                        ),
+                    onChanged = onChanged
                 )
             }
         }
@@ -14292,7 +14299,9 @@ private fun BusinessCenterContent(
     db: AppDatabase,
     dataVersion: Int,
     currentBook: LedgerBook,
-    cloudSyncManager: CloudSyncManager
+    cloudSyncManager: CloudSyncManager,
+    canImportCustomerPayments: Boolean,
+    onChanged: () -> Unit
 ) {
     var tab by remember { mutableIntStateOf(0) }
     val labels =
@@ -14300,7 +14309,8 @@ private fun BusinessCenterContent(
             "经营统计",
             "经营分析",
             "经营天气",
-            "个人汇总"
+            "个人汇总",
+            "客户分析"
         )
 
     Column(Modifier.fillMaxSize()) {
@@ -14344,10 +14354,18 @@ private fun BusinessCenterContent(
                         initialStoreId = null
                     )
 
-                else ->
+                3 ->
                     PersonalSummaryContent(
                         db = db,
                         dataVersion = dataVersion
+                    )
+
+                else ->
+                    CustomerAnalysisContent(
+                        db = db,
+                        dataVersion = dataVersion,
+                        canImport = canImportCustomerPayments,
+                        onChanged = onChanged
                     )
             }
         }
