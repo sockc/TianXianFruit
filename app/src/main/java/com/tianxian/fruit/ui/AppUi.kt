@@ -7720,6 +7720,19 @@ private fun PurchaseScreen(
             }
         }
 
+        if (editingOrderId == null) {
+            item {
+                HistoricalPurchaseAssistCard(
+                    db = db,
+                    date = date,
+                    dataVersion = dataVersion,
+                    hasManualPurchase = dayPurchaseOrders.isNotEmpty(),
+                    manualPurchaseTotal = dayPurchasedTotal,
+                    onChanged = onChanged
+                )
+            }
+        }
+
         if (
             editingOrderId == null &&
             !purchaseFormExpanded
@@ -10536,6 +10549,30 @@ private fun SessionScreen(
                     }
                 }
             }
+        }
+
+        item {
+            BusinessPaymentAssistCard(
+                db = db,
+                date = date,
+                dataVersion = dataVersion,
+                hasManualBusiness = todayRecords.isNotEmpty(),
+                manualElectronicTotal =
+                    todayRecords.sumOf {
+                        it.wechatIncome + it.alipayIncome
+                    },
+                onCreateBusinessRecord = {
+                    if (editingRecordId == null) {
+                        clearForm()
+                        newBusinessFormExpanded = true
+                        businessBaselineFingerprint =
+                            currentBusinessFingerprint()
+                        message = ""
+                        isError = false
+                    }
+                },
+                onChanged = onChanged
+            )
         }
 
         val showBusinessEntryForm =
