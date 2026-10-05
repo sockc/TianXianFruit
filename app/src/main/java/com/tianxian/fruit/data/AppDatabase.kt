@@ -14672,6 +14672,12 @@ class AppDatabase(
             }
 
         if (existing != null) {
+            val purchaseImport =
+                saveHistoricalPurchaseCandidates(
+                    batchId = existing.id,
+                    fileName = existing.fileName,
+                    candidates = parsed.purchaseCandidates
+                )
             return PaymentImportOutcome(
                 batchId = existing.id,
                 platform = existing.platform,
@@ -14684,7 +14690,10 @@ class AppDatabase(
                 refundRows = existing.refundRows,
                 errorRows = existing.errorRows,
                 unmatchedStoreRows = 0,
-                duplicateFile = true
+                duplicateFile = true,
+                purchaseCandidateRows = parsed.purchaseCandidates.size,
+                purchaseCandidateInsertedRows = purchaseImport.first,
+                purchaseCandidateDuplicateRows = purchaseImport.second
             )
         }
 
