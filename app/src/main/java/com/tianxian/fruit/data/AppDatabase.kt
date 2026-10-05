@@ -15215,6 +15215,293 @@ class AppDatabase(
             if (c.moveToFirst()) c.int("c") else 0
         }
 
+    fun getHistoricalPurchaseCandidates(
+        date: String,
+        includeIgnored: Boolean = false
+    ): List<HistoricalPurchaseCandidateAnalysis> {
+        val raw =
+            readableDatabase.rawQuery(
+                """
+                SELECT *
+                FROM historical_purchase_candidate
+                WHERE business_date=?
+                  ${if (includeIgnored) "" else "AND status<>'IGNORED'"}
+                ORDER BY trade_time ASC,id ASC
+                """.trimIndent(),
+                arrayOf(date)
+            ).use { c ->
+                buildList {
+                    while (c.moveToNext()) {
+                        add(
+                            HistoricalPurchaseCandidateRecord(
+                                id = c.long("id"),
+                                platform = c.str("platform"),
+                                tradeTime = c.str("trade_time"),
+                                businessDate = c.str("business_date"),
+                                amount = c.dbl("amount"),
+                                transactionRef = c.str("transaction_ref"),
+                                counterpartyKey = c.str("counterparty_key"),
+                                counterpartyName = c.str("counterparty_name"),
+                                identityConfidence = c.str("identity_confidence"),
+                                transactionType = c.str("transaction_type"),
+                                tradeStatus = c.str("trade_status"),
+                                status = c.str("status"),
+                                sourceFile = c.str("source_file"),
+                                createdAt = c.long("created_at"),
+                                updatedAt = c.long("updated_at")
+                            )
+                        )
+                    }
+                }
+            }
+
+        if (raw.isEmpty()) return emptyList()
+
+        val hasBusinessEvidence =
+            hasBusinessEvidenceForHistoricalPurchase(date)
+
+        val supplierKeys =
+            readableDatabase.rawQuery(
+                "SELECT counterparty_key FROM purchase_supplier_identity WHERE enabled=1",
+                null
+            ).use { c ->
+                buildSet {
+                    while (c.moveToNext()) add(c.getString(0))
+                }
+            }
+
+        val occurrence =
+            readableDatabase.rawQuery(
+                """
+                SELECT counterparty_key,COUNT(*) AS c
+                FROM historical_purchase_candidate
+                WHERE status<>'IGNORED'
+                GROUP BY counterparty_key
+                """.trimIndent(),
+                null
+            ).use { c ->
+                buildMap {
+                    while (c.moveToNext()) put(c.str("counterparty_key"), c.int("c"))
+                }
+            }
+
+        val confirmed =
+            readableDatabase.rawQuery(
+                """
+                SELECT counterparty_key,COUNT(*) AS c
+                FROM historical_purchase_candidate
+                WHERE status='CONFIRMED'
+                GROUP BY counterparty_key
+                """.trimIndent(),
+                null
+            ).use { c ->
+                buildMap {
+                    while (c.moveToNext()) put(c.str("counterparty_key"), c.int("c"))
+                }
+            }
+
+        return raw
+            .map { record ->
+                HistoricalPurchaseScoring.score(
+                    record = record,
+                    hasBusinessEvidence = hasBusinessEvidence,
+                    knownSupplier = record.counterpartyKey in supplierKeys,
+                    confirmedHistoryCount = confirmed[record.counterpartyKey] ?: 0,
+                    occurrenceCount = occurrence[record.counterpartyKey] ?: 0
+                )
+            }
+            .sortedWith(
+                compareBy<HistoricalPurchaseCandidateAnalysis> {
+                    when (it.record.status) {
+                        "PENDING" -> 0
+                        "CONFIRMED" -> 1
+                        else -> 2
+                    }
+                }
+                    .thenByDescending { it.score }
+                    .thenBy { it.record.tradeTime }
+            )
+    }
+
+    private fun hasBusinessEvidenceForHistoricalPurchase(
+        date: String
+    ): Boolean {
+        val manual =
+            readableDatabase.rawQuery(
+                "SELECT 1 FROM store_daily_record WHERE date=? AND deleted=0 LIMIT 1",
+                arrayOf(date)
+            ).use { it.moveToFirst() }
+        if (manual) return true
+
+        return readableDatabase.rawQuery(
+            """
+            SELECT 1
+            FROM customer_payment_transaction
+            WHERE business_date=? AND net_amount>0.005
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(date)
+        ).use { it.moveToFirst() }
+    }
+
+    fun getHistoricalPurchaseDaySummary(
+        date: String
+    ): HistoricalPurchaseDaySummary {
+        val rows =
+            getHistoricalPurchaseCandidates(
+                date = date,
+                includeIgnored = true
+            )
+        val pending =
+            rows.filter { it.record.status == "PENDING" }
+        val high =
+            pending.filter { it.confidence == "HIGH" }
+        val confirmed =
+            rows.filter { it.record.status == "CONFIRMED" }
+
+        return HistoricalPurchaseDaySummary(
+            date = date,
+            pendingCount = pending.size,
+            pendingAmount = HistoricalPurchaseScoring.roundMoney(
+                pending.sumOf { it.record.amount }
+            ),
+            highConfidenceCount = high.size,
+            highConfidenceAmount = HistoricalPurchaseScoring.roundMoney(
+                high.sumOf { it.record.amount }
+            ),
+            confirmedCount = confirmed.size,
+            confirmedAmount = HistoricalPurchaseScoring.roundMoney(
+                confirmed.sumOf { it.record.amount }
+            ),
+            ignoredCount =
+                rows.count { it.record.status == "IGNORED" }
+        )
+    }
+
+    fun setHistoricalPurchaseCandidateStatus(
+        id: Long,
+        status: String
+    ): Boolean {
+        if (status !in setOf("PENDING", "CONFIRMED", "IGNORED")) return false
+
+        return writableDatabase.update(
+            "historical_purchase_candidate",
+            ContentValues().apply {
+                put("status", status)
+                put("updated_at", System.currentTimeMillis())
+            },
+            "id=?",
+            arrayOf(id.toString())
+        ) > 0
+    }
+
+    fun confirmHighConfidenceHistoricalPurchases(
+        date: String
+    ): Int {
+        val ids =
+            getHistoricalPurchaseCandidates(date)
+                .filter {
+                    it.record.status == "PENDING" &&
+                        it.confidence == "HIGH"
+                }
+                .map { it.record.id }
+
+        if (ids.isEmpty()) return 0
+
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val now = System.currentTimeMillis()
+            var changed = 0
+            ids.forEach { id ->
+                changed +=
+                    db.update(
+                        "historical_purchase_candidate",
+                        ContentValues().apply {
+                            put("status", "CONFIRMED")
+                            put("updated_at", now)
+                        },
+                        "id=? AND status='PENDING'",
+                        arrayOf(id.toString())
+                    )
+            }
+            db.setTransactionSuccessful()
+            return changed
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun markHistoricalPurchaseSupplier(
+        candidateId: Long
+    ): Boolean {
+        val candidate =
+            readableDatabase.rawQuery(
+                """
+                SELECT platform,counterparty_key,counterparty_name
+                FROM historical_purchase_candidate
+                WHERE id=?
+                LIMIT 1
+                """.trimIndent(),
+                arrayOf(candidateId.toString())
+            ).use { c ->
+                if (!c.moveToFirst()) null
+                else Triple(
+                    c.str("platform"),
+                    c.str("counterparty_key"),
+                    c.str("counterparty_name")
+                )
+            } ?: return false
+
+        val now = System.currentTimeMillis()
+        val db = writableDatabase
+        val updated =
+            db.update(
+                "purchase_supplier_identity",
+                ContentValues().apply {
+                    put("platform", candidate.first)
+                    put("counterparty_name", candidate.third)
+                    put("enabled", 1)
+                    put("updated_at", now)
+                },
+                "counterparty_key=?",
+                arrayOf(candidate.second)
+            )
+
+        if (updated > 0) return true
+
+        return db.insert(
+            "purchase_supplier_identity",
+            null,
+            ContentValues().apply {
+                put("platform", candidate.first)
+                put("counterparty_key", candidate.second)
+                put("counterparty_name", candidate.third)
+                put("enabled", 1)
+                put("created_at", now)
+                put("updated_at", now)
+            }
+        ) > 0L
+    }
+
+    fun getConfirmedHistoricalPurchaseTotal(
+        date: String
+    ): Double =
+        readableDatabase.rawQuery(
+            """
+            SELECT COALESCE(SUM(amount),0) AS total
+            FROM historical_purchase_candidate
+            WHERE business_date=? AND status='CONFIRMED'
+            """.trimIndent(),
+            arrayOf(date)
+        ).use { c ->
+            if (c.moveToFirst()) {
+                HistoricalPurchaseScoring.roundMoney(c.dbl("total"))
+            } else {
+                0.0
+            }
+        }
+
     fun exportJson(): String {
         val root = JSONObject()
         root.put("schemaVersion", DB_VERSION)
