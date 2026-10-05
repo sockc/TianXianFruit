@@ -168,7 +168,17 @@ internal object CustomerAnalyticsEngine {
                 }
 
         val allByCustomer =
+            allRecords.groupBy {
+                it.customerKey
+            }
+
+        val positiveAllByCustomer =
             positiveAll.groupBy {
+                it.customerKey
+            }
+
+        val periodAllByCustomer =
+            filtered.groupBy {
                 it.customerKey
             }
 
@@ -178,7 +188,7 @@ internal object CustomerAnalyticsEngine {
             }
 
         val firstDateByCustomer =
-            allByCustomer.mapValues {
+            positiveAllByCustomer.mapValues {
                 (_, records) ->
                 records.minOf {
                     it.businessDate
@@ -216,7 +226,7 @@ internal object CustomerAnalyticsEngine {
             periodCustomers
                 .filter {
                     key ->
-                    allByCustomer[
+                    positiveAllByCustomer[
                         key
                     ]
                         .orEmpty()
@@ -290,7 +300,7 @@ internal object CustomerAnalyticsEngine {
             }
 
         val amount90ByCustomer =
-            positiveAll
+            allRecords
                 .filter {
                     runCatching {
                         LocalDate.parse(
@@ -328,13 +338,15 @@ internal object CustomerAnalyticsEngine {
             )
 
         val profiles =
-            periodByCustomer
+            periodCustomers
                 .map {
-                    (key, periodRecords) ->
+                    key ->
                     buildProfile(
                         customerKey = key,
                         periodRecords =
-                            periodRecords,
+                            periodAllByCustomer[
+                                key
+                            ].orEmpty(),
                         lifetimeRecords =
                             allByCustomer[
                                 key
@@ -360,20 +372,32 @@ internal object CustomerAnalyticsEngine {
                 )
 
         val stores =
-            positive
+            filtered
                 .groupBy {
                     it.storeName
                         .ifBlank {
                             "未匹配位置"
                         }
                 }
-                .map {
+                .mapNotNull {
                     (
                         storeName,
                         records
                     ) ->
+                    val positiveRecords =
+                        records.filter {
+                            it.netAmount >
+                                0.005
+                        }
+
+                    if (
+                        positiveRecords.isEmpty()
+                    ) {
+                        return@mapNotNull null
+                    }
+
                     val keys =
-                        records.map {
+                        positiveRecords.map {
                             it.customerKey
                         }
                             .toSet()
@@ -381,7 +405,7 @@ internal object CustomerAnalyticsEngine {
                     val repeat =
                         keys.count {
                             key ->
-                            records
+                            positiveRecords
                                 .filter {
                                     it.customerKey ==
                                         key
@@ -407,7 +431,7 @@ internal object CustomerAnalyticsEngine {
                         netRevenue =
                             amount,
                         paymentCount =
-                            records.size,
+                            positiveRecords.size,
                         customerCount =
                             keys.size,
                         repeatCustomerCount =
@@ -423,11 +447,11 @@ internal object CustomerAnalyticsEngine {
                             },
                         averageTicket =
                             if (
-                                records.isNotEmpty()
+                                positiveRecords.isNotEmpty()
                             ) {
                                 roundMoney(
                                     amount /
-                                        records.size
+                                        positiveRecords.size
                                 )
                             } else {
                                 0.0
@@ -539,8 +563,20 @@ internal object CustomerAnalyticsEngine {
                 it.tradeTime
             }
 
+        val lifetimePositive =
+            lifetimeSorted.filter {
+                it.netAmount >
+                    0.005
+            }
+
+        val periodPositive =
+            periodRecords.filter {
+                it.netAmount >
+                    0.005
+            }
+
         val dates =
-            lifetimeSorted
+            lifetimePositive
                 .map {
                     it.businessDate
                 }
@@ -600,7 +636,7 @@ internal object CustomerAnalyticsEngine {
                 ?.average()
 
         val visits30 =
-            lifetimeSorted
+            lifetimePositive
                 .filter {
                     runCatching {
                         LocalDate.parse(
@@ -688,7 +724,7 @@ internal object CustomerAnalyticsEngine {
             }
 
         val commonStore =
-            lifetimeSorted
+            lifetimePositive
                 .filter {
                     it.storeName
                         .isNotBlank()
@@ -774,9 +810,9 @@ internal object CustomerAnalyticsEngine {
             periodAmount =
                 periodAmount,
             periodPayments =
-                periodRecords.size,
+                periodPositive.size,
             periodVisits =
-                periodRecords
+                periodPositive
                     .map {
                         it.businessDate
                     }
@@ -785,7 +821,7 @@ internal object CustomerAnalyticsEngine {
             lifetimeAmount =
                 lifetimeAmount,
             lifetimePayments =
-                lifetimeSorted.size,
+                lifetimePositive.size,
             lifetimeVisits =
                 dates.size,
             firstDate =
@@ -796,11 +832,11 @@ internal object CustomerAnalyticsEngine {
                 daysSinceLast,
             averageTicket =
                 if (
-                    lifetimeSorted.isNotEmpty()
+                    lifetimePositive.isNotEmpty()
                 ) {
                     roundMoney(
                         lifetimeAmount /
-                            lifetimeSorted.size
+                            lifetimePositive.size
                     )
                 } else {
                     0.0
