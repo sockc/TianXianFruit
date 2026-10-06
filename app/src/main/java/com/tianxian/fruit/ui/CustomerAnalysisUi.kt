@@ -716,7 +716,24 @@ internal fun CustomerAnalysisContent(
                                     sameWeekdayComparisons,
                                 singleDay =
                                     range ==
-                                        CustomerRange.TODAY
+                                        CustomerRange.TODAY,
+                                onSelectDay = {
+                                    selected ->
+                                    runCatching {
+                                        LocalDate.parse(
+                                            selected
+                                        )
+                                    }.getOrNull()
+                                        ?.let {
+                                            day ->
+                                            dayAnchor =
+                                                day
+                                            range =
+                                                CustomerRange.TODAY
+                                            chromeVisible =
+                                                true
+                                        }
+                                }
                             )
 
                         CustomerAnalysisTab.REPEAT ->
