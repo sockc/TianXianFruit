@@ -7967,11 +7967,56 @@ private fun PurchaseScreen(
             )
         }
 
+        item {
+            Row(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .height(22.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "计划金额：${money(dayPlannedTotal)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.Gray
+                )
+                Spacer(Modifier.width(18.dp))
+                Text(
+                    (if (dayPurchaseOrders.isNotEmpty()) "● " else "") +
+                        "采购额 ${compactKMoney(dayPurchasedTotal)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color =
+                        if (dayPurchaseOrders.isNotEmpty()) {
+                            BrandGreen
+                        } else {
+                            Color.Gray
+                        },
+                    fontWeight =
+                        if (dayPurchaseOrders.isNotEmpty()) {
+                            FontWeight.SemiBold
+                        } else {
+                            FontWeight.Normal
+                        }
+                )
+            }
+        }
+
         if (editingOrderId != null) {
             item {
-                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF7D9))) {
+                Card(
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor = Color(0xFFFFF7D9)
+                        )
+                ) {
                     Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                horizontal = 12.dp,
+                                vertical = 8.dp
+                            ),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
@@ -7986,51 +8031,14 @@ private fun PurchaseScreen(
                                     message = "已取消编辑"
                                 }
                             }
-                        ) { Text("取消") }
+                        ) {
+                            Text("取消")
+                        }
                     }
                 }
             }
-        }
 
-        item {
-            if (editingOrderId == null) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(22.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "计划金额：${money(dayPlannedTotal)}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = Color.Gray
-                        )
-                        Spacer(Modifier.width(18.dp))
-                        Text(
-                            (if (dayPurchaseOrders.isNotEmpty()) "● " else "") +
-                                "采购额 ${compactKMoney(dayPurchasedTotal)}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color =
-                                if (dayPurchaseOrders.isNotEmpty()) {
-                                    BrandGreen
-                                } else {
-                                    Color.Gray
-                                },
-                            fontWeight =
-                                if (dayPurchaseOrders.isNotEmpty()) {
-                                    FontWeight.SemiBold
-                                } else {
-                                    FontWeight.Normal
-                                }
-                        )
-                    }
-                }
-            } else {
+            item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -8041,14 +8049,20 @@ private fun PurchaseScreen(
                             "采购人",
                             editBuyerDisplayName,
                             Modifier.fillMaxWidth()
-                        ) { editBuyerMenu = true }
+                        ) {
+                            editBuyerMenu = true
+                        }
                         DropdownMenu(
                             expanded = editBuyerMenu,
-                            onDismissRequest = { editBuyerMenu = false }
+                            onDismissRequest = {
+                                editBuyerMenu = false
+                            }
                         ) {
                             partners.forEach { p ->
                                 DropdownMenuItem(
-                                    text = { Text(p.name) },
+                                    text = {
+                                        Text(p.name)
+                                    },
                                     onClick = {
                                         editBuyerId = p.id
                                         historicalBuyerName = ""
