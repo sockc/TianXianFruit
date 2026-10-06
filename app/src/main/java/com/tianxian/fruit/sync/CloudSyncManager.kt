@@ -5,6 +5,7 @@ import com.tianxian.fruit.BuildConfig
 import com.tianxian.fruit.data.AppDatabase
 import com.tianxian.fruit.data.SyncChangeRecord
 import com.tianxian.fruit.data.SyncConflictRecord
+import com.tianxian.fruit.data.StoreDailyRecoveryPolicy
 import com.tianxian.fruit.data.SyncDeletePolicy
 import com.tianxian.fruit.data.SyncTablePolicy
 import org.json.JSONArray
@@ -2507,43 +2508,30 @@ class CloudSyncManager(
 
     private fun storeDailyLogicalKey(
         event: PullEvent
-    ): String {
-        val date =
-            event.payload
-                .optString(
-                    "date",
-                    ""
-                )
-                .trim()
-        val storeName =
-            event.payload
-                .optString(
-                    "store_name",
-                    ""
-                )
-                .trim()
-                .lowercase()
-        val storeSyncId =
-            event.payload
-                .optString(
-                    "store_sync_id",
-                    ""
-                )
-                .trim()
-
-        return when {
-            date.isNotBlank() &&
-                storeName.isNotBlank() ->
-                "$date|name:$storeName"
-
-            date.isNotBlank() &&
-                storeSyncId.isNotBlank() ->
-                "$date|store:$storeSyncId"
-
-            else ->
-                "sync:${event.syncId}"
-        }
-    }
+    ): String =
+        StoreDailyRecoveryPolicy
+            .logicalKey(
+                date =
+                    event.payload
+                        .optString(
+                            "date",
+                            ""
+                        ),
+                storeName =
+                    event.payload
+                        .optString(
+                            "store_name",
+                            ""
+                        ),
+                storeSyncId =
+                    event.payload
+                        .optString(
+                            "store_sync_id",
+                            ""
+                        ),
+                syncId =
+                    event.syncId
+            )
 
     private fun newerStoreDailyBackfillEvent(
         current: StoreDailyBackfillEvent?,
@@ -2566,21 +2554,22 @@ class CloudSyncManager(
                     0L
                 )
 
-        return when {
-            candidateUpdatedAt >
-                currentUpdatedAt ->
-                candidate
-
-            candidateUpdatedAt <
-                currentUpdatedAt ->
-                current
-
-            candidate.sequence >
-                current.sequence ->
-                candidate
-
-            else ->
-                current
+        return if (
+            StoreDailyRecoveryPolicy
+                .preferCandidate(
+                    currentUpdatedAt =
+                        currentUpdatedAt,
+                    currentSequence =
+                        current.sequence,
+                    candidateUpdatedAt =
+                        candidateUpdatedAt,
+                    candidateSequence =
+                        candidate.sequence
+                )
+        ) {
+            candidate
+        } else {
+            current
         }
     }
 
