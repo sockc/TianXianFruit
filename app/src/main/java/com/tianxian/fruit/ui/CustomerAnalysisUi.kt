@@ -5,7 +5,9 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -15,8 +17,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -32,7 +39,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private enum class CustomerRange(val label: String) {
-    TODAY("今天"),
+    TODAY("单日"),
     LAST_7("近7天"),
     THIS_MONTH("本月"),
     LAST_30("近30天"),
@@ -53,6 +60,12 @@ private enum class CustomerRecordFilter(val label: String) {
     NORMAL("正常"),
     LARGE("大额"),
     EXCLUDED("已排除")
+}
+
+private enum class CustomerTrafficMetric(val label: String) {
+    CUSTOMERS("客户"),
+    AMOUNT("金额"),
+    PAYMENTS("笔数")
 }
 
 private enum class CustomerRankingMode(val label: String) {
@@ -83,6 +96,35 @@ internal fun CustomerAnalysisContent(
             currentMonth
         )
     }
+    var dayAnchor by remember {
+        mutableStateOf(
+            today
+        )
+    }
+    var chromeVisible by remember {
+        mutableStateOf(
+            true
+        )
+    }
+    val immersiveScrollConnection =
+        remember {
+            object :
+                NestedScrollConnection {
+                override fun onPreScroll(
+                    available: Offset,
+                    source: NestedScrollSource
+                ): Offset {
+                    when {
+                        available.y < -8f ->
+                            chromeVisible = false
+
+                        available.y > 8f ->
+                            chromeVisible = true
+                    }
+                    return Offset.Zero
+                }
+            }
+        }
     var tab by remember { mutableStateOf(CustomerAnalysisTab.OVERVIEW) }
     var showRangeMenu by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
@@ -123,12 +165,13 @@ internal fun CustomerAnalysisContent(
         remember(
             range,
             today,
-            monthAnchor
+            monthAnchor,
+            dayAnchor
         ) {
             when (range) {
                 CustomerRange.TODAY ->
-                    today.toString() to
-                        today.toString()
+                    dayAnchor.toString() to
+                        dayAnchor.toString()
 
                 CustomerRange.LAST_7 ->
                     today.minusDays(6)
@@ -202,8 +245,83 @@ internal fun CustomerAnalysisContent(
                         "yyyy年M月"
                     )
                 )
+
+            CustomerRange.TODAY ->
+                dayAnchor.format(
+                    DateTimeFormatter.ofPattern(
+                        "yyyy年M月d日"
+                    )
+                )
+
             else ->
                 range.label
+        }
+
+    val hourlyTraffic =
+        remember(
+            allRecords,
+            range,
+            dayAnchor
+        ) {
+            if (
+                range ==
+                CustomerRange.TODAY
+            ) {
+                CustomerAnalyticsEngine.hourlyTraffic(
+                    allRecords =
+                        allRecords,
+                    date =
+                        dayAnchor.toString()
+                )
+            } else {
+                emptyList()
+            }
+        }
+
+    val sameWeekdayComparisons =
+        remember(
+            allRecords,
+            range,
+            dayAnchor
+        ) {
+            if (
+                range ==
+                CustomerRange.TODAY
+            ) {
+                CustomerAnalyticsEngine.sameWeekdayComparisons(
+                    allRecords =
+                        allRecords,
+                    date =
+                        dayAnchor.toString()
+                )
+            } else {
+                emptyList()
+            }
+        }
+
+    val dailyTraffic =
+        remember(
+            allRecords,
+            range,
+            dateRange
+        ) {
+            if (
+                range ==
+                    CustomerRange.THIS_MONTH &&
+                dateRange.first != null &&
+                dateRange.second != null
+            ) {
+                CustomerAnalyticsEngine.dailyTraffic(
+                    allRecords =
+                        allRecords,
+                    startDate =
+                        dateRange.first!!,
+                    endDate =
+                        dateRange.second!!
+                )
+            } else {
+                emptyList()
+            }
         }
 
     val launcher =
@@ -258,7 +376,14 @@ internal fun CustomerAnalysisContent(
                     0xFFF7F8F8
                 )
             )
+            .nestedScroll(
+                immersiveScrollConnection
+            )
     ) {
+        AnimatedVisibility(
+            visible =
+                chromeVisible
+        ) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -341,14 +466,28 @@ internal fun CustomerAnalysisContent(
             ) {
                 TextButton(
                     onClick = {
-                        monthAnchor =
-                            monthAnchor.minusMonths(
-                                1
-                            )
+                        when (range) {
+                            CustomerRange.THIS_MONTH ->
+                                monthAnchor =
+                                    monthAnchor.minusMonths(
+                                        1
+                                    )
+
+                            CustomerRange.TODAY ->
+                                dayAnchor =
+                                    dayAnchor.minusDays(
+                                        1
+                                    )
+
+                            else ->
+                                Unit
+                        }
                     },
                     enabled =
                         range ==
-                            CustomerRange.THIS_MONTH,
+                            CustomerRange.THIS_MONTH ||
+                            range ==
+                                CustomerRange.TODAY,
                     contentPadding =
                         PaddingValues(
                             horizontal = 8.dp
@@ -403,6 +542,15 @@ internal fun CustomerAnalysisContent(
                                         monthAnchor =
                                             currentMonth
                                     }
+                                    if (
+                                        option ==
+                                        CustomerRange.TODAY
+                                    ) {
+                                        dayAnchor =
+                                            today
+                                    }
+                                    chromeVisible =
+                                        true
                                     showRangeMenu =
                                         false
                                 }
@@ -413,21 +561,46 @@ internal fun CustomerAnalysisContent(
 
                 TextButton(
                     onClick = {
-                        if (
-                            monthAnchor <
-                            currentMonth
-                        ) {
-                            monthAnchor =
-                                monthAnchor.plusMonths(
-                                    1
-                                )
+                        when (range) {
+                            CustomerRange.THIS_MONTH ->
+                                if (
+                                    monthAnchor <
+                                    currentMonth
+                                ) {
+                                    monthAnchor =
+                                        monthAnchor.plusMonths(
+                                            1
+                                        )
+                                }
+
+                            CustomerRange.TODAY ->
+                                if (
+                                    dayAnchor <
+                                    today
+                                ) {
+                                    dayAnchor =
+                                        dayAnchor.plusDays(
+                                            1
+                                        )
+                                }
+
+                            else ->
+                                Unit
                         }
                     },
                     enabled =
-                        range ==
-                            CustomerRange.THIS_MONTH &&
-                            monthAnchor <
-                            currentMonth,
+                        (
+                            range ==
+                                CustomerRange.THIS_MONTH &&
+                                monthAnchor <
+                                    currentMonth
+                            ) ||
+                            (
+                                range ==
+                                    CustomerRange.TODAY &&
+                                    dayAnchor <
+                                        today
+                                ),
                     contentPadding =
                         PaddingValues(
                             horizontal = 8.dp
@@ -466,7 +639,12 @@ internal fun CustomerAnalysisContent(
                 )
             }
         }
+        }
 
+        AnimatedVisibility(
+            visible =
+                chromeVisible
+        ) {
         ScrollableTabRow(
             selectedTabIndex =
                 tab.ordinal,
@@ -487,6 +665,7 @@ internal fun CustomerAnalysisContent(
                     }
                 )
             }
+        }
         }
 
         Box(
@@ -527,7 +706,17 @@ internal fun CustomerAnalysisContent(
                     when (tab) {
                         CustomerAnalysisTab.OVERVIEW ->
                             CustomerOverview(
-                                analysis
+                                result =
+                                    analysis,
+                                hourlyTraffic =
+                                    hourlyTraffic,
+                                dailyTraffic =
+                                    dailyTraffic,
+                                sameWeekdayComparisons =
+                                    sameWeekdayComparisons,
+                                singleDay =
+                                    range ==
+                                        CustomerRange.TODAY
                             )
 
                         CustomerAnalysisTab.REPEAT ->
