@@ -3994,47 +3994,73 @@ private fun BusinessWeatherCard(
 
     val ov = state.overview
     val bh = storeBusinessHours(ov?.hourly.orEmpty(), date, store)
-    val coverage =
-        weatherCoverageStatus(
-            date = selectedDate,
-            store = store,
-            hours = ov?.hourly.orEmpty(),
-            stale =
-                state.expiresAtMillis > 0L &&
-                    state.expiresAtMillis <= System.currentTimeMillis()
-        )
     val pop = bh.mapNotNull { it.precipitationProbability }.maxOrNull()
     val day = ov?.daily?.firstOrNull { it.date == date } ?: ov?.selectedDay()
     val text = ov?.current?.text?.takeIf { selectedDate == LocalDate.now() } ?: day?.textDay.orEmpty().ifBlank { bh.firstOrNull()?.text.orEmpty() }
     val temp = ov?.current?.temperature?.takeIf { selectedDate == LocalDate.now() } ?: bh.firstOrNull()?.temperature ?: day?.tempMax
 
     Card(
-        Modifier.fillMaxWidth().clickable(enabled = store != null) { onOpenDetail(date, store?.id) },
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF5FAFF)),
+        Modifier
+            .fillMaxWidth()
+            .clickable(
+                enabled = store != null
+            ) {
+                onOpenDetail(
+                    date,
+                    store?.id
+                )
+            },
+        colors =
+            CardDefaults.cardColors(
+                containerColor = Color(0xFFF5FAFF)
+            ),
         shape = RoundedCornerShape(12.dp)
     ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    when {
-                        state.loading -> "🌤️ ${store?.name ?: "营业天气"} · 更新中…"
-                        state.error.isNotBlank() -> "🌤️ ${store?.name ?: "营业天气"} · ${state.error}"
-                        else -> "${weatherEmoji(ov?.current?.code ?: day?.codeDay.orEmpty(), text)} ${store?.name.orEmpty()} · ${weatherTemp(temp)} · ${text.ifBlank { "天气" }}"
+        Row(
+            Modifier.padding(
+                horizontal = 10.dp,
+                vertical = 7.dp
+            ),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                when {
+                    state.loading ->
+                        "🌤️ ${store?.name ?: "营业天气"} · 更新中…"
+                    state.error.isNotBlank() ->
+                        "🌤️ ${store?.name ?: "营业天气"} · ${state.error}"
+                    else ->
+                        "${weatherEmoji(ov?.current?.code ?: day?.codeDay.orEmpty(), text)} " +
+                            "${store?.name.orEmpty()} · ${weatherTemp(temp)} · " +
+                            "${text.ifBlank { "天气" }}" +
+                            if (pop != null) {
+                                " · 雨${weatherPercent(pop)}"
+                            } else {
+                                ""
+                            }
+                },
+                modifier = Modifier.weight(1f),
+                fontWeight =
+                    if (ov != null) {
+                        FontWeight.SemiBold
+                    } else {
+                        FontWeight.Normal
                     },
-                    modifier = Modifier.weight(1f),
-                    fontWeight = if (ov != null) FontWeight.SemiBold else FontWeight.Normal,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (state.error.isNotBlank()) Color.Gray else Color.Unspecified
-                )
-                if (ov != null) Text("详情 ›", style = MaterialTheme.typography.labelSmall, color = BrandGreen)
-            }
+                style = MaterialTheme.typography.bodySmall,
+                color =
+                    if (state.error.isNotBlank()) {
+                        Color.Gray
+                    } else {
+                        Color.Unspecified
+                    },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
             if (ov != null) {
                 Text(
-                    "${businessTimeLabel(store)} · 降雨概率${weatherPercent(pop)} · " +
-                        "时段 ${coverage.first.actual}/${coverage.first.expected}小时 ${weatherEvidenceLabel(coverage.second)} · " +
-                        "风 ${bh.firstOrNull()?.windDirection.orEmpty()} ${bh.firstOrNull()?.windScale.orEmpty()}级",
+                    "详情 ›",
                     style = MaterialTheme.typography.labelSmall,
-                    color = Color.DarkGray
+                    color = BrandGreen
                 )
             }
         }
