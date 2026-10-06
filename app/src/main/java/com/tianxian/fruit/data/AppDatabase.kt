@@ -3345,6 +3345,7 @@ class AppDatabase(
                 source_file TEXT NOT NULL DEFAULT '',
                 created_at INTEGER NOT NULL DEFAULT 0,
                 analysis_excluded INTEGER NOT NULL DEFAULT 0,
+                analysis_included_override INTEGER NOT NULL DEFAULT 0,
                 exclusion_reason TEXT NOT NULL DEFAULT ''
             )
             """.trimIndent()
@@ -3375,6 +3376,12 @@ class AppDatabase(
             db.execSQL(
                 "ALTER TABLE customer_payment_transaction " +
                     "ADD COLUMN analysis_excluded INTEGER NOT NULL DEFAULT 0"
+            )
+        }
+        if (!columnExists(db, "customer_payment_transaction", "analysis_included_override")) {
+            db.execSQL(
+                "ALTER TABLE customer_payment_transaction " +
+                    "ADD COLUMN analysis_included_override INTEGER NOT NULL DEFAULT 0"
             )
         }
         if (!columnExists(db, "customer_payment_transaction", "exclusion_reason")) {
@@ -15218,6 +15225,8 @@ class AppDatabase(
                             transactionRef = c.str("transaction_ref"),
                             analysisExcluded =
                                 c.int("analysis_excluded") == 1,
+                            analysisIncludedOverride =
+                                c.int("analysis_included_override") == 1,
                             exclusionReason =
                                 c.str("exclusion_reason")
                         )
@@ -15279,25 +15288,36 @@ class AppDatabase(
         ) > 0
     }
 
-    fun setCustomerPaymentAnalysisExcluded(
+    fun setCustomerPaymentAnalysisState(
         id: Long,
-        excluded: Boolean
-    ): Boolean =
-        writableDatabase.update(
+        state: String
+    ): Boolean {
+        if (state !in setOf("DEFAULT", "EXCLUDED", "INCLUDED")) return false
+
+        return writableDatabase.update(
             "customer_payment_transaction",
             ContentValues().apply {
                 put(
                     "analysis_excluded",
-                    if (excluded) 1 else 0
+                    if (state == "EXCLUDED") 1 else 0
+                )
+                put(
+                    "analysis_included_override",
+                    if (state == "INCLUDED") 1 else 0
                 )
                 put(
                     "exclusion_reason",
-                    if (excluded) "手动排除" else ""
+                    when (state) {
+                        "EXCLUDED" -> "手动排除"
+                        "INCLUDED" -> "手动计入"
+                        else -> ""
+                    }
                 )
             },
             "id=?",
             arrayOf(id.toString())
         ) > 0
+    }
 
     fun getPaymentImportBatches(
         limit: Int = 20
