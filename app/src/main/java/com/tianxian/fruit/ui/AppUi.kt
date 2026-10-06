@@ -6857,7 +6857,17 @@ private fun PurchaseScreen(
     var restoreCompletedItem by remember { mutableStateOf<PurchasePlanItemRecord?>(null) }
     var deleteCollaborationItem by remember { mutableStateOf<PurchasePlanItemRecord?>(null) }
 
-    val history = remember(dataVersion) { db.getRecentPurchaseOrdersByDays(7) }
+    val history =
+        remember(
+            dataVersion,
+            date
+        ) {
+            db.getRecentPurchaseOrdersBeforeDate(
+                beforeDateExclusive =
+                    date,
+                dayLimit = 7
+            )
+        }
     val collaborationPlan = remember(dataVersion, date) { db.getPurchasePlan(date) }
     val dayPurchaseOrders =
         remember(dataVersion, date) {
