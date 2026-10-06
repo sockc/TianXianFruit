@@ -22,7 +22,21 @@ data class CustomerPaymentRecord(
     val transactionType: String,
     val tradeStatus: String,
     val storeId: Long,
-    val storeName: String
+    val storeName: String,
+    val transactionRef: String = "",
+    val analysisExcluded: Boolean = false,
+    val exclusionReason: String = ""
+)
+
+data class CustomerAnalysisSettings(
+    val excludeLargePayments: Boolean = true,
+    val largePaymentThreshold: Double = 2000.0
+)
+
+data class CustomerPaymentFilterResult(
+    val included: List<CustomerPaymentRecord>,
+    val excludedIds: Set<Long>,
+    val autoLargeIds: Set<Long>
 )
 
 data class PaymentImportBatchRecord(
@@ -134,6 +148,94 @@ data class CustomerAnalysisResult(
 )
 
 internal object CustomerAnalyticsEngine {
+    fun filterRecords(
+        allRecords: List<CustomerPaymentRecord>,
+        settings: CustomerAnalysisSettings
+    ): CustomerPaymentFilterResult {
+        val autoLargeRootRefs =
+            if (settings.excludeLargePayments) {
+                allRecords
+                    .filter {
+                        it.amount > 0.005 &&
+                            it.amount >= settings.largePaymentThreshold &&
+                            it.transactionRef.isNotBlank()
+                    }
+                    .map {
+                        it.platform + "|" + it.transactionRef
+                    }
+                    .toSet()
+            } else {
+                emptySet()
+            }
+
+        val manualRootRefs =
+            allRecords
+                .filter {
+                    it.analysisExcluded &&
+                        it.amount > 0.005 &&
+                        it.transactionRef.isNotBlank()
+                }
+                .map {
+                    it.platform + "|" + it.transactionRef
+                }
+                .toSet()
+
+        val excludedRefs =
+            autoLargeRootRefs + manualRootRefs
+
+        val excludedIds =
+            allRecords
+                .filter { record ->
+                    record.analysisExcluded ||
+                        (
+                            record.transactionRef.isNotBlank() &&
+                                (
+                                    record.platform +
+                                        "|" +
+                                        record.transactionRef
+                                    ) in excludedRefs
+                            ) ||
+                        (
+                            settings.excludeLargePayments &&
+                                record.amount > 0.005 &&
+                                record.amount >= settings.largePaymentThreshold
+                            )
+                }
+                .map { it.id }
+                .toSet()
+
+        val autoLargeIds =
+            allRecords
+                .filter { record ->
+                    settings.excludeLargePayments &&
+                        (
+                            (
+                                record.amount > 0.005 &&
+                                    record.amount >= settings.largePaymentThreshold
+                                ) ||
+                                (
+                                    record.transactionRef.isNotBlank() &&
+                                        (
+                                            record.platform +
+                                                "|" +
+                                                record.transactionRef
+                                            ) in autoLargeRootRefs
+                                    )
+                            )
+                }
+                .map { it.id }
+                .toSet()
+
+        return CustomerPaymentFilterResult(
+            included =
+                allRecords.filterNot {
+                    it.id in excludedIds
+                },
+            excludedIds = excludedIds,
+            autoLargeIds = autoLargeIds
+        )
+    }
+
     fun analyze(
         allRecords: List<CustomerPaymentRecord>,
         startDate: String?,
@@ -722,8 +824,12 @@ internal object CustomerAnalyticsEngine {
                     2 ->
                     "普通老客"
 
+                dates.size <=
+                    1 ->
+                    "一次客"
+
                 else ->
-                    "新客"
+                    "一次客"
             }
 
         val commonStore =
@@ -1217,6 +1323,7 @@ internal object CustomerAnalyticsEngine {
     private val LIFECYCLE_ORDER =
         listOf(
             "新客",
+            "一次客",
             "活跃老客",
             "高频客",
             "高价值客",
