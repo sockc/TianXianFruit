@@ -9949,6 +9949,12 @@ private fun SessionScreen(
     var message by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
     var deleteRecord by remember { mutableStateOf<StoreDailyRecord?>(null) }
+    var pendingBusinessSupplement by remember(date) {
+        mutableStateOf<Pair<Double, Double>?>(null)
+    }
+    var pendingBusinessSupplementRecordId by remember(date) {
+        mutableStateOf<Long?>(null)
+    }
     var businessBaselineFingerprint by remember(date) { mutableStateOf("") }
     val businessFormBringIntoViewRequester =
         remember {
@@ -10177,6 +10183,94 @@ private fun SessionScreen(
         isError = missingMultiReceipt
         newBusinessFormExpanded = true
         businessBaselineFingerprint = currentBusinessFingerprint()
+    }
+
+    fun applySupplementElectronicTotals(
+        wechatTotal: Double,
+        alipayTotal: Double
+    ) {
+        if (receiptRows.isEmpty()) {
+            receiptRows.add(
+                ReceiptDraftRow(
+                    rowId = nextReceiptRowId++,
+                    partnerId = partners.firstOrNull()?.id,
+                    partnerNameSnapshot = partners.firstOrNull()?.name.orEmpty()
+                )
+            )
+        }
+
+        fun allocate(
+            total: Double,
+            values: List<Double>
+        ): List<Double> {
+            if (values.isEmpty()) return emptyList()
+            if (total <= 0.005) {
+                return List(values.size) { 0.0 }
+            }
+
+            val existingTotal = values.sum()
+
+            if (existingTotal <= 0.005) {
+                return values.indices.map { index ->
+                    if (index == 0) {
+                        uiRoundMoney(total)
+                    } else {
+                        0.0
+                    }
+                }
+            }
+
+            var left = uiRoundMoney(total)
+            return values.mapIndexed { index, value ->
+                if (index == values.lastIndex) {
+                    left
+                } else {
+                    uiRoundMoney(
+                        total *
+                            (
+                                value /
+                                    existingTotal
+                                )
+                    ).also { part ->
+                        left =
+                            uiRoundMoney(
+                                left -
+                                    part
+                            )
+                    }
+                }
+            }
+        }
+
+        val wechatParts =
+            allocate(
+                wechatTotal,
+                receiptRows.map {
+                    it.wechat.toDoubleOrNull() ?: 0.0
+                }
+            )
+        val alipayParts =
+            allocate(
+                alipayTotal,
+                receiptRows.map {
+                    it.alipay.toDoubleOrNull() ?: 0.0
+                }
+            )
+
+        receiptRows.indices.forEach { index ->
+            val row = receiptRows[index]
+            receiptRows[index] =
+                row.copy(
+                    wechat =
+                        cleanNumber(
+                            wechatParts[index]
+                        ),
+                    alipay =
+                        cleanNumber(
+                            alipayParts[index]
+                        )
+                )
+        }
     }
 
     LaunchedEffect(dataVersion, stores.map { it.id }, partners.map { it.id }, editingRecordId) {
@@ -10569,18 +10663,46 @@ private fun SessionScreen(
                     todayRecords.sumOf {
                         it.wechatIncome + it.alipayIncome
                     },
-                onCreateBusinessRecord = {
-                    if (editingRecordId == null) {
-                        clearForm()
-                        newBusinessFormExpanded = true
-                        businessBaselineFingerprint =
-                            currentBusinessFingerprint()
-                        message = ""
-                        isError = false
-                        businessFormScrollScope.launch {
-                            delay(80)
-                            businessFormBringIntoViewRequester
-                                .bringIntoView()
+                onSupplementBusiness = {
+                    wechatTotal,
+                    alipayTotal ->
+                    if (todayRecords.isEmpty()) {
+                        onRequestLeave {
+                            clearForm()
+                            newBusinessFormExpanded = true
+                            applySupplementElectronicTotals(
+                                wechatTotal,
+                                alipayTotal
+                            )
+                            message =
+                                "已补入微信 ${money(wechatTotal)}、支付宝 ${money(alipayTotal)}，请检查后保存营业记录"
+                            isError = false
+                            businessFormScrollScope.launch {
+                                delay(80)
+                                businessFormBringIntoViewRequester
+                                    .bringIntoView()
+                            }
+                        }
+                    } else {
+                        val targetRecord =
+                            editingRecordId
+                                ?.let { id ->
+                                    todayRecords.firstOrNull {
+                                        it.id == id
+                                    }
+                                }
+                                ?: todayRecords.singleOrNull()
+
+                        if (targetRecord == null) {
+                            message =
+                                "当天有多条营业记录，请先点要修改的位置记录，再使用“补入营业”"
+                            isError = true
+                        } else {
+                            pendingBusinessSupplement =
+                                wechatTotal to
+                                    alipayTotal
+                            pendingBusinessSupplementRecordId =
+                                targetRecord.id
                         }
                     }
                 },
@@ -11020,6 +11142,105 @@ private fun SessionScreen(
             }
         }
 
+    }
+
+    pendingBusinessSupplement?.let { amounts ->
+        val targetRecord =
+            pendingBusinessSupplementRecordId
+                ?.let { id ->
+                    todayRecords.firstOrNull {
+                        it.id == id
+                    }
+                }
+
+        if (targetRecord == null) {
+            pendingBusinessSupplement = null
+            pendingBusinessSupplementRecordId = null
+        } else {
+            AlertDialog(
+                onDismissRequest = {
+                    pendingBusinessSupplement = null
+                    pendingBusinessSupplementRecordId = null
+                },
+                title = {
+                    Text("覆盖电子收款？")
+                },
+                text = {
+                    Column(
+                        verticalArrangement =
+                            Arrangement.spacedBy(
+                                6.dp
+                            )
+                    ) {
+                        Text(
+                            "${targetRecord.storeName} · ${targetRecord.date}",
+                            fontWeight =
+                                FontWeight.SemiBold
+                        )
+                        Text(
+                            "微信 ${money(targetRecord.wechatIncome)} → ${money(amounts.first)}"
+                        )
+                        Text(
+                            "支付宝 ${money(targetRecord.alipayIncome)} → ${money(amounts.second)}"
+                        )
+                        Text(
+                            "现金 ${money(targetRecord.cashIncome)} 保持不变",
+                            color =
+                                BrandGreen,
+                            fontWeight =
+                                FontWeight.SemiBold
+                        )
+                        Text(
+                            "位置、营业时间、日常开销和其他营业数据都不会改动。",
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall,
+                            color =
+                                Color.Gray
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            pendingBusinessSupplement = null
+                            pendingBusinessSupplementRecordId = null
+                            onRequestLeave {
+                                loadRecord(
+                                    targetRecord
+                                )
+                                applySupplementElectronicTotals(
+                                    amounts.first,
+                                    amounts.second
+                                )
+                                newBusinessFormExpanded = true
+                                message =
+                                    "已覆盖微信/支付宝，现金保持不变；请检查后保存修改"
+                                isError = false
+                                businessFormScrollScope.launch {
+                                    delay(80)
+                                    businessFormBringIntoViewRequester
+                                        .bringIntoView()
+                                }
+                            }
+                        }
+                    ) {
+                        Text("确认覆盖")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            pendingBusinessSupplement = null
+                            pendingBusinessSupplementRecordId = null
+                        }
+                    ) {
+                        Text("取消")
+                    }
+                }
+            )
+        }
     }
 
     if (addStoreDialog) {

@@ -12,12 +12,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.tianxian.fruit.data.*
 import java.time.Instant
@@ -40,9 +42,17 @@ private enum class CustomerRange(val label: String) {
 private enum class CustomerAnalysisTab(val label: String) {
     OVERVIEW("概览"),
     REPEAT("复购"),
-    RANKING("客户排行"),
+    RANKING("排行"),
     LIFECYCLE("生命周期"),
-    STORE("位置")
+    STORE("位置"),
+    RECORDS("收款记录")
+}
+
+private enum class CustomerRecordFilter(val label: String) {
+    ALL("全部"),
+    NORMAL("正常"),
+    LARGE("大额"),
+    EXCLUDED("已排除")
 }
 
 private enum class CustomerRankingMode(val label: String) {
@@ -61,178 +71,1082 @@ internal fun CustomerAnalysisContent(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val today = LocalDate.now()
+    val currentMonth =
+        today.withDayOfMonth(1)
+
     var importing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
-    var lastOutcome by remember { mutableStateOf<PaymentImportOutcome?>(null) }
     var range by remember { mutableStateOf(CustomerRange.THIS_MONTH) }
-    var tab by remember { mutableStateOf(CustomerAnalysisTab.OVERVIEW) }
-    var showImports by remember { mutableStateOf(false) }
-
-    val allRecords = remember(dataVersion) { db.getCustomerPayments() }
-    val importBatches = remember(dataVersion, showImports) { db.getPaymentImportBatches(10) }
-    val today = LocalDate.now()
-    val dateRange = remember(range, today) {
-        when (range) {
-            CustomerRange.TODAY -> today.toString() to today.toString()
-            CustomerRange.LAST_7 -> today.minusDays(6).toString() to today.toString()
-            CustomerRange.THIS_MONTH -> today.withDayOfMonth(1).toString() to today.toString()
-            CustomerRange.LAST_30 -> today.minusDays(29).toString() to today.toString()
-            CustomerRange.ALL -> null to null
-        }
-    }
-    val analysis = remember(allRecords, dateRange, today) {
-        CustomerAnalyticsEngine.analyze(
-            allRecords = allRecords,
-            startDate = dateRange.first,
-            endDate = dateRange.second,
-            today = today
+    var monthAnchor by remember {
+        mutableStateOf(
+            currentMonth
         )
     }
+    var tab by remember { mutableStateOf(CustomerAnalysisTab.OVERVIEW) }
+    var showRangeMenu by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
 
-    val launcher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri == null || importing) return@rememberLauncherForActivityResult
-        importing = true
-        message = "正在解析账单…"
-        lastOutcome = null
-        scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    importPaymentFile(
-                        db = db,
-                        uri = uri,
-                        resolver = context.contentResolver
-                    )
-                }
-            }
-            result.onSuccess { outcome ->
-                lastOutcome = outcome
-                message =
-                    if (outcome.duplicateFile) {
-                        "这个账单文件已经导入过，没有重复写入"
-                    } else {
-                        "导入完成：新增 ${outcome.insertedRows} 笔经营收款"
-                    }
-                onChanged()
-            }.onFailure { error ->
-                message = "导入失败：${error.message ?: "无法读取账单"}"
-            }
-            importing = false
+    val rawRecords =
+        remember(dataVersion) {
+            db.getCustomerPayments()
         }
-    }
+    val settings =
+        remember(dataVersion) {
+            db.getCustomerAnalysisSettings()
+        }
+    val filterResult =
+        remember(
+            rawRecords,
+            settings
+        ) {
+            CustomerAnalyticsEngine.filterRecords(
+                allRecords = rawRecords,
+                settings = settings
+            )
+        }
+    val allRecords =
+        filterResult.included
+    val importBatches =
+        remember(
+            dataVersion,
+            showSettings
+        ) {
+            if (showSettings) {
+                db.getPaymentImportBatches(5)
+            } else {
+                emptyList()
+            }
+        }
+
+    val dateRange =
+        remember(
+            range,
+            today,
+            monthAnchor
+        ) {
+            when (range) {
+                CustomerRange.TODAY ->
+                    today.toString() to
+                        today.toString()
+
+                CustomerRange.LAST_7 ->
+                    today.minusDays(6)
+                        .toString() to
+                        today.toString()
+
+                CustomerRange.THIS_MONTH -> {
+                    val end =
+                        if (
+                            monthAnchor ==
+                            currentMonth
+                        ) {
+                            today
+                        } else {
+                            monthAnchor.withDayOfMonth(
+                                monthAnchor.lengthOfMonth()
+                            )
+                        }
+                    monthAnchor.toString() to
+                        end.toString()
+                }
+
+                CustomerRange.LAST_30 ->
+                    today.minusDays(29)
+                        .toString() to
+                        today.toString()
+
+                CustomerRange.ALL ->
+                    null to null
+            }
+        }
+
+    val analysis =
+        remember(
+            allRecords,
+            dateRange,
+            today
+        ) {
+            CustomerAnalyticsEngine.analyze(
+                allRecords = allRecords,
+                startDate = dateRange.first,
+                endDate = dateRange.second,
+                today = today
+            )
+        }
+
+    val periodRawRecords =
+        remember(
+            rawRecords,
+            dateRange
+        ) {
+            rawRecords.filter { record ->
+                (
+                    dateRange.first == null ||
+                        record.businessDate >=
+                        dateRange.first!!
+                    ) &&
+                    (
+                        dateRange.second == null ||
+                            record.businessDate <=
+                            dateRange.second!!
+                        )
+            }
+        }
+
+    val rangeLabel =
+        when (range) {
+            CustomerRange.THIS_MONTH ->
+                monthAnchor.format(
+                    DateTimeFormatter.ofPattern(
+                        "yyyy年M月"
+                    )
+                )
+            else ->
+                range.label
+        }
+
+    val launcher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri ->
+            if (
+                uri == null ||
+                importing
+            ) {
+                return@rememberLauncherForActivityResult
+            }
+            importing = true
+            message = "正在解析账单…"
+            scope.launch {
+                val result =
+                    withContext(
+                        Dispatchers.IO
+                    ) {
+                        runCatching {
+                            importPaymentFile(
+                                db = db,
+                                uri = uri,
+                                resolver =
+                                    context.contentResolver
+                            )
+                        }
+                    }
+                result.onSuccess { outcome ->
+                    message =
+                        if (
+                            outcome.duplicateFile
+                        ) {
+                            "这个账单文件已经导入过，没有重复写入"
+                        } else {
+                            "导入完成：新增 ${outcome.insertedRows} 笔经营收款"
+                        }
+                    onChanged()
+                }.onFailure { error ->
+                    message =
+                        "导入失败：${error.message ?: "无法读取账单"}"
+                }
+                importing = false
+            }
+        }
 
     Column(
         Modifier
             .fillMaxSize()
-            .background(Color(0xFFF7F8F8))
+            .background(
+                Color(
+                    0xFFF7F8F8
+                )
+            )
     ) {
         Column(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            Modifier
+                .fillMaxWidth()
+                .padding(
+                    horizontal = 10.dp,
+                    vertical = 4.dp
+                ),
+            verticalArrangement =
+                Arrangement.spacedBy(
+                    2.dp
+                )
         ) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F8F4))
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment =
+                    androidx.compose.ui.Alignment.CenterVertically
             ) {
-                Column(
-                    Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                Text(
+                    "客户分析",
+                    fontWeight =
+                        FontWeight.Bold,
+                    color =
+                        Color(
+                            0xFF087D4E
+                        ),
+                    modifier =
+                        Modifier.weight(
+                            1f
+                        )
+                )
+                TextButton(
+                    onClick = {
+                        launcher.launch(
+                            arrayOf(
+                                "text/*",
+                                "text/csv",
+                                "application/csv",
+                                "application/zip",
+                                "application/vnd.ms-excel",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                "application/octet-stream"
+                            )
+                        )
+                    },
+                    enabled =
+                        canImport &&
+                            !importing,
+                    contentPadding =
+                        PaddingValues(
+                            horizontal = 8.dp
+                        )
                 ) {
-                    Row(Modifier.fillMaxWidth()) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                "经营客户分析",
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF087D4E)
-                            )
-                            Text(
-                                "仅识别二维码收款 / 经营收款；不修改营业额，不参与结算与利润分配。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color.DarkGray
-                            )
+                    Text(
+                        if (importing) {
+                            "导入中"
+                        } else {
+                            "导入"
                         }
-                        Spacer(Modifier.width(8.dp))
-                        Button(
-                            onClick = {
-                                launcher.launch(
-                                    arrayOf(
-                                        "text/*",
-                                        "text/csv",
-                                        "application/csv",
-                                        "application/zip",
-                                        "application/vnd.ms-excel",
-                                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                        "application/octet-stream"
-                                    )
-                                )
-                            },
-                            enabled = canImport && !importing
-                        ) {
-                            Text(if (importing) "导入中" else "导入账单")
-                        }
-                    }
-
-                    if (!canImport) {
-                        Text(
-                            "当前权限仅可查看客户分析，不能导入账单。",
-                            color = Color.Gray,
-                            style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                TextButton(
+                    onClick = {
+                        showSettings = true
+                    },
+                    contentPadding =
+                        PaddingValues(
+                            horizontal = 8.dp
                         )
-                    }
-                    if (importing) LinearProgressIndicator(Modifier.fillMaxWidth())
-                    if (message.isNotBlank()) {
-                        Text(
-                            message,
-                            color = if (message.contains("失败")) MaterialTheme.colorScheme.error else Color(0xFF087D4E),
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    lastOutcome?.let { ImportOutcomeCard(it) }
-
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        TextButton(onClick = { showImports = !showImports }) {
-                            Text(if (showImports) "收起导入记录" else "查看导入记录")
-                        }
-                    }
-                    if (showImports) ImportBatchList(importBatches)
+                ) {
+                    Text("设置")
                 }
             }
 
             Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                Modifier.fillMaxWidth(),
+                verticalAlignment =
+                    androidx.compose.ui.Alignment.CenterVertically,
+                horizontalArrangement =
+                    Arrangement.Center
             ) {
-                CustomerRange.entries.forEach { option ->
-                    FilterChip(
-                        selected = range == option,
-                        onClick = { range = option },
-                        label = { Text(option.label) }
-                    )
+                TextButton(
+                    onClick = {
+                        monthAnchor =
+                            monthAnchor.minusMonths(
+                                1
+                            )
+                    },
+                    enabled =
+                        range ==
+                            CustomerRange.THIS_MONTH,
+                    contentPadding =
+                        PaddingValues(
+                            horizontal = 8.dp
+                        )
+                ) {
+                    Text("‹")
+                }
+
+                Box {
+                    TextButton(
+                        onClick = {
+                            showRangeMenu = true
+                        },
+                        contentPadding =
+                            PaddingValues(
+                                horizontal = 10.dp
+                            )
+                    ) {
+                        Text(
+                            "$rangeLabel ▼",
+                            fontWeight =
+                                FontWeight.SemiBold
+                        )
+                    }
+                    DropdownMenu(
+                        expanded =
+                            showRangeMenu,
+                        onDismissRequest = {
+                            showRangeMenu = false
+                        }
+                    ) {
+                        listOf(
+                            CustomerRange.THIS_MONTH,
+                            CustomerRange.TODAY,
+                            CustomerRange.LAST_7,
+                            CustomerRange.LAST_30,
+                            CustomerRange.ALL
+                        ).forEach { option ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        option.label
+                                    )
+                                },
+                                onClick = {
+                                    range =
+                                        option
+                                    if (
+                                        option ==
+                                        CustomerRange.THIS_MONTH
+                                    ) {
+                                        monthAnchor =
+                                            currentMonth
+                                    }
+                                    showRangeMenu =
+                                        false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                TextButton(
+                    onClick = {
+                        if (
+                            monthAnchor <
+                            currentMonth
+                        ) {
+                            monthAnchor =
+                                monthAnchor.plusMonths(
+                                    1
+                                )
+                        }
+                    },
+                    enabled =
+                        range ==
+                            CustomerRange.THIS_MONTH &&
+                            monthAnchor <
+                            currentMonth,
+                    contentPadding =
+                        PaddingValues(
+                            horizontal = 8.dp
+                        )
+                ) {
+                    Text("›")
                 }
             }
-        }
 
-        ScrollableTabRow(selectedTabIndex = tab.ordinal, edgePadding = 8.dp) {
-            CustomerAnalysisTab.entries.forEach { item ->
-                Tab(
-                    selected = tab == item,
-                    onClick = { tab = item },
-                    text = { Text(item.label) }
+            if (importing) {
+                LinearProgressIndicator(
+                    Modifier.fillMaxWidth()
+                )
+            }
+            if (message.isNotBlank()) {
+                Text(
+                    message,
+                    color =
+                        if (
+                            message.contains(
+                                "失败"
+                            )
+                        ) {
+                            MaterialTheme
+                                .colorScheme
+                                .error
+                        } else {
+                            Color(
+                                0xFF087D4E
+                            )
+                        },
+                    style =
+                        MaterialTheme
+                            .typography
+                            .labelSmall
                 )
             }
         }
 
-        Box(Modifier.fillMaxSize()) {
-            if (allRecords.isEmpty()) {
-                EmptyCustomerAnalysis()
-            } else {
-                when (tab) {
-                    CustomerAnalysisTab.OVERVIEW -> CustomerOverview(analysis)
-                    CustomerAnalysisTab.REPEAT -> CustomerRepeatAnalysis(analysis.profiles)
-                    CustomerAnalysisTab.RANKING -> CustomerRankingAnalysis(analysis.profiles)
-                    CustomerAnalysisTab.LIFECYCLE ->
-                        CustomerLifecycleAnalysis(analysis.lifecycles, analysis.profiles)
-                    CustomerAnalysisTab.STORE -> CustomerStoreAnalysisContent(analysis.stores)
+        ScrollableTabRow(
+            selectedTabIndex =
+                tab.ordinal,
+            edgePadding = 4.dp
+        ) {
+            CustomerAnalysisTab.entries.forEach {
+                item ->
+                Tab(
+                    selected =
+                        tab == item,
+                    onClick = {
+                        tab = item
+                    },
+                    text = {
+                        Text(
+                            item.label
+                        )
+                    }
+                )
+            }
+        }
+
+        Box(
+            Modifier.fillMaxSize()
+        ) {
+            when {
+                rawRecords.isEmpty() ->
+                    EmptyCustomerAnalysis()
+
+                tab ==
+                    CustomerAnalysisTab.RECORDS ->
+                    CustomerPaymentRecordsContent(
+                        records =
+                            periodRawRecords,
+                        settings =
+                            settings,
+                        excludedIds =
+                            filterResult.excludedIds,
+                        autoLargeIds =
+                            filterResult.autoLargeIds,
+                        onStateChange = {
+                            id,
+                            state ->
+                            db.setCustomerPaymentAnalysisState(
+                                id,
+                                state
+                            )
+                            onChanged()
+                        }
+                    )
+
+                allRecords.isEmpty() ->
+                    SimpleEmpty(
+                        "当前经营收款都被分析规则排除了，可到“设置”或“收款记录”中调整。"
+                    )
+
+                else ->
+                    when (tab) {
+                        CustomerAnalysisTab.OVERVIEW ->
+                            CustomerOverview(
+                                analysis
+                            )
+
+                        CustomerAnalysisTab.REPEAT ->
+                            CustomerRepeatAnalysis(
+                                analysis.profiles
+                            )
+
+                        CustomerAnalysisTab.RANKING ->
+                            CustomerRankingAnalysis(
+                                analysis.profiles
+                            )
+
+                        CustomerAnalysisTab.LIFECYCLE ->
+                            CustomerLifecycleAnalysis(
+                                analysis.lifecycles,
+                                analysis.profiles
+                            )
+
+                        CustomerAnalysisTab.STORE ->
+                            CustomerStoreAnalysisContent(
+                                analysis.stores
+                            )
+
+                        CustomerAnalysisTab.RECORDS ->
+                            Unit
+                    }
+            }
+        }
+    }
+
+    if (showSettings) {
+        CustomerAnalysisSettingsDialog(
+            settings = settings,
+            importBatches =
+                importBatches,
+            onDismiss = {
+                showSettings = false
+            },
+            onSave = {
+                updated ->
+                db.saveCustomerAnalysisSettings(
+                    updated
+                )
+                showSettings = false
+                onChanged()
+            }
+        )
+    }
+}
+
+@Composable
+private fun CustomerAnalysisSettingsDialog(
+    settings: CustomerAnalysisSettings,
+    importBatches: List<PaymentImportBatchRecord>,
+    onDismiss: () -> Unit,
+    onSave: (CustomerAnalysisSettings) -> Unit
+) {
+    var enabled by remember(
+        settings
+    ) {
+        mutableStateOf(
+            settings.excludeLargePayments
+        )
+    }
+    var thresholdText by remember(
+        settings
+    ) {
+        mutableStateOf(
+            cleanSettingNumber(
+                settings.largePaymentThreshold
+            )
+        )
+    }
+    val threshold =
+        thresholdText
+            .toDoubleOrNull()
+    val valid =
+        threshold != null &&
+            threshold >= 1.0
+
+    AlertDialog(
+        onDismissRequest =
+            onDismiss,
+        title = {
+            Text("客户分析设置")
+        },
+        text = {
+            Column(
+                verticalArrangement =
+                    Arrangement.spacedBy(
+                        10.dp
+                    )
+            ) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment =
+                        androidx.compose.ui.Alignment.CenterVertically
+                ) {
+                    Column(
+                        Modifier.weight(
+                            1f
+                        )
+                    ) {
+                        Text(
+                            "排除大额收款",
+                            fontWeight =
+                                FontWeight.SemiBold
+                        )
+                        Text(
+                            "达到阈值的单笔收款不进入客户分析。",
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .labelSmall,
+                            color =
+                                Color.Gray
+                        )
+                    }
+                    Switch(
+                        checked = enabled,
+                        onCheckedChange = {
+                            enabled = it
+                        }
+                    )
+                }
+
+                OutlinedTextField(
+                    value =
+                        thresholdText,
+                    onValueChange = {
+                        value ->
+                        thresholdText =
+                            value.filter {
+                                ch ->
+                                ch.isDigit() ||
+                                    ch == '.'
+                            }
+                    },
+                    label = {
+                        Text(
+                            "大额阈值（元）"
+                        )
+                    },
+                    enabled = enabled,
+                    singleLine = true,
+                    keyboardOptions =
+                        KeyboardOptions(
+                            keyboardType =
+                                KeyboardType.Decimal
+                        ),
+                    modifier =
+                        Modifier.fillMaxWidth()
+                )
+
+                Text(
+                    "默认 ¥2000。只影响客户分析、排行、客单价、复购和生命周期；原始账单与正式营业额不会删除或修改。",
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall,
+                    color =
+                        Color.DarkGray
+                )
+
+                if (
+                    importBatches.isNotEmpty()
+                ) {
+                    HorizontalDivider()
+                    Text(
+                        "最近导入",
+                        fontWeight =
+                            FontWeight.SemiBold
+                    )
+                    importBatches
+                        .take(
+                            3
+                        )
+                        .forEach {
+                            batch ->
+                            Text(
+                                (
+                                    if (
+                                        batch.platform ==
+                                        "WECHAT"
+                                    ) {
+                                        "微信"
+                                    } else {
+                                        "支付宝"
+                                    }
+                                    ) +
+                                    " · " +
+                                    batch.fileName +
+                                    " · " +
+                                    formatTime(
+                                        batch.importedAt
+                                    ),
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .labelSmall,
+                                color =
+                                    Color.Gray,
+                                maxLines = 1
+                            )
+                        }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onSave(
+                        CustomerAnalysisSettings(
+                            excludeLargePayments =
+                                enabled,
+                            largePaymentThreshold =
+                                threshold
+                                    ?: settings.largePaymentThreshold
+                        )
+                    )
+                },
+                enabled =
+                    !enabled ||
+                        valid
+            ) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick =
+                    onDismiss
+            ) {
+                Text("取消")
+            }
+        }
+    )
+}
+
+@Composable
+private fun CustomerPaymentRecordsContent(
+    records: List<CustomerPaymentRecord>,
+    settings: CustomerAnalysisSettings,
+    excludedIds: Set<Long>,
+    autoLargeIds: Set<Long>,
+    onStateChange: (Long, String) -> Unit
+) {
+    var filter by remember {
+        mutableStateOf(
+            CustomerRecordFilter.ALL
+        )
+    }
+
+    val payments =
+        remember(
+            records
+        ) {
+            records
+                .filter {
+                    it.amount >
+                        0.005
+                }
+                .sortedWith(
+                    compareByDescending<CustomerPaymentRecord> {
+                        it.tradeTime
+                    }
+                        .thenByDescending {
+                            it.id
+                        }
+                )
+        }
+
+    val visible =
+        remember(
+            payments,
+            filter,
+            excludedIds,
+            settings
+        ) {
+            payments.filter {
+                record ->
+                val excluded =
+                    record.id in
+                        excludedIds
+                val large =
+                    record.amount >=
+                        settings.largePaymentThreshold
+
+                when (filter) {
+                    CustomerRecordFilter.ALL ->
+                        true
+
+                    CustomerRecordFilter.NORMAL ->
+                        !excluded
+
+                    CustomerRecordFilter.LARGE ->
+                        large
+
+                    CustomerRecordFilter.EXCLUDED ->
+                        excluded
+                }
+            }
+        }
+
+    Column(
+        Modifier.fillMaxSize()
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(
+                    rememberScrollState()
+                )
+                .padding(
+                    horizontal = 10.dp,
+                    vertical = 5.dp
+                ),
+            horizontalArrangement =
+                Arrangement.spacedBy(
+                    6.dp
+                )
+        ) {
+            CustomerRecordFilter.entries.forEach {
+                item ->
+                FilterChip(
+                    selected =
+                        filter == item,
+                    onClick = {
+                        filter = item
+                    },
+                    label = {
+                        Text(
+                            item.label
+                        )
+                    }
+                )
+            }
+        }
+
+        if (
+            settings.excludeLargePayments
+        ) {
+            Text(
+                "单笔 ≥ ${money(settings.largePaymentThreshold)} 默认不进入客户分析；可在单笔记录中选择“仍计入”。",
+                modifier =
+                    Modifier.padding(
+                        horizontal = 12.dp,
+                        vertical = 2.dp
+                    ),
+                style =
+                    MaterialTheme
+                        .typography
+                        .labelSmall,
+                color =
+                    Color.Gray
+            )
+        }
+
+        if (
+            visible.isEmpty()
+        ) {
+            SimpleEmpty(
+                "当前筛选没有收款记录。"
+            )
+        } else {
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                contentPadding =
+                    PaddingValues(
+                        horizontal = 10.dp,
+                        vertical = 6.dp
+                    ),
+                verticalArrangement =
+                    Arrangement.spacedBy(
+                        6.dp
+                    )
+            ) {
+                items(
+                    visible,
+                    key = {
+                        it.id
+                    }
+                ) {
+                    record ->
+                    val excluded =
+                        record.id in
+                            excludedIds
+                    val autoLarge =
+                        record.id in
+                            autoLargeIds
+                    val large =
+                        record.amount >=
+                            settings.largePaymentThreshold
+                    val platform =
+                        if (
+                            record.platform ==
+                            "WECHAT"
+                        ) {
+                            "微信"
+                        } else {
+                            "支付宝"
+                        }
+
+                    Card(
+                        colors =
+                            CardDefaults.cardColors(
+                                containerColor =
+                                    if (excluded) {
+                                        Color(
+                                            0xFFFFF6E8
+                                        )
+                                    } else {
+                                        Color.White
+                                    }
+                            )
+                    ) {
+                        Column(
+                            Modifier.padding(
+                                horizontal = 10.dp,
+                                vertical = 8.dp
+                            ),
+                            verticalArrangement =
+                                Arrangement.spacedBy(
+                                    3.dp
+                                )
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment =
+                                    androidx.compose.ui.Alignment.CenterVertically
+                            ) {
+                                Column(
+                                    Modifier.weight(
+                                        1f
+                                    )
+                                ) {
+                                    Text(
+                                        record.customerName
+                                            .ifBlank {
+                                                "匿名客户"
+                                            },
+                                        fontWeight =
+                                            FontWeight.SemiBold,
+                                        maxLines = 1
+                                    )
+                                    Text(
+                                        "${formatTradeDateTime(record.tradeTime)} · $platform" +
+                                            if (
+                                                record.storeName
+                                                    .isNotBlank()
+                                            ) {
+                                                " · ${record.storeName}"
+                                            } else {
+                                                ""
+                                            },
+                                        style =
+                                            MaterialTheme
+                                                .typography
+                                                .labelSmall,
+                                        color =
+                                            Color.Gray,
+                                        maxLines = 1
+                                    )
+                                }
+                                Text(
+                                    money(
+                                        record.amount
+                                    ),
+                                    fontWeight =
+                                        FontWeight.Bold,
+                                    color =
+                                        if (excluded) {
+                                            Color(
+                                                0xFF9A6700
+                                            )
+                                        } else {
+                                            Color(
+                                                0xFF087D4E
+                                            )
+                                        }
+                                )
+                            }
+
+                            val statusText =
+                                when {
+                                    record.analysisIncludedOverride ->
+                                        "已确认计入" +
+                                            if (large) {
+                                                " · 大额"
+                                            } else {
+                                                ""
+                                            }
+
+                                    record.analysisExcluded ->
+                                        "已手动排除"
+
+                                    excluded &&
+                                        autoLarge ->
+                                        "已按大额规则排除"
+
+                                    large ->
+                                        "大额收款"
+
+                                    else ->
+                                        "正常经营收款"
+                                }
+
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment =
+                                    androidx.compose.ui.Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    statusText,
+                                    modifier =
+                                        Modifier.weight(
+                                            1f
+                                        ),
+                                    style =
+                                        MaterialTheme
+                                            .typography
+                                            .bodySmall,
+                                    color =
+                                        when {
+                                            record.analysisIncludedOverride ->
+                                                Color(
+                                                    0xFF087D4E
+                                                )
+
+                                            excluded ->
+                                                Color(
+                                                    0xFF9A6700
+                                                )
+
+                                            else ->
+                                                Color.Gray
+                                        }
+                                )
+
+                                when {
+                                    record.analysisIncludedOverride ->
+                                        TextButton(
+                                            onClick = {
+                                                onStateChange(
+                                                    record.id,
+                                                    "DEFAULT"
+                                                )
+                                            },
+                                            contentPadding =
+                                                PaddingValues(
+                                                    horizontal = 6.dp
+                                                )
+                                        ) {
+                                            Text(
+                                                "恢复默认"
+                                            )
+                                        }
+
+                                    excluded &&
+                                        (
+                                            large ||
+                                                autoLarge
+                                            ) ->
+                                        TextButton(
+                                            onClick = {
+                                                onStateChange(
+                                                    record.id,
+                                                    "INCLUDED"
+                                                )
+                                            },
+                                            contentPadding =
+                                                PaddingValues(
+                                                    horizontal = 6.dp
+                                                )
+                                        ) {
+                                            Text(
+                                                "仍计入"
+                                            )
+                                        }
+
+                                    excluded ->
+                                        TextButton(
+                                            onClick = {
+                                                onStateChange(
+                                                    record.id,
+                                                    "DEFAULT"
+                                                )
+                                            },
+                                            contentPadding =
+                                                PaddingValues(
+                                                    horizontal = 6.dp
+                                                )
+                                        ) {
+                                            Text(
+                                                "恢复计入"
+                                            )
+                                        }
+
+                                    else ->
+                                        TextButton(
+                                            onClick = {
+                                                onStateChange(
+                                                    record.id,
+                                                    "EXCLUDED"
+                                                )
+                                            },
+                                            contentPadding =
+                                                PaddingValues(
+                                                    horizontal = 6.dp
+                                                )
+                                        ) {
+                                            Text(
+                                                "排除此笔"
+                                            )
+                                        }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -637,6 +1551,43 @@ private fun SimpleEmpty(text: String) {
     ) {
         Text(text, color = Color.Gray)
     }
+}
+
+private fun cleanSettingNumber(
+    value: Double
+): String =
+    if (
+        kotlin.math.abs(
+            value -
+                value.toLong()
+        ) <
+        0.000001
+    ) {
+        value.toLong()
+            .toString()
+    } else {
+        String.format(
+            Locale.CHINA,
+            "%.2f",
+            value
+        )
+            .trimEnd('0')
+            .trimEnd('.')
+    }
+
+private fun formatTradeDateTime(
+    value: String
+): String {
+    if (
+        value.length >=
+        16
+    ) {
+        return value.substring(
+            5,
+            16
+        )
+    }
+    return value
 }
 
 private fun confidenceLabel(value: String): String = when (value) {
