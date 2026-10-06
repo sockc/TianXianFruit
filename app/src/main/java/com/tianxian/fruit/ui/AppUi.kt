@@ -2479,6 +2479,91 @@ private data class WeatherUiState(
     val expiresAtMillis: Long = 0L
 )
 
+private fun cachedBusinessWeatherState(
+    db: AppDatabase,
+    date: String,
+    store: StoreOption?
+): WeatherUiState {
+    if (store == null) {
+        return WeatherUiState(loading = true)
+    }
+
+    val selectedDate =
+        runCatching {
+            LocalDate.parse(date)
+        }.getOrElse {
+            LocalDate.now()
+        }
+
+    if (
+        selectedDate.isBefore(
+            LocalDate.now()
+        )
+    ) {
+        val history =
+            runCatching {
+                db.getBusinessWeatherHistory(
+                    date,
+                    store.id
+                )
+            }.getOrNull()
+        val overview =
+            history?.let {
+                runCatching {
+                    WeatherClient.parseOverview(
+                        it.payloadJson,
+                        historical = true
+                    )
+                }.getOrNull()
+            }
+        return if (
+            history != null &&
+            overview != null
+        ) {
+            WeatherUiState(
+                overview = overview,
+                snapshotType = "LOCAL_ARCHIVE",
+                updatedAtMillis =
+                    history.updatedAt,
+                expiresAtMillis =
+                    Long.MAX_VALUE
+            )
+        } else {
+            WeatherUiState(
+                loading = true
+            )
+        }
+    }
+
+    val cached =
+        runCatching {
+            db.getWeatherCache(
+                date,
+                store.id
+            )
+        }.getOrNull()
+            ?: return WeatherUiState(
+                loading = true
+            )
+    val overview =
+        runCatching {
+            WeatherClient.parseOverview(
+                cached.payloadJson,
+                historical = false
+            )
+        }.getOrNull()
+            ?: return WeatherUiState(
+                loading = true
+            )
+
+    return WeatherUiState(
+        overview = overview,
+        snapshotType = "CACHE",
+        updatedAtMillis = cached.fetchedAt,
+        expiresAtMillis = cached.expiresAt
+    )
+}
+
 private fun weatherAlertLevel(alert: WeatherAlert): Int {
     val text = (alert.severity + " " + alert.title + " " + alert.type).lowercase(Locale.ROOT)
     return when {
@@ -3643,7 +3728,18 @@ private fun BusinessWeatherCard(
     cloudSyncManager: CloudSyncManager,
     onOpenDetail: (String, Long?) -> Unit
 ) {
-    var state by remember(date, store?.id) { mutableStateOf(WeatherUiState(loading = true)) }
+    // V1.4.7.73: initialise directly from authoritative local weather. LazyColumn
+    // may dispose off-screen items and tab switches recreate this composable;
+    // neither event should make unchanged weather flash "更新中…".
+    var state by remember(date, store?.id) {
+        mutableStateOf(
+            cachedBusinessWeatherState(
+                db,
+                date,
+                store
+            )
+        )
+    }
     val selectedDate = runCatching { LocalDate.parse(date) }.getOrElse { LocalDate.now() }
 
     LaunchedEffect(date, store?.id, store?.latitude, store?.longitude, currentBook.cloudBookId) {
@@ -3652,66 +3748,248 @@ private fun BusinessWeatherCard(
             state = WeatherUiState(error = "当前没有营业位置")
             return@LaunchedEffect
         }
-        val past = selectedDate.isBefore(LocalDate.now())
-        if (past) {
-            val archived = withContext(Dispatchers.IO) {
-                runCatching {
-                    val bookId = weatherBookId(currentBook)
-                    if (bookId.isBlank()) throw IllegalStateException("账本尚未连接云端天气服务")
-                    WeatherClient(cloudSyncManager).fetchArchive(bookId, selectedStore, selectedDate)
-                }
-            }
-            state = archived.fold(
-                onSuccess = { WeatherUiState(it, snapshotType = "SERVER_ARCHIVE", updatedAtMillis = System.currentTimeMillis()) },
-                onFailure = { WeatherUiState(error = it.message ?: "该营业日暂无服务器逐小时天气档案") }
+
+        val past =
+            selectedDate.isBefore(
+                LocalDate.now()
             )
-            return@LaunchedEffect
-        }
-        if (selectedStore.latitude == null || selectedStore.longitude == null) {
-            state = WeatherUiState(error = "当前营业位置未绑定天气坐标")
-            return@LaunchedEffect
-        }
-        val now = System.currentTimeMillis()
-        val cached = withContext(Dispatchers.IO) { db.getWeatherCache(date, selectedStore.id) }
-        var hasCache = false
-        if (cached != null) {
-            val parsed = runCatching { WeatherClient.parseOverview(cached.payloadJson, false) }.getOrNull()
-            if (parsed != null) {
-                hasCache = true
-                val stale = cached.expiresAt <= now
+
+        if (past) {
+            val localHistory =
+                withContext(Dispatchers.IO) {
+                    db.getBusinessWeatherHistory(
+                        date,
+                        selectedStore.id
+                    )
+                }
+            val localOverview =
+                localHistory?.let {
+                    runCatching {
+                        WeatherClient.parseOverview(
+                            it.payloadJson,
+                            historical = true
+                        )
+                    }.getOrNull()
+                }
+            if (
+                localHistory != null &&
+                localOverview != null
+            ) {
                 state =
                     WeatherUiState(
-                        parsed,
-                        refreshing = stale,
-                        snapshotType = "CACHE",
-                        updatedAtMillis = cached.fetchedAt,
-                        expiresAtMillis = cached.expiresAt
+                        overview = localOverview,
+                        snapshotType = "LOCAL_ARCHIVE",
+                        updatedAtMillis =
+                            localHistory.updatedAt,
+                        expiresAtMillis =
+                            Long.MAX_VALUE
                     )
-                if (!stale) return@LaunchedEffect
+                return@LaunchedEffect
             }
+
+            if (state.overview == null) {
+                state =
+                    WeatherUiState(
+                        loading = true
+                    )
+            }
+            val archived =
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        val bookId =
+                            weatherBookId(
+                                currentBook
+                            )
+                        if (bookId.isBlank()) {
+                            throw IllegalStateException(
+                                "账本尚未连接云端天气服务"
+                            )
+                        }
+                        val overview =
+                            WeatherClient(
+                                cloudSyncManager
+                            ).fetchArchive(
+                                bookId,
+                                selectedStore,
+                                selectedDate
+                            )
+                        val fetchedAt =
+                            System.currentTimeMillis()
+                        val business =
+                            db.getDailyRecords(date)
+                                .firstOrNull {
+                                    it.storeId ==
+                                        selectedStore.id
+                                }
+                        db.cacheBusinessWeatherHistory(
+                            date = date,
+                            store = selectedStore,
+                            actualStartTime =
+                                business
+                                    ?.actualStartTime
+                                    ?.ifBlank {
+                                        selectedStore
+                                            .defaultStartTime
+                                    }
+                                    ?: selectedStore
+                                        .defaultStartTime,
+                            actualEndTime =
+                                business
+                                    ?.actualEndTime
+                                    ?.ifBlank {
+                                        selectedStore
+                                            .defaultEndTime
+                                    }
+                                    ?: selectedStore
+                                        .defaultEndTime,
+                            payloadJson =
+                                overview.rawJson,
+                            source =
+                                "SERVER_ARCHIVE",
+                            observedAt =
+                                fetchedAt
+                        )
+                        WeatherUiState(
+                            overview = overview,
+                            snapshotType =
+                                "SERVER_ARCHIVE",
+                            updatedAtMillis =
+                                fetchedAt,
+                            expiresAtMillis =
+                                Long.MAX_VALUE
+                        )
+                    }
+                }
+            state =
+                archived.getOrElse { error ->
+                    if (state.overview != null) {
+                        state
+                    } else {
+                        WeatherUiState(
+                            error =
+                                error.message
+                                    ?: "该营业日暂无服务器逐小时天气档案"
+                        )
+                    }
+                }
+            return@LaunchedEffect
         }
-        if (!hasCache) state = WeatherUiState(loading = true)
-        val refreshed = withContext(Dispatchers.IO) {
-            runCatching {
-                val bookId = weatherBookId(currentBook)
-                if (bookId.isBlank()) throw IllegalStateException("账本尚未连接云端天气服务")
-                val overview =
-                    WeatherClient(cloudSyncManager)
-                        .fetchOverview(bookId, selectedStore, selectedDate, 120)
-                val fetchedAt = System.currentTimeMillis()
-                val ttl = weatherCacheTtl(selectedDate, selectedStore, overview)
-                db.saveWeatherCache(date, selectedStore.id, overview.rawJson, ttl, fetchedAt)
-                WeatherUiState(
-                    overview,
-                    snapshotType = "CACHE",
-                    updatedAtMillis = fetchedAt,
-                    expiresAtMillis = fetchedAt + ttl
+
+        val now =
+            System.currentTimeMillis()
+        val cached =
+            withContext(Dispatchers.IO) {
+                db.getWeatherCache(
+                    date,
+                    selectedStore.id
                 )
             }
+        var hasCache = false
+        if (cached != null) {
+            val parsed =
+                runCatching {
+                    WeatherClient.parseOverview(
+                        cached.payloadJson,
+                        historical = false
+                    )
+                }.getOrNull()
+            if (parsed != null) {
+                hasCache = true
+                state =
+                    WeatherUiState(
+                        overview = parsed,
+                        loading = false,
+                        refreshing = false,
+                        snapshotType = "CACHE",
+                        updatedAtMillis =
+                            cached.fetchedAt,
+                        expiresAtMillis =
+                            cached.expiresAt
+                    )
+                if (cached.expiresAt > now) {
+                    return@LaunchedEffect
+                }
+            }
         }
-        state = refreshed.getOrElse { error ->
-            if (hasCache) state.copy(refreshing = false) else WeatherUiState(error = error.message ?: "天气加载失败")
+
+        if (
+            selectedStore.latitude == null ||
+                selectedStore.longitude == null
+        ) {
+            if (!hasCache) {
+                state =
+                    WeatherUiState(
+                        error =
+                            "当前营业位置未绑定天气坐标"
+                    )
+            }
+            return@LaunchedEffect
         }
+
+        // If a stale cache exists, keep it on-screen while refreshing. Do not
+        // expose a fake loading/refresh state merely because the card remounted.
+        if (!hasCache) {
+            state = WeatherUiState(loading = true)
+        }
+        val refreshed =
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val bookId =
+                        weatherBookId(
+                            currentBook
+                        )
+                    if (bookId.isBlank()) {
+                        throw IllegalStateException(
+                            "账本尚未连接云端天气服务"
+                        )
+                    }
+                    val overview =
+                        WeatherClient(
+                            cloudSyncManager
+                        ).fetchOverview(
+                            bookId,
+                            selectedStore,
+                            selectedDate,
+                            120
+                        )
+                    val fetchedAt =
+                        System.currentTimeMillis()
+                    val ttl =
+                        weatherCacheTtl(
+                            selectedDate,
+                            selectedStore,
+                            overview
+                        )
+                    db.saveWeatherCache(
+                        date,
+                        selectedStore.id,
+                        overview.rawJson,
+                        ttl,
+                        fetchedAt
+                    )
+                    WeatherUiState(
+                        overview = overview,
+                        snapshotType = "CACHE",
+                        updatedAtMillis = fetchedAt,
+                        expiresAtMillis =
+                            fetchedAt + ttl
+                    )
+                }
+            }
+        state =
+            refreshed.getOrElse { error ->
+                if (hasCache) {
+                    state.copy(
+                        refreshing = false
+                    )
+                } else {
+                    WeatherUiState(
+                        error =
+                            error.message
+                                ?: "天气加载失败"
+                    )
+                }
+            }
     }
 
     val ov = state.overview
@@ -6857,7 +7135,11 @@ private fun PurchaseScreen(
     var restoreCompletedItem by remember { mutableStateOf<PurchasePlanItemRecord?>(null) }
     var deleteCollaborationItem by remember { mutableStateOf<PurchasePlanItemRecord?>(null) }
 
-    val history =
+    val dayPurchaseOrders =
+        remember(dataVersion, date) {
+            db.getPurchaseOrdersForDate(date)
+        }
+    val previousPurchaseHistory =
         remember(
             dataVersion,
             date
@@ -6868,11 +7150,21 @@ private fun PurchaseScreen(
                 dayLimit = 7
             )
         }
-    val collaborationPlan = remember(dataVersion, date) { db.getPurchasePlan(date) }
-    val dayPurchaseOrders =
-        remember(dataVersion, date) {
-            db.getPurchaseOrdersForDate(date)
+    // The selected day is extra: if it has purchases, show that day plus the
+    // previous seven actual purchase days (up to eight date groups in total).
+    val history =
+        remember(
+            dayPurchaseOrders,
+            previousPurchaseHistory
+        ) {
+            if (dayPurchaseOrders.isEmpty()) {
+                previousPurchaseHistory
+            } else {
+                dayPurchaseOrders +
+                    previousPurchaseHistory
+            }
         }
+    val collaborationPlan = remember(dataVersion, date) { db.getPurchasePlan(date) }
     val dayPurchasedTotal =
         remember(dayPurchaseOrders) {
             dayPurchaseOrders.sumOf { it.order.totalCost }
@@ -8195,7 +8487,15 @@ private fun PurchaseScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
-                Text("最近7个采购日", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Text(
+                    if (dayPurchaseOrders.isNotEmpty()) {
+                        "当天 + 前7个采购日"
+                    } else {
+                        "最近7个采购日"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
             }
         }
 

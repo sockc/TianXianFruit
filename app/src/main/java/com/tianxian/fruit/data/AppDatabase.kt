@@ -932,6 +932,7 @@ class AppDatabase(
         createV36CustomerPayments(db)
         createV37HistoricalPurchaseAssist(db)
         createV38CustomerAnalysisExclusion(db)
+        createV39StableBusinessIdentity(db)
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -1091,6 +1092,165 @@ class AppDatabase(
             // formal business revenue, settlement or profit distribution.
             createV38CustomerAnalysisExclusion(db)
         }
+        if (oldVersion < 39) {
+            // V39: business identity is date + stable store sync id. Remove any
+            // local legacy aliases first, then enforce one active row per key.
+            createV39StableBusinessIdentity(db)
+        }
+    }
+
+    private fun createV39StableBusinessIdentity(
+        db: SQLiteDatabase
+    ) {
+        if (!tableExists(db, "store_daily_record")) {
+            return
+        }
+        if (!columnExists(db, "store_daily_record", "store_sync_id")) {
+            db.execSQL(
+                "ALTER TABLE store_daily_record ADD COLUMN store_sync_id TEXT NOT NULL DEFAULT ''"
+            )
+        }
+
+        val canSuppressSync = tableExists(db, "sync_context")
+        if (canSuppressSync) {
+            setRemoteApply(db, true)
+        }
+        try {
+            // Old records may still only carry this device's numeric store id.
+            // Backfill the stable id before deduplicating so a restored/remapped
+            // store cannot create two business rows for the same date.
+            db.execSQL(
+                """
+                UPDATE store_daily_record
+                SET store_sync_id=COALESCE(
+                    (
+                        SELECT s.sync_id
+                        FROM store s
+                        WHERE s.id=store_daily_record.store_id
+                        LIMIT 1
+                    ),
+                    store_sync_id
+                )
+                WHERE TRIM(COALESCE(store_sync_id,''))=''
+                """.trimIndent()
+            )
+
+            db.execSQL(
+                """
+                CREATE TEMP TABLE IF NOT EXISTS v39_store_daily_aliases(
+                    id INTEGER PRIMARY KEY,
+                    sync_id TEXT NOT NULL DEFAULT ''
+                )
+                """.trimIndent()
+            )
+            db.delete("v39_store_daily_aliases", null, null)
+
+            // Keep the latest active record for each date + stable store.
+            db.execSQL(
+                """
+                INSERT OR IGNORE INTO v39_store_daily_aliases(id,sync_id)
+                SELECT older.id,older.sync_id
+                FROM store_daily_record older
+                WHERE
+                    older.deleted=0
+                    AND TRIM(COALESCE(older.store_sync_id,''))<>''
+                    AND EXISTS(
+                        SELECT 1
+                        FROM store_daily_record newer
+                        WHERE
+                            newer.deleted=0
+                            AND newer.date=older.date
+                            AND newer.store_sync_id=older.store_sync_id
+                            AND (
+                                newer.updated_at>older.updated_at
+                                OR (
+                                    newer.updated_at=older.updated_at
+                                    AND newer.id>older.id
+                                )
+                            )
+                    )
+                """.trimIndent()
+            )
+
+            // Once an active winner exists, old soft-deleted aliases for the
+            // same stable key are no longer useful. Keeping them would let a
+            // legacy cloud alias be "recovered" as a second local row later.
+            db.execSQL(
+                """
+                INSERT OR IGNORE INTO v39_store_daily_aliases(id,sync_id)
+                SELECT old.id,old.sync_id
+                FROM store_daily_record old
+                WHERE
+                    old.deleted=1
+                    AND TRIM(COALESCE(old.store_sync_id,''))<>''
+                    AND EXISTS(
+                        SELECT 1
+                        FROM store_daily_record active
+                        WHERE
+                            active.deleted=0
+                            AND active.date=old.date
+                            AND active.store_sync_id=old.store_sync_id
+                            AND active.id<>old.id
+                    )
+                """.trimIndent()
+            )
+
+            // Pending changes/conflicts for removed aliases would otherwise
+            // refer to rows that no longer exist and could block all syncing.
+            if (tableExists(db, "sync_change_log")) {
+                db.execSQL(
+                    """
+                    DELETE FROM sync_change_log
+                    WHERE
+                        table_name='store_daily_record'
+                        AND record_sync_id IN(
+                            SELECT sync_id
+                            FROM v39_store_daily_aliases
+                            WHERE TRIM(sync_id)<>''
+                        )
+                    """.trimIndent()
+                )
+            }
+            if (tableExists(db, "sync_conflict")) {
+                db.execSQL(
+                    """
+                    DELETE FROM sync_conflict
+                    WHERE
+                        table_name='store_daily_record'
+                        AND record_sync_id IN(
+                            SELECT sync_id
+                            FROM v39_store_daily_aliases
+                            WHERE TRIM(sync_id)<>''
+                        )
+                    """.trimIndent()
+                )
+            }
+
+            db.execSQL(
+                """
+                DELETE FROM store_daily_record
+                WHERE id IN(
+                    SELECT id
+                    FROM v39_store_daily_aliases
+                )
+                """.trimIndent()
+            )
+            db.execSQL("DROP TABLE IF EXISTS v39_store_daily_aliases")
+        } finally {
+            if (canSuppressSync) {
+                setRemoteApply(db, false)
+            }
+        }
+
+        // SQLite's old UNIQUE(date,store_id) protects one local store row. This
+        // index adds the cross-device business identity and ignores tombstones.
+        db.execSQL(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_store_daily_stable_business_key
+            ON store_daily_record(date,store_sync_id)
+            WHERE deleted=0 AND TRIM(store_sync_id)<>''
+            """.trimIndent()
+        )
     }
 
     private fun createV29InventoryLoss(
@@ -10498,18 +10658,47 @@ class AppDatabase(
         return ProductHistoryDetail(summary, purchases, retail, inventory)
     }
 
-    fun getBusinessWeatherHistory(date: String, storeId: Long): BusinessWeatherHistoryRecord? =
-        readableDatabase.rawQuery(
-            "SELECT * FROM business_weather_history WHERE date=? AND store_id=? AND deleted=0 ORDER BY updated_at DESC LIMIT 1",
-            arrayOf(date, storeId.toString())
-        ).use { c ->
-            if (!c.moveToFirst()) null else BusinessWeatherHistoryRecord(
-                date=c.str("date"), storeId=c.long("store_id"), storeSyncId=c.str("store_sync_id"), storeName=c.str("store_name"),
-                latitude=c.dbl("latitude"), longitude=c.dbl("longitude"), actualStartTime=c.str("actual_start_time"), actualEndTime=c.str("actual_end_time"),
-                windowStartTime=c.str("window_start_time"), windowEndTime=c.str("window_end_time"), payloadJson=c.str("payload_json"),
-                source=c.str("source"), observedAt=c.long("observed_at"), updatedAt=c.long("updated_at")
+    fun getBusinessWeatherHistory(date: String, storeId: Long): BusinessWeatherHistoryRecord? {
+        val storeSyncId =
+            getStoreSyncId(
+                storeId
             )
+        return readableDatabase.rawQuery(
+            """
+            SELECT *
+            FROM business_weather_history
+            WHERE
+                date=?
+                AND deleted=0
+                AND (
+                    store_id=?
+                    OR (?<>'' AND store_sync_id=?)
+                )
+            ORDER BY
+                CASE WHEN store_id=? THEN 0 ELSE 1 END,
+                updated_at DESC
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(
+                date,
+                storeId.toString(),
+                storeSyncId,
+                storeSyncId,
+                storeId.toString()
+            )
+        ).use { c ->
+            if (!c.moveToFirst()) {
+                null
+            } else {
+                BusinessWeatherHistoryRecord(
+                    date=c.str("date"), storeId=c.long("store_id"), storeSyncId=c.str("store_sync_id"), storeName=c.str("store_name"),
+                    latitude=c.dbl("latitude"), longitude=c.dbl("longitude"), actualStartTime=c.str("actual_start_time"), actualEndTime=c.str("actual_end_time"),
+                    windowStartTime=c.str("window_start_time"), windowEndTime=c.str("window_end_time"), payloadJson=c.str("payload_json"),
+                    source=c.str("source"), observedAt=c.long("observed_at"), updatedAt=c.long("updated_at")
+                )
+            }
         }
+    }
 
     fun getStoreDailyRecordsBefore(
         storeId: Long,
@@ -11650,28 +11839,52 @@ class AppDatabase(
         val receiptSplitsJson = encodeReceiptSplits(effectiveReceiptSplits)
         val profit = roundMoney(revenue + closingStock - openingStock - expense)
         val now = System.currentTimeMillis()
+        val stableStoreSyncId =
+            freshStore.syncId.ifBlank {
+                getStoreSyncId(freshStore.id)
+            }
 
-        // A date+store pair is unique. If another active row already occupies it,
-        // editing must not overwrite that other row silently.
-        val activeConflictId = if (recordId == null) {
+        // V39: the real business key is date + stable store id. store_id is only
+        // a device-local numeric id and may change after restore or sync.
+        val activeConflictId =
             db.rawQuery(
                 """
-                SELECT id FROM store_daily_record
-                WHERE date=? AND store_id=? AND deleted=0
+                SELECT id
+                FROM store_daily_record
+                WHERE
+                    date=?
+                    AND deleted=0
+                    AND (
+                        store_id=?
+                        OR (?<>'' AND store_sync_id=?)
+                    )
+                    ${if (recordId != null) "AND id<>?" else ""}
+                ORDER BY updated_at DESC,id DESC
                 LIMIT 1
                 """.trimIndent(),
-                arrayOf(date, freshStore.id.toString())
-            ).use { c -> if (c.moveToFirst()) c.long("id") else null }
-        } else {
-            db.rawQuery(
-                """
-                SELECT id FROM store_daily_record
-                WHERE date=? AND store_id=? AND deleted=0 AND id<>?
-                LIMIT 1
-                """.trimIndent(),
-                arrayOf(date, freshStore.id.toString(), recordId.toString())
-            ).use { c -> if (c.moveToFirst()) c.long("id") else null }
-        }
+                if (recordId == null) {
+                    arrayOf(
+                        date,
+                        freshStore.id.toString(),
+                        stableStoreSyncId,
+                        stableStoreSyncId
+                    )
+                } else {
+                    arrayOf(
+                        date,
+                        freshStore.id.toString(),
+                        stableStoreSyncId,
+                        stableStoreSyncId,
+                        recordId.toString()
+                    )
+                }
+            ).use { c ->
+                if (c.moveToFirst()) {
+                    c.long("id")
+                } else {
+                    null
+                }
+            }
 
         if (activeConflictId != null) {
             return StoreDailySaveResult(
@@ -11680,14 +11893,40 @@ class AppDatabase(
             )
         }
 
-        // When creating a new entry, an old soft-deleted row with the same
-        // date+store would otherwise violate UNIQUE(date, store_id).
-        val reusableDeletedId = if (recordId == null) {
-            db.rawQuery(
-                "SELECT id FROM store_daily_record WHERE date=? AND store_id=? AND deleted=1 LIMIT 1",
-                arrayOf(date, freshStore.id.toString())
-            ).use { c -> if (c.moveToFirst()) c.long("id") else null }
-        } else null
+        // Reuse the logical tombstone even when this device's numeric store id
+        // changed. This keeps a delete-then-restore edit on one cloud identity.
+        val reusableDeletedId =
+            if (recordId == null) {
+                db.rawQuery(
+                    """
+                    SELECT id
+                    FROM store_daily_record
+                    WHERE
+                        date=?
+                        AND deleted=1
+                        AND (
+                            store_id=?
+                            OR (?<>'' AND store_sync_id=?)
+                        )
+                    ORDER BY updated_at DESC,id DESC
+                    LIMIT 1
+                    """.trimIndent(),
+                    arrayOf(
+                        date,
+                        freshStore.id.toString(),
+                        stableStoreSyncId,
+                        stableStoreSyncId
+                    )
+                ).use { c ->
+                    if (c.moveToFirst()) {
+                        c.long("id")
+                    } else {
+                        null
+                    }
+                }
+            } else {
+                null
+            }
 
         val targetId = recordId ?: reusableDeletedId
         val oldRecord = when {
@@ -11715,10 +11954,6 @@ class AppDatabase(
             encodeReceiptSplits(oldRecord.receiptSplits) != receiptSplitsJson ||
             oldRecord.expensePayerId != (freshExpensePayer?.id ?: 0L)
 
-        val stableStoreSyncId =
-            freshStore.syncId.ifBlank {
-                getStoreSyncId(freshStore.id)
-            }
         val deterministicRecordSyncId =
             UUID.nameUUIDFromBytes(
                 (
@@ -16191,7 +16426,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 38
+        const val DB_VERSION = 39
 
         private val CUSTOMER_PAYMENT_DATE_TIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
