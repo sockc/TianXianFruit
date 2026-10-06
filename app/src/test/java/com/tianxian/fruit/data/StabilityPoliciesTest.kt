@@ -61,6 +61,66 @@ class StabilityPoliciesTest {
         assertEquals(150.0, tracker.unitCost!!, 0.000001)
     }
 
+    @Test fun businessHistoryRecoveryGroupsLegacyAliasesByDateAndStoreName() {
+        val first =
+            StoreDailyRecoveryPolicy.logicalKey(
+                date = "2026-09-23",
+                storeName = "游乐场",
+                storeSyncId = "store-old-a",
+                syncId = "daily-a"
+            )
+        val second =
+            StoreDailyRecoveryPolicy.logicalKey(
+                date = "2026-09-23",
+                storeName = "游乐场",
+                storeSyncId = "store-old-b",
+                syncId = "daily-b"
+            )
+        val otherDay =
+            StoreDailyRecoveryPolicy.logicalKey(
+                date = "2026-09-24",
+                storeName = "游乐场",
+                storeSyncId = "store-old-a",
+                syncId = "daily-c"
+            )
+
+        assertEquals(
+            first,
+            second
+        )
+        assertNotEquals(
+            first,
+            otherDay
+        )
+    }
+
+    @Test fun businessHistoryRecoveryPrefersLatestLogicalEvent() {
+        assertTrue(
+            StoreDailyRecoveryPolicy.preferCandidate(
+                currentUpdatedAt = 100L,
+                currentSequence = 10L,
+                candidateUpdatedAt = 101L,
+                candidateSequence = 1L
+            )
+        )
+        assertFalse(
+            StoreDailyRecoveryPolicy.preferCandidate(
+                currentUpdatedAt = 101L,
+                currentSequence = 1L,
+                candidateUpdatedAt = 100L,
+                candidateSequence = 99L
+            )
+        )
+        assertTrue(
+            StoreDailyRecoveryPolicy.preferCandidate(
+                currentUpdatedAt = 100L,
+                currentSequence = 10L,
+                candidateUpdatedAt = 100L,
+                candidateSequence = 11L
+            )
+        )
+    }
+
     @Test fun sourceAndChildrenCountAsOneDeletion() {
         val keys = listOf(
             SyncDeletePolicy.businessKey("purchase_order", "order-A"),
