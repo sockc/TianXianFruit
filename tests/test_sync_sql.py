@@ -107,6 +107,82 @@ class SyncSqlTest(unittest.TestCase):
         self.insert(1, "cloud-record")
         self.assertEqual([], self.pending())
 
+    def test_v39_business_identity_keeps_latest_alias_and_blocks_duplicate(self):
+        migration = re.search(
+            r"private fun createV39StableBusinessIdentity\(.*?private fun createV29InventoryLoss\(",
+            SOURCE,
+            re.S,
+        ).group(0)
+        sql_blocks = [
+            re.sub(r"^\s+", "", block, flags=re.M).strip()
+            for block in re.findall(r'"""(.*?)"""\.trimIndent\(\)', migration, re.S)
+        ]
+
+        db = sqlite3.connect(":memory:")
+        try:
+            db.executescript("""
+                CREATE TABLE store(
+                    id INTEGER PRIMARY KEY,
+                    sync_id TEXT NOT NULL
+                );
+                CREATE TABLE store_daily_record(
+                    id INTEGER PRIMARY KEY,
+                    date TEXT NOT NULL,
+                    store_id INTEGER NOT NULL,
+                    store_sync_id TEXT NOT NULL DEFAULT '',
+                    sync_id TEXT NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE sync_change_log(
+                    id INTEGER PRIMARY KEY,
+                    table_name TEXT,
+                    record_sync_id TEXT
+                );
+                CREATE TABLE sync_conflict(
+                    id INTEGER PRIMARY KEY,
+                    table_name TEXT,
+                    record_sync_id TEXT
+                );
+                INSERT INTO store VALUES(1,'stable-A');
+                INSERT INTO store VALUES(2,'stable-A');
+
+                INSERT INTO store_daily_record
+                    VALUES(1,'2026-10-06',1,'stable-A','alias-old',0,100);
+                INSERT INTO store_daily_record
+                    VALUES(2,'2026-10-06',2,'stable-A','alias-new',0,200);
+                INSERT INTO store_daily_record
+                    VALUES(3,'2026-10-06',1,'stable-A','alias-deleted',1,50);
+
+                INSERT INTO sync_change_log VALUES(1,'store_daily_record','alias-old');
+                INSERT INTO sync_change_log VALUES(2,'store_daily_record','alias-deleted');
+                INSERT INTO sync_conflict VALUES(1,'store_daily_record','alias-old');
+            """)
+
+            for sql in sql_blocks:
+                db.execute(sql)
+
+            rows = db.execute(
+                "SELECT id,sync_id,deleted FROM store_daily_record ORDER BY id"
+            ).fetchall()
+            self.assertEqual([(2, "alias-new", 0)], rows)
+            self.assertEqual([], db.execute("SELECT * FROM sync_change_log").fetchall())
+            self.assertEqual([], db.execute("SELECT * FROM sync_conflict").fetchall())
+
+            with self.assertRaises(sqlite3.IntegrityError):
+                db.execute(
+                    "INSERT INTO store_daily_record VALUES(4,?,?,?,?,?,?)",
+                    ("2026-10-06", 1, "stable-A", "duplicate-again", 0, 300),
+                )
+
+            # Tombstones remain allowed by the partial unique index.
+            db.execute(
+                "INSERT INTO store_daily_record VALUES(5,?,?,?,?,?,?)",
+                ("2026-10-06", 1, "stable-A", "deleted-alias", 1, 300),
+            )
+        finally:
+            db.close()
+
     def test_latest_delete_and_restore_operations_are_selected(self):
         self.insert(1, "record-A")
         self.db.execute("UPDATE sample SET deleted=1 WHERE id=1")
