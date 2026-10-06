@@ -417,6 +417,144 @@ class PaymentBillParserTest {
         )
     }
 
+    @Test
+    fun largePaymentsAndLinkedRefundsAreExcludedButCanBeOverridden() {
+        val large =
+            payment(
+                id = 1,
+                customer = "A",
+                name = "客户A",
+                date = "2026-10-05",
+                amount = 2000.0
+            ).copy(
+                transactionRef = "trade-large"
+            )
+        val refund =
+            CustomerPaymentRecord(
+                id = 2,
+                platform = "WECHAT",
+                tradeTime = "2026-10-05 19:00:00",
+                businessDate = "2026-10-05",
+                amount = 0.0,
+                refundAmount = 100.0,
+                netAmount = -100.0,
+                customerKey = "A",
+                customerName = "客户A",
+                identityConfidence = "HIGH",
+                transactionType = "二维码收款",
+                tradeStatus = "退款",
+                storeId = 1,
+                storeName = "测试位置",
+                transactionRef = "trade-large"
+            )
+        val normal =
+            payment(
+                id = 3,
+                customer = "B",
+                name = "客户B",
+                date = "2026-10-05",
+                amount = 20.0
+            ).copy(
+                transactionRef = "trade-normal"
+            )
+
+        val settings =
+            CustomerAnalysisSettings(
+                excludeLargePayments = true,
+                largePaymentThreshold = 2000.0
+            )
+        val filtered =
+            CustomerAnalyticsEngine.filterRecords(
+                allRecords =
+                    listOf(
+                        large,
+                        refund,
+                        normal
+                    ),
+                settings = settings
+            )
+
+        assertEquals(
+            listOf(3L),
+            filtered.included.map {
+                it.id
+            }
+        )
+        assertTrue(
+            1L in filtered.autoLargeIds
+        )
+        assertTrue(
+            2L in filtered.excludedIds
+        )
+
+        val overridden =
+            CustomerAnalyticsEngine.filterRecords(
+                allRecords =
+                    listOf(
+                        large.copy(
+                            analysisIncludedOverride = true
+                        ),
+                        refund,
+                        normal
+                    ),
+                settings = settings
+            )
+
+        assertEquals(
+            setOf(
+                1L,
+                2L,
+                3L
+            ),
+            overridden.included
+                .map {
+                    it.id
+                }
+                .toSet()
+        )
+    }
+
+    @Test
+    fun oldSingleVisitCustomerIsOneTimeInsteadOfNew() {
+        val result =
+            CustomerAnalyticsEngine.analyze(
+                allRecords =
+                    listOf(
+                        payment(
+                            id = 1,
+                            customer = "A",
+                            name = "一次客A",
+                            date = "2026-08-01",
+                            amount = 20.0
+                        )
+                    ),
+                startDate = null,
+                endDate = null,
+                today =
+                    LocalDate.of(
+                        2026,
+                        10,
+                        6
+                    )
+            )
+
+        assertEquals(
+            "一次客",
+            result.profiles
+                .single()
+                .lifecycle
+        )
+        assertEquals(
+            1,
+            result.lifecycles
+                .first {
+                    it.label ==
+                        "一次客"
+                }
+                .count
+        )
+    }
+
     private fun payment(
         id: Long,
         customer: String,
