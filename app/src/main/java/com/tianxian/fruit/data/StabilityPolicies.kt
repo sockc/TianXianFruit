@@ -324,12 +324,32 @@ internal object StoreDailyRecoveryPolicy {
     }
 
     fun preferCandidate(
+        currentOperation: String,
         currentUpdatedAt: Long,
         currentSequence: Long,
+        candidateOperation: String,
         candidateUpdatedAt: Long,
         candidateSequence: Long
-    ): Boolean =
-        when {
+    ): Boolean {
+        val currentActive =
+            currentOperation !=
+                "DELETE"
+        val candidateActive =
+            candidateOperation !=
+                "DELETE"
+
+        // Legacy builds could create more than one cloud identity for the same
+        // date+store. A tombstone for only one alias must not erase another
+        // alias that is still active. Only when every alias is deleted will
+        // the logical group resolve to DELETE.
+        if (
+            currentActive !=
+            candidateActive
+        ) {
+            return candidateActive
+        }
+
+        return when {
             candidateUpdatedAt >
                 currentUpdatedAt ->
                 true
@@ -342,6 +362,7 @@ internal object StoreDailyRecoveryPolicy {
                 candidateSequence >
                     currentSequence
         }
+    }
 }
 
 internal object SyncDeletePolicy {
