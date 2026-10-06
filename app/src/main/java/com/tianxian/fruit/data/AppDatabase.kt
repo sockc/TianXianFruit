@@ -15931,6 +15931,36 @@ class AppDatabase(
             if (c.moveToFirst()) c.int("c") else 0
         }
 
+    fun hasCustomerPaymentsForDate(
+        date: String
+    ): Boolean =
+        readableDatabase.rawQuery(
+            """
+            SELECT 1
+            FROM customer_payment_transaction
+            WHERE business_date=?
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(date)
+        ).use { it.moveToFirst() }
+
+    fun hasAssistBillData(
+        date: String
+    ): Boolean {
+        if (hasCustomerPaymentsForDate(date)) {
+            return true
+        }
+        return readableDatabase.rawQuery(
+            """
+            SELECT 1
+            FROM historical_purchase_candidate
+            WHERE business_date=?
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(date)
+        ).use { it.moveToFirst() }
+    }
+
     fun getHistoricalPurchaseCandidates(
         date: String,
         includeIgnored: Boolean = false
