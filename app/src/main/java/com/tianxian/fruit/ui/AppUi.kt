@@ -26094,9 +26094,15 @@ private fun QuickDatePickerDialog(
                                     revenueTotals[it]
                                 } ?: 0.0
                             val hasPurchase =
-                                purchase > 0.005
+                                dateKey != null &&
+                                    purchaseTotals.containsKey(
+                                        dateKey
+                                    )
                             val hasBusiness =
-                                revenue > 0.005
+                                dateKey != null &&
+                                    revenueTotals.containsKey(
+                                        dateKey
+                                    )
                             val hasHistory =
                                 hasPurchase ||
                                     hasBusiness
