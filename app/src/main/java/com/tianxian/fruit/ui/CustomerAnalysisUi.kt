@@ -1553,6 +1553,43 @@ private fun SimpleEmpty(text: String) {
     }
 }
 
+private fun cleanSettingNumber(
+    value: Double
+): String =
+    if (
+        kotlin.math.abs(
+            value -
+                value.toLong()
+        ) <
+        0.000001
+    ) {
+        value.toLong()
+            .toString()
+    } else {
+        String.format(
+            Locale.CHINA,
+            "%.2f",
+            value
+        )
+            .trimEnd('0')
+            .trimEnd('.')
+    }
+
+private fun formatTradeDateTime(
+    value: String
+): String {
+    if (
+        value.length >=
+        16
+    ) {
+        return value.substring(
+            5,
+            16
+        )
+    }
+    return value
+}
+
 private fun confidenceLabel(value: String): String = when (value) {
     "HIGH" -> "稳定标识"
     "MEDIUM" -> "昵称识别"
