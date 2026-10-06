@@ -418,7 +418,7 @@ internal fun BusinessPaymentAssistCard(
 
     val snapshot by
         produceState<BusinessAssistSnapshot?>(
-            initialValue = null,
+            null,
             db,
             dataVersion,
             date
