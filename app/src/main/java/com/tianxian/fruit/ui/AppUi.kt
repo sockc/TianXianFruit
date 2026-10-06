@@ -2487,12 +2487,54 @@ private fun cachedBusinessWeatherState(
     if (store == null) {
         return WeatherUiState(loading = true)
     }
+
     val selectedDate =
         runCatching {
             LocalDate.parse(date)
         }.getOrElse {
             LocalDate.now()
         }
+
+    if (
+        selectedDate.isBefore(
+            LocalDate.now()
+        )
+    ) {
+        val history =
+            runCatching {
+                db.getBusinessWeatherHistory(
+                    date,
+                    store.id
+                )
+            }.getOrNull()
+        val overview =
+            history?.let {
+                runCatching {
+                    WeatherClient.parseOverview(
+                        it.payloadJson,
+                        historical = true
+                    )
+                }.getOrNull()
+            }
+        return if (
+            history != null &&
+            overview != null
+        ) {
+            WeatherUiState(
+                overview = overview,
+                snapshotType = "LOCAL_ARCHIVE",
+                updatedAtMillis =
+                    history.updatedAt,
+                expiresAtMillis =
+                    Long.MAX_VALUE
+            )
+        } else {
+            WeatherUiState(
+                loading = true
+            )
+        }
+    }
+
     val cached =
         runCatching {
             db.getWeatherCache(
@@ -2507,10 +2549,7 @@ private fun cachedBusinessWeatherState(
         runCatching {
             WeatherClient.parseOverview(
                 cached.payloadJson,
-                historical =
-                    selectedDate.isBefore(
-                        LocalDate.now()
-                    )
+                historical = false
             )
         }.getOrNull()
             ?: return WeatherUiState(
@@ -2519,18 +2558,7 @@ private fun cachedBusinessWeatherState(
 
     return WeatherUiState(
         overview = overview,
-        loading = false,
-        refreshing = false,
-        snapshotType =
-            if (
-                selectedDate.isBefore(
-                    LocalDate.now()
-                )
-            ) {
-                "ARCHIVE_CACHE"
-            } else {
-                "CACHE"
-            },
+        snapshotType = "CACHE",
         updatedAtMillis = cached.fetchedAt,
         expiresAtMillis = cached.expiresAt
     )
