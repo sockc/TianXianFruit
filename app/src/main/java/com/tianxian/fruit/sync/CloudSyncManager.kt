@@ -2118,7 +2118,26 @@ class CloudSyncManager(
         var cursor =
             db.getServerCursor()
 
+        var storeDailyBackfillCount = 0
+
         if (conflictCount == 0) {
+            val needsStoreDailyBackfill =
+                !isStoreDailyBackfillDone(
+                    book.id
+                )
+
+            if (needsStoreDailyBackfill) {
+                storeDailyBackfillCount =
+                    backfillStoreDailyRecords(
+                        session = current,
+                        db = db,
+                        book = book
+                    )
+                markStoreDailyBackfillDone(
+                    book.id
+                )
+            }
+
             val needsActivityBackfill =
                 !isPurchaseActivityBackfillDone(
                     book.id
@@ -2204,6 +2223,10 @@ class CloudSyncManager(
                 blockedTables.isNotEmpty() ->
                     "同步完成：上传 $uploadedCount 条，下载 $downloadedCount 条；" +
                         "${blockedTables.size} 个业务表等待服务器支持"
+
+                storeDailyBackfillCount > 0 ->
+                    "同步完成：上传 $uploadedCount 条，下载 $downloadedCount 条；" +
+                        "已重新校验 $storeDailyBackfillCount 条云端营业记录"
 
                 else ->
                     "同步完成：上传 $uploadedCount 条，下载 $downloadedCount 条"
@@ -2448,6 +2471,70 @@ class CloudSyncManager(
         return count to cursor
     }
 
+    private fun backfillStoreDailyRecords(
+        session: CloudSession,
+        db: AppDatabase,
+        book: LedgerBook
+    ): Int {
+        var cursor = 0L
+        val latestBySyncId =
+            linkedMapOf<String, PullEvent>()
+
+        do {
+            val pull =
+                pullBatch(
+                    session = session,
+                    book = book,
+                    since = cursor
+                )
+
+            pull.events
+                .filter {
+                    it.tableName ==
+                        "store_daily_record"
+                }
+                .forEach {
+                    event ->
+                    latestBySyncId[
+                        event.syncId
+                    ] = event
+                }
+
+            cursor =
+                pull.nextCursor
+        } while (pull.hasMore)
+
+        latestBySyncId
+            .values
+            .sortedWith(
+                compareBy<PullEvent> {
+                    it.payload.optLong(
+                        "updated_at",
+                        0L
+                    )
+                }.thenBy {
+                    it.syncId
+                }
+            )
+            .forEach {
+                event ->
+                db.applyRemoteStoreDailyBackfillEvent(
+                    syncId =
+                        event.syncId,
+                    rowVersion =
+                        event.rowVersion,
+                    operation =
+                        event.operation,
+                    payload =
+                        event.payload,
+                    modifiedBy =
+                        event.modifiedBy
+                )
+            }
+
+        return latestBySyncId.size
+    }
+
     private fun remoteDeleteWouldRemoveActiveLocal(
         db: AppDatabase,
         event: PullEvent
@@ -2475,6 +2562,35 @@ class CloudSyncManager(
 
         return event.rowVersion >
             localVersion
+    }
+
+    private fun storeDailyBackfillKey(
+        bookId: String
+    ): String =
+        KEY_STORE_DAILY_BACKFILL_PREFIX +
+            bookId
+
+    private fun isStoreDailyBackfillDone(
+        bookId: String
+    ): Boolean =
+        prefs.getBoolean(
+            storeDailyBackfillKey(
+                bookId
+            ),
+            false
+        )
+
+    private fun markStoreDailyBackfillDone(
+        bookId: String
+    ) {
+        prefs.edit()
+            .putBoolean(
+                storeDailyBackfillKey(
+                    bookId
+                ),
+                true
+            )
+            .apply()
     }
 
     private fun purchaseActivityBackfillKey(
@@ -3026,6 +3142,9 @@ class CloudSyncManager(
 
         private const val KEY_PURCHASE_ACTIVITY_BACKFILL_PREFIX =
             "purchase_activity_backfill_v1_4_"
+
+        private const val KEY_STORE_DAILY_BACKFILL_PREFIX =
+            "store_daily_backfill_v1_4_7_71_"
 
         private const val AUTO_SYNC_DEBOUNCE_MS =
             800L
