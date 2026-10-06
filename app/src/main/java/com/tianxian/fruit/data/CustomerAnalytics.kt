@@ -140,6 +140,31 @@ data class CustomerChangeBreakdown(
     val mainReason: String = ""
 )
 
+data class CustomerHourlyPoint(
+    val hour: Int,
+    val customerCount: Int,
+    val newCustomerCount: Int,
+    val oldCustomerCount: Int,
+    val paymentCount: Int,
+    val amount: Double
+)
+
+data class CustomerDailyTrafficPoint(
+    val date: String,
+    val customerCount: Int,
+    val paymentCount: Int,
+    val amount: Double
+)
+
+data class CustomerSameWeekdayComparison(
+    val storeName: String,
+    val currentCustomers: Int,
+    val averageCustomers: Double,
+    val sampleDays: Int,
+    val difference: Int,
+    val percentChange: Double?
+)
+
 data class CustomerAnalysisResult(
     val summary: CustomerAnalysisSummary,
     val profiles: List<CustomerProfileAnalysis>,
@@ -149,6 +174,324 @@ data class CustomerAnalysisResult(
 )
 
 internal object CustomerAnalyticsEngine {
+    fun hourlyTraffic(
+        allRecords: List<CustomerPaymentRecord>,
+        date: String
+    ): List<CustomerHourlyPoint> {
+        val positiveAll =
+            allRecords.filter {
+                it.netAmount > 0.005
+            }
+        val firstDateByCustomer =
+            positiveAll
+                .groupBy {
+                    it.customerKey
+                }
+                .mapValues {
+                    entry ->
+                    entry.value
+                        .minOf {
+                            it.businessDate
+                        }
+                }
+
+        val dayPositive =
+            positiveAll.filter {
+                it.businessDate == date
+            }
+        val dayNet =
+            allRecords.filter {
+                it.businessDate == date
+            }
+
+        return (0..23).map {
+            hour ->
+            val positiveHour =
+                dayPositive.filter {
+                    parseHour(
+                        it.tradeTime
+                    ) == hour
+                }
+            val netHour =
+                dayNet.filter {
+                    parseHour(
+                        it.tradeTime
+                    ) == hour
+                }
+            val customers =
+                positiveHour
+                    .map {
+                        it.customerKey
+                    }
+                    .toSet()
+            val newCustomers =
+                customers.count {
+                    firstDateByCustomer[it] ==
+                        date
+                }
+
+            CustomerHourlyPoint(
+                hour = hour,
+                customerCount =
+                    customers.size,
+                newCustomerCount =
+                    newCustomers,
+                oldCustomerCount =
+                    (
+                        customers.size -
+                            newCustomers
+                        ).coerceAtLeast(
+                            0
+                        ),
+                paymentCount =
+                    positiveHour.size,
+                amount =
+                    roundMoney(
+                        netHour.sumOf {
+                            it.netAmount
+                        }
+                    )
+            )
+        }
+    }
+
+    fun dailyTraffic(
+        allRecords: List<CustomerPaymentRecord>,
+        startDate: String,
+        endDate: String
+    ): List<CustomerDailyTrafficPoint> {
+        val start =
+            runCatching {
+                LocalDate.parse(
+                    startDate
+                )
+            }.getOrNull()
+                ?: return emptyList()
+        val end =
+            runCatching {
+                LocalDate.parse(
+                    endDate
+                )
+            }.getOrNull()
+                ?: return emptyList()
+        if (end < start) {
+            return emptyList()
+        }
+
+        val positive =
+            allRecords.filter {
+                it.netAmount > 0.005
+            }
+        val netByDate =
+            allRecords
+                .filter {
+                    it.businessDate >=
+                        startDate &&
+                        it.businessDate <=
+                            endDate
+                }
+                .groupBy {
+                    it.businessDate
+                }
+
+        return generateSequence(
+            start
+        ) {
+            previous ->
+            previous.plusDays(
+                1
+            ).takeIf {
+                it <= end
+            }
+        }
+            .map {
+                date ->
+                val key =
+                    date.toString()
+                val dayPositive =
+                    positive.filter {
+                        it.businessDate ==
+                            key
+                    }
+                CustomerDailyTrafficPoint(
+                    date = key,
+                    customerCount =
+                        dayPositive
+                            .map {
+                                it.customerKey
+                            }
+                            .toSet()
+                            .size,
+                    paymentCount =
+                        dayPositive.size,
+                    amount =
+                        roundMoney(
+                            netByDate[key]
+                                .orEmpty()
+                                .sumOf {
+                                    it.netAmount
+                                }
+                        )
+                )
+            }
+            .toList()
+    }
+
+    fun sameWeekdayComparisons(
+        allRecords: List<CustomerPaymentRecord>,
+        date: String,
+        previousLimit: Int = 4
+    ): List<CustomerSameWeekdayComparison> {
+        val target =
+            runCatching {
+                LocalDate.parse(
+                    date
+                )
+            }.getOrNull()
+                ?: return emptyList()
+
+        val positive =
+            allRecords.filter {
+                it.netAmount > 0.005 &&
+                    it.storeName.isNotBlank() &&
+                    it.storeName !=
+                        "未匹配位置"
+            }
+        val current =
+            positive.filter {
+                it.businessDate ==
+                    date
+            }
+        val stores =
+            current
+                .map {
+                    it.storeName
+                }
+                .distinct()
+
+        return stores.mapNotNull {
+            storeName ->
+            val currentCustomers =
+                current
+                    .filter {
+                        it.storeName ==
+                            storeName
+                    }
+                    .map {
+                        it.customerKey
+                    }
+                    .toSet()
+                    .size
+
+            val previous =
+                positive
+                    .asSequence()
+                    .filter {
+                        it.storeName ==
+                            storeName &&
+                            it.businessDate <
+                                date
+                    }
+                    .groupBy {
+                        it.businessDate
+                    }
+                    .mapNotNull {
+                        (day, rows) ->
+                        val parsed =
+                            runCatching {
+                                LocalDate.parse(
+                                    day
+                                )
+                            }.getOrNull()
+                                ?: return@mapNotNull null
+
+                        if (
+                            parsed.dayOfWeek !=
+                            target.dayOfWeek
+                        ) {
+                            null
+                        } else {
+                            day to
+                                rows
+                                    .map {
+                                        it.customerKey
+                                    }
+                                    .toSet()
+                                    .size
+                        }
+                    }
+                    .sortedByDescending {
+                        it.first
+                    }
+                    .take(
+                        previousLimit
+                            .coerceAtLeast(
+                                1
+                            )
+                    )
+
+            if (previous.isEmpty()) {
+                null
+            } else {
+                val average =
+                    previous
+                        .map {
+                            it.second
+                        }
+                        .average()
+                val difference =
+                    currentCustomers -
+                        average.roundToInt()
+                val percent =
+                    if (average > 0.005) {
+                        (
+                            currentCustomers -
+                                average
+                            ) /
+                            average
+                    } else {
+                        null
+                    }
+
+                CustomerSameWeekdayComparison(
+                    storeName =
+                        storeName,
+                    currentCustomers =
+                        currentCustomers,
+                    averageCustomers =
+                        average,
+                    sampleDays =
+                        previous.size,
+                    difference =
+                        difference,
+                    percentChange =
+                        percent
+                )
+            }
+        }
+    }
+
+    private fun parseHour(
+        tradeTime: String
+    ): Int? {
+        if (
+            tradeTime.length <
+            13
+        ) {
+            return null
+        }
+
+        return tradeTime
+            .substring(
+                11,
+                13
+            )
+            .toIntOrNull()
+            ?.takeIf {
+                it in 0..23
+            }
+    }
+
     fun filterRecords(
         allRecords: List<CustomerPaymentRecord>,
         settings: CustomerAnalysisSettings
