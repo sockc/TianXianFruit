@@ -12,8 +12,8 @@ android {
         applicationId "com.tianxian.fruit"
         minSdk 26
         targetSdk 36
-        versionCode 107
-        versionName "1.4.7.69"
+        versionCode 108
+        versionName "1.4.7.70"
     }
 
     signingConfigs {
