@@ -1548,7 +1548,10 @@ private fun PageHeader(
 private fun BusinessDateHeader(
     pageTitle: String,
     date: String,
-    onDate: (String) -> Unit
+    onDate: (String) -> Unit,
+    db: AppDatabase? = null,
+    dataVersion: Int = 0,
+    showPurchaseBusinessHistory: Boolean = false
 ) {
     val parsedDate =
         runCatching { LocalDate.parse(date) }
@@ -1602,6 +1605,10 @@ private fun BusinessDateHeader(
     if (showPicker) {
         QuickDatePickerDialog(
             selectedDate = parsedDate,
+            db = db,
+            dataVersion = dataVersion,
+            showPurchaseBusinessHistory =
+                showPurchaseBusinessHistory,
             onDismiss = { showPicker = false },
             onSelect = { selected ->
                 showPicker = false
@@ -7963,60 +7970,18 @@ private fun PurchaseScreen(
             BusinessDateHeader(
                 pageTitle = "采购",
                 date = date,
-                onDate = onWorkDateChange
+                onDate = onWorkDateChange,
+                db = db,
+                dataVersion = dataVersion,
+                showPurchaseBusinessHistory = true
             )
-        }
-
-        item {
-            Row(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .height(22.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "计划金额：${money(dayPlannedTotal)}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = Color.Gray
-                )
-                Spacer(Modifier.width(18.dp))
-                Text(
-                    (if (dayPurchaseOrders.isNotEmpty()) "● " else "") +
-                        "采购额 ${compactKMoney(dayPurchasedTotal)}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color =
-                        if (dayPurchaseOrders.isNotEmpty()) {
-                            BrandGreen
-                        } else {
-                            Color.Gray
-                        },
-                    fontWeight =
-                        if (dayPurchaseOrders.isNotEmpty()) {
-                            FontWeight.SemiBold
-                        } else {
-                            FontWeight.Normal
-                        }
-                )
-            }
         }
 
         if (editingOrderId != null) {
             item {
-                Card(
-                    colors =
-                        CardDefaults.cardColors(
-                            containerColor = Color(0xFFFFF7D9)
-                        )
-                ) {
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF7D9))) {
                     Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(
-                                horizontal = 12.dp,
-                                vertical = 8.dp
-                            ),
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
@@ -8031,14 +7996,39 @@ private fun PurchaseScreen(
                                     message = "已取消编辑"
                                 }
                             }
-                        ) {
-                            Text("取消")
-                        }
+                        ) { Text("取消") }
                     }
                 }
             }
+        }
 
-            item {
+        item {
+            if (editingOrderId == null) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(22.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "计划金额：${money(dayPlannedTotal)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.Gray
+                        )
+                        Spacer(Modifier.width(18.dp))
+                        Text(
+                            "已采购金额：${money(dayPurchasedTotal)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.Gray
+                        )
+                    }
+                }
+            } else {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -8049,20 +8039,14 @@ private fun PurchaseScreen(
                             "采购人",
                             editBuyerDisplayName,
                             Modifier.fillMaxWidth()
-                        ) {
-                            editBuyerMenu = true
-                        }
+                        ) { editBuyerMenu = true }
                         DropdownMenu(
                             expanded = editBuyerMenu,
-                            onDismissRequest = {
-                                editBuyerMenu = false
-                            }
+                            onDismissRequest = { editBuyerMenu = false }
                         ) {
                             partners.forEach { p ->
                                 DropdownMenuItem(
-                                    text = {
-                                        Text(p.name)
-                                    },
+                                    text = { Text(p.name) },
                                     onClick = {
                                         editBuyerId = p.id
                                         historicalBuyerName = ""
@@ -10838,38 +10822,11 @@ private fun SessionScreen(
             BusinessDateHeader(
                 pageTitle = "营业",
                 date = date,
-                onDate = onWorkDateChange
+                onDate = onWorkDateChange,
+                db = db,
+                dataVersion = dataVersion,
+                showPurchaseBusinessHistory = true
             )
-        }
-
-        item {
-            Row(
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .height(22.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                val hasBusiness = todayRecords.isNotEmpty()
-                Text(
-                    (if (hasBusiness) "● " else "") +
-                        "营业额 ${compactKMoney(todayRecords.sumOf { it.revenue })}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color =
-                        if (hasBusiness) {
-                            BrandGreen
-                        } else {
-                            Color.Gray
-                        },
-                    fontWeight =
-                        if (hasBusiness) {
-                            FontWeight.SemiBold
-                        } else {
-                            FontWeight.Normal
-                        }
-                )
-            }
         }
 
         item {
@@ -26014,6 +25971,9 @@ private fun TimeFilterSelector(
 @Composable
 private fun QuickDatePickerDialog(
     selectedDate: LocalDate,
+    db: AppDatabase? = null,
+    dataVersion: Int = 0,
+    showPurchaseBusinessHistory: Boolean = false,
     onDismiss: () -> Unit,
     onSelect: (LocalDate) -> Unit
 ) {
@@ -26025,6 +25985,50 @@ private fun QuickDatePickerDialog(
     val firstOffset = visibleMonth.dayOfWeek.value - 1
     val daysInMonth = visibleMonth.lengthOfMonth()
     val cellCount = ((firstOffset + daysInMonth + 6) / 7) * 7
+    val monthStart = visibleMonth.toString()
+    val monthEnd =
+        visibleMonth
+            .withDayOfMonth(daysInMonth)
+            .toString()
+
+    val purchaseTotals =
+        remember(
+            db,
+            dataVersion,
+            visibleMonth,
+            showPurchaseBusinessHistory
+        ) {
+            if (
+                db != null &&
+                showPurchaseBusinessHistory
+            ) {
+                db.getPurchaseTotalsBetween(
+                    monthStart,
+                    monthEnd
+                )
+            } else {
+                emptyMap()
+            }
+        }
+    val revenueTotals =
+        remember(
+            db,
+            dataVersion,
+            visibleMonth,
+            showPurchaseBusinessHistory
+        ) {
+            if (
+                db != null &&
+                showPurchaseBusinessHistory
+            ) {
+                db.getRevenueTotalsBetween(
+                    monthStart,
+                    monthEnd
+                )
+            } else {
+                emptyMap()
+            }
+        }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -26080,41 +26084,151 @@ private fun QuickDatePickerDialog(
                                 } else {
                                     null
                                 }
-                            val selected = cellDate == selectedDate
-                            val isToday = cellDate == today
+                            val dateKey = cellDate?.toString()
+                            val purchase =
+                                dateKey?.let {
+                                    purchaseTotals[it]
+                                } ?: 0.0
+                            val revenue =
+                                dateKey?.let {
+                                    revenueTotals[it]
+                                } ?: 0.0
+                            val hasPurchase =
+                                purchase > 0.005
+                            val hasBusiness =
+                                revenue > 0.005
+                            val hasHistory =
+                                hasPurchase ||
+                                    hasBusiness
+                            val selected =
+                                cellDate == selectedDate
+                            val isToday =
+                                cellDate == today
+
                             val cellModifier =
                                 Modifier
                                     .weight(1f)
-                                    .aspectRatio(1f)
-                                    .padding(2.dp)
-                                    .clip(RoundedCornerShape(9.dp))
                                     .then(
-                                        when {
-                                            selected -> Modifier.background(BrandGreen)
-                                            isToday -> Modifier.background(SoftGreen)
-                                            else -> Modifier
+                                        if (
+                                            showPurchaseBusinessHistory
+                                        ) {
+                                            Modifier.height(54.dp)
+                                        } else {
+                                            Modifier.aspectRatio(1f)
                                         }
                                     )
-                                    .clickable(enabled = cellDate != null) {
-                                        cellDate?.let(onSelect)
+                                    .padding(2.dp)
+                                    .clip(
+                                        RoundedCornerShape(9.dp)
+                                    )
+                                    .then(
+                                        when {
+                                            selected ->
+                                                Modifier.background(
+                                                    BrandGreen
+                                                )
+                                            isToday ->
+                                                Modifier.background(
+                                                    SoftGreen
+                                                )
+                                            else ->
+                                                Modifier
+                                        }
+                                    )
+                                    .clickable(
+                                        enabled =
+                                            cellDate != null
+                                    ) {
+                                        cellDate
+                                            ?.let(
+                                                onSelect
+                                            )
                                     }
 
                             Box(
                                 cellModifier,
-                                contentAlignment = Alignment.Center
+                                contentAlignment =
+                                    Alignment.Center
                             ) {
                                 if (cellDate != null) {
-                                    Text(
-                                        cellDate.dayOfMonth.toString(),
-                                        color = if (selected) Color.White else Color.DarkGray,
-                                        fontWeight =
-                                            if (selected || isToday) FontWeight.Bold
-                                            else FontWeight.Normal
-                                    )
+                                    Column(
+                                        horizontalAlignment =
+                                            Alignment.CenterHorizontally,
+                                        verticalArrangement =
+                                            Arrangement.Center
+                                    ) {
+                                        Text(
+                                            cellDate.dayOfMonth.toString(),
+                                            color =
+                                                when {
+                                                    selected ->
+                                                        Color.White
+                                                    hasHistory ->
+                                                        BrandGreen
+                                                    else ->
+                                                        Color.DarkGray
+                                                },
+                                            fontWeight =
+                                                if (
+                                                    selected ||
+                                                    isToday ||
+                                                    hasHistory
+                                                ) {
+                                                    FontWeight.Bold
+                                                } else {
+                                                    FontWeight.Normal
+                                                },
+                                            fontSize = 13.sp,
+                                            lineHeight = 14.sp
+                                        )
+                                        if (
+                                            showPurchaseBusinessHistory &&
+                                            hasPurchase
+                                        ) {
+                                            Text(
+                                                "采${calendarKAmount(purchase)}",
+                                                color =
+                                                    if (selected) {
+                                                        Color.White
+                                                    } else {
+                                                        BrandGreen
+                                                    },
+                                                fontSize = 8.sp,
+                                                lineHeight = 9.sp,
+                                                maxLines = 1
+                                            )
+                                        }
+                                        if (
+                                            showPurchaseBusinessHistory &&
+                                            hasBusiness
+                                        ) {
+                                            Text(
+                                                "营${calendarKAmount(revenue)}",
+                                                color =
+                                                    if (selected) {
+                                                        Color.White
+                                                    } else {
+                                                        BrandGreen
+                                                    },
+                                                fontSize = 8.sp,
+                                                lineHeight = 9.sp,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
+                }
+
+                if (showPurchaseBusinessHistory) {
+                    Text(
+                        "绿色日期 = 有采购或营业记录",
+                        modifier = Modifier.align(Alignment.CenterHorizontally),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = BrandGreen
+                    )
                 }
 
                 TextButton(
@@ -26128,6 +26242,15 @@ private fun QuickDatePickerDialog(
         }
     )
 }
+
+private fun calendarKAmount(
+    value: Double
+): String =
+    String.format(
+        Locale.CHINA,
+        "%.1fk",
+        value / 1000.0
+    )
 
 @Composable
 internal fun CompactDateNavigator(
@@ -26719,14 +26842,6 @@ private fun ConfirmDelete(text: String, onDismiss: () -> Unit, onConfirm: () -> 
 }
 
 private fun money(v: Double): String = "¥" + if (kotlin.math.abs(v - v.toLong()) < 0.005) v.toLong().toString() else String.format(Locale.CHINA, "%.2f", v)
-
-private fun compactKMoney(v: Double): String =
-    "¥" +
-        String.format(
-            Locale.CHINA,
-            "%.1fk",
-            v / 1000.0
-        )
 
 private fun settlementTimeText(epochMillis: Long): String {
     if (epochMillis <= 0L) return ""
