@@ -555,6 +555,152 @@ class PaymentBillParserTest {
         )
     }
 
+    @Test
+    fun hourlyTrafficCountsUniqueCustomersPerHour() {
+        val rows =
+            listOf(
+                payment(
+                    id = 1,
+                    customer = "A",
+                    name = "客户A",
+                    date = "2026-10-06",
+                    amount = 20.0
+                ).copy(
+                    tradeTime =
+                        "2026-10-06 18:05:00"
+                ),
+                payment(
+                    id = 2,
+                    customer = "A",
+                    name = "客户A",
+                    date = "2026-10-06",
+                    amount = 10.0
+                ).copy(
+                    tradeTime =
+                        "2026-10-06 18:35:00"
+                ),
+                payment(
+                    id = 3,
+                    customer = "B",
+                    name = "客户B",
+                    date = "2026-10-06",
+                    amount = 30.0
+                ).copy(
+                    tradeTime =
+                        "2026-10-06 19:10:00"
+                )
+            )
+
+        val traffic =
+            CustomerAnalyticsEngine.hourlyTraffic(
+                allRecords = rows,
+                date = "2026-10-06"
+            )
+
+        val hour18 =
+            traffic.first {
+                it.hour == 18
+            }
+        val hour19 =
+            traffic.first {
+                it.hour == 19
+            }
+
+        assertEquals(
+            1,
+            hour18.customerCount
+        )
+        assertEquals(
+            2,
+            hour18.paymentCount
+        )
+        assertEquals(
+            30.0,
+            hour18.amount,
+            0.001
+        )
+        assertEquals(
+            1,
+            hour19.customerCount
+        )
+    }
+
+    @Test
+    fun sameWeekdayComparisonUsesSameStoreOnly() {
+        val rows =
+            listOf(
+                payment(
+                    1,
+                    "A",
+                    "A",
+                    "2026-10-06",
+                    20.0
+                ),
+                payment(
+                    2,
+                    "B",
+                    "B",
+                    "2026-10-06",
+                    20.0
+                ),
+                payment(
+                    3,
+                    "C",
+                    "C",
+                    "2026-09-29",
+                    20.0
+                ),
+                payment(
+                    4,
+                    "D",
+                    "D",
+                    "2026-09-22",
+                    20.0
+                ),
+                payment(
+                    5,
+                    "E",
+                    "E",
+                    "2026-09-22",
+                    20.0
+                ),
+                payment(
+                    6,
+                    "X",
+                    "X",
+                    "2026-09-29",
+                    20.0
+                ).copy(
+                    storeId = 2,
+                    storeName = "其他位置"
+                )
+            )
+
+        val comparison =
+            CustomerAnalyticsEngine.sameWeekdayComparisons(
+                allRecords = rows,
+                date = "2026-10-06"
+            )
+                .first {
+                    it.storeName ==
+                        "测试位置"
+                }
+
+        assertEquals(
+            2,
+            comparison.currentCustomers
+        )
+        assertEquals(
+            2,
+            comparison.sampleDays
+        )
+        assertEquals(
+            1.5,
+            comparison.averageCustomers,
+            0.001
+        )
+    }
+
     private fun payment(
         id: Long,
         customer: String,
