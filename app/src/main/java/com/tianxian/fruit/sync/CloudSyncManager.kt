@@ -2556,10 +2556,14 @@ class CloudSyncManager(
         return if (
             StoreDailyRecoveryPolicy
                 .preferCandidate(
+                    currentOperation =
+                        current.event.operation,
                     currentUpdatedAt =
                         currentUpdatedAt,
                     currentSequence =
                         current.sequence,
+                    candidateOperation =
+                        candidate.event.operation,
                     candidateUpdatedAt =
                         candidateUpdatedAt,
                     candidateSequence =
