@@ -3994,47 +3994,73 @@ private fun BusinessWeatherCard(
 
     val ov = state.overview
     val bh = storeBusinessHours(ov?.hourly.orEmpty(), date, store)
-    val coverage =
-        weatherCoverageStatus(
-            date = selectedDate,
-            store = store,
-            hours = ov?.hourly.orEmpty(),
-            stale =
-                state.expiresAtMillis > 0L &&
-                    state.expiresAtMillis <= System.currentTimeMillis()
-        )
     val pop = bh.mapNotNull { it.precipitationProbability }.maxOrNull()
     val day = ov?.daily?.firstOrNull { it.date == date } ?: ov?.selectedDay()
     val text = ov?.current?.text?.takeIf { selectedDate == LocalDate.now() } ?: day?.textDay.orEmpty().ifBlank { bh.firstOrNull()?.text.orEmpty() }
     val temp = ov?.current?.temperature?.takeIf { selectedDate == LocalDate.now() } ?: bh.firstOrNull()?.temperature ?: day?.tempMax
 
     Card(
-        Modifier.fillMaxWidth().clickable(enabled = store != null) { onOpenDetail(date, store?.id) },
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF5FAFF)),
+        Modifier
+            .fillMaxWidth()
+            .clickable(
+                enabled = store != null
+            ) {
+                onOpenDetail(
+                    date,
+                    store?.id
+                )
+            },
+        colors =
+            CardDefaults.cardColors(
+                containerColor = Color(0xFFF5FAFF)
+            ),
         shape = RoundedCornerShape(12.dp)
     ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    when {
-                        state.loading -> "🌤️ ${store?.name ?: "营业天气"} · 更新中…"
-                        state.error.isNotBlank() -> "🌤️ ${store?.name ?: "营业天气"} · ${state.error}"
-                        else -> "${weatherEmoji(ov?.current?.code ?: day?.codeDay.orEmpty(), text)} ${store?.name.orEmpty()} · ${weatherTemp(temp)} · ${text.ifBlank { "天气" }}"
+        Row(
+            Modifier.padding(
+                horizontal = 10.dp,
+                vertical = 7.dp
+            ),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                when {
+                    state.loading ->
+                        "🌤️ ${store?.name ?: "营业天气"} · 更新中…"
+                    state.error.isNotBlank() ->
+                        "🌤️ ${store?.name ?: "营业天气"} · ${state.error}"
+                    else ->
+                        "${weatherEmoji(ov?.current?.code ?: day?.codeDay.orEmpty(), text)} " +
+                            "${store?.name.orEmpty()} · ${weatherTemp(temp)} · " +
+                            "${text.ifBlank { "天气" }}" +
+                            if (pop != null) {
+                                " · 雨${weatherPercent(pop)}"
+                            } else {
+                                ""
+                            }
+                },
+                modifier = Modifier.weight(1f),
+                fontWeight =
+                    if (ov != null) {
+                        FontWeight.SemiBold
+                    } else {
+                        FontWeight.Normal
                     },
-                    modifier = Modifier.weight(1f),
-                    fontWeight = if (ov != null) FontWeight.SemiBold else FontWeight.Normal,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (state.error.isNotBlank()) Color.Gray else Color.Unspecified
-                )
-                if (ov != null) Text("详情 ›", style = MaterialTheme.typography.labelSmall, color = BrandGreen)
-            }
+                style = MaterialTheme.typography.bodySmall,
+                color =
+                    if (state.error.isNotBlank()) {
+                        Color.Gray
+                    } else {
+                        Color.Unspecified
+                    },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
             if (ov != null) {
                 Text(
-                    "${businessTimeLabel(store)} · 降雨概率${weatherPercent(pop)} · " +
-                        "时段 ${coverage.first.actual}/${coverage.first.expected}小时 ${weatherEvidenceLabel(coverage.second)} · " +
-                        "风 ${bh.firstOrNull()?.windDirection.orEmpty()} ${bh.firstOrNull()?.windScale.orEmpty()}级",
+                    "详情 ›",
                     style = MaterialTheme.typography.labelSmall,
-                    color = Color.DarkGray
+                    color = BrandGreen
                 )
             }
         }
@@ -7941,11 +7967,56 @@ private fun PurchaseScreen(
             )
         }
 
+        item {
+            Row(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .height(22.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "计划金额：${money(dayPlannedTotal)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.Gray
+                )
+                Spacer(Modifier.width(18.dp))
+                Text(
+                    (if (dayPurchaseOrders.isNotEmpty()) "● " else "") +
+                        "采购额 ${compactKMoney(dayPurchasedTotal)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color =
+                        if (dayPurchaseOrders.isNotEmpty()) {
+                            BrandGreen
+                        } else {
+                            Color.Gray
+                        },
+                    fontWeight =
+                        if (dayPurchaseOrders.isNotEmpty()) {
+                            FontWeight.SemiBold
+                        } else {
+                            FontWeight.Normal
+                        }
+                )
+            }
+        }
+
         if (editingOrderId != null) {
             item {
-                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF7D9))) {
+                Card(
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor = Color(0xFFFFF7D9)
+                        )
+                ) {
                     Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                horizontal = 12.dp,
+                                vertical = 8.dp
+                            ),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
@@ -7960,39 +8031,14 @@ private fun PurchaseScreen(
                                     message = "已取消编辑"
                                 }
                             }
-                        ) { Text("取消") }
+                        ) {
+                            Text("取消")
+                        }
                     }
                 }
             }
-        }
 
-        item {
-            if (editingOrderId == null) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(22.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "计划金额：${money(dayPlannedTotal)}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = Color.Gray
-                        )
-                        Spacer(Modifier.width(18.dp))
-                        Text(
-                            "已采购金额：${money(dayPurchasedTotal)}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = Color.Gray
-                        )
-                    }
-                }
-            } else {
+            item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -8003,14 +8049,20 @@ private fun PurchaseScreen(
                             "采购人",
                             editBuyerDisplayName,
                             Modifier.fillMaxWidth()
-                        ) { editBuyerMenu = true }
+                        ) {
+                            editBuyerMenu = true
+                        }
                         DropdownMenu(
                             expanded = editBuyerMenu,
-                            onDismissRequest = { editBuyerMenu = false }
+                            onDismissRequest = {
+                                editBuyerMenu = false
+                            }
                         ) {
                             partners.forEach { p ->
                                 DropdownMenuItem(
-                                    text = { Text(p.name) },
+                                    text = {
+                                        Text(p.name)
+                                    },
                                     onClick = {
                                         editBuyerId = p.id
                                         historicalBuyerName = ""
@@ -10791,6 +10843,93 @@ private fun SessionScreen(
         }
 
         item {
+            Row(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .height(22.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val hasBusiness = todayRecords.isNotEmpty()
+                Text(
+                    (if (hasBusiness) "● " else "") +
+                        "营业额 ${compactKMoney(todayRecords.sumOf { it.revenue })}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color =
+                        if (hasBusiness) {
+                            BrandGreen
+                        } else {
+                            Color.Gray
+                        },
+                    fontWeight =
+                        if (hasBusiness) {
+                            FontWeight.SemiBold
+                        } else {
+                            FontWeight.Normal
+                        }
+                )
+            }
+        }
+
+        item {
+            BusinessPaymentAssistCard(
+                db = db,
+                date = date,
+                dataVersion = dataVersion,
+                hasManualBusiness = todayRecords.isNotEmpty(),
+                manualElectronicTotal =
+                    todayRecords.sumOf {
+                        it.wechatIncome + it.alipayIncome
+                    },
+                onSupplementBusiness = {
+                    wechatTotal,
+                    alipayTotal ->
+                    if (todayRecords.isEmpty()) {
+                        onRequestLeave {
+                            clearForm()
+                            newBusinessFormExpanded = true
+                            applySupplementElectronicTotals(
+                                wechatTotal,
+                                alipayTotal
+                            )
+                            message =
+                                "已补入微信 ${money(wechatTotal)}、支付宝 ${money(alipayTotal)}，请检查后保存营业记录"
+                            isError = false
+                            businessFormScrollScope.launch {
+                                delay(80)
+                                businessFormBringIntoViewRequester
+                                    .bringIntoView()
+                            }
+                        }
+                    } else {
+                        val targetRecord =
+                            editingRecordId
+                                ?.let { id ->
+                                    todayRecords.firstOrNull {
+                                        it.id == id
+                                    }
+                                }
+                                ?: todayRecords.singleOrNull()
+
+                        if (targetRecord == null) {
+                            message =
+                                "当天有多条营业记录，请先点要修改的位置记录，再使用“补入营业”"
+                            isError = true
+                        } else {
+                            pendingBusinessSupplement =
+                                wechatTotal to
+                                    alipayTotal
+                            pendingBusinessSupplementRecordId =
+                                targetRecord.id
+                        }
+                    }
+                },
+                onChanged = onChanged
+            )
+        }
+
+        item {
             Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 businessWeatherStores.distinctBy { it.id }.forEach { weatherStore ->
                     BusinessWeatherCard(
@@ -10961,63 +11100,6 @@ private fun SessionScreen(
                     }
                 }
             }
-        }
-
-        item {
-            BusinessPaymentAssistCard(
-                db = db,
-                date = date,
-                dataVersion = dataVersion,
-                hasManualBusiness = todayRecords.isNotEmpty(),
-                manualElectronicTotal =
-                    todayRecords.sumOf {
-                        it.wechatIncome + it.alipayIncome
-                    },
-                onSupplementBusiness = {
-                    wechatTotal,
-                    alipayTotal ->
-                    if (todayRecords.isEmpty()) {
-                        onRequestLeave {
-                            clearForm()
-                            newBusinessFormExpanded = true
-                            applySupplementElectronicTotals(
-                                wechatTotal,
-                                alipayTotal
-                            )
-                            message =
-                                "已补入微信 ${money(wechatTotal)}、支付宝 ${money(alipayTotal)}，请检查后保存营业记录"
-                            isError = false
-                            businessFormScrollScope.launch {
-                                delay(80)
-                                businessFormBringIntoViewRequester
-                                    .bringIntoView()
-                            }
-                        }
-                    } else {
-                        val targetRecord =
-                            editingRecordId
-                                ?.let { id ->
-                                    todayRecords.firstOrNull {
-                                        it.id == id
-                                    }
-                                }
-                                ?: todayRecords.singleOrNull()
-
-                        if (targetRecord == null) {
-                            message =
-                                "当天有多条营业记录，请先点要修改的位置记录，再使用“补入营业”"
-                            isError = true
-                        } else {
-                            pendingBusinessSupplement =
-                                wechatTotal to
-                                    alipayTotal
-                            pendingBusinessSupplementRecordId =
-                                targetRecord.id
-                        }
-                    }
-                },
-                onChanged = onChanged
-            )
         }
 
         val showBusinessEntryForm =
@@ -26637,6 +26719,14 @@ private fun ConfirmDelete(text: String, onDismiss: () -> Unit, onConfirm: () -> 
 }
 
 private fun money(v: Double): String = "¥" + if (kotlin.math.abs(v - v.toLong()) < 0.005) v.toLong().toString() else String.format(Locale.CHINA, "%.2f", v)
+
+private fun compactKMoney(v: Double): String =
+    "¥" +
+        String.format(
+            Locale.CHINA,
+            "%.1fk",
+            v / 1000.0
+        )
 
 private fun settlementTimeText(epochMillis: Long): String {
     if (epochMillis <= 0L) return ""
