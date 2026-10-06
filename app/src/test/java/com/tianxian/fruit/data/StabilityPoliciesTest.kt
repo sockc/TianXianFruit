@@ -94,27 +94,43 @@ class StabilityPoliciesTest {
         )
     }
 
-    @Test fun businessHistoryRecoveryPrefersLatestLogicalEvent() {
+    @Test fun businessHistoryRecoveryPrefersActiveAliasThenLatestEvent() {
         assertTrue(
             StoreDailyRecoveryPolicy.preferCandidate(
-                currentUpdatedAt = 100L,
-                currentSequence = 10L,
-                candidateUpdatedAt = 101L,
+                currentOperation = "DELETE",
+                currentUpdatedAt = 500L,
+                currentSequence = 50L,
+                candidateOperation = "UPSERT",
+                candidateUpdatedAt = 100L,
                 candidateSequence = 1L
             )
         )
         assertFalse(
             StoreDailyRecoveryPolicy.preferCandidate(
-                currentUpdatedAt = 101L,
+                currentOperation = "UPSERT",
+                currentUpdatedAt = 100L,
                 currentSequence = 1L,
-                candidateUpdatedAt = 100L,
-                candidateSequence = 99L
+                candidateOperation = "DELETE",
+                candidateUpdatedAt = 500L,
+                candidateSequence = 50L
             )
         )
         assertTrue(
             StoreDailyRecoveryPolicy.preferCandidate(
+                currentOperation = "UPSERT",
                 currentUpdatedAt = 100L,
                 currentSequence = 10L,
+                candidateOperation = "UPSERT",
+                candidateUpdatedAt = 101L,
+                candidateSequence = 1L
+            )
+        )
+        assertTrue(
+            StoreDailyRecoveryPolicy.preferCandidate(
+                currentOperation = "DELETE",
+                currentUpdatedAt = 100L,
+                currentSequence = 10L,
+                candidateOperation = "DELETE",
                 candidateUpdatedAt = 100L,
                 candidateSequence = 11L
             )
