@@ -42,8 +42,7 @@ internal fun HistoricalPurchaseAssistCard(
     val scope = rememberCoroutineScope()
     var importing by remember { mutableStateOf(false) }
     var message by remember(date) { mutableStateOf("") }
-    var userToggled by remember(date) { mutableStateOf(false) }
-    var expanded by remember(date) { mutableStateOf(!hasManualPurchase) }
+    var expanded by remember(date) { mutableStateOf(false) }
 
     val rows =
         remember(dataVersion, date) {
@@ -53,11 +52,6 @@ internal fun HistoricalPurchaseAssistCard(
         remember(dataVersion, date) {
             db.getHistoricalPurchaseDaySummary(date)
         }
-
-    LaunchedEffect(date, hasManualPurchase) {
-        if (!userToggled) expanded = !hasManualPurchase
-    }
-
     val highPending =
         rows.filter {
             it.record.status == "PENDING" &&
@@ -84,10 +78,8 @@ internal fun HistoricalPurchaseAssistCard(
                     }
                 result.onSuccess { outcome ->
                     message =
-                        if (
-                            outcome.purchaseCandidateInsertedRows > 0
-                        ) {
-                            "新增采购候选 ${outcome.purchaseCandidateInsertedRows} 笔；经营收款新增 ${outcome.insertedRows} 笔"
+                        if (outcome.purchaseCandidateInsertedRows > 0) {
+                            "新增采购候选 ${outcome.purchaseCandidateInsertedRows} 笔 · 经营收款新增 ${outcome.insertedRows} 笔"
                         } else if (outcome.duplicateFile) {
                             "账单已处理过，没有新的采购候选"
                         } else {
@@ -115,121 +107,148 @@ internal fun HistoricalPurchaseAssistCard(
     ) {
         Column(
             Modifier.padding(
-                horizontal = 12.dp,
-                vertical = 9.dp
+                horizontal = 10.dp,
+                vertical = 4.dp
             ),
-            verticalArrangement = Arrangement.spacedBy(7.dp)
+            verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
             Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        userToggled = true
-                        expanded = !expanded
-                    },
+                Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(Modifier.weight(1f)) {
+                Column(
+                    Modifier.weight(1f)
+                ) {
                     Text(
-                        "历史采购识别",
-                        fontWeight = FontWeight.Bold
+                        "账单采购辅助",
+                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.bodySmall
                     )
                     Text(
                         buildString {
                             if (summary.pendingCount > 0) {
-                                append("待核对 ${summary.pendingCount}笔 ${assistMoney(summary.pendingAmount)}")
+                                append("待核对 ${summary.pendingCount}笔 ${assistKMoney(summary.pendingAmount)}")
                             } else {
                                 append("暂无待核对")
                             }
                             if (summary.confirmedCount > 0) {
-                                append(" · 已确认 ${assistMoney(summary.confirmedAmount)}")
+                                append(" · 已确认 ${assistKMoney(summary.confirmedAmount)}")
                             }
                         },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (attention) Color(0xFF9A6700) else Color.Gray
+                        style = MaterialTheme.typography.labelSmall,
+                        color =
+                            if (attention) {
+                                Color(0xFF9A6700)
+                            } else {
+                                Color.Gray
+                            },
+                        maxLines = 1
                     )
                 }
+
+                TextButton(
+                    onClick = {
+                        launcher.launch(
+                            arrayOf(
+                                "text/*",
+                                "text/csv",
+                                "application/csv",
+                                "application/zip",
+                                "application/vnd.ms-excel",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                "application/octet-stream"
+                            )
+                        )
+                    },
+                    enabled = !importing,
+                    contentPadding =
+                        PaddingValues(
+                            horizontal = 6.dp,
+                            vertical = 0.dp
+                        )
+                ) {
+                    Text(
+                        if (importing) {
+                            "扫描中"
+                        } else {
+                            "导入"
+                        },
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+
+                TextButton(
+                    onClick = {
+                        expanded = !expanded
+                    },
+                    contentPadding =
+                        PaddingValues(
+                            horizontal = 4.dp,
+                            vertical = 0.dp
+                        )
+                ) {
+                    Text(
+                        if (expanded) "收起" else "详情",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = AssistGreen
+                    )
+                }
+            }
+
+            if (importing) {
+                LinearProgressIndicator(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
+                )
+            }
+
+            if (message.isNotBlank()) {
                 Text(
-                    if (expanded) "收起 ▲" else "展开 ▼",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = AssistGreen
+                    message,
+                    style = MaterialTheme.typography.labelSmall,
+                    color =
+                        if (message.startsWith("导入失败")) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            AssistGreen
+                        },
+                    maxLines = 2
                 )
             }
 
             if (expanded) {
-                if (hasManualPurchase) {
-                    Text(
-                        "当天已有正式采购 ${assistMoney(manualPurchaseTotal)}。候选只用于核对，不自动补差，也不会重复计入采购。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.DarkGray
-                    )
-                } else {
-                    Text(
-                        "当天没有手工采购记录。系统仅筛选 06:00–14:00、金额≥¥40 的付款，再结合当天营业、供应商和历史频率评分。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.DarkGray
-                    )
-                }
+                Text(
+                    if (hasManualPurchase) {
+                        "正式采购 ${assistMoney(manualPurchaseTotal)}；候选仅用于核对，不重复计入采购。"
+                    } else {
+                        "筛选 06:00–14:00、金额≥¥40 的付款，并结合供应商与历史频率评分。"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.DarkGray
+                )
 
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            launcher.launch(
-                                arrayOf(
-                                    "text/*",
-                                    "text/csv",
-                                    "application/csv",
-                                    "application/zip",
-                                    "application/vnd.ms-excel",
-                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    "application/octet-stream"
-                                )
-                            )
-                        },
-                        enabled = !importing,
-                        modifier = Modifier.weight(1f)
+                if (highPending.isNotEmpty()) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
                     ) {
-                        Text(if (importing) "扫描中…" else "导入微信/支付宝账单")
-                    }
-
-                    if (highPending.isNotEmpty()) {
-                        Button(
+                        TextButton(
                             onClick = {
                                 val count =
                                     db.confirmHighConfidenceHistoricalPurchases(date)
                                 message = "已确认 $count 笔高可信历史采购"
                                 onChanged()
-                            },
-                            modifier = Modifier.weight(0.75f)
+                            }
                         ) {
                             Text("确认高可信")
                         }
                     }
                 }
 
-                if (importing) {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                }
-
-                if (message.isNotBlank()) {
-                    Text(
-                        message,
-                        style = MaterialTheme.typography.bodySmall,
-                        color =
-                            if (message.startsWith("导入失败")) {
-                                MaterialTheme.colorScheme.error
-                            } else {
-                                AssistGreen
-                            }
-                    )
-                }
-
                 if (rows.isEmpty()) {
                     Text(
-                        "当前日期没有采购候选。可以导入覆盖该日期的完整微信/支付宝账单。",
+                        "当前日期没有采购候选。",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.Gray
                     )
@@ -263,7 +282,7 @@ internal fun HistoricalPurchaseAssistCard(
                 }
 
                 Text(
-                    "已确认历史采购仍是辅助数据：不生成商品明细、不改正式采购金额、不进入库存成本、利润或结算。",
+                    "辅助采购不生成正式商品明细，不进入库存成本、利润或结算。",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.Gray
                 )
@@ -364,8 +383,7 @@ internal fun BusinessPaymentAssistCard(
     val scope = rememberCoroutineScope()
     var importing by remember { mutableStateOf(false) }
     var message by remember(date) { mutableStateOf("") }
-    var userToggled by remember(date) { mutableStateOf(false) }
-    var expanded by remember(date) { mutableStateOf(!hasManualBusiness) }
+    var expanded by remember(date) { mutableStateOf(false) }
 
     val settings =
         remember(dataVersion) {
@@ -393,8 +411,7 @@ internal fun BusinessPaymentAssistCard(
             date
         ) {
             allPayments.filter {
-                it.businessDate ==
-                    date
+                it.businessDate == date
             }
         }
 
@@ -414,34 +431,24 @@ internal fun BusinessPaymentAssistCard(
         remember(payments) {
             payments
                 .filter {
-                    it.platform ==
-                        "WECHAT"
+                    it.platform == "WECHAT"
                 }
                 .sumOf {
                     it.netAmount
                 }
-                .coerceAtLeast(
-                    0.0
-                )
+                .coerceAtLeast(0.0)
         }
     val alipayTotal =
         remember(payments) {
             payments
                 .filter {
-                    it.platform ==
-                        "ALIPAY"
+                    it.platform == "ALIPAY"
                 }
                 .sumOf {
                     it.netAmount
                 }
-                .coerceAtLeast(
-                    0.0
-                )
+                .coerceAtLeast(0.0)
         }
-
-    LaunchedEffect(date, hasManualBusiness) {
-        if (!userToggled) expanded = !hasManualBusiness
-    }
 
     val importedTotal =
         analysis.summary.netRevenue
@@ -451,7 +458,11 @@ internal fun BusinessPaymentAssistCard(
         hasManualBusiness &&
             importedTotal > 0.005 &&
             manualElectronicTotal > 0.005 &&
-            abs(difference) >= max(20.0, manualElectronicTotal * 0.10)
+            abs(difference) >=
+                max(
+                    20.0,
+                    manualElectronicTotal * 0.10
+                )
 
     val launcher =
         rememberLauncherForActivityResult(
@@ -475,7 +486,7 @@ internal fun BusinessPaymentAssistCard(
                     message =
                         "经营收款新增 ${outcome.insertedRows} 笔" +
                             if (outcome.purchaseCandidateInsertedRows > 0) {
-                                " · 同时发现采购候选 ${outcome.purchaseCandidateInsertedRows} 笔"
+                                " · 采购候选 ${outcome.purchaseCandidateInsertedRows} 笔"
                             } else {
                                 ""
                             }
@@ -492,130 +503,170 @@ internal fun BusinessPaymentAssistCard(
         colors =
             CardDefaults.cardColors(
                 containerColor =
-                    if (meaningfulDifference) AssistSoftOrange else AssistSoftGreen
+                    if (meaningfulDifference) {
+                        AssistSoftOrange
+                    } else {
+                        AssistSoftGreen
+                    }
             )
     ) {
         Column(
             Modifier.padding(
-                horizontal = 12.dp,
-                vertical = 9.dp
+                horizontal = 10.dp,
+                vertical = 4.dp
             ),
-            verticalArrangement = Arrangement.spacedBy(7.dp)
+            verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
             Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        userToggled = true
-                        expanded = !expanded
-                    },
+                Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(Modifier.weight(1f)) {
+                Column(
+                    Modifier.weight(1f)
+                ) {
                     Text(
-                        "经营收款与客户",
-                        fontWeight = FontWeight.Bold
+                        "账单收款",
+                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.bodySmall
                     )
                     Text(
                         when {
-                            payments.isEmpty() -> "未导入当天经营收款"
+                            payments.isEmpty() ->
+                                "当天未导入经营收款"
                             meaningfulDifference ->
-                                "${assistMoney(importedTotal)} · ${analysis.summary.paymentCount}笔 · 差额 ${signedAssistMoney(difference)}"
+                                "${assistKMoney(importedTotal)} · ${analysis.summary.paymentCount}笔 · 差额 ${signedAssistMoney(difference)}"
                             else ->
-                                "${assistMoney(importedTotal)} · ${analysis.summary.paymentCount}笔 · ${analysis.summary.customerCount}位可识别客户"
+                                "${assistKMoney(importedTotal)} · ${analysis.summary.paymentCount}笔 · ${analysis.summary.customerCount}客"
                         },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (meaningfulDifference) Color(0xFF9A6700) else Color.Gray
-                    )
-                }
-                Text(
-                    if (expanded) "收起 ▲" else "展开 ▼",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = AssistGreen
-                )
-            }
-
-            if (expanded) {
-                if (hasManualBusiness) {
-                    Text(
-                        "当天已有手工营业记录。补入时会先确认是否用账单覆盖微信/支付宝，现金和其他营业数据保持不动。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.DarkGray
-                    )
-                } else if (payments.isNotEmpty()) {
-                    Text(
-                        "发现当天有经营收款。可把识别后的微信/支付宝金额补入营业表，再由你检查并保存。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFF9A6700)
-                    )
-                } else {
-                    Text(
-                        "当天没有手工营业记录。导入完整账单后，只识别二维码/经营收款，同时会把早间付款送到采购页做候选分析。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.DarkGray
-                    )
-                }
-
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            launcher.launch(
-                                arrayOf(
-                                    "text/*",
-                                    "text/csv",
-                                    "application/csv",
-                                    "application/zip",
-                                    "application/vnd.ms-excel",
-                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    "application/octet-stream"
-                                )
-                            )
-                        },
-                        enabled = !importing,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(if (importing) "导入中…" else "导入微信/支付宝账单")
-                    }
-
-                    if (payments.isNotEmpty()) {
-                        Button(
-                            onClick = {
-                                onSupplementBusiness(
-                                    wechatTotal,
-                                    alipayTotal
-                                )
-                            },
-                            modifier = Modifier.weight(0.75f)
-                        ) {
-                            Text("补入营业")
-                        }
-                    }
-                }
-
-                if (importing) {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                }
-
-                if (message.isNotBlank()) {
-                    Text(
-                        message,
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.labelSmall,
                         color =
-                            if (message.startsWith("导入失败")) {
-                                MaterialTheme.colorScheme.error
+                            if (meaningfulDifference) {
+                                Color(0xFF9A6700)
                             } else {
-                                AssistGreen
-                            }
+                                Color.Gray
+                            },
+                        maxLines = 1
+                    )
+                }
+
+                TextButton(
+                    onClick = {
+                        launcher.launch(
+                            arrayOf(
+                                "text/*",
+                                "text/csv",
+                                "application/csv",
+                                "application/zip",
+                                "application/vnd.ms-excel",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                "application/octet-stream"
+                            )
+                        )
+                    },
+                    enabled = !importing,
+                    contentPadding =
+                        PaddingValues(
+                            horizontal = 6.dp,
+                            vertical = 0.dp
+                        )
+                ) {
+                    Text(
+                        if (importing) "导入中" else "导入",
+                        style = MaterialTheme.typography.labelMedium
                     )
                 }
 
                 if (payments.isNotEmpty()) {
+                    TextButton(
+                        onClick = {
+                            onSupplementBusiness(
+                                wechatTotal,
+                                alipayTotal
+                            )
+                        },
+                        contentPadding =
+                            PaddingValues(
+                                horizontal = 4.dp,
+                                vertical = 0.dp
+                            )
+                    ) {
+                        Text(
+                            "补入",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = AssistGreen
+                        )
+                    }
+                }
+
+                TextButton(
+                    onClick = {
+                        expanded = !expanded
+                    },
+                    contentPadding =
+                        PaddingValues(
+                            horizontal = 4.dp,
+                            vertical = 0.dp
+                        )
+                ) {
+                    Text(
+                        if (expanded) "收起" else "详情",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = AssistGreen
+                    )
+                }
+            }
+
+            if (importing) {
+                LinearProgressIndicator(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
+                )
+            }
+
+            if (message.isNotBlank()) {
+                Text(
+                    message,
+                    style = MaterialTheme.typography.labelSmall,
+                    color =
+                        if (message.startsWith("导入失败")) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            AssistGreen
+                        },
+                    maxLines = 2
+                )
+            }
+
+            if (expanded) {
+                Text(
+                    when {
+                        hasManualBusiness ->
+                            "补入只覆盖微信/支付宝，现金及其他手工营业数据保持不动。"
+                        payments.isNotEmpty() ->
+                            "可把识别后的微信/支付宝金额补入营业表，再检查保存。"
+                        else ->
+                            "导入完整微信/支付宝账单，只识别经营收款；早间付款同时进入采购候选。"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color =
+                        if (
+                            !hasManualBusiness &&
+                            payments.isNotEmpty()
+                        ) {
+                            Color(0xFF9A6700)
+                        } else {
+                            Color.DarkGray
+                        }
+                )
+
+                if (payments.isNotEmpty()) {
                     Row(
                         Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(7.dp)
+                        horizontalArrangement =
+                            Arrangement.spacedBy(
+                                7.dp
+                            )
                     ) {
                         AssistMetric(
                             "客户",
@@ -634,20 +685,22 @@ internal fun BusinessPaymentAssistCard(
                         )
                         AssistMetric(
                             "平均客单",
-                            assistMoney(analysis.summary.averageTicket),
+                            assistMoney(
+                                analysis.summary.averageTicket
+                            ),
                             Modifier.weight(1f)
                         )
                     }
 
                     if (hasManualBusiness) {
                         Text(
-                            "手工微信+支付宝 ${assistMoney(manualElectronicTotal)} · 账单识别 ${assistMoney(importedTotal)}" +
+                            "手工微信+支付宝 ${assistMoney(manualElectronicTotal)} · 账单 ${assistMoney(importedTotal)}" +
                                 if (meaningfulDifference) {
-                                    " · ⚠ 差额 ${signedAssistMoney(difference)}"
+                                    " · ⚠ ${signedAssistMoney(difference)}"
                                 } else {
                                     ""
                                 },
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.labelSmall,
                             color =
                                 if (meaningfulDifference) {
                                     Color(0xFF9A6700)
@@ -659,7 +712,7 @@ internal fun BusinessPaymentAssistCard(
                 }
 
                 Text(
-                    "电子支付客户≠全部客流；现金客户不会被账单识别。经营收款数据不参与结算或利润分配。",
+                    "电子支付客户不含现金客流；账单辅助数据不参与结算或利润分配。",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.Gray
                 )
@@ -760,6 +813,13 @@ private fun assistMoney(value: Double): String =
         Locale.CHINA,
         "¥%.2f",
         value
+    )
+
+private fun assistKMoney(value: Double): String =
+    String.format(
+        Locale.CHINA,
+        "¥%.1fk",
+        value / 1000.0
     )
 
 private fun signedAssistMoney(value: Double): String =
