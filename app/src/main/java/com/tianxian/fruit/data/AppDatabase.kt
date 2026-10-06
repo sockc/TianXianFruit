@@ -4385,7 +4385,64 @@ class AppDatabase(
                 payload,
             modifiedBy =
                 modifiedBy,
-            force = false
+            force = false,
+            allowStoreDailyRecovery = false
+        )
+    }
+
+    fun applyRemoteStoreDailyBackfillEvent(
+        syncId: String,
+        rowVersion: Long,
+        operation: String,
+        payload: JSONObject,
+        modifiedBy: String
+    ) {
+        val db = readableDatabase
+        val pendingSameSync =
+            db.rawQuery(
+                "SELECT 1 FROM sync_change_log " +
+                    "WHERE table_name='store_daily_record' " +
+                    "AND record_sync_id=? AND uploaded=0 LIMIT 1",
+                arrayOf(syncId)
+            ).use {
+                it.moveToFirst()
+            }
+
+        if (pendingSameSync) {
+            return
+        }
+
+        val sameSyncDeleted =
+            db.rawQuery(
+                "SELECT deleted FROM store_daily_record " +
+                    "WHERE sync_id=? LIMIT 1",
+                arrayOf(syncId)
+            ).use {
+                c ->
+                if (c.moveToFirst()) {
+                    c.int("deleted") == 1
+                } else {
+                    false
+                }
+            }
+
+        applyRemoteRecord(
+            tableName =
+                "store_daily_record",
+            syncId =
+                syncId,
+            rowVersion =
+                rowVersion,
+            operation =
+                operation,
+            payload =
+                payload,
+            modifiedBy =
+                modifiedBy,
+            force =
+                sameSyncDeleted,
+            allowStoreDailyRecovery =
+                true
         )
     }
 
@@ -4396,7 +4453,8 @@ class AppDatabase(
         operation: String,
         payload: JSONObject,
         modifiedBy: String,
-        force: Boolean
+        force: Boolean,
+        allowStoreDailyRecovery: Boolean = false
     ) {
         if (
             tableName !in
@@ -4524,7 +4582,7 @@ class AppDatabase(
                             localStoreId > 0L
                         ) {
                             db.rawQuery(
-                                "SELECT id,sync_id,updated_at " +
+                                "SELECT id,sync_id,updated_at,deleted " +
                                     "FROM store_daily_record " +
                                     "WHERE date=? AND store_id=? LIMIT 1",
                                 arrayOf(
@@ -4533,10 +4591,11 @@ class AppDatabase(
                                 )
                             ).use { c ->
                                 if (c.moveToFirst()) {
-                                    Triple(
+                                    listOf(
                                         c.long("id"),
                                         c.str("sync_id"),
-                                        c.long("updated_at")
+                                        c.long("updated_at"),
+                                        c.int("deleted")
                                     )
                                 } else {
                                     null
@@ -4547,9 +4606,14 @@ class AppDatabase(
                         }
 
                     if (logicalState != null) {
-                        val logicalId = logicalState.first
-                        val logicalSyncId = logicalState.second
-                        val localUpdatedAt = logicalState.third
+                        val logicalId =
+                            logicalState[0] as Long
+                        val logicalSyncId =
+                            logicalState[1] as String
+                        val localUpdatedAt =
+                            logicalState[2] as Long
+                        val logicalDeleted =
+                            logicalState[3] as Int == 1
 
                         if (logicalSyncId != syncId) {
                             // A tombstone for only one historical alias must
@@ -4581,7 +4645,11 @@ class AppDatabase(
                                 hasPendingLocalChange ||
                                 (
                                     remoteUpdatedAt > 0L &&
-                                    localUpdatedAt > remoteUpdatedAt
+                                    localUpdatedAt > remoteUpdatedAt &&
+                                    !(
+                                        allowStoreDailyRecovery &&
+                                            logicalDeleted
+                                        )
                                 )
                             ) {
                                 return
