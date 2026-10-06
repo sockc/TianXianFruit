@@ -293,6 +293,57 @@ internal class InventoryCostTracker {
     }
 }
 
+internal object StoreDailyRecoveryPolicy {
+    fun logicalKey(
+        date: String,
+        storeName: String,
+        storeSyncId: String,
+        syncId: String
+    ): String {
+        val cleanDate =
+            date.trim()
+        val cleanName =
+            storeName
+                .trim()
+                .lowercase()
+        val cleanStoreSyncId =
+            storeSyncId.trim()
+
+        return when {
+            cleanDate.isNotBlank() &&
+                cleanName.isNotBlank() ->
+                "$cleanDate|name:$cleanName"
+
+            cleanDate.isNotBlank() &&
+                cleanStoreSyncId.isNotBlank() ->
+                "$cleanDate|store:$cleanStoreSyncId"
+
+            else ->
+                "sync:$syncId"
+        }
+    }
+
+    fun preferCandidate(
+        currentUpdatedAt: Long,
+        currentSequence: Long,
+        candidateUpdatedAt: Long,
+        candidateSequence: Long
+    ): Boolean =
+        when {
+            candidateUpdatedAt >
+                currentUpdatedAt ->
+                true
+
+            candidateUpdatedAt <
+                currentUpdatedAt ->
+                false
+
+            else ->
+                candidateSequence >
+                    currentSequence
+        }
+}
+
 internal object SyncDeletePolicy {
     // Derived rows do not turn a single source-document deletion into a bulk deletion.
     val derivedTables = setOf(
