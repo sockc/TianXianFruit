@@ -7986,9 +7986,21 @@ private fun PurchaseScreen(
                         )
                         Spacer(Modifier.width(18.dp))
                         Text(
-                            "已采购金额：${money(dayPurchasedTotal)}",
+                            (if (dayPurchaseOrders.isNotEmpty()) "● " else "") +
+                                "采购额 ${compactKMoney(dayPurchasedTotal)}",
                             style = MaterialTheme.typography.labelMedium,
-                            color = Color.Gray
+                            color =
+                                if (dayPurchaseOrders.isNotEmpty()) {
+                                    BrandGreen
+                                } else {
+                                    Color.Gray
+                                },
+                            fontWeight =
+                                if (dayPurchaseOrders.isNotEmpty()) {
+                                    FontWeight.SemiBold
+                                } else {
+                                    FontWeight.Normal
+                                }
                         )
                     }
                 }
@@ -10791,6 +10803,93 @@ private fun SessionScreen(
         }
 
         item {
+            Row(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .height(22.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val hasBusiness = todayRecords.isNotEmpty()
+                Text(
+                    (if (hasBusiness) "● " else "") +
+                        "营业额 ${compactKMoney(todayRecords.sumOf { it.revenue })}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color =
+                        if (hasBusiness) {
+                            BrandGreen
+                        } else {
+                            Color.Gray
+                        },
+                    fontWeight =
+                        if (hasBusiness) {
+                            FontWeight.SemiBold
+                        } else {
+                            FontWeight.Normal
+                        }
+                )
+            }
+        }
+
+        item {
+            BusinessPaymentAssistCard(
+                db = db,
+                date = date,
+                dataVersion = dataVersion,
+                hasManualBusiness = todayRecords.isNotEmpty(),
+                manualElectronicTotal =
+                    todayRecords.sumOf {
+                        it.wechatIncome + it.alipayIncome
+                    },
+                onSupplementBusiness = {
+                    wechatTotal,
+                    alipayTotal ->
+                    if (todayRecords.isEmpty()) {
+                        onRequestLeave {
+                            clearForm()
+                            newBusinessFormExpanded = true
+                            applySupplementElectronicTotals(
+                                wechatTotal,
+                                alipayTotal
+                            )
+                            message =
+                                "已补入微信 ${money(wechatTotal)}、支付宝 ${money(alipayTotal)}，请检查后保存营业记录"
+                            isError = false
+                            businessFormScrollScope.launch {
+                                delay(80)
+                                businessFormBringIntoViewRequester
+                                    .bringIntoView()
+                            }
+                        }
+                    } else {
+                        val targetRecord =
+                            editingRecordId
+                                ?.let { id ->
+                                    todayRecords.firstOrNull {
+                                        it.id == id
+                                    }
+                                }
+                                ?: todayRecords.singleOrNull()
+
+                        if (targetRecord == null) {
+                            message =
+                                "当天有多条营业记录，请先点要修改的位置记录，再使用“补入营业”"
+                            isError = true
+                        } else {
+                            pendingBusinessSupplement =
+                                wechatTotal to
+                                    alipayTotal
+                            pendingBusinessSupplementRecordId =
+                                targetRecord.id
+                        }
+                    }
+                },
+                onChanged = onChanged
+            )
+        }
+
+        item {
             Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 businessWeatherStores.distinctBy { it.id }.forEach { weatherStore ->
                     BusinessWeatherCard(
@@ -10961,63 +11060,6 @@ private fun SessionScreen(
                     }
                 }
             }
-        }
-
-        item {
-            BusinessPaymentAssistCard(
-                db = db,
-                date = date,
-                dataVersion = dataVersion,
-                hasManualBusiness = todayRecords.isNotEmpty(),
-                manualElectronicTotal =
-                    todayRecords.sumOf {
-                        it.wechatIncome + it.alipayIncome
-                    },
-                onSupplementBusiness = {
-                    wechatTotal,
-                    alipayTotal ->
-                    if (todayRecords.isEmpty()) {
-                        onRequestLeave {
-                            clearForm()
-                            newBusinessFormExpanded = true
-                            applySupplementElectronicTotals(
-                                wechatTotal,
-                                alipayTotal
-                            )
-                            message =
-                                "已补入微信 ${money(wechatTotal)}、支付宝 ${money(alipayTotal)}，请检查后保存营业记录"
-                            isError = false
-                            businessFormScrollScope.launch {
-                                delay(80)
-                                businessFormBringIntoViewRequester
-                                    .bringIntoView()
-                            }
-                        }
-                    } else {
-                        val targetRecord =
-                            editingRecordId
-                                ?.let { id ->
-                                    todayRecords.firstOrNull {
-                                        it.id == id
-                                    }
-                                }
-                                ?: todayRecords.singleOrNull()
-
-                        if (targetRecord == null) {
-                            message =
-                                "当天有多条营业记录，请先点要修改的位置记录，再使用“补入营业”"
-                            isError = true
-                        } else {
-                            pendingBusinessSupplement =
-                                wechatTotal to
-                                    alipayTotal
-                            pendingBusinessSupplementRecordId =
-                                targetRecord.id
-                        }
-                    }
-                },
-                onChanged = onChanged
-            )
         }
 
         val showBusinessEntryForm =
@@ -26637,6 +26679,14 @@ private fun ConfirmDelete(text: String, onDismiss: () -> Unit, onConfirm: () -> 
 }
 
 private fun money(v: Double): String = "¥" + if (kotlin.math.abs(v - v.toLong()) < 0.005) v.toLong().toString() else String.format(Locale.CHINA, "%.2f", v)
+
+private fun compactKMoney(v: Double): String =
+    "¥" +
+        String.format(
+            Locale.CHINA,
+            "%.1fk",
+            v / 1000.0
+        )
 
 private fun settlementTimeText(epochMillis: Long): String {
     if (epochMillis <= 0L) return ""
