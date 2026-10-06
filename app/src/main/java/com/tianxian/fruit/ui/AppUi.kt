@@ -3728,10 +3728,9 @@ private fun BusinessWeatherCard(
     cloudSyncManager: CloudSyncManager,
     onOpenDetail: (String, Long?) -> Unit
 ) {
-    // V1.4.7.72: initialise directly from SQLite cache. LazyColumn may dispose
-    // this card when it scrolls off-screen, and tabs recreate it when returning.
-    // Starting from loading=true made the same cached weather flash "更新中…" for
-    // a fraction of a second even though no useful refresh had happened.
+    // V1.4.7.73: initialise directly from authoritative local weather. LazyColumn
+    // may dispose off-screen items and tab switches recreate this composable;
+    // neither event should make unchanged weather flash "更新中…".
     var state by remember(date, store?.id) {
         mutableStateOf(
             cachedBusinessWeatherState(
@@ -3750,55 +3749,49 @@ private fun BusinessWeatherCard(
             return@LaunchedEffect
         }
 
-        val now = System.currentTimeMillis()
-        val past = selectedDate.isBefore(LocalDate.now())
-        val cached =
-            withContext(Dispatchers.IO) {
-                db.getWeatherCache(
-                    date,
-                    selectedStore.id
-                )
-            }
-        var hasCache = false
-        if (cached != null) {
-            val parsed =
-                runCatching {
-                    WeatherClient.parseOverview(
-                        cached.payloadJson,
-                        historical = past
-                    )
-                }.getOrNull()
-            if (parsed != null) {
-                hasCache = true
-                state =
-                    WeatherUiState(
-                        overview = parsed,
-                        loading = false,
-                        refreshing = false,
-                        snapshotType =
-                            if (past) {
-                                "ARCHIVE_CACHE"
-                            } else {
-                                "CACHE"
-                            },
-                        updatedAtMillis = cached.fetchedAt,
-                        expiresAtMillis = cached.expiresAt
-                    )
-
-                // Historical weather is immutable for this compact business
-                // card. Re-entering the page must not fetch the same archive.
-                if (past) {
-                    return@LaunchedEffect
-                }
-                if (cached.expiresAt > now) {
-                    return@LaunchedEffect
-                }
-            }
-        }
+        val past =
+            selectedDate.isBefore(
+                LocalDate.now()
+            )
 
         if (past) {
-            if (!hasCache) {
-                state = WeatherUiState(loading = true)
+            val localHistory =
+                withContext(Dispatchers.IO) {
+                    db.getBusinessWeatherHistory(
+                        date,
+                        selectedStore.id
+                    )
+                }
+            val localOverview =
+                localHistory?.let {
+                    runCatching {
+                        WeatherClient.parseOverview(
+                            it.payloadJson,
+                            historical = true
+                        )
+                    }.getOrNull()
+                }
+            if (
+                localHistory != null &&
+                localOverview != null
+            ) {
+                state =
+                    WeatherUiState(
+                        overview = localOverview,
+                        snapshotType = "LOCAL_ARCHIVE",
+                        updatedAtMillis =
+                            localHistory.updatedAt,
+                        expiresAtMillis =
+                            Long.MAX_VALUE
+                    )
+                return@LaunchedEffect
+            }
+
+            if (state.overview == null) {
+                state =
+                    WeatherUiState(
+                        loading = true
+                    )
             }
             val archived =
                 withContext(Dispatchers.IO) {
@@ -3822,26 +3815,54 @@ private fun BusinessWeatherCard(
                             )
                         val fetchedAt =
                             System.currentTimeMillis()
-                        db.saveWeatherCache(
-                            date,
-                            selectedStore.id,
-                            overview.rawJson,
-                            WEATHER_CACHE_ARCHIVE_MS,
-                            fetchedAt
+                        val business =
+                            db.getDailyRecords(date)
+                                .firstOrNull {
+                                    it.storeId ==
+                                        selectedStore.id
+                                }
+                        db.cacheBusinessWeatherHistory(
+                            date = date,
+                            store = selectedStore,
+                            actualStartTime =
+                                business
+                                    ?.actualStartTime
+                                    ?.ifBlank {
+                                        selectedStore
+                                            .defaultStartTime
+                                    }
+                                    ?: selectedStore
+                                        .defaultStartTime,
+                            actualEndTime =
+                                business
+                                    ?.actualEndTime
+                                    ?.ifBlank {
+                                        selectedStore
+                                            .defaultEndTime
+                                    }
+                                    ?: selectedStore
+                                        .defaultEndTime,
+                            payloadJson =
+                                overview.rawJson,
+                            source =
+                                "SERVER_ARCHIVE",
+                            observedAt =
+                                fetchedAt
                         )
                         WeatherUiState(
                             overview = overview,
-                            snapshotType = "SERVER_ARCHIVE",
-                            updatedAtMillis = fetchedAt,
+                            snapshotType =
+                                "SERVER_ARCHIVE",
+                            updatedAtMillis =
+                                fetchedAt,
                             expiresAtMillis =
-                                fetchedAt +
-                                    WEATHER_CACHE_ARCHIVE_MS
+                                Long.MAX_VALUE
                         )
                     }
                 }
             state =
                 archived.getOrElse { error ->
-                    if (hasCache) {
+                    if (state.overview != null) {
                         state
                     } else {
                         WeatherUiState(
@@ -3852,6 +3873,43 @@ private fun BusinessWeatherCard(
                     }
                 }
             return@LaunchedEffect
+        }
+
+        val now =
+            System.currentTimeMillis()
+        val cached =
+            withContext(Dispatchers.IO) {
+                db.getWeatherCache(
+                    date,
+                    selectedStore.id
+                )
+            }
+        var hasCache = false
+        if (cached != null) {
+            val parsed =
+                runCatching {
+                    WeatherClient.parseOverview(
+                        cached.payloadJson,
+                        historical = false
+                    )
+                }.getOrNull()
+            if (parsed != null) {
+                hasCache = true
+                state =
+                    WeatherUiState(
+                        overview = parsed,
+                        loading = false,
+                        refreshing = false,
+                        snapshotType = "CACHE",
+                        updatedAtMillis =
+                            cached.fetchedAt,
+                        expiresAtMillis =
+                            cached.expiresAt
+                    )
+                if (cached.expiresAt > now) {
+                    return@LaunchedEffect
+                }
+            }
         }
 
         if (
