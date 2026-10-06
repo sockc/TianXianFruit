@@ -11467,6 +11467,52 @@ class AppDatabase(
         "SELECT COALESCE(SUM(total_cost),0) AS total FROM purchase_order WHERE date=? AND deleted=0", arrayOf(date)
     ).use { c -> if (c.moveToFirst()) c.dbl("total") else 0.0 }
 
+    fun getPurchaseTotalsBetween(
+        start: String,
+        end: String
+    ): Map<String, Double> =
+        readableDatabase.rawQuery(
+            """
+            SELECT date,COALESCE(SUM(total_cost),0) AS total
+            FROM purchase_order
+            WHERE deleted=0 AND date>=? AND date<=?
+            GROUP BY date
+            """.trimIndent(),
+            arrayOf(start, end)
+        ).use { c ->
+            buildMap {
+                while (c.moveToNext()) {
+                    put(
+                        c.str("date"),
+                        c.dbl("total")
+                    )
+                }
+            }
+        }
+
+    fun getRevenueTotalsBetween(
+        start: String,
+        end: String
+    ): Map<String, Double> =
+        readableDatabase.rawQuery(
+            """
+            SELECT date,COALESCE(SUM(revenue),0) AS total
+            FROM store_daily_record
+            WHERE deleted=0 AND date>=? AND date<=?
+            GROUP BY date
+            """.trimIndent(),
+            arrayOf(start, end)
+        ).use { c ->
+            buildMap {
+                while (c.moveToNext()) {
+                    put(
+                        c.str("date"),
+                        c.dbl("total")
+                    )
+                }
+            }
+        }
+
     fun getPurchaseTotalByStore(date: String, storeId: Long): Double = readableDatabase.rawQuery(
         "SELECT COALESCE(SUM(total_cost),0) AS total FROM purchase_order WHERE date=? AND store_id=? AND deleted=0",
         arrayOf(date, storeId.toString())
