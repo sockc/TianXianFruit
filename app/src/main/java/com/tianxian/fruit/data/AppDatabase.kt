@@ -931,6 +931,7 @@ class AppDatabase(
         createV32FruitSeasonLibrary(db)
         createV36CustomerPayments(db)
         createV37HistoricalPurchaseAssist(db)
+        createV38CustomerAnalysisExclusion(db)
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -1084,6 +1085,11 @@ class AppDatabase(
             // V37: historical purchase recognition stays local-only and never
             // writes formal purchase orders, inventory, profit or settlement.
             createV37HistoricalPurchaseAssist(db)
+        }
+        if (oldVersion < 38) {
+            // V38: customer-analysis exclusions are local-only and never change
+            // formal business revenue, settlement or profit distribution.
+            createV38CustomerAnalysisExclusion(db)
         }
     }
 
@@ -3337,7 +3343,9 @@ class AppDatabase(
                 store_name TEXT NOT NULL DEFAULT '',
                 source_batch_id INTEGER NOT NULL DEFAULT 0,
                 source_file TEXT NOT NULL DEFAULT '',
-                created_at INTEGER NOT NULL DEFAULT 0
+                created_at INTEGER NOT NULL DEFAULT 0,
+                analysis_excluded INTEGER NOT NULL DEFAULT 0,
+                exclusion_reason TEXT NOT NULL DEFAULT ''
             )
             """.trimIndent()
         )
@@ -3357,6 +3365,46 @@ class AppDatabase(
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS idx_payment_import_time " +
                 "ON payment_import_batch(imported_at)"
+        )
+    }
+
+    private fun createV38CustomerAnalysisExclusion(
+        db: SQLiteDatabase
+    ) {
+        if (!columnExists(db, "customer_payment_transaction", "analysis_excluded")) {
+            db.execSQL(
+                "ALTER TABLE customer_payment_transaction " +
+                    "ADD COLUMN analysis_excluded INTEGER NOT NULL DEFAULT 0"
+            )
+        }
+        if (!columnExists(db, "customer_payment_transaction", "exclusion_reason")) {
+            db.execSQL(
+                "ALTER TABLE customer_payment_transaction " +
+                    "ADD COLUMN exclusion_reason TEXT NOT NULL DEFAULT ''"
+            )
+        }
+
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS customer_analysis_setting(
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                exclude_large_payments INTEGER NOT NULL DEFAULT 1,
+                large_payment_threshold REAL NOT NULL DEFAULT 2000,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent()
+        )
+
+        db.insertWithOnConflict(
+            "customer_analysis_setting",
+            null,
+            ContentValues().apply {
+                put("id", 1)
+                put("exclude_large_payments", 1)
+                put("large_payment_threshold", 2000.0)
+                put("updated_at", System.currentTimeMillis())
+            },
+            SQLiteDatabase.CONFLICT_IGNORE
         )
     }
 
@@ -15166,13 +15214,90 @@ class AppDatabase(
                             transactionType = c.str("transaction_type"),
                             tradeStatus = c.str("trade_status"),
                             storeId = c.long("store_id"),
-                            storeName = c.str("store_name")
+                            storeName = c.str("store_name"),
+                            transactionRef = c.str("transaction_ref"),
+                            analysisExcluded =
+                                c.int("analysis_excluded") == 1,
+                            exclusionReason =
+                                c.str("exclusion_reason")
                         )
                     )
                 }
             }
         }
     }
+
+    fun getCustomerAnalysisSettings(): CustomerAnalysisSettings =
+        readableDatabase.rawQuery(
+            """
+            SELECT exclude_large_payments,large_payment_threshold
+            FROM customer_analysis_setting
+            WHERE id=1
+            LIMIT 1
+            """.trimIndent(),
+            null
+        ).use { c ->
+            if (c.moveToFirst()) {
+                CustomerAnalysisSettings(
+                    excludeLargePayments =
+                        c.int("exclude_large_payments") == 1,
+                    largePaymentThreshold =
+                        c.dbl("large_payment_threshold")
+                            .takeIf { it >= 1.0 }
+                            ?: 2000.0
+                )
+            } else {
+                CustomerAnalysisSettings()
+            }
+        }
+
+    fun saveCustomerAnalysisSettings(
+        settings: CustomerAnalysisSettings
+    ): Boolean {
+        val threshold =
+            settings.largePaymentThreshold
+                .coerceAtLeast(1.0)
+
+        return writableDatabase.update(
+            "customer_analysis_setting",
+            ContentValues().apply {
+                put(
+                    "exclude_large_payments",
+                    if (settings.excludeLargePayments) 1 else 0
+                )
+                put(
+                    "large_payment_threshold",
+                    threshold
+                )
+                put(
+                    "updated_at",
+                    System.currentTimeMillis()
+                )
+            },
+            "id=1",
+            null
+        ) > 0
+    }
+
+    fun setCustomerPaymentAnalysisExcluded(
+        id: Long,
+        excluded: Boolean
+    ): Boolean =
+        writableDatabase.update(
+            "customer_payment_transaction",
+            ContentValues().apply {
+                put(
+                    "analysis_excluded",
+                    if (excluded) 1 else 0
+                )
+                put(
+                    "exclusion_reason",
+                    if (excluded) "手动排除" else ""
+                )
+            },
+            "id=?",
+            arrayOf(id.toString())
+        ) > 0
 
     fun getPaymentImportBatches(
         limit: Int = 20
@@ -15514,7 +15639,7 @@ class AppDatabase(
             getSyncFoundationStatus()
                 .pendingChanges
         )
-        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot", "product_cost_reference", "daily_retail_price", "business_weather_history", "daily_business_score", "fruit_season_catalog", "fruit_alias", "fruit_season_region", "fruit_profile", "payment_import_batch", "customer_payment_transaction", "historical_purchase_candidate", "purchase_supplier_identity", "weather_snapshot").forEach { table ->
+        listOf("fruit", "store", "partner", "purchase_plan", "purchase_plan_item", "purchase_order", "purchase_item", "purchase_activity", "purchase_collaboration", "store_daily_record", "profit_rule", "profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer", "profit_settlement_batch", "profit_settlement_item", "inventory_snapshot", "product_cost_reference", "daily_retail_price", "business_weather_history", "daily_business_score", "fruit_season_catalog", "fruit_alias", "fruit_season_region", "fruit_profile", "payment_import_batch", "customer_payment_transaction", "customer_analysis_setting", "historical_purchase_candidate", "purchase_supplier_identity", "weather_snapshot").forEach { table ->
             root.put(table, tableAsJson(table))
         }
         return root.toString(2)
@@ -15756,7 +15881,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 37
+        const val DB_VERSION = 38
 
         private val CUSTOMER_PAYMENT_DATE_TIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
