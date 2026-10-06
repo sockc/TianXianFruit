@@ -293,6 +293,78 @@ internal class InventoryCostTracker {
     }
 }
 
+internal object StoreDailyRecoveryPolicy {
+    fun logicalKey(
+        date: String,
+        storeName: String,
+        storeSyncId: String,
+        syncId: String
+    ): String {
+        val cleanDate =
+            date.trim()
+        val cleanName =
+            storeName
+                .trim()
+                .lowercase()
+        val cleanStoreSyncId =
+            storeSyncId.trim()
+
+        return when {
+            cleanDate.isNotBlank() &&
+                cleanName.isNotBlank() ->
+                "$cleanDate|name:$cleanName"
+
+            cleanDate.isNotBlank() &&
+                cleanStoreSyncId.isNotBlank() ->
+                "$cleanDate|store:$cleanStoreSyncId"
+
+            else ->
+                "sync:$syncId"
+        }
+    }
+
+    fun preferCandidate(
+        currentOperation: String,
+        currentUpdatedAt: Long,
+        currentSequence: Long,
+        candidateOperation: String,
+        candidateUpdatedAt: Long,
+        candidateSequence: Long
+    ): Boolean {
+        val currentActive =
+            currentOperation !=
+                "DELETE"
+        val candidateActive =
+            candidateOperation !=
+                "DELETE"
+
+        // Legacy builds could create more than one cloud identity for the same
+        // date+store. A tombstone for only one alias must not erase another
+        // alias that is still active. Only when every alias is deleted will
+        // the logical group resolve to DELETE.
+        if (
+            currentActive !=
+            candidateActive
+        ) {
+            return candidateActive
+        }
+
+        return when {
+            candidateUpdatedAt >
+                currentUpdatedAt ->
+                true
+
+            candidateUpdatedAt <
+                currentUpdatedAt ->
+                false
+
+            else ->
+                candidateSequence >
+                    currentSequence
+        }
+    }
+}
+
 internal object SyncDeletePolicy {
     // Derived rows do not turn a single source-document deletion into a bulk deletion.
     val derivedTables = setOf(

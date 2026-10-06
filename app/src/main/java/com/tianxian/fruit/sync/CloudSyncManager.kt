@@ -5,6 +5,7 @@ import com.tianxian.fruit.BuildConfig
 import com.tianxian.fruit.data.AppDatabase
 import com.tianxian.fruit.data.SyncChangeRecord
 import com.tianxian.fruit.data.SyncConflictRecord
+import com.tianxian.fruit.data.StoreDailyRecoveryPolicy
 import com.tianxian.fruit.data.SyncDeletePolicy
 import com.tianxian.fruit.data.SyncTablePolicy
 import org.json.JSONArray
@@ -2118,7 +2119,8 @@ class CloudSyncManager(
         var cursor =
             db.getServerCursor()
 
-        var storeDailyBackfillCount = 0
+        var storeDailyBackfill =
+            StoreDailyBackfillResult()
 
         if (conflictCount == 0) {
             val needsStoreDailyBackfill =
@@ -2127,15 +2129,20 @@ class CloudSyncManager(
                 )
 
             if (needsStoreDailyBackfill) {
-                storeDailyBackfillCount =
+                storeDailyBackfill =
                     backfillStoreDailyRecords(
                         session = current,
                         db = db,
                         book = book
                     )
-                markStoreDailyBackfillDone(
-                    book.id
-                )
+                if (
+                    storeDailyBackfill.unresolved ==
+                    0
+                ) {
+                    markStoreDailyBackfillDone(
+                        book.id
+                    )
+                }
             }
 
             val needsActivityBackfill =
@@ -2178,7 +2185,12 @@ class CloudSyncManager(
         val now =
             System.currentTimeMillis()
 
-        if (conflictCount == 0) {
+        if (
+            conflictCount ==
+            0 &&
+            storeDailyBackfill.unresolved ==
+            0
+        ) {
             db.setLastCloudSync(
                 now,
                 ""
@@ -2192,6 +2204,14 @@ class CloudSyncManager(
                     enabled = true,
                     lastSyncAt = now
                 )
+        } else if (
+            storeDailyBackfill.unresolved >
+            0
+        ) {
+            db.setLastCloudSync(
+                db.getLastCloudSyncAt(),
+                "营业历史校验仍有 ${storeDailyBackfill.unresolved} 条云端有效记录未恢复"
+            )
         } else {
             db.setLastCloudSync(
                 db.getLastCloudSyncAt(),
@@ -2213,6 +2233,9 @@ class CloudSyncManager(
                 conflictCount > 0 ->
                     "检测到 $conflictCount 条批量删除待确认；其余修改已按最新版本同步"
 
+                storeDailyBackfill.unresolved > 0 ->
+                    "营业历史重新校验后仍有 ${storeDailyBackfill.unresolved} 条有效记录未恢复；不会标记为完整同步，下次继续重试"
+
                 !canEdit &&
                     pendingReadOnly ->
                     "当前权限仅同步允许查看的数据；本机存在无权上传的修改"
@@ -2224,9 +2247,9 @@ class CloudSyncManager(
                     "同步完成：上传 $uploadedCount 条，下载 $downloadedCount 条；" +
                         "${blockedTables.size} 个业务表等待服务器支持"
 
-                storeDailyBackfillCount > 0 ->
+                storeDailyBackfill.scanned > 0 ->
                     "同步完成：上传 $uploadedCount 条，下载 $downloadedCount 条；" +
-                        "已重新校验 $storeDailyBackfillCount 条云端营业记录"
+                        "已重新校验 ${storeDailyBackfill.scanned} 条云端营业记录"
 
                 else ->
                     "同步完成：上传 $uploadedCount 条，下载 $downloadedCount 条"
@@ -2471,14 +2494,100 @@ class CloudSyncManager(
         return count to cursor
     }
 
+    private data class StoreDailyBackfillEvent(
+        val event: PullEvent,
+        val sequence: Long
+    )
+
+    private data class StoreDailyBackfillResult(
+        val scanned: Int = 0,
+        val active: Int = 0,
+        val unresolved: Int = 0
+    )
+
+    private fun storeDailyLogicalKey(
+        event: PullEvent
+    ): String =
+        StoreDailyRecoveryPolicy
+            .logicalKey(
+                date =
+                    event.payload
+                        .optString(
+                            "date",
+                            ""
+                        ),
+                storeName =
+                    event.payload
+                        .optString(
+                            "store_name",
+                            ""
+                        ),
+                storeSyncId =
+                    event.payload
+                        .optString(
+                            "store_sync_id",
+                            ""
+                        ),
+                syncId =
+                    event.syncId
+            )
+
+    private fun newerStoreDailyBackfillEvent(
+        current: StoreDailyBackfillEvent?,
+        candidate: StoreDailyBackfillEvent
+    ): StoreDailyBackfillEvent {
+        if (current == null) {
+            return candidate
+        }
+
+        val currentUpdatedAt =
+            current.event.payload
+                .optLong(
+                    "updated_at",
+                    0L
+                )
+        val candidateUpdatedAt =
+            candidate.event.payload
+                .optLong(
+                    "updated_at",
+                    0L
+                )
+
+        return if (
+            StoreDailyRecoveryPolicy
+                .preferCandidate(
+                    currentOperation =
+                        current.event.operation,
+                    currentUpdatedAt =
+                        currentUpdatedAt,
+                    currentSequence =
+                        current.sequence,
+                    candidateOperation =
+                        candidate.event.operation,
+                    candidateUpdatedAt =
+                        candidateUpdatedAt,
+                    candidateSequence =
+                        candidate.sequence
+                )
+        ) {
+            candidate
+        } else {
+            current
+        }
+    }
+
     private fun backfillStoreDailyRecords(
         session: CloudSession,
         db: AppDatabase,
         book: LedgerBook
-    ): Int {
+    ): StoreDailyBackfillResult {
         var cursor = 0L
+        var sequence = 0L
         val latestBySyncId =
-            linkedMapOf<String, PullEvent>()
+            linkedMapOf<
+                String,
+                StoreDailyBackfillEvent
+            >()
 
         do {
             val pull =
@@ -2495,29 +2604,60 @@ class CloudSyncManager(
                 }
                 .forEach {
                     event ->
+                    sequence += 1L
                     latestBySyncId[
                         event.syncId
-                    ] = event
+                    ] =
+                        StoreDailyBackfillEvent(
+                            event = event,
+                            sequence = sequence
+                        )
                 }
 
             cursor =
                 pull.nextCursor
         } while (pull.hasMore)
 
+        val latestByLogicalKey =
+            linkedMapOf<
+                String,
+                StoreDailyBackfillEvent
+            >()
+
         latestBySyncId
             .values
-            .sortedWith(
-                compareBy<PullEvent> {
-                    it.payload.optLong(
-                        "updated_at",
-                        0L
-                    )
-                }.thenBy {
-                    it.syncId
-                }
-            )
             .forEach {
-                event ->
+                indexed ->
+                val key =
+                    storeDailyLogicalKey(
+                        indexed.event
+                    )
+                latestByLogicalKey[
+                    key
+                ] =
+                    newerStoreDailyBackfillEvent(
+                        current =
+                            latestByLogicalKey[
+                                key
+                            ],
+                        candidate =
+                            indexed
+                    )
+            }
+
+        var active = 0
+        var unresolved = 0
+
+        latestByLogicalKey
+            .values
+            .sortedBy {
+                it.sequence
+            }
+            .forEach {
+                indexed ->
+                val event =
+                    indexed.event
+
                 db.applyRemoteStoreDailyBackfillEvent(
                     syncId =
                         event.syncId,
@@ -2530,9 +2670,31 @@ class CloudSyncManager(
                     modifiedBy =
                         event.modifiedBy
                 )
+
+                if (
+                    event.operation !=
+                    "DELETE"
+                ) {
+                    active += 1
+                    if (
+                        !db.hasActiveStoreDailyForRemotePayload(
+                            syncId =
+                                event.syncId,
+                            payload =
+                                event.payload
+                        )
+                    ) {
+                        unresolved += 1
+                    }
+                }
             }
 
-        return latestBySyncId.size
+        return StoreDailyBackfillResult(
+            scanned =
+                latestByLogicalKey.size,
+            active = active,
+            unresolved = unresolved
+        )
     }
 
     private fun remoteDeleteWouldRemoveActiveLocal(
@@ -3144,7 +3306,7 @@ class CloudSyncManager(
             "purchase_activity_backfill_v1_4_"
 
         private const val KEY_STORE_DAILY_BACKFILL_PREFIX =
-            "store_daily_backfill_v1_4_7_71_"
+            "store_daily_backfill_v1_4_7_72_"
 
         private const val AUTO_SYNC_DEBOUNCE_MS =
             800L
