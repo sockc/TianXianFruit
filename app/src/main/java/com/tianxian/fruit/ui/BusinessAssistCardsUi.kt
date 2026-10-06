@@ -357,7 +357,7 @@ internal fun BusinessPaymentAssistCard(
     dataVersion: Int,
     hasManualBusiness: Boolean,
     manualElectronicTotal: Double,
-    onCreateBusinessRecord: () -> Unit,
+    onSupplementBusiness: (Double, Double) -> Unit,
     onChanged: () -> Unit
 ) {
     val context = LocalContext.current
@@ -367,18 +367,76 @@ internal fun BusinessPaymentAssistCard(
     var userToggled by remember(date) { mutableStateOf(false) }
     var expanded by remember(date) { mutableStateOf(!hasManualBusiness) }
 
+    val settings =
+        remember(dataVersion) {
+            db.getCustomerAnalysisSettings()
+        }
+    val allRawPayments =
+        remember(dataVersion) {
+            db.getCustomerPayments()
+        }
+    val paymentFilter =
+        remember(
+            allRawPayments,
+            settings
+        ) {
+            CustomerAnalyticsEngine.filterRecords(
+                allRecords = allRawPayments,
+                settings = settings
+            )
+        }
+    val allPayments =
+        paymentFilter.included
     val payments =
-        remember(dataVersion, date) {
-            db.getCustomerPayments(date, date)
+        remember(
+            allPayments,
+            date
+        ) {
+            allPayments.filter {
+                it.businessDate ==
+                    date
+            }
         }
 
     val analysis =
-        remember(dataVersion, payments, date) {
+        remember(
+            allPayments,
+            date
+        ) {
             CustomerAnalyticsEngine.analyze(
-                allRecords = db.getCustomerPayments(),
+                allRecords = allPayments,
                 startDate = date,
                 endDate = date
             )
+        }
+
+    val wechatTotal =
+        remember(payments) {
+            payments
+                .filter {
+                    it.platform ==
+                        "WECHAT"
+                }
+                .sumOf {
+                    it.netAmount
+                }
+                .coerceAtLeast(
+                    0.0
+                )
+        }
+    val alipayTotal =
+        remember(payments) {
+            payments
+                .filter {
+                    it.platform ==
+                        "ALIPAY"
+                }
+                .sumOf {
+                    it.netAmount
+                }
+                .coerceAtLeast(
+                    0.0
+                )
         }
 
     LaunchedEffect(date, hasManualBusiness) {
@@ -480,13 +538,13 @@ internal fun BusinessPaymentAssistCard(
             if (expanded) {
                 if (hasManualBusiness) {
                     Text(
-                        "当天已有手工营业记录，因此默认收起。账单数据只做客户分析和参考核对，不会修改正式营业额。",
+                        "当天已有手工营业记录。补入时会先确认是否用账单覆盖微信/支付宝，现金和其他营业数据保持不动。",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.DarkGray
                     )
                 } else if (payments.isNotEmpty()) {
                     Text(
-                        "发现当天有经营收款，但没有手工营业记录。可以补录营业记录；系统不会直接把电子收款当成正式营业额。",
+                        "发现当天有经营收款。可把识别后的微信/支付宝金额补入营业表，再由你检查并保存。",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color(0xFF9A6700)
                     )
@@ -522,12 +580,17 @@ internal fun BusinessPaymentAssistCard(
                         Text(if (importing) "导入中…" else "导入微信/支付宝账单")
                     }
 
-                    if (!hasManualBusiness && payments.isNotEmpty()) {
+                    if (payments.isNotEmpty()) {
                         Button(
-                            onClick = onCreateBusinessRecord,
+                            onClick = {
+                                onSupplementBusiness(
+                                    wechatTotal,
+                                    alipayTotal
+                                )
+                            },
                             modifier = Modifier.weight(0.75f)
                         ) {
-                            Text("补录营业")
+                            Text("补入营业")
                         }
                     }
                 }
