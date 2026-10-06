@@ -4538,6 +4538,20 @@ class AppDatabase(
                             "deleted",
                             1
                         )
+                    } else if (
+                        allowStoreDailyRecovery &&
+                        tableName ==
+                            "store_daily_record"
+                    ) {
+                        // The event envelope is authoritative during the
+                        // one-time/full-history recovery pass. Older payloads
+                        // did not always carry deleted=0, so an UPSERT must
+                        // explicitly revive a local tombstone instead of
+                        // leaving the row hidden.
+                        put(
+                            "deleted",
+                            0
+                        )
                     }
                 }
 
@@ -4916,22 +4930,166 @@ class AppDatabase(
             if (bySync != null) return bySync
         }
 
+        // Numeric ids are local database ids and old devices could legitimately
+        // use the same number for different stores. Prefer the stable display
+        // identity before considering a remote numeric id.
+        if (storeName.isNotBlank()) {
+            val byName =
+                db.rawQuery(
+                    "SELECT id FROM store " +
+                        "WHERE name=? AND deleted=0 " +
+                        "ORDER BY enabled DESC,id LIMIT 1",
+                    arrayOf(storeName)
+                ).use {
+                    c ->
+                    if (c.moveToFirst()) {
+                        c.long("id")
+                    } else {
+                        null
+                    }
+                }
+            if (byName != null) return byName
+        }
+
         if (remoteStoreId > 0) {
-            val byId = db.rawQuery(
+            return db.rawQuery(
                 "SELECT id FROM store WHERE id=? LIMIT 1",
                 arrayOf(remoteStoreId.toString())
-            ).use { c -> if (c.moveToFirst()) c.long("id") else null }
-            if (byId != null) return byId
+            ).use {
+                c ->
+                if (!c.moveToFirst()) {
+                    null
+                } else if (
+                    storeName.isBlank()
+                ) {
+                    c.long("id")
+                } else {
+                    val localName =
+                        db.rawQuery(
+                            "SELECT name FROM store WHERE id=? LIMIT 1",
+                            arrayOf(remoteStoreId.toString())
+                        ).use {
+                            nameCursor ->
+                            if (nameCursor.moveToFirst()) {
+                                nameCursor.getString(0)
+                            } else {
+                                ""
+                            }
+                        }
+                    c.long("id")
+                        .takeIf {
+                            localName ==
+                                storeName
+                        }
+                }
+            }
+        }
+
+        return null
+    }
+
+    fun hasActiveStoreDailyForRemotePayload(
+        syncId: String,
+        payload: JSONObject
+    ): Boolean {
+        val db = readableDatabase
+        val date =
+            payload.optString(
+                "date",
+                ""
+            )
+                .trim()
+        if (date.isBlank()) {
+            return false
+        }
+
+        val storeSyncId =
+            payload.optString(
+                "store_sync_id",
+                ""
+            )
+                .trim()
+        val remoteStoreId =
+            payload.optLong(
+                "store_id",
+                0L
+            )
+        val storeName =
+            payload.optString(
+                "store_name",
+                ""
+            )
+                .trim()
+
+        val localStoreId =
+            resolveLocalWeatherStoreId(
+                db = db,
+                storeSyncId =
+                    storeSyncId,
+                remoteStoreId =
+                    remoteStoreId,
+                storeName =
+                    storeName
+            )
+
+        if (localStoreId != null) {
+            return db.rawQuery(
+                """
+                SELECT 1
+                FROM store_daily_record
+                WHERE date=?
+                  AND store_id=?
+                  AND deleted=0
+                LIMIT 1
+                """.trimIndent(),
+                arrayOf(
+                    date,
+                    localStoreId.toString()
+                )
+            ).use {
+                it.moveToFirst()
+            }
+        }
+
+        if (syncId.isNotBlank()) {
+            val bySync =
+                db.rawQuery(
+                    """
+                    SELECT 1
+                    FROM store_daily_record
+                    WHERE sync_id=?
+                      AND deleted=0
+                    LIMIT 1
+                    """.trimIndent(),
+                    arrayOf(syncId)
+                ).use {
+                    it.moveToFirst()
+                }
+            if (bySync) {
+                return true
+            }
         }
 
         if (storeName.isNotBlank()) {
             return db.rawQuery(
-                "SELECT id FROM store WHERE name=? AND deleted=0 ORDER BY id LIMIT 1",
-                arrayOf(storeName)
-            ).use { c -> if (c.moveToFirst()) c.long("id") else null }
+                """
+                SELECT 1
+                FROM store_daily_record
+                WHERE date=?
+                  AND store_name=?
+                  AND deleted=0
+                LIMIT 1
+                """.trimIndent(),
+                arrayOf(
+                    date,
+                    storeName
+                )
+            ).use {
+                it.moveToFirst()
+            }
         }
 
-        return null
+        return false
     }
 
     fun prepareCloudIdRanges() {
