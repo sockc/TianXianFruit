@@ -4953,33 +4953,20 @@ class AppDatabase(
 
         if (remoteStoreId > 0) {
             return db.rawQuery(
-                "SELECT id FROM store WHERE id=? LIMIT 1",
+                "SELECT id,name FROM store WHERE id=? LIMIT 1",
                 arrayOf(remoteStoreId.toString())
             ).use {
                 c ->
                 if (!c.moveToFirst()) {
                     null
-                } else if (
-                    storeName.isBlank()
-                ) {
-                    c.long("id")
                 } else {
                     val localName =
-                        db.rawQuery(
-                            "SELECT name FROM store WHERE id=? LIMIT 1",
-                            arrayOf(remoteStoreId.toString())
-                        ).use {
-                            nameCursor ->
-                            if (nameCursor.moveToFirst()) {
-                                nameCursor.getString(0)
-                            } else {
-                                ""
-                            }
-                        }
+                        c.str("name")
                     c.long("id")
                         .takeIf {
-                            localName ==
-                                storeName
+                            storeName.isBlank() ||
+                                localName ==
+                                    storeName
                         }
                 }
             }
