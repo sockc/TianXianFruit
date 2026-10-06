@@ -82,33 +82,37 @@ internal fun AssistBillImportButton(
             }
         }
 
-    TextButton(
-        onClick = {
-            launcher.launch(
-                arrayOf(
-                    "text/*",
-                    "text/csv",
-                    "application/csv",
-                    "application/zip",
-                    "application/vnd.ms-excel",
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    "application/octet-stream"
-                )
-            )
-        },
-        enabled = !importing,
-        contentPadding =
-            PaddingValues(
-                horizontal = 5.dp,
-                vertical = 0.dp
-            )
-    ) {
-        Text(
-            if (importing) "导入中" else label,
-            style = MaterialTheme.typography.labelMedium,
-            color = AssistGreen
-        )
-    }
+    Text(
+        if (importing) "导入中" else label,
+        modifier =
+            Modifier
+                .clickable(
+                    enabled = !importing
+                ) {
+                    launcher.launch(
+                        arrayOf(
+                            "text/*",
+                            "text/csv",
+                            "application/csv",
+                            "application/zip",
+                            "application/vnd.ms-excel",
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            "application/octet-stream"
+                        )
+                    )
+                }
+                .padding(
+                    horizontal = 5.dp,
+                    vertical = 2.dp
+                ),
+        style = MaterialTheme.typography.labelMedium,
+        color =
+            if (importing) {
+                Color.Gray
+            } else {
+                AssistGreen
+            }
+    )
 }
 
 @Composable
