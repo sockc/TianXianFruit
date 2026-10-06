@@ -4440,7 +4440,9 @@ class AppDatabase(
             modifiedBy =
                 modifiedBy,
             force =
-                sameSyncDeleted,
+                sameSyncDeleted ||
+                    operation ==
+                        "DELETE",
             allowStoreDailyRecovery =
                 true
         )
