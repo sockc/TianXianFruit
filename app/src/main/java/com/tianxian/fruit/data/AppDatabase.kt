@@ -8737,6 +8737,89 @@ class AppDatabase(
     }
 
 
+    fun getRecentPurchaseOrdersBeforeDate(
+        beforeDateExclusive: String,
+        dayLimit: Int = 7
+    ): List<PurchaseOrderDetail> {
+        if (
+            beforeDateExclusive.isBlank() ||
+            dayLimit <= 0
+        ) {
+            return emptyList()
+        }
+
+        val dates =
+            readableDatabase.rawQuery(
+                """
+                SELECT DISTINCT date
+                FROM purchase_order
+                WHERE
+                    deleted=0
+                    AND date<?
+                ORDER BY date DESC
+                LIMIT ?
+                """.trimIndent(),
+                arrayOf(
+                    beforeDateExclusive,
+                    dayLimit.toString()
+                )
+            ).use {
+                c ->
+                buildList {
+                    while (c.moveToNext()) {
+                        add(c.str("date"))
+                    }
+                }
+            }
+
+        if (dates.isEmpty()) {
+            return emptyList()
+        }
+
+        val placeholders =
+            dates.joinToString(",") {
+                "?"
+            }
+
+        val orders =
+            readableDatabase.rawQuery(
+                """
+                SELECT *
+                FROM purchase_order
+                WHERE
+                    deleted=0
+                    AND date IN($placeholders)
+                ORDER BY
+                    date DESC,
+                    created_at DESC,
+                    id DESC
+                """.trimIndent(),
+                dates.toTypedArray()
+            ).use {
+                c ->
+                buildList {
+                    while (c.moveToNext()) {
+                        add(order(c))
+                    }
+                }
+            }
+
+        return orders.map {
+            row ->
+            PurchaseOrderDetail(
+                order = row,
+                items =
+                    getPurchaseItems(
+                        row.id
+                    ),
+                activity =
+                    getPurchaseActivity(
+                        row.id
+                    )
+            )
+        }
+    }
+
     fun getRecentPurchaseOrdersByDays(
         dayLimit: Int = 7
     ): List<PurchaseOrderDetail> {
