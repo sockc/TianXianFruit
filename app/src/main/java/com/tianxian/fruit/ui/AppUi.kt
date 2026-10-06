@@ -5835,7 +5835,7 @@ private fun HomeScreen(
                                 )
                                 DashboardTile(
                                     "🧮",
-                                    "预估经营利润（仅参考）",
+                                    "预估利润",
                                     when {
                                         !operatingAnalysis.inventoryComplete -> "待盘点"
                                         !operatingAnalysis.costComplete -> {
@@ -5849,7 +5849,12 @@ private fun HomeScreen(
                                             }
                                             "缺成本${missing}种"
                                         }
-                                        else -> operatingAnalysis.operatingProfit?.let { money(it) } ?: "—"
+                                        else ->
+                                            operatingAnalysis.operatingProfit
+                                                ?.let {
+                                                    wholeMoney(it)
+                                                }
+                                                ?: "—"
                                     },
                                     SoftPurple,
                                     Modifier.weight(1f),
@@ -6464,15 +6469,17 @@ private fun InventoryScreen(
                     SoftOrange
                 )
                 MiniSummaryCard(
-                    "剩余估值",
-                    money(remainingEstimatedValue),
+                    "剩余价值",
+                    wholeMoney(
+                        remainingEstimatedValue
+                    ),
                     Modifier.weight(1f),
                     SoftPurple
                 )
             }
             if (remainingMissingCostCount > 0) {
                 Text(
-                    "剩余估值未包含 ${remainingMissingCostCount} 种缺成本商品",
+                    "剩余价值未包含 ${remainingMissingCostCount} 种缺成本商品",
                     style = MaterialTheme.typography.labelSmall,
                     color = Color(0xFFB26A00),
                     modifier = Modifier.padding(top = 3.dp)
@@ -7201,6 +7208,13 @@ private fun PurchaseScreen(
     val dayPurchasedTotal =
         remember(dayPurchaseOrders) {
             dayPurchaseOrders.sumOf { it.order.totalCost }
+        }
+    val hasAssistBillData =
+        remember(
+            dataVersion,
+            date
+        ) {
+            db.hasAssistBillData(date)
         }
     val dayPlannedTotal =
         remember(collaborationPlan) {
@@ -8026,6 +8040,16 @@ private fun PurchaseScreen(
                             style = MaterialTheme.typography.labelMedium,
                             color = Color.Gray
                         )
+                        if (!hasAssistBillData) {
+                            Spacer(Modifier.width(4.dp))
+                            AssistBillImportButton(
+                                db = db,
+                                onChanged = onChanged,
+                                onResult = {
+                                    message = it
+                                }
+                            )
+                        }
                     }
                 }
             } else {
@@ -8060,7 +8084,10 @@ private fun PurchaseScreen(
             }
         }
 
-        if (editingOrderId == null) {
+        if (
+            editingOrderId == null &&
+            hasAssistBillData
+        ) {
             item {
                 HistoricalPurchaseAssistCard(
                     db = db,
@@ -10127,7 +10154,8 @@ private fun PurchaseDraftRowEditor(
                         CompactSelectButton(
                             "采购人",
                             buyerDisplay,
-                            Modifier.fillMaxWidth()
+                            Modifier.fillMaxWidth(),
+                            controlHeightDp = 36
                         ) { buyerMenu = true }
                         DropdownMenu(
                             expanded = buyerMenu,
@@ -10338,6 +10366,15 @@ private fun SessionScreen(
             date
         ) {
             db.getDailyRecords(
+                date
+            )
+        }
+    val hasImportedBusinessPayments =
+        remember(
+            dataVersion,
+            date
+        ) {
+            db.hasCustomerPaymentsForDate(
                 date
             )
         }
@@ -10800,7 +10837,16 @@ private fun SessionScreen(
     val revenue = w + a + c
     val contribution = revenue + close - open - e
     val businessWeatherStore =
-        stores.firstOrNull { it.id == storeId } ?: db.resolveWeatherStore(date).store
+        remember(
+            dataVersion,
+            date,
+            storeId,
+            stores
+        ) {
+            stores.firstOrNull {
+                it.id == storeId
+            } ?: db.resolveWeatherStore(date).store
+        }
     val actualBusinessWeatherStores = remember(dataVersion, date) {
         db.getBusinessStoresForDate(date)
     }
@@ -10829,61 +10875,62 @@ private fun SessionScreen(
             )
         }
 
-        item {
-            BusinessPaymentAssistCard(
-                db = db,
-                date = date,
-                dataVersion = dataVersion,
-                hasManualBusiness = todayRecords.isNotEmpty(),
-                manualElectronicTotal =
-                    todayRecords.sumOf {
-                        it.wechatIncome + it.alipayIncome
-                    },
-                onSupplementBusiness = {
-                    wechatTotal,
-                    alipayTotal ->
-                    if (todayRecords.isEmpty()) {
-                        onRequestLeave {
-                            clearForm()
-                            newBusinessFormExpanded = true
-                            applySupplementElectronicTotals(
-                                wechatTotal,
-                                alipayTotal
-                            )
-                            message =
-                                "已补入微信 ${money(wechatTotal)}、支付宝 ${money(alipayTotal)}，请检查后保存营业记录"
-                            isError = false
-                            businessFormScrollScope.launch {
-                                delay(80)
-                                businessFormBringIntoViewRequester
-                                    .bringIntoView()
+        if (hasImportedBusinessPayments) {
+            item {
+                BusinessPaymentAssistCard(
+                    db = db,
+                    date = date,
+                    dataVersion = dataVersion,
+                    hasManualBusiness = todayRecords.isNotEmpty(),
+                    manualElectronicTotal =
+                        todayRecords.sumOf {
+                            it.wechatIncome + it.alipayIncome
+                        },
+                    onSupplementBusiness = {
+                        wechatTotal,
+                        alipayTotal ->
+                        if (todayRecords.isEmpty()) {
+                            onRequestLeave {
+                                clearForm()
+                                newBusinessFormExpanded = true
+                                applySupplementElectronicTotals(
+                                    wechatTotal,
+                                    alipayTotal
+                                )
+                                message =
+                                    "已补入微信 ${money(wechatTotal)}、支付宝 ${money(alipayTotal)}，请检查后保存营业记录"
+                                isError = false
+                                businessFormScrollScope.launch {
+                                    delay(80)
+                                    businessFormBringIntoViewRequester
+                                        .bringIntoView()
+                                }
+                            }
+                        } else {
+                            val targetRecord =
+                                editingRecordId
+                                    ?.let { id ->
+                                        todayRecords.firstOrNull {
+                                            it.id == id
+                                        }
+                                    }
+                                    ?: todayRecords.singleOrNull()
+
+                            if (targetRecord == null) {
+                                message =
+                                    "当天有多条营业记录，请先点要修改的位置记录，再使用“补入营业”"
+                                isError = true
+                            } else {
+                                pendingBusinessSupplement =
+                                    wechatTotal to
+                                        alipayTotal
+                                pendingBusinessSupplementRecordId =
+                                    targetRecord.id
                             }
                         }
-                    } else {
-                        val targetRecord =
-                            editingRecordId
-                                ?.let { id ->
-                                    todayRecords.firstOrNull {
-                                        it.id == id
-                                    }
-                                }
-                                ?: todayRecords.singleOrNull()
-
-                        if (targetRecord == null) {
-                            message =
-                                "当天有多条营业记录，请先点要修改的位置记录，再使用“补入营业”"
-                            isError = true
-                        } else {
-                            pendingBusinessSupplement =
-                                wechatTotal to
-                                    alipayTotal
-                            pendingBusinessSupplementRecordId =
-                                targetRecord.id
-                        }
                     }
-                },
-                onChanged = onChanged
-            )
+                )
+            }
         }
 
         item {
@@ -11082,52 +11129,85 @@ private fun SessionScreen(
         } else {
 
         item {
-            Box(
+            Row(
                 Modifier
                     .fillMaxWidth()
                     .bringIntoViewRequester(
                         businessFormBringIntoViewRequester
-                    )
+                    ),
+                horizontalArrangement =
+                    Arrangement.spacedBy(6.dp),
+                verticalAlignment =
+                    Alignment.Bottom
             ) {
-                CompactSelectButton(
-                    "位置",
-                    storeDisplayName,
-                    Modifier.fillMaxWidth()
-                ) { storeMenu = true }
+                Box(
+                    Modifier.weight(1.45f)
+                ) {
+                    CompactSelectButton(
+                        "位置",
+                        storeDisplayName,
+                        Modifier.fillMaxWidth(),
+                        controlHeightDp = 40
+                    ) {
+                        storeMenu = true
+                    }
 
-                DropdownMenu(expanded = storeMenu, onDismissRequest = { storeMenu = false }) {
-                    stores.forEach { s ->
+                    DropdownMenu(
+                        expanded = storeMenu,
+                        onDismissRequest = {
+                            storeMenu = false
+                        }
+                    ) {
+                        stores.forEach { s ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(s.name)
+                                },
+                                onClick = {
+                                    storeId = s.id
+                                    historicalStoreName = ""
+                                    actualStartTime =
+                                        s.defaultStartTime
+                                    actualEndTime =
+                                        s.defaultEndTime
+                                    storeMenu = false
+                                }
+                            )
+                        }
                         DropdownMenuItem(
-                            text = { Text(s.name) },
+                            text = {
+                                Text("＋新增位置")
+                            },
                             onClick = {
-                                storeId = s.id
-                                historicalStoreName = ""
-                                actualStartTime = s.defaultStartTime
-                                actualEndTime = s.defaultEndTime
                                 storeMenu = false
+                                addStoreDialog = true
                             }
                         )
                     }
-                    DropdownMenuItem(
-                        text = { Text("＋新增位置") },
-                        onClick = {
-                            storeMenu = false
-                            addStoreDialog = true
-                        }
-                    )
+                }
+
+                StoreTimePickerField(
+                    label = "开始",
+                    value = actualStartTime,
+                    isEndTime = false,
+                    modifier =
+                        Modifier.weight(0.9f),
+                    compact = true
+                ) {
+                    actualStartTime = it
+                }
+
+                StoreTimePickerField(
+                    label = "结束",
+                    value = actualEndTime,
+                    isEndTime = true,
+                    modifier =
+                        Modifier.weight(0.9f),
+                    compact = true
+                ) {
+                    actualEndTime = it
                 }
             }
-        }
-
-        item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StoreTimePickerField("实际开始", actualStartTime, false, Modifier.weight(1f)) { actualStartTime = it }
-                StoreTimePickerField("实际结束", actualEndTime, true, Modifier.weight(1f)) { actualEndTime = it }
-            }
-            Text(
-                "历史天气按实际开始前3小时 → 实际结束保存；当天多位置分别记录。",
-                style = MaterialTheme.typography.labelSmall, color = Color.Gray
-            )
         }
 
         if (receiptRows.size > 1) {
@@ -26131,7 +26211,7 @@ private fun QuickDatePickerDialog(
                                         when {
                                             selected ->
                                                 Modifier.background(
-                                                    BrandGreen
+                                                    Color(0xFFDFF5E9)
                                                 )
                                             isToday ->
                                                 Modifier.background(
@@ -26168,7 +26248,7 @@ private fun QuickDatePickerDialog(
                                             color =
                                                 when {
                                                     selected ->
-                                                        Color.White
+                                                        BrandGreen
                                                     hasHistory ->
                                                         BrandGreen
                                                     else ->
@@ -26192,13 +26272,9 @@ private fun QuickDatePickerDialog(
                                             hasPurchase
                                         ) {
                                             Text(
-                                                "采${calendarKAmount(purchase)}",
+                                                calendarKAmount(purchase),
                                                 color =
-                                                    if (selected) {
-                                                        Color.White
-                                                    } else {
-                                                        BrandGreen
-                                                    },
+                                                    Color(0xFFD99A00),
                                                 fontSize = 8.sp,
                                                 lineHeight = 9.sp,
                                                 maxLines = 1
@@ -26209,13 +26285,9 @@ private fun QuickDatePickerDialog(
                                             hasBusiness
                                         ) {
                                             Text(
-                                                "营${calendarKAmount(revenue)}",
+                                                calendarKAmount(revenue),
                                                 color =
-                                                    if (selected) {
-                                                        Color.White
-                                                    } else {
-                                                        BrandGreen
-                                                    },
+                                                    BrandGreen,
                                                 fontSize = 8.sp,
                                                 lineHeight = 9.sp,
                                                 maxLines = 1
@@ -26226,15 +26298,6 @@ private fun QuickDatePickerDialog(
                             }
                         }
                     }
-                }
-
-                if (showPurchaseBusinessHistory) {
-                    Text(
-                        "绿色日期 = 有采购或营业记录",
-                        modifier = Modifier.align(Alignment.CenterHorizontally),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = BrandGreen
-                    )
                 }
 
                 TextButton(
@@ -26695,6 +26758,7 @@ private fun StoreTimePickerField(
     value: String,
     isEndTime: Boolean,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
     onValue: (String) -> Unit
 ) {
     val context = LocalContext.current
@@ -26702,28 +26766,81 @@ private fun StoreTimePickerField(
     val parts = normalized.split(':')
     val initialHour = parts.getOrNull(0)?.toIntOrNull()?.coerceIn(0, 23) ?: if (isEndTime) 0 else 16
     val initialMinute = parts.getOrNull(1)?.toIntOrNull()?.coerceIn(0, 59) ?: 0
-    OutlinedButton(
-        onClick = {
-            TimePickerDialog(
-                context,
-                { _, hour, minute ->
-                    val picked = if (isEndTime && hour == 0 && minute == 0) {
+    val openPicker = {
+        TimePickerDialog(
+            context,
+            { _, hour, minute ->
+                val picked =
+                    if (
+                        isEndTime &&
+                        hour == 0 &&
+                        minute == 0
+                    ) {
                         "24:00"
                     } else {
-                        String.format(Locale.CHINA, "%02d:%02d", hour, minute)
+                        String.format(
+                            Locale.CHINA,
+                            "%02d:%02d",
+                            hour,
+                            minute
+                        )
                     }
-                    onValue(picked)
-                },
-                initialHour,
-                initialMinute,
-                true
-            ).show()
-        },
-        modifier = modifier
-    ) {
-        Column(horizontalAlignment = Alignment.Start) {
-            Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-            Text(value, fontWeight = FontWeight.SemiBold)
+                onValue(picked)
+            },
+            initialHour,
+            initialMinute,
+            true
+        ).show()
+    }
+
+    if (compact) {
+        Column(modifier) {
+            Text(
+                label,
+                style =
+                    MaterialTheme.typography.labelSmall,
+                color = Color.Gray
+            )
+            OutlinedButton(
+                onClick = openPicker,
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .height(40.dp),
+                contentPadding =
+                    PaddingValues(
+                        horizontal = 7.dp,
+                        vertical = 0.dp
+                    )
+            ) {
+                Text(
+                    value,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 13.sp,
+                    maxLines = 1
+                )
+            }
+        }
+    } else {
+        OutlinedButton(
+            onClick = openPicker,
+            modifier = modifier
+        ) {
+            Column(
+                horizontalAlignment =
+                    Alignment.Start
+            ) {
+                Text(
+                    label,
+                    style =
+                        MaterialTheme.typography.labelSmall,
+                    color = Color.Gray
+                )
+                Text(
+                    value,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
         }
     }
 }
@@ -26848,6 +26965,15 @@ private fun ConfirmDelete(text: String, onDismiss: () -> Unit, onConfirm: () -> 
 }
 
 private fun money(v: Double): String = "¥" + if (kotlin.math.abs(v - v.toLong()) < 0.005) v.toLong().toString() else String.format(Locale.CHINA, "%.2f", v)
+
+private fun wholeMoney(
+    v: Double
+): String =
+    String.format(
+        Locale.CHINA,
+        "¥%.0f",
+        v
+    )
 
 private fun settlementTimeText(epochMillis: Long): String {
     if (epochMillis <= 0L) return ""
