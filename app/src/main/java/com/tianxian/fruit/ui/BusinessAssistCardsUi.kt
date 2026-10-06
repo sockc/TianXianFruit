@@ -30,6 +30,88 @@ private val AssistSoftOrange = Color(0xFFFFF3E3)
 private val AssistSoftGray = Color(0xFFF7F7F8)
 
 @Composable
+internal fun AssistBillImportButton(
+    db: AppDatabase,
+    label: String = "导入",
+    onChanged: () -> Unit,
+    onResult: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var importing by remember { mutableStateOf(false) }
+
+    val launcher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri ->
+            if (uri == null || importing) {
+                return@rememberLauncherForActivityResult
+            }
+            importing = true
+            onResult("正在识别账单…")
+            scope.launch {
+                val result =
+                    withContext(Dispatchers.IO) {
+                        runCatching {
+                            importAssistBillFile(
+                                db = db,
+                                uri = uri,
+                                resolver = context.contentResolver
+                            )
+                        }
+                    }
+                result.onSuccess { outcome ->
+                    onResult(
+                        when {
+                            outcome.duplicateFile ->
+                                "账单已处理过，没有新增数据"
+                            outcome.insertedRows > 0 ||
+                                outcome.purchaseCandidateInsertedRows > 0 ->
+                                "导入完成：经营收款 ${outcome.insertedRows} 笔 · 采购候选 ${outcome.purchaseCandidateInsertedRows} 笔"
+                            else ->
+                                "账单已读取，没有发现新的经营收款或采购候选"
+                        }
+                    )
+                    onChanged()
+                }.onFailure {
+                    onResult(
+                        "导入失败：${it.message ?: "无法读取账单"}"
+                    )
+                }
+                importing = false
+            }
+        }
+
+    TextButton(
+        onClick = {
+            launcher.launch(
+                arrayOf(
+                    "text/*",
+                    "text/csv",
+                    "application/csv",
+                    "application/zip",
+                    "application/vnd.ms-excel",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "application/octet-stream"
+                )
+            )
+        },
+        enabled = !importing,
+        contentPadding =
+            PaddingValues(
+                horizontal = 5.dp,
+                vertical = 0.dp
+            )
+    ) {
+        Text(
+            if (importing) "导入中" else label,
+            style = MaterialTheme.typography.labelMedium,
+            color = AssistGreen
+        )
+    }
+}
+
+@Composable
 internal fun HistoricalPurchaseAssistCard(
     db: AppDatabase,
     date: String,
@@ -38,9 +120,6 @@ internal fun HistoricalPurchaseAssistCard(
     manualPurchaseTotal: Double,
     onChanged: () -> Unit
 ) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var importing by remember { mutableStateOf(false) }
     var message by remember(date) { mutableStateOf("") }
     var expanded by remember(date) { mutableStateOf(false) }
 
@@ -57,42 +136,6 @@ internal fun HistoricalPurchaseAssistCard(
             it.record.status == "PENDING" &&
                 it.confidence == "HIGH"
         }
-
-    val launcher =
-        rememberLauncherForActivityResult(
-            ActivityResultContracts.OpenDocument()
-        ) { uri ->
-            if (uri == null || importing) return@rememberLauncherForActivityResult
-            importing = true
-            message = "正在扫描账单中的早间付款…"
-            scope.launch {
-                val result =
-                    withContext(Dispatchers.IO) {
-                        runCatching {
-                            importAssistBillFile(
-                                db = db,
-                                uri = uri,
-                                resolver = context.contentResolver
-                            )
-                        }
-                    }
-                result.onSuccess { outcome ->
-                    message =
-                        if (outcome.purchaseCandidateInsertedRows > 0) {
-                            "新增采购候选 ${outcome.purchaseCandidateInsertedRows} 笔 · 经营收款新增 ${outcome.insertedRows} 笔"
-                        } else if (outcome.duplicateFile) {
-                            "账单已处理过，没有新的采购候选"
-                        } else {
-                            "未发现新的早间采购候选"
-                        }
-                    onChanged()
-                }.onFailure {
-                    message = "导入失败：${it.message ?: "无法读取账单"}"
-                }
-                importing = false
-            }
-        }
-
     val attention =
         hasManualPurchase &&
             highPending.isNotEmpty()
@@ -102,7 +145,11 @@ internal fun HistoricalPurchaseAssistCard(
         colors =
             CardDefaults.cardColors(
                 containerColor =
-                    if (attention) AssistSoftOrange else AssistSoftGray
+                    if (attention) {
+                        AssistSoftOrange
+                    } else {
+                        AssistSoftGray
+                    }
             )
     ) {
         Column(
@@ -120,19 +167,23 @@ internal fun HistoricalPurchaseAssistCard(
                     Modifier.weight(1f)
                 ) {
                     Text(
-                        "账单采购辅助",
+                        "账单采购",
                         fontWeight = FontWeight.SemiBold,
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(
                         buildString {
                             if (summary.pendingCount > 0) {
-                                append("待核对 ${summary.pendingCount}笔 ${assistKMoney(summary.pendingAmount)}")
+                                append(
+                                    "待核对 ${summary.pendingCount}笔 ${assistMoney(summary.pendingAmount)}"
+                                )
                             } else {
                                 append("暂无待核对")
                             }
                             if (summary.confirmedCount > 0) {
-                                append(" · 已确认 ${assistKMoney(summary.confirmedAmount)}")
+                                append(
+                                    " · 已确认 ${assistMoney(summary.confirmedAmount)}"
+                                )
                             }
                         },
                         style = MaterialTheme.typography.labelSmall,
@@ -146,36 +197,14 @@ internal fun HistoricalPurchaseAssistCard(
                     )
                 }
 
-                TextButton(
-                    onClick = {
-                        launcher.launch(
-                            arrayOf(
-                                "text/*",
-                                "text/csv",
-                                "application/csv",
-                                "application/zip",
-                                "application/vnd.ms-excel",
-                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                "application/octet-stream"
-                            )
-                        )
-                    },
-                    enabled = !importing,
-                    contentPadding =
-                        PaddingValues(
-                            horizontal = 6.dp,
-                            vertical = 0.dp
-                        )
-                ) {
-                    Text(
-                        if (importing) {
-                            "扫描中"
-                        } else {
-                            "导入"
-                        },
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                }
+                AssistBillImportButton(
+                    db = db,
+                    label = "追加",
+                    onChanged = onChanged,
+                    onResult = {
+                        message = it
+                    }
+                )
 
                 TextButton(
                     onClick = {
@@ -193,14 +222,6 @@ internal fun HistoricalPurchaseAssistCard(
                         color = AssistGreen
                     )
                 }
-            }
-
-            if (importing) {
-                LinearProgressIndicator(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(2.dp)
-                )
             }
 
             if (message.isNotBlank()) {
@@ -237,7 +258,8 @@ internal fun HistoricalPurchaseAssistCard(
                             onClick = {
                                 val count =
                                     db.confirmHighConfidenceHistoricalPurchases(date)
-                                message = "已确认 $count 笔高可信历史采购"
+                                message =
+                                    "已确认 $count 笔高可信历史采购"
                                 onChanged()
                             }
                         ) {
@@ -248,7 +270,7 @@ internal fun HistoricalPurchaseAssistCard(
 
                 if (rows.isEmpty()) {
                     Text(
-                        "当前日期没有采购候选。",
+                        "当前账单没有采购候选。",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.Gray
                     )
@@ -274,7 +296,8 @@ internal fun HistoricalPurchaseAssistCard(
                                 db.markHistoricalPurchaseSupplier(
                                     item.record.id
                                 )
-                                message = "已将 ${item.record.counterpartyName} 标记为供应商"
+                                message =
+                                    "已将 ${item.record.counterpartyName} 标记为供应商"
                                 onChanged()
                             }
                         )
@@ -376,52 +399,48 @@ internal fun BusinessPaymentAssistCard(
     dataVersion: Int,
     hasManualBusiness: Boolean,
     manualElectronicTotal: Double,
-    onSupplementBusiness: (Double, Double) -> Unit,
-    onChanged: () -> Unit
+    onSupplementBusiness: (Double, Double) -> Unit
 ) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var importing by remember { mutableStateOf(false) }
-    var message by remember(date) { mutableStateOf("") }
-    var expanded by remember(date) { mutableStateOf(false) }
+    var expanded by remember(date) {
+        mutableStateOf(false)
+    }
 
     val settings =
         remember(dataVersion) {
             db.getCustomerAnalysisSettings()
         }
-    val allRawPayments =
-        remember(dataVersion) {
-            db.getCustomerPayments()
+
+    val rawPayments =
+        remember(
+            dataVersion,
+            date
+        ) {
+            db.getCustomerPayments(
+                date,
+                date
+            )
         }
+
     val paymentFilter =
         remember(
-            allRawPayments,
+            rawPayments,
             settings
         ) {
             CustomerAnalyticsEngine.filterRecords(
-                allRecords = allRawPayments,
+                allRecords = rawPayments,
                 settings = settings
             )
         }
-    val allPayments =
-        paymentFilter.included
     val payments =
-        remember(
-            allPayments,
-            date
-        ) {
-            allPayments.filter {
-                it.businessDate == date
-            }
-        }
+        paymentFilter.included
 
     val analysis =
         remember(
-            allPayments,
+            payments,
             date
         ) {
             CustomerAnalyticsEngine.analyze(
-                allRecords = allPayments,
+                allRecords = payments,
                 startDate = date,
                 endDate = date
             )
@@ -464,40 +483,6 @@ internal fun BusinessPaymentAssistCard(
                     manualElectronicTotal * 0.10
                 )
 
-    val launcher =
-        rememberLauncherForActivityResult(
-            ActivityResultContracts.OpenDocument()
-        ) { uri ->
-            if (uri == null || importing) return@rememberLauncherForActivityResult
-            importing = true
-            message = "正在识别经营收款…"
-            scope.launch {
-                val result =
-                    withContext(Dispatchers.IO) {
-                        runCatching {
-                            importAssistBillFile(
-                                db = db,
-                                uri = uri,
-                                resolver = context.contentResolver
-                            )
-                        }
-                    }
-                result.onSuccess { outcome ->
-                    message =
-                        "经营收款新增 ${outcome.insertedRows} 笔" +
-                            if (outcome.purchaseCandidateInsertedRows > 0) {
-                                " · 采购候选 ${outcome.purchaseCandidateInsertedRows} 笔"
-                            } else {
-                                ""
-                            }
-                    onChanged()
-                }.onFailure {
-                    message = "导入失败：${it.message ?: "无法读取账单"}"
-                }
-                importing = false
-            }
-        }
-
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors =
@@ -531,12 +516,13 @@ internal fun BusinessPaymentAssistCard(
                     )
                     Text(
                         when {
-                            payments.isEmpty() ->
-                                "当天未导入经营收款"
+                            rawPayments.isNotEmpty() &&
+                                payments.isEmpty() ->
+                                "当天账单收款已按分析规则排除"
                             meaningfulDifference ->
-                                "${assistKMoney(importedTotal)} · ${analysis.summary.paymentCount}笔 · 差额 ${signedAssistMoney(difference)}"
+                                "${assistMoney(importedTotal)} · ${analysis.summary.paymentCount}笔 · 差额 ${signedAssistMoney(difference)}"
                             else ->
-                                "${assistKMoney(importedTotal)} · ${analysis.summary.paymentCount}笔 · ${analysis.summary.customerCount}客"
+                                "${assistMoney(importedTotal)} · ${analysis.summary.paymentCount}笔 · ${analysis.summary.customerCount}客"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color =
@@ -546,33 +532,6 @@ internal fun BusinessPaymentAssistCard(
                                 Color.Gray
                             },
                         maxLines = 1
-                    )
-                }
-
-                TextButton(
-                    onClick = {
-                        launcher.launch(
-                            arrayOf(
-                                "text/*",
-                                "text/csv",
-                                "application/csv",
-                                "application/zip",
-                                "application/vnd.ms-excel",
-                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                "application/octet-stream"
-                            )
-                        )
-                    },
-                    enabled = !importing,
-                    contentPadding =
-                        PaddingValues(
-                            horizontal = 6.dp,
-                            vertical = 0.dp
-                        )
-                ) {
-                    Text(
-                        if (importing) "导入中" else "导入",
-                        style = MaterialTheme.typography.labelMedium
                     )
                 }
 
@@ -616,37 +575,12 @@ internal fun BusinessPaymentAssistCard(
                 }
             }
 
-            if (importing) {
-                LinearProgressIndicator(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(2.dp)
-                )
-            }
-
-            if (message.isNotBlank()) {
-                Text(
-                    message,
-                    style = MaterialTheme.typography.labelSmall,
-                    color =
-                        if (message.startsWith("导入失败")) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            AssistGreen
-                        },
-                    maxLines = 2
-                )
-            }
-
             if (expanded) {
                 Text(
-                    when {
-                        hasManualBusiness ->
-                            "补入只覆盖微信/支付宝，现金及其他手工营业数据保持不动。"
-                        payments.isNotEmpty() ->
-                            "可把识别后的微信/支付宝金额补入营业表，再检查保存。"
-                        else ->
-                            "导入完整微信/支付宝账单，只识别经营收款；早间付款同时进入采购候选。"
+                    if (hasManualBusiness) {
+                        "补入只覆盖微信/支付宝，现金及其他手工营业数据保持不动。"
+                    } else {
+                        "账单由采购页统一导入；这里仅显示当天经营收款数据。"
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color =
@@ -813,13 +747,6 @@ private fun assistMoney(value: Double): String =
         Locale.CHINA,
         "¥%.2f",
         value
-    )
-
-private fun assistKMoney(value: Double): String =
-    String.format(
-        Locale.CHINA,
-        "¥%.1fk",
-        value / 1000.0
     )
 
 private fun signedAssistMoney(value: Double): String =
