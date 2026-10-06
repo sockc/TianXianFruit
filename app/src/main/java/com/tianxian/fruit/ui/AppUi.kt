@@ -30,6 +30,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -9948,6 +9950,12 @@ private fun SessionScreen(
     var isError by remember { mutableStateOf(false) }
     var deleteRecord by remember { mutableStateOf<StoreDailyRecord?>(null) }
     var businessBaselineFingerprint by remember(date) { mutableStateOf("") }
+    val businessFormBringIntoViewRequester =
+        remember {
+            BringIntoViewRequester()
+        }
+    val businessFormScrollScope =
+        rememberCoroutineScope()
 
     val activeSelectedStore = stores.firstOrNull { it.id == storeId }
     val historicalSelectedStore = if (editingRecordId != null && storeId != null && activeSelectedStore == null) {
@@ -10569,6 +10577,11 @@ private fun SessionScreen(
                             currentBusinessFingerprint()
                         message = ""
                         isError = false
+                        businessFormScrollScope.launch {
+                            delay(80)
+                            businessFormBringIntoViewRequester
+                                .bringIntoView()
+                        }
                     }
                 },
                 onChanged = onChanged
@@ -10598,7 +10611,13 @@ private fun SessionScreen(
         } else {
 
         item {
-            Box(Modifier.fillMaxWidth()) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .bringIntoViewRequester(
+                        businessFormBringIntoViewRequester
+                    )
+            ) {
                 CompactSelectButton(
                     "位置",
                     storeDisplayName,
