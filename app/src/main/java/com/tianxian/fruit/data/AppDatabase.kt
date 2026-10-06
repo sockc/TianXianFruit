@@ -10658,18 +10658,47 @@ class AppDatabase(
         return ProductHistoryDetail(summary, purchases, retail, inventory)
     }
 
-    fun getBusinessWeatherHistory(date: String, storeId: Long): BusinessWeatherHistoryRecord? =
-        readableDatabase.rawQuery(
-            "SELECT * FROM business_weather_history WHERE date=? AND store_id=? AND deleted=0 ORDER BY updated_at DESC LIMIT 1",
-            arrayOf(date, storeId.toString())
-        ).use { c ->
-            if (!c.moveToFirst()) null else BusinessWeatherHistoryRecord(
-                date=c.str("date"), storeId=c.long("store_id"), storeSyncId=c.str("store_sync_id"), storeName=c.str("store_name"),
-                latitude=c.dbl("latitude"), longitude=c.dbl("longitude"), actualStartTime=c.str("actual_start_time"), actualEndTime=c.str("actual_end_time"),
-                windowStartTime=c.str("window_start_time"), windowEndTime=c.str("window_end_time"), payloadJson=c.str("payload_json"),
-                source=c.str("source"), observedAt=c.long("observed_at"), updatedAt=c.long("updated_at")
+    fun getBusinessWeatherHistory(date: String, storeId: Long): BusinessWeatherHistoryRecord? {
+        val storeSyncId =
+            getStoreSyncId(
+                storeId
             )
+        return readableDatabase.rawQuery(
+            """
+            SELECT *
+            FROM business_weather_history
+            WHERE
+                date=?
+                AND deleted=0
+                AND (
+                    store_id=?
+                    OR (?<>'' AND store_sync_id=?)
+                )
+            ORDER BY
+                CASE WHEN store_id=? THEN 0 ELSE 1 END,
+                updated_at DESC
+            LIMIT 1
+            """.trimIndent(),
+            arrayOf(
+                date,
+                storeId.toString(),
+                storeSyncId,
+                storeSyncId,
+                storeId.toString()
+            )
+        ).use { c ->
+            if (!c.moveToFirst()) {
+                null
+            } else {
+                BusinessWeatherHistoryRecord(
+                    date=c.str("date"), storeId=c.long("store_id"), storeSyncId=c.str("store_sync_id"), storeName=c.str("store_name"),
+                    latitude=c.dbl("latitude"), longitude=c.dbl("longitude"), actualStartTime=c.str("actual_start_time"), actualEndTime=c.str("actual_end_time"),
+                    windowStartTime=c.str("window_start_time"), windowEndTime=c.str("window_end_time"), payloadJson=c.str("payload_json"),
+                    source=c.str("source"), observedAt=c.long("observed_at"), updatedAt=c.long("updated_at")
+                )
+            }
         }
+    }
 
     fun getStoreDailyRecordsBefore(
         storeId: Long,
