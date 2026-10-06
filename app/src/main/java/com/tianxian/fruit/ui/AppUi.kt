@@ -26803,7 +26803,6 @@ private fun StatsRangePickerDialog(
 }
 
 @Composable
-@Composable
 private fun QuickDatePickerDialog(
     selectedDate: LocalDate,
     db: AppDatabase? = null,
