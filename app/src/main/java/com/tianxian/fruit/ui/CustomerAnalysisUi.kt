@@ -1457,7 +1457,14 @@ private fun EmptyCustomerAnalysis() {
 }
 
 @Composable
-private fun CustomerOverview(result: CustomerAnalysisResult) {
+private fun CustomerOverview(
+    result: CustomerAnalysisResult,
+    hourlyTraffic: List<CustomerHourlyPoint>,
+    dailyTraffic: List<CustomerDailyTrafficPoint>,
+    sameWeekdayComparisons: List<CustomerSameWeekdayComparison>,
+    singleDay: Boolean,
+    onSelectDay: (String) -> Unit
+) {
     val s = result.summary
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -1465,60 +1472,779 @@ private fun CustomerOverview(result: CustomerAnalysisResult) {
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Metric("客户", s.customerCount.toString(), Modifier.weight(1f))
-                Metric("新客", s.newCustomerCount.toString(), Modifier.weight(1f))
-                Metric("老客", s.oldCustomerCount.toString(), Modifier.weight(1f))
-                Metric("复购率", percent(s.repeatRate), Modifier.weight(1f))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement =
+                    Arrangement.spacedBy(
+                        8.dp
+                    )
+            ) {
+                Metric(
+                    "客户",
+                    s.customerCount.toString(),
+                    Modifier.weight(1f)
+                )
+                Metric(
+                    "新客",
+                    s.newCustomerCount.toString(),
+                    Modifier.weight(1f)
+                )
+                Metric(
+                    "老客",
+                    s.oldCustomerCount.toString(),
+                    Modifier.weight(1f)
+                )
+                Metric(
+                    "复购率",
+                    percent(s.repeatRate),
+                    Modifier.weight(1f)
+                )
             }
         }
+
         item {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Metric("经营收款", money(s.netRevenue), Modifier.weight(1f))
-                Metric("平均客单", money(s.averageTicket), Modifier.weight(1f))
-                Metric("客均贡献", money(s.averageCustomerValue), Modifier.weight(1f))
-                Metric("收款笔数", s.paymentCount.toString(), Modifier.weight(1f))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement =
+                    Arrangement.spacedBy(
+                        8.dp
+                    )
+            ) {
+                Metric(
+                    "经营收款",
+                    money(s.netRevenue),
+                    Modifier.weight(1f)
+                )
+                Metric(
+                    "平均客单",
+                    money(s.averageTicket),
+                    Modifier.weight(1f)
+                )
+                Metric(
+                    "客均贡献",
+                    money(s.averageCustomerValue),
+                    Modifier.weight(1f)
+                )
+                Metric(
+                    "收款笔数",
+                    s.paymentCount.toString(),
+                    Modifier.weight(1f)
+                )
             }
         }
-        if (result.change.available) item { RevenueChangeCard(result.change) }
+
+        if (
+            singleDay
+        ) {
+            item {
+                HourlyCustomerTrafficCard(
+                    points =
+                        hourlyTraffic
+                )
+            }
+
+            if (
+                sameWeekdayComparisons
+                    .isNotEmpty()
+            ) {
+                item {
+                    SameWeekdayCustomerCard(
+                        rows =
+                            sameWeekdayComparisons
+                    )
+                }
+            }
+        } else if (
+            dailyTraffic.isNotEmpty()
+        ) {
+            item {
+                DailyCustomerTrafficCard(
+                    points =
+                        dailyTraffic,
+                    onSelectDay =
+                        onSelectDay
+                )
+            }
+        }
+
+        if (result.change.available) {
+            item {
+                RevenueChangeCard(
+                    result.change
+                )
+            }
+        }
+
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text("客户识别质量", fontWeight = FontWeight.Bold)
+            Card(
+                colors =
+                    CardDefaults.cardColors(
+                        containerColor =
+                            Color.White
+                    )
+            ) {
+                Column(
+                    Modifier.padding(
+                        12.dp
+                    ),
+                    verticalArrangement =
+                        Arrangement.spacedBy(
+                            5.dp
+                        )
+                ) {
+                    Text(
+                        "客户识别质量",
+                        fontWeight =
+                            FontWeight.Bold
+                    )
                     Text(
                         "稳定标识 ${s.highConfidenceCount} · 昵称识别 ${s.mediumConfidenceCount} · 匿名 ${s.lowConfidenceCount}",
-                        style = MaterialTheme.typography.bodySmall
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall
                     )
                     Text(
-                        "复购优先依赖稳定付款方标识；只有昵称时标记为中等可信，避免把复购率包装成绝对准确。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.Gray
+                        "这里统计的是电子支付可识别客户；现金客户不会被账单识别。",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .bodySmall,
+                        color =
+                            Color.Gray
                     )
-                    if (s.unmatchedStoreCount > 0) {
+                    if (
+                        s.unmatchedStoreCount >
+                        0
+                    ) {
                         HorizontalDivider()
                         Text(
                             "有 ${s.unmatchedStoreCount} 笔收款未能唯一匹配营业位置，多位置同时间营业时不会自动猜位置。",
-                            color = Color(0xFF9A6700),
-                            style = MaterialTheme.typography.bodySmall
+                            color =
+                                Color(
+                                    0xFF9A6700
+                                ),
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .bodySmall
                         )
                     }
                 }
             }
         }
-        item {
-            Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF8FAFC))) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("与营业账完全分开", fontWeight = FontWeight.Bold)
-                    Text(
-                        "这里的经营收款只用于客户行为、复购和客流分析。营业表仍是正式营业额来源，结算与利润逻辑不会读取这里。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.DarkGray
+    }
+}
+
+@Composable
+private fun HourlyCustomerTrafficCard(
+    points: List<CustomerHourlyPoint>
+) {
+    var metric by remember {
+        mutableStateOf(
+            CustomerTrafficMetric.CUSTOMERS
+        )
+    }
+    var selectedHour by remember(
+        points
+    ) {
+        mutableIntStateOf(
+            points
+                .maxByOrNull {
+                    it.customerCount
+                }
+                ?.hour
+                ?: -1
+        )
+    }
+
+    val active =
+        points.filter {
+            it.customerCount > 0 ||
+                it.paymentCount > 0 ||
+                kotlin.math.abs(
+                    it.amount
+                ) > 0.005
+        }
+    val startHour =
+        (
+            active.minOfOrNull {
+                it.hour
+            } ?: 14
+            )
+            .minus(
+                1
+            )
+            .coerceAtLeast(
+                0
+            )
+    val endHour =
+        (
+            active.maxOfOrNull {
+                it.hour
+            } ?: 23
+            )
+            .plus(
+                1
+            )
+            .coerceAtMost(
+                23
+            )
+    val visible =
+        points.filter {
+            it.hour in
+                startHour..endHour
+        }
+
+    fun value(
+        point: CustomerHourlyPoint
+    ): Double =
+        when (metric) {
+            CustomerTrafficMetric.CUSTOMERS ->
+                point.customerCount
+                    .toDouble()
+
+            CustomerTrafficMetric.AMOUNT ->
+                point.amount
+                    .coerceAtLeast(
+                        0.0
                     )
+
+            CustomerTrafficMetric.PAYMENTS ->
+                point.paymentCount
+                    .toDouble()
+        }
+
+    val maxValue =
+        visible.maxOfOrNull {
+            value(it)
+        }
+            ?.coerceAtLeast(
+                1.0
+            )
+            ?: 1.0
+    val selected =
+        visible.firstOrNull {
+            it.hour ==
+                selectedHour
+        }
+            ?: visible.maxByOrNull {
+                it.customerCount
+            }
+
+    Card(
+        colors =
+            CardDefaults.cardColors(
+                containerColor =
+                    Color.White
+            )
+    ) {
+        Column(
+            Modifier.padding(
+                12.dp
+            ),
+            verticalArrangement =
+                Arrangement.spacedBy(
+                    8.dp
+                )
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment =
+                    Alignment.CenterVertically
+            ) {
+                Column(
+                    Modifier.weight(
+                        1f
+                    )
+                ) {
+                    Text(
+                        "逐小时可识别客流",
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+                    Text(
+                        "同一付款方同一小时多笔付款只算 1 位客户",
+                        style =
+                            MaterialTheme
+                                .typography
+                                .labelSmall,
+                        color =
+                            Color.Gray
+                    )
+                }
+
+                Row(
+                    horizontalArrangement =
+                        Arrangement.spacedBy(
+                            4.dp
+                        )
+                ) {
+                    CustomerTrafficMetric.entries.forEach {
+                        item ->
+                        FilterChip(
+                            selected =
+                                metric ==
+                                    item,
+                            onClick = {
+                                metric =
+                                    item
+                            },
+                            label = {
+                                Text(
+                                    item.label
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(
+                        rememberScrollState()
+                    ),
+                horizontalArrangement =
+                    Arrangement.spacedBy(
+                        5.dp
+                    ),
+                verticalAlignment =
+                    Alignment.Bottom
+            ) {
+                visible.forEach {
+                    point ->
+                    val current =
+                        value(
+                            point
+                        )
+                    val ratio =
+                        (
+                            current /
+                                maxValue
+                            )
+                            .toFloat()
+                            .coerceIn(
+                                0f,
+                                1f
+                            )
+
+                    Column(
+                        modifier =
+                            Modifier
+                                .width(
+                                    34.dp
+                                )
+                                .clickable {
+                                    selectedHour =
+                                        point.hour
+                                },
+                        horizontalAlignment =
+                            Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            trafficValueLabel(
+                                metric,
+                                current
+                            ),
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .labelSmall,
+                            color =
+                                if (
+                                    point.hour ==
+                                    selectedHour
+                                ) {
+                                    Color(
+                                        0xFF087D4E
+                                    )
+                                } else {
+                                    Color.Gray
+                                },
+                            maxLines = 1
+                        )
+
+                        Box(
+                            Modifier
+                                .height(
+                                    92.dp
+                                )
+                                .fillMaxWidth(),
+                            contentAlignment =
+                                Alignment.BottomCenter
+                        ) {
+                            Box(
+                                Modifier
+                                    .width(
+                                        20.dp
+                                    )
+                                    .height(
+                                        if (
+                                            current >
+                                            0.0
+                                        ) {
+                                            (
+                                                6f +
+                                                    80f *
+                                                    ratio
+                                                ).dp
+                                        } else {
+                                            2.dp
+                                        }
+                                    )
+                                    .background(
+                                        if (
+                                            point.hour ==
+                                            selectedHour
+                                        ) {
+                                            Color(
+                                                0xFF0A9B61
+                                            )
+                                        } else {
+                                            Color(
+                                                0xFF86CFAE
+                                            )
+                                        },
+                                        RoundedCornerShape(
+                                            topStart =
+                                                4.dp,
+                                            topEnd =
+                                                4.dp
+                                        )
+                                    )
+                            )
+                        }
+
+                        Text(
+                            "${point.hour}时",
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .labelSmall,
+                            color =
+                                Color.Gray
+                        )
+                    }
+                }
+            }
+
+            selected?.let {
+                point ->
+                HorizontalDivider()
+                Text(
+                    "${point.hour}:00–${point.hour}:59 · 客户 ${point.customerCount} · 老客 ${point.oldCustomerCount} · 新客 ${point.newCustomerCount} · ${point.paymentCount}笔 · ${money(point.amount)}",
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall
+                )
+            }
+
+            active.maxByOrNull {
+                it.customerCount
+            }?.let {
+                peak ->
+                Text(
+                    "客流高峰：${peak.hour}:00–${peak.hour}:59 · ${peak.customerCount} 位可识别客户",
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall,
+                    color =
+                        Color(
+                            0xFF087D4E
+                        ),
+                    fontWeight =
+                        FontWeight.SemiBold
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DailyCustomerTrafficCard(
+    points: List<CustomerDailyTrafficPoint>,
+    onSelectDay: (String) -> Unit
+) {
+    val maxCustomers =
+        points.maxOfOrNull {
+            it.customerCount
+        }
+            ?.coerceAtLeast(
+                1
+            )
+            ?: 1
+
+    Card(
+        colors =
+            CardDefaults.cardColors(
+                containerColor =
+                    Color.White
+            )
+    ) {
+        Column(
+            Modifier.padding(
+                12.dp
+            ),
+            verticalArrangement =
+                Arrangement.spacedBy(
+                    7.dp
+                )
+        ) {
+            Text(
+                "每日可识别客户",
+                fontWeight =
+                    FontWeight.Bold
+            )
+            Text(
+                "点某一天可直接进入该日逐小时客流",
+                style =
+                    MaterialTheme
+                        .typography
+                        .labelSmall,
+                color =
+                    Color.Gray
+            )
+
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(
+                        rememberScrollState()
+                    ),
+                horizontalArrangement =
+                    Arrangement.spacedBy(
+                        4.dp
+                    ),
+                verticalAlignment =
+                    Alignment.Bottom
+            ) {
+                points.forEach {
+                    point ->
+                    val ratio =
+                        (
+                            point.customerCount
+                                .toFloat() /
+                                maxCustomers
+                                    .toFloat()
+                            )
+                            .coerceIn(
+                                0f,
+                                1f
+                            )
+                    val day =
+                        runCatching {
+                            LocalDate.parse(
+                                point.date
+                            ).dayOfMonth
+                        }.getOrDefault(
+                            0
+                        )
+
+                    Column(
+                        modifier =
+                            Modifier
+                                .width(
+                                    30.dp
+                                )
+                                .clickable {
+                                    onSelectDay(
+                                        point.date
+                                    )
+                                },
+                        horizontalAlignment =
+                            Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            if (
+                                point.customerCount >
+                                0
+                            ) {
+                                point.customerCount
+                                    .toString()
+                            } else {
+                                ""
+                            },
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .labelSmall,
+                            color =
+                                Color(
+                                    0xFF087D4E
+                                )
+                        )
+                        Box(
+                            Modifier
+                                .height(
+                                    82.dp
+                                )
+                                .fillMaxWidth(),
+                            contentAlignment =
+                                Alignment.BottomCenter
+                        ) {
+                            Box(
+                                Modifier
+                                    .width(
+                                        18.dp
+                                    )
+                                    .height(
+                                        if (
+                                            point.customerCount >
+                                            0
+                                        ) {
+                                            (
+                                                5f +
+                                                    70f *
+                                                    ratio
+                                                ).dp
+                                        } else {
+                                            2.dp
+                                        }
+                                    )
+                                    .background(
+                                        Color(
+                                            0xFF5CB98D
+                                        ),
+                                        RoundedCornerShape(
+                                            topStart =
+                                                4.dp,
+                                            topEnd =
+                                                4.dp
+                                        )
+                                    )
+                            )
+                        }
+                        Text(
+                            day.toString(),
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .labelSmall,
+                            color =
+                                Color.Gray
+                        )
+                    }
                 }
             }
         }
     }
 }
+
+@Composable
+private fun SameWeekdayCustomerCard(
+    rows: List<CustomerSameWeekdayComparison>
+) {
+    Card(
+        colors =
+            CardDefaults.cardColors(
+                containerColor =
+                    Color.White
+            )
+    ) {
+        Column(
+            Modifier.padding(
+                12.dp
+            ),
+            verticalArrangement =
+                Arrangement.spacedBy(
+                    6.dp
+                )
+        ) {
+            Text(
+                "同位置 · 同星期比较",
+                fontWeight =
+                    FontWeight.Bold
+            )
+
+            rows.forEachIndexed {
+                index,
+                row ->
+                if (
+                    index >
+                    0
+                ) {
+                    HorizontalDivider()
+                }
+
+                val changeText =
+                    row.percentChange
+                        ?.let {
+                            value ->
+                            val sign =
+                                if (
+                                    value >=
+                                    0
+                                ) {
+                                    "+"
+                                } else {
+                                    ""
+                                }
+                            "$sign${String.format(Locale.CHINA, "%.1f%%", value * 100.0)}"
+                        }
+                        ?: "—"
+
+                Text(
+                    row.storeName,
+                    fontWeight =
+                        FontWeight.SemiBold
+                )
+                Text(
+                    "当天 ${row.currentCustomers} 人 · 最近 ${row.sampleDays} 个同星期平均 ${String.format(Locale.CHINA, "%.1f", row.averageCustomers)} 人 · ${signedInt(row.difference)} 人（$changeText）",
+                    style =
+                        MaterialTheme
+                            .typography
+                            .bodySmall,
+                    color =
+                        if (
+                            row.difference >=
+                            0
+                        ) {
+                            Color(
+                                0xFF087D4E
+                            )
+                        } else {
+                            Color(
+                                0xFF9A6700
+                            )
+                        }
+                )
+            }
+        }
+    }
+}
+
+private fun trafficValueLabel(
+    metric: CustomerTrafficMetric,
+    value: Double
+): String =
+    when (metric) {
+        CustomerTrafficMetric.CUSTOMERS,
+        CustomerTrafficMetric.PAYMENTS ->
+            value
+                .toInt()
+                .toString()
+
+        CustomerTrafficMetric.AMOUNT ->
+            if (
+                value >=
+                1000
+            ) {
+                String.format(
+                    Locale.CHINA,
+                    "%.1fk",
+                    value /
+                        1000.0
+                )
+            } else {
+                value
+                    .toInt()
+                    .toString()
+            }
+    }
 
 @Composable
 private fun RevenueChangeCard(change: CustomerChangeBreakdown) {
