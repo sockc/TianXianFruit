@@ -396,6 +396,13 @@ private fun HistoricalPurchaseCandidateRow(
     }
 }
 
+private data class BusinessAssistSnapshot(
+    val analysis: CustomerAnalysisResult,
+    val wechatTotal: Double,
+    val alipayTotal: Double,
+    val rawDayCount: Int
+)
+
 @Composable
 internal fun BusinessPaymentAssistCard(
     db: AppDatabase,
@@ -409,70 +416,108 @@ internal fun BusinessPaymentAssistCard(
         mutableStateOf(false)
     }
 
-    val settings =
-        remember(dataVersion) {
-            db.getCustomerAnalysisSettings()
-        }
-
-    val rawPayments =
-        remember(
+    val snapshot by
+        produceState<BusinessAssistSnapshot?>(
+            initialValue = null,
+            db,
             dataVersion,
             date
         ) {
-            db.getCustomerPayments(
-                date,
-                date
-            )
+            value =
+                withContext(Dispatchers.IO) {
+                    val settings =
+                        db.getCustomerAnalysisSettings()
+                    val allRawPayments =
+                        db.getCustomerPayments()
+                    val filteredAll =
+                        CustomerAnalyticsEngine
+                            .filterRecords(
+                                allRecords =
+                                    allRawPayments,
+                                settings = settings
+                            )
+                            .included
+                    val dayPayments =
+                        filteredAll.filter {
+                            it.businessDate == date
+                        }
+                    val analysis =
+                        CustomerAnalyticsEngine.analyze(
+                            allRecords =
+                                filteredAll,
+                            startDate = date,
+                            endDate = date
+                        )
+                    BusinessAssistSnapshot(
+                        analysis = analysis,
+                        wechatTotal =
+                            dayPayments
+                                .filter {
+                                    it.platform == "WECHAT"
+                                }
+                                .sumOf {
+                                    it.netAmount
+                                }
+                                .coerceAtLeast(0.0),
+                        alipayTotal =
+                            dayPayments
+                                .filter {
+                                    it.platform == "ALIPAY"
+                                }
+                                .sumOf {
+                                    it.netAmount
+                                }
+                                .coerceAtLeast(0.0),
+                        rawDayCount =
+                            allRawPayments.count {
+                                it.businessDate == date
+                            }
+                    )
+                }
         }
 
-    val paymentFilter =
-        remember(
-            rawPayments,
-            settings
+    val current = snapshot
+    if (current == null) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors =
+                CardDefaults.cardColors(
+                    containerColor =
+                        AssistSoftGreen
+                )
         ) {
-            CustomerAnalyticsEngine.filterRecords(
-                allRecords = rawPayments,
-                settings = settings
-            )
+            Row(
+                Modifier.padding(
+                    horizontal = 10.dp,
+                    vertical = 7.dp
+                ),
+                verticalAlignment =
+                    Alignment.CenterVertically
+            ) {
+                Text(
+                    "账单收款",
+                    fontWeight =
+                        FontWeight.SemiBold,
+                    style =
+                        MaterialTheme.typography
+                            .bodySmall
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "读取中…",
+                    style =
+                        MaterialTheme.typography
+                            .labelSmall,
+                    color = Color.Gray
+                )
+            }
         }
-    val payments =
-        paymentFilter.included
+        return
+    }
 
-    val analysis =
-        remember(
-            payments,
-            date
-        ) {
-            CustomerAnalyticsEngine.analyze(
-                allRecords = payments,
-                startDate = date,
-                endDate = date
-            )
-        }
-
-    val wechatTotal =
-        remember(payments) {
-            payments
-                .filter {
-                    it.platform == "WECHAT"
-                }
-                .sumOf {
-                    it.netAmount
-                }
-                .coerceAtLeast(0.0)
-        }
-    val alipayTotal =
-        remember(payments) {
-            payments
-                .filter {
-                    it.platform == "ALIPAY"
-                }
-                .sumOf {
-                    it.netAmount
-                }
-                .coerceAtLeast(0.0)
-        }
-
+    val analysis = current.analysis
+    val wechatTotal = current.wechatTotal
+    val alipayTotal = current.alipayTotal
     val importedTotal =
         analysis.summary.netRevenue
     val difference =
@@ -504,31 +549,38 @@ internal fun BusinessPaymentAssistCard(
                 horizontal = 10.dp,
                 vertical = 4.dp
             ),
-            verticalArrangement = Arrangement.spacedBy(3.dp)
+            verticalArrangement =
+                Arrangement.spacedBy(3.dp)
         ) {
             Row(
                 Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment =
+                    Alignment.CenterVertically
             ) {
                 Column(
                     Modifier.weight(1f)
                 ) {
                     Text(
                         "账单收款",
-                        fontWeight = FontWeight.SemiBold,
-                        style = MaterialTheme.typography.bodySmall
+                        fontWeight =
+                            FontWeight.SemiBold,
+                        style =
+                            MaterialTheme.typography
+                                .bodySmall
                     )
                     Text(
                         when {
-                            rawPayments.isNotEmpty() &&
-                                payments.isEmpty() ->
+                            current.rawDayCount > 0 &&
+                                analysis.summary.paymentCount == 0 ->
                                 "当天账单收款已按分析规则排除"
                             meaningfulDifference ->
                                 "${assistMoney(importedTotal)} · ${analysis.summary.paymentCount}笔 · 差额 ${signedAssistMoney(difference)}"
                             else ->
                                 "${assistMoney(importedTotal)} · ${analysis.summary.paymentCount}笔 · ${analysis.summary.customerCount}客"
                         },
-                        style = MaterialTheme.typography.labelSmall,
+                        style =
+                            MaterialTheme.typography
+                                .labelSmall,
                         color =
                             if (meaningfulDifference) {
                                 Color(0xFF9A6700)
@@ -539,7 +591,10 @@ internal fun BusinessPaymentAssistCard(
                     )
                 }
 
-                if (payments.isNotEmpty()) {
+                if (
+                    analysis.summary.paymentCount >
+                    0
+                ) {
                     TextButton(
                         onClick = {
                             onSupplementBusiness(
@@ -555,7 +610,9 @@ internal fun BusinessPaymentAssistCard(
                     ) {
                         Text(
                             "补入",
-                            style = MaterialTheme.typography.labelMedium,
+                            style =
+                                MaterialTheme.typography
+                                    .labelMedium,
                             color = AssistGreen
                         )
                     }
@@ -572,8 +629,14 @@ internal fun BusinessPaymentAssistCard(
                         )
                 ) {
                     Text(
-                        if (expanded) "收起" else "详情",
-                        style = MaterialTheme.typography.labelMedium,
+                        if (expanded) {
+                            "收起"
+                        } else {
+                            "详情"
+                        },
+                        style =
+                            MaterialTheme.typography
+                                .labelMedium,
                         color = AssistGreen
                     )
                 }
@@ -586,11 +649,14 @@ internal fun BusinessPaymentAssistCard(
                     } else {
                         "账单由采购页统一导入；这里仅显示当天经营收款数据。"
                     },
-                    style = MaterialTheme.typography.labelSmall,
+                    style =
+                        MaterialTheme.typography
+                            .labelSmall,
                     color =
                         if (
                             !hasManualBusiness &&
-                            payments.isNotEmpty()
+                            analysis.summary
+                                .paymentCount > 0
                         ) {
                             Color(0xFF9A6700)
                         } else {
@@ -598,7 +664,10 @@ internal fun BusinessPaymentAssistCard(
                         }
                 )
 
-                if (payments.isNotEmpty()) {
+                if (
+                    analysis.summary.paymentCount >
+                    0
+                ) {
                     Row(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement =
@@ -608,23 +677,30 @@ internal fun BusinessPaymentAssistCard(
                     ) {
                         AssistMetric(
                             "客户",
-                            analysis.summary.customerCount.toString(),
+                            analysis.summary
+                                .customerCount
+                                .toString(),
                             Modifier.weight(1f)
                         )
                         AssistMetric(
                             "新客",
-                            analysis.summary.newCustomerCount.toString(),
+                            analysis.summary
+                                .newCustomerCount
+                                .toString(),
                             Modifier.weight(1f)
                         )
                         AssistMetric(
                             "老客",
-                            analysis.summary.oldCustomerCount.toString(),
+                            analysis.summary
+                                .oldCustomerCount
+                                .toString(),
                             Modifier.weight(1f)
                         )
                         AssistMetric(
                             "平均客单",
                             assistMoney(
-                                analysis.summary.averageTicket
+                                analysis.summary
+                                    .averageTicket
                             ),
                             Modifier.weight(1f)
                         )
@@ -633,15 +709,23 @@ internal fun BusinessPaymentAssistCard(
                     if (hasManualBusiness) {
                         Text(
                             "手工微信+支付宝 ${assistMoney(manualElectronicTotal)} · 账单 ${assistMoney(importedTotal)}" +
-                                if (meaningfulDifference) {
+                                if (
+                                    meaningfulDifference
+                                ) {
                                     " · ⚠ ${signedAssistMoney(difference)}"
                                 } else {
                                     ""
                                 },
-                            style = MaterialTheme.typography.labelSmall,
+                            style =
+                                MaterialTheme.typography
+                                    .labelSmall,
                             color =
-                                if (meaningfulDifference) {
-                                    Color(0xFF9A6700)
+                                if (
+                                    meaningfulDifference
+                                ) {
+                                    Color(
+                                        0xFF9A6700
+                                    )
                                 } else {
                                     Color.Gray
                                 }
@@ -651,7 +735,9 @@ internal fun BusinessPaymentAssistCard(
 
                 Text(
                     "电子支付客户不含现金客流；账单辅助数据不参与结算或利润分配。",
-                    style = MaterialTheme.typography.labelSmall,
+                    style =
+                        MaterialTheme.typography
+                            .labelSmall,
                     color = Color.Gray
                 )
             }
