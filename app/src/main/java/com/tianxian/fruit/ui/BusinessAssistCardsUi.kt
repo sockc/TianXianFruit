@@ -403,6 +403,54 @@ private data class BusinessAssistSnapshot(
     val rawDayCount: Int
 )
 
+internal data class BusinessPaymentSupplement(
+    val wechatTotal: Double,
+    val alipayTotal: Double,
+    val newCustomerCount: Int,
+    val oldCustomerCount: Int
+)
+
+private object BusinessAssistMemoryCache {
+    private val values =
+        LinkedHashMap<String, BusinessAssistSnapshot>()
+
+    private fun key(
+        db: AppDatabase,
+        date: String
+    ): String =
+        System.identityHashCode(db).toString() +
+            "|" +
+            date
+
+    fun get(
+        db: AppDatabase,
+        date: String
+    ): BusinessAssistSnapshot? =
+        synchronized(values) {
+            values[key(db, date)]
+        }
+
+    fun put(
+        db: AppDatabase,
+        date: String,
+        snapshot: BusinessAssistSnapshot
+    ) {
+        synchronized(values) {
+            val cacheKey = key(db, date)
+            values.remove(cacheKey)
+            values[cacheKey] = snapshot
+            while (values.size > 64) {
+                val first =
+                    values.entries
+                        .firstOrNull()
+                        ?.key
+                        ?: break
+                values.remove(first)
+            }
+        }
+    }
+}
+
 @Composable
 internal fun BusinessPaymentAssistCard(
     db: AppDatabase,
@@ -410,25 +458,41 @@ internal fun BusinessPaymentAssistCard(
     dataVersion: Int,
     hasManualBusiness: Boolean,
     manualElectronicTotal: Double,
-    onSupplementBusiness: (Double, Double) -> Unit
+    onSupplementBusiness: (BusinessPaymentSupplement) -> Unit
 ) {
     var expanded by remember(date) {
         mutableStateOf(false)
     }
 
+    val cachedSnapshot =
+        remember(
+            db,
+            date
+        ) {
+            BusinessAssistMemoryCache.get(
+                db,
+                date
+            )
+        }
+
     val snapshot by
         produceState<BusinessAssistSnapshot?>(
-            null,
+            cachedSnapshot,
             db,
             dataVersion,
             date
         ) {
-            value =
+            val fresh =
                 withContext(Dispatchers.IO) {
                     val settings =
                         db.getCustomerAnalysisSettings()
+                    // For a selected business date only historical rows up to that
+                    // date are needed to determine new/old customers. Avoid reading
+                    // later bill rows every time the business page is mounted.
                     val allRawPayments =
-                        db.getCustomerPayments()
+                        db.getCustomerPayments(
+                            endDate = date
+                        )
                     val filteredAll =
                         CustomerAnalyticsEngine
                             .filterRecords(
@@ -474,6 +538,13 @@ internal fun BusinessPaymentAssistCard(
                             }
                     )
                 }
+
+            BusinessAssistMemoryCache.put(
+                db = db,
+                date = date,
+                snapshot = fresh
+            )
+            value = fresh
         }
 
     val current = snapshot
@@ -598,8 +669,16 @@ internal fun BusinessPaymentAssistCard(
                     TextButton(
                         onClick = {
                             onSupplementBusiness(
-                                wechatTotal,
-                                alipayTotal
+                                BusinessPaymentSupplement(
+                                    wechatTotal = wechatTotal,
+                                    alipayTotal = alipayTotal,
+                                    newCustomerCount =
+                                        analysis.summary
+                                            .newCustomerCount,
+                                    oldCustomerCount =
+                                        analysis.summary
+                                            .oldCustomerCount
+                                )
                             )
                         },
                         contentPadding =

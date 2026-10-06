@@ -226,6 +226,11 @@ private enum class ReportDetail(val label: String) {
     DETAILED("详细版")
 }
 
+private enum class StatsRangePickMode {
+    MONTH,
+    DAY
+}
+
 private enum class BusinessStatsTab(val label: String) {
     OVERVIEW("概览"),
     CALENDAR("日历"),
@@ -3999,6 +4004,15 @@ private fun BusinessWeatherCard(
             }
     }
 
+    if (
+        selectedDate.isBefore(
+            LocalDate.now()
+        ) &&
+        state.overview == null
+    ) {
+        return
+    }
+
     val ov = state.overview
     val bh = storeBusinessHours(ov?.hourly.orEmpty(), date, store)
     val pop = bh.mapNotNull { it.precipitationProbability }.maxOrNull()
@@ -5857,8 +5871,7 @@ private fun HomeScreen(
                                                 ?: "—"
                                     },
                                     SoftPurple,
-                                    Modifier.weight(1f),
-                                    caption = "按库存消耗估算"
+                                    Modifier.weight(1f)
                                 )
                             }
     
@@ -10324,7 +10337,7 @@ private fun SessionScreen(
     var isError by remember { mutableStateOf(false) }
     var deleteRecord by remember { mutableStateOf<StoreDailyRecord?>(null) }
     var pendingBusinessSupplement by remember(date) {
-        mutableStateOf<Pair<Double, Double>?>(null)
+        mutableStateOf<BusinessPaymentSupplement?>(null)
     }
     var pendingBusinessSupplementRecordId by remember(date) {
         mutableStateOf<Long?>(null)
@@ -10656,6 +10669,21 @@ private fun SessionScreen(
         }
     }
 
+    fun applySupplementBillData(
+        supplement: BusinessPaymentSupplement
+    ) {
+        applySupplementElectronicTotals(
+            supplement.wechatTotal,
+            supplement.alipayTotal
+        )
+        newCustomer =
+            supplement.newCustomerCount
+                .toString()
+        oldCustomer =
+            supplement.oldCustomerCount
+                .toString()
+    }
+
     LaunchedEffect(dataVersion, stores.map { it.id }, partners.map { it.id }, editingRecordId) {
         if (editingRecordId == null) {
             if (storeId == null || stores.none { it.id == storeId }) {
@@ -10887,18 +10915,17 @@ private fun SessionScreen(
                             it.wechatIncome + it.alipayIncome
                         },
                     onSupplementBusiness = {
-                        wechatTotal,
-                        alipayTotal ->
+                        supplement ->
                         if (todayRecords.isEmpty()) {
                             onRequestLeave {
                                 clearForm()
                                 newBusinessFormExpanded = true
-                                applySupplementElectronicTotals(
-                                    wechatTotal,
-                                    alipayTotal
+                                applySupplementBillData(
+                                    supplement
                                 )
                                 message =
-                                    "已补入微信 ${money(wechatTotal)}、支付宝 ${money(alipayTotal)}，请检查后保存营业记录"
+                                    "已补入微信 ${money(supplement.wechatTotal)}、支付宝 ${money(supplement.alipayTotal)}，" +
+                                        "新客 ${supplement.newCustomerCount}、老客 ${supplement.oldCustomerCount}，请检查后保存营业记录"
                                 isError = false
                                 businessFormScrollScope.launch {
                                     delay(80)
@@ -10922,8 +10949,7 @@ private fun SessionScreen(
                                 isError = true
                             } else {
                                 pendingBusinessSupplement =
-                                    wechatTotal to
-                                        alipayTotal
+                                    supplement
                                 pendingBusinessSupplementRecordId =
                                     targetRecord.id
                             }
@@ -11607,10 +11633,14 @@ private fun SessionScreen(
                                 FontWeight.SemiBold
                         )
                         Text(
-                            "微信 ${money(targetRecord.wechatIncome)} → ${money(amounts.first)}"
+                            "微信 ${money(targetRecord.wechatIncome)} → ${money(amounts.wechatTotal)}"
                         )
                         Text(
-                            "支付宝 ${money(targetRecord.alipayIncome)} → ${money(amounts.second)}"
+                            "支付宝 ${money(targetRecord.alipayIncome)} → ${money(amounts.alipayTotal)}"
+                        )
+                        Text(
+                            "新客 ${targetRecord.newCustomer} → ${amounts.newCustomerCount}   ·   " +
+                                "老客 ${targetRecord.oldCustomer} → ${amounts.oldCustomerCount}"
                         )
                         Text(
                             "现金 ${money(targetRecord.cashIncome)} 保持不变",
@@ -11620,7 +11650,7 @@ private fun SessionScreen(
                                 FontWeight.SemiBold
                         )
                         Text(
-                            "位置、营业时间、日常开销和其他营业数据都不会改动。",
+                            "位置、营业时间、日常开销和其他营业数据都不会改动；客户数按账单客户重新填入。",
                             style =
                                 MaterialTheme
                                     .typography
@@ -11639,13 +11669,12 @@ private fun SessionScreen(
                                 loadRecord(
                                     targetRecord
                                 )
-                                applySupplementElectronicTotals(
-                                    amounts.first,
-                                    amounts.second
+                                applySupplementBillData(
+                                    amounts
                                 )
                                 newBusinessFormExpanded = true
                                 message =
-                                    "已覆盖微信/支付宝，现金保持不变；请检查后保存修改"
+                                    "已覆盖微信/支付宝并补入新客/老客，现金保持不变；请检查后保存修改"
                                 isError = false
                                 businessFormScrollScope.launch {
                                     delay(80)
@@ -21923,7 +21952,7 @@ private fun StatsContent(
 ) {
     var filter by remember {
         mutableStateOf(
-            HistoryTimeFilter.THIS_MONTH
+            HistoryTimeFilter.CUSTOM
         )
     }
 
@@ -21970,7 +21999,11 @@ private fun StatsContent(
 
     var customEnd by remember {
         mutableStateOf(
-            today.toString()
+            today
+                .withDayOfMonth(
+                    today.lengthOfMonth()
+                )
+                .toString()
         )
     }
 
@@ -23027,20 +23060,21 @@ private fun StatsContent(
             )
     ) {
         item {
-            TimeFilterSelector(
+            StatsTimeRangeSelector(
                 filter = filter,
-                onFilterChange = {
-                    filter = it
+                customStart = customStart,
+                customEnd = customEnd,
+                onRangeSelected = {
+                    start,
+                    end ->
+                    filter =
+                        HistoryTimeFilter.CUSTOM
+                    customStart = start
+                    customEnd = end
                 },
-                customStart =
-                    customStart,
-                onCustomStart = {
-                    customStart = it
-                },
-                customEnd =
-                    customEnd,
-                onCustomEnd = {
-                    customEnd = it
+                onAll = {
+                    filter =
+                        HistoryTimeFilter.ALL
                 }
             )
         }
@@ -26046,6 +26080,726 @@ private fun TimeFilterSelector(
             )
         }
     }
+}
+
+private fun statsTimeRangeLabel(
+    filter: HistoryTimeFilter,
+    customStart: String,
+    customEnd: String
+): String {
+    if (filter == HistoryTimeFilter.ALL) {
+        return "全部时间"
+    }
+
+    val range =
+        resolveTimeRange(
+            filter,
+            customStart,
+            customEnd
+        )
+    val start =
+        range.first
+            ?.let {
+                runCatching {
+                    LocalDate.parse(it)
+                }.getOrNull()
+            }
+            ?: return "选择时间"
+    val end =
+        range.second
+            ?.let {
+                runCatching {
+                    LocalDate.parse(it)
+                }.getOrNull()
+            }
+            ?: start
+
+    val fullMonthRange =
+        start.dayOfMonth == 1 &&
+            end.dayOfMonth ==
+                end.lengthOfMonth()
+
+    return when {
+        fullMonthRange &&
+            start.year == end.year &&
+            start.month == end.month ->
+            start.format(
+                DateTimeFormatter.ofPattern(
+                    "yyyy年M月"
+                )
+            )
+
+        fullMonthRange &&
+            start.year == end.year ->
+            start.format(
+                DateTimeFormatter.ofPattern(
+                    "yyyy年M月"
+                )
+            ) +
+                " ～ " +
+                end.format(
+                    DateTimeFormatter.ofPattern(
+                        "M月"
+                    )
+                )
+
+        fullMonthRange ->
+            start.format(
+                DateTimeFormatter.ofPattern(
+                    "yyyy年M月"
+                )
+            ) +
+                " ～ " +
+                end.format(
+                    DateTimeFormatter.ofPattern(
+                        "yyyy年M月"
+                    )
+                )
+
+        start == end ->
+            start.format(
+                DateTimeFormatter.ofPattern(
+                    "yyyy年M月d日"
+                )
+            )
+
+        start.year == end.year ->
+            start.format(
+                DateTimeFormatter.ofPattern(
+                    "yyyy年M月d日"
+                )
+            ) +
+                " ～ " +
+                end.format(
+                    DateTimeFormatter.ofPattern(
+                        "M月d日"
+                    )
+                )
+
+        else ->
+            start.format(
+                DateTimeFormatter.ofPattern(
+                    "yyyy年M月d日"
+                )
+            ) +
+                " ～ " +
+                end.format(
+                    DateTimeFormatter.ofPattern(
+                        "yyyy年M月d日"
+                    )
+                )
+    }
+}
+
+@Composable
+private fun StatsTimeRangeSelector(
+    filter: HistoryTimeFilter,
+    customStart: String,
+    customEnd: String,
+    onRangeSelected: (
+        String,
+        String
+    ) -> Unit,
+    onAll: () -> Unit
+) {
+    var showPicker by remember {
+        mutableStateOf(false)
+    }
+
+    Column(
+        verticalArrangement =
+            Arrangement.spacedBy(
+                4.dp
+            )
+    ) {
+        Text(
+            "时间范围",
+            style =
+                MaterialTheme.typography
+                    .labelSmall,
+            color = Color.Gray
+        )
+        OutlinedButton(
+            onClick = {
+                showPicker = true
+            },
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .height(44.dp),
+            contentPadding =
+                PaddingValues(
+                    horizontal = 10.dp,
+                    vertical = 2.dp
+                )
+        ) {
+            Text(
+                statsTimeRangeLabel(
+                    filter,
+                    customStart,
+                    customEnd
+                ),
+                modifier =
+                    Modifier.weight(1f),
+                fontWeight =
+                    FontWeight.SemiBold,
+                maxLines = 1
+            )
+            Text(
+                "📅",
+                fontSize = 14.sp
+            )
+        }
+    }
+
+    if (showPicker) {
+        val initialStart =
+            runCatching {
+                LocalDate.parse(
+                    customStart
+                )
+            }.getOrElse {
+                LocalDate.now()
+                    .withDayOfMonth(1)
+            }
+        val initialEnd =
+            runCatching {
+                LocalDate.parse(
+                    customEnd
+                )
+            }.getOrElse {
+                initialStart
+            }
+
+        StatsRangePickerDialog(
+            initialStart = initialStart,
+            initialEnd = initialEnd,
+            onDismiss = {
+                showPicker = false
+            },
+            onAll = {
+                showPicker = false
+                onAll()
+            },
+            onConfirm = {
+                start,
+                end ->
+                showPicker = false
+                onRangeSelected(
+                    start.toString(),
+                    end.toString()
+                )
+            }
+        )
+    }
+}
+
+@Composable
+private fun StatsRangePickerDialog(
+    initialStart: LocalDate,
+    initialEnd: LocalDate,
+    onDismiss: () -> Unit,
+    onAll: () -> Unit,
+    onConfirm: (
+        LocalDate,
+        LocalDate
+    ) -> Unit
+) {
+    var visibleMonth by
+        remember(
+            initialStart
+        ) {
+            mutableStateOf(
+                initialStart
+                    .withDayOfMonth(1)
+            )
+        }
+    var draftStart by
+        remember(
+            initialStart,
+            initialEnd
+        ) {
+            mutableStateOf<LocalDate?>(
+                initialStart
+            )
+        }
+    var draftEnd by
+        remember(
+            initialStart,
+            initialEnd
+        ) {
+            mutableStateOf<LocalDate?>(
+                initialEnd
+            )
+        }
+    var pickMode by remember {
+        mutableStateOf<StatsRangePickMode?>(
+            null
+        )
+    }
+    var anchor by remember {
+        mutableStateOf<LocalDate?>(
+            null
+        )
+    }
+
+    fun chooseMonth(
+        month: LocalDate
+    ) {
+        val first =
+            month.withDayOfMonth(1)
+
+        if (
+            pickMode !=
+                StatsRangePickMode.MONTH ||
+            anchor == null
+        ) {
+            pickMode =
+                StatsRangePickMode.MONTH
+            anchor = first
+            draftStart = first
+            draftEnd = null
+            return
+        }
+
+        val other = anchor!!
+        val start =
+            if (other <= first) {
+                other
+            } else {
+                first
+            }
+        val endMonth =
+            if (other >= first) {
+                other
+            } else {
+                first
+            }
+
+        draftStart = start
+        draftEnd =
+            endMonth.withDayOfMonth(
+                endMonth.lengthOfMonth()
+            )
+        anchor = null
+    }
+
+    fun chooseDay(
+        day: LocalDate
+    ) {
+        if (
+            pickMode !=
+                StatsRangePickMode.DAY ||
+            anchor == null
+        ) {
+            pickMode =
+                StatsRangePickMode.DAY
+            anchor = day
+            draftStart = day
+            draftEnd = null
+            return
+        }
+
+        val other = anchor!!
+        draftStart =
+            if (other <= day) {
+                other
+            } else {
+                day
+            }
+        draftEnd =
+            if (other >= day) {
+                other
+            } else {
+                day
+            }
+        anchor = null
+    }
+
+    val effectiveStart =
+        draftStart
+    val effectiveEnd =
+        when {
+            draftEnd != null ->
+                draftEnd
+
+            draftStart != null &&
+                pickMode ==
+                    StatsRangePickMode.MONTH ->
+                draftStart!!
+                    .withDayOfMonth(
+                        draftStart!!
+                            .lengthOfMonth()
+                    )
+
+            else ->
+                draftStart
+        }
+
+    val weekLabels =
+        listOf(
+            "一",
+            "二",
+            "三",
+            "四",
+            "五",
+            "六",
+            "日"
+        )
+    val firstOffset =
+        visibleMonth.dayOfWeek.value -
+            1
+    val daysInMonth =
+        visibleMonth.lengthOfMonth()
+    val cellCount =
+        (
+            (
+                firstOffset +
+                    daysInMonth +
+                    6
+                ) /
+                7
+            ) *
+            7
+
+    val visibleMonthSelected =
+        effectiveStart != null &&
+            effectiveEnd != null &&
+            !visibleMonth
+                .withDayOfMonth(
+                    visibleMonth.lengthOfMonth()
+                )
+                .isBefore(
+                    effectiveStart
+                ) &&
+            !visibleMonth
+                .isAfter(
+                    effectiveEnd
+                        .withDayOfMonth(1)
+                )
+
+    AlertDialog(
+        onDismissRequest =
+            onDismiss,
+        title = {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment =
+                    Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = {
+                        visibleMonth =
+                            visibleMonth
+                                .minusMonths(1)
+                    },
+                    modifier =
+                        Modifier.size(
+                            38.dp
+                        )
+                ) {
+                    Text(
+                        "‹",
+                        fontSize = 28.sp,
+                        color = BrandGreen
+                    )
+                }
+
+                FilterChip(
+                    selected =
+                        visibleMonthSelected,
+                    onClick = {
+                        chooseMonth(
+                            visibleMonth
+                        )
+                    },
+                    label = {
+                        Text(
+                            visibleMonth.format(
+                                DateTimeFormatter
+                                    .ofPattern(
+                                        "yyyy年M月"
+                                    )
+                            ),
+                            fontWeight =
+                                FontWeight.Bold
+                        )
+                    },
+                    modifier =
+                        Modifier.weight(1f)
+                )
+
+                IconButton(
+                    onClick = {
+                        visibleMonth =
+                            visibleMonth
+                                .plusMonths(1)
+                    },
+                    modifier =
+                        Modifier.size(
+                            38.dp
+                        )
+                ) {
+                    Text(
+                        "›",
+                        fontSize = 28.sp,
+                        color = BrandGreen
+                    )
+                }
+            }
+        },
+        text = {
+            Column(
+                verticalArrangement =
+                    Arrangement.spacedBy(
+                        5.dp
+                    )
+            ) {
+                Text(
+                    "点月份选择整月；连续点两个不同月份选择多月。点日期一次选单日，连续点两个日期选择日期范围。",
+                    style =
+                        MaterialTheme.typography
+                            .labelSmall,
+                    color = Color.Gray
+                )
+
+                Row(
+                    Modifier.fillMaxWidth()
+                ) {
+                    weekLabels.forEach {
+                        label ->
+                        Text(
+                            label,
+                            modifier =
+                                Modifier.weight(1f),
+                            textAlign =
+                                TextAlign.Center,
+                            style =
+                                MaterialTheme
+                                    .typography
+                                    .labelMedium,
+                            color = Color.Gray
+                        )
+                    }
+                }
+
+                repeat(
+                    cellCount / 7
+                ) {
+                    rowIndex ->
+                    Row(
+                        Modifier.fillMaxWidth()
+                    ) {
+                        repeat(7) {
+                            columnIndex ->
+                            val index =
+                                rowIndex * 7 +
+                                    columnIndex
+                            val dayNumber =
+                                index -
+                                    firstOffset +
+                                    1
+                            val cellDate =
+                                if (
+                                    dayNumber in
+                                    1..daysInMonth
+                                ) {
+                                    visibleMonth
+                                        .withDayOfMonth(
+                                            dayNumber
+                                        )
+                                } else {
+                                    null
+                                }
+
+                            val selected =
+                                cellDate != null &&
+                                    effectiveStart !=
+                                        null &&
+                                    effectiveEnd !=
+                                        null &&
+                                    !cellDate
+                                        .isBefore(
+                                            effectiveStart
+                                        ) &&
+                                    !cellDate
+                                        .isAfter(
+                                            effectiveEnd
+                                        )
+                            val endpoint =
+                                cellDate != null &&
+                                    (
+                                        cellDate ==
+                                            draftStart ||
+                                            cellDate ==
+                                                draftEnd
+                                        )
+
+                            Box(
+                                Modifier
+                                    .weight(1f)
+                                    .aspectRatio(1f)
+                                    .padding(2.dp)
+                                    .clip(
+                                        RoundedCornerShape(
+                                            9.dp
+                                        )
+                                    )
+                                    .then(
+                                        when {
+                                            endpoint ->
+                                                Modifier
+                                                    .background(
+                                                        Color(
+                                                            0xFFCDEEDC
+                                                        )
+                                                    )
+
+                                            selected ->
+                                                Modifier
+                                                    .background(
+                                                        Color(
+                                                            0xFFE9F8F0
+                                                        )
+                                                    )
+
+                                            else ->
+                                                Modifier
+                                        }
+                                    )
+                                    .clickable(
+                                        enabled =
+                                            cellDate !=
+                                                null
+                                    ) {
+                                        cellDate
+                                            ?.let {
+                                                chooseDay(
+                                                    it
+                                                )
+                                            }
+                                    },
+                                contentAlignment =
+                                    Alignment.Center
+                            ) {
+                                if (
+                                    cellDate !=
+                                    null
+                                ) {
+                                    Text(
+                                        cellDate
+                                            .dayOfMonth
+                                            .toString(),
+                                        color =
+                                            if (
+                                                selected
+                                            ) {
+                                                BrandGreen
+                                            } else {
+                                                Color.DarkGray
+                                            },
+                                        fontWeight =
+                                            if (
+                                                endpoint
+                                            ) {
+                                                FontWeight.Bold
+                                            } else {
+                                                FontWeight.Normal
+                                            }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                val previewStart =
+                    effectiveStart
+                val previewEnd =
+                    effectiveEnd
+                if (
+                    previewStart != null &&
+                    previewEnd != null
+                ) {
+                    Text(
+                        "已选：" +
+                            statsTimeRangeLabel(
+                                HistoryTimeFilter.CUSTOM,
+                                previewStart
+                                    .toString(),
+                                previewEnd
+                                    .toString()
+                            ),
+                        style =
+                            MaterialTheme.typography
+                                .bodySmall,
+                        color = BrandGreen,
+                        fontWeight =
+                            FontWeight.SemiBold
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val start =
+                        draftStart
+                            ?: initialStart
+                    val end =
+                        when {
+                            draftEnd !=
+                                null ->
+                                draftEnd!!
+
+                            pickMode ==
+                                StatsRangePickMode.MONTH ->
+                                start
+                                    .withDayOfMonth(
+                                        start.lengthOfMonth()
+                                    )
+
+                            pickMode ==
+                                StatsRangePickMode.DAY ->
+                                start
+
+                            else ->
+                                initialEnd
+                        }
+
+                    if (start <= end) {
+                        onConfirm(
+                            start,
+                            end
+                        )
+                    } else {
+                        onConfirm(
+                            end,
+                            start
+                        )
+                    }
+                }
+            ) {
+                Text("确定")
+            }
+        },
+        dismissButton = {
+            Row {
+                TextButton(
+                    onClick =
+                        onAll
+                ) {
+                    Text("全部日期")
+                }
+                TextButton(
+                    onClick =
+                        onDismiss
+                ) {
+                    Text("取消")
+                }
+            }
+        }
+    )
 }
 
 @Composable
