@@ -25,6 +25,7 @@ data class CustomerPaymentRecord(
     val storeName: String,
     val transactionRef: String = "",
     val analysisExcluded: Boolean = false,
+    val analysisIncludedOverride: Boolean = false,
     val exclusionReason: String = ""
 )
 
@@ -156,7 +157,8 @@ internal object CustomerAnalyticsEngine {
             if (settings.excludeLargePayments) {
                 allRecords
                     .filter {
-                        it.amount > 0.005 &&
+                        !it.analysisIncludedOverride &&
+                            it.amount > 0.005 &&
                             it.amount >= settings.largePaymentThreshold &&
                             it.transactionRef.isNotBlank()
                     }
@@ -172,6 +174,7 @@ internal object CustomerAnalyticsEngine {
             allRecords
                 .filter {
                     it.analysisExcluded &&
+                        !it.analysisIncludedOverride &&
                         it.amount > 0.005 &&
                         it.transactionRef.isNotBlank()
                 }
@@ -186,9 +189,13 @@ internal object CustomerAnalyticsEngine {
         val excludedIds =
             allRecords
                 .filter { record ->
-                    record.analysisExcluded ||
+                    (
+                        record.analysisExcluded &&
+                            !record.analysisIncludedOverride
+                        ) ||
                         (
-                            record.transactionRef.isNotBlank() &&
+                            !record.analysisIncludedOverride &&
+                                record.transactionRef.isNotBlank() &&
                                 (
                                     record.platform +
                                         "|" +
@@ -196,7 +203,8 @@ internal object CustomerAnalyticsEngine {
                                     ) in excludedRefs
                             ) ||
                         (
-                            settings.excludeLargePayments &&
+                            !record.analysisIncludedOverride &&
+                                settings.excludeLargePayments &&
                                 record.amount > 0.005 &&
                                 record.amount >= settings.largePaymentThreshold
                             )
@@ -207,7 +215,8 @@ internal object CustomerAnalyticsEngine {
         val autoLargeIds =
             allRecords
                 .filter { record ->
-                    settings.excludeLargePayments &&
+                    !record.analysisIncludedOverride &&
+                        settings.excludeLargePayments &&
                         (
                             (
                                 record.amount > 0.005 &&
