@@ -114,6 +114,7 @@ private enum class MorePage {
     PRODUCT_CENTER,
     BOOK_COLLAB,
     HOME_SETTINGS,
+    NOTIFICATIONS,
     BOOKS,
     CLOUD_BOOKS,
     MEMBER_PERMISSIONS,
@@ -15236,6 +15237,17 @@ private fun MoreScreen(
                         SettingsDivider()
 
                         SettingsRow(
+                            "🌦️",
+                            "天气通知",
+                            trailing = "低温 · 温差 · 风雨"
+                        ) {
+                            sub =
+                                MorePage.NOTIFICATIONS
+                        }
+
+                        SettingsDivider()
+
+                        SettingsRow(
                             "🔐",
                             "安全与验证",
                             trailing =
@@ -15402,6 +15414,22 @@ private fun MoreScreen(
                         uiSettingsVersion,
                     onChanged =
                         onUiSettingsChanged
+                )
+            }
+        }
+
+        MorePage.NOTIFICATIONS -> {
+            SubPage(
+                "天气通知",
+                {
+                    sub =
+                        MorePage.MENU
+                }
+            ) {
+                WeatherNotificationSettingsContent(
+                    db = db,
+                    dataVersion = dataVersion,
+                    currentBook = currentBook
                 )
             }
         }

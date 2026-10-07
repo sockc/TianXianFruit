@@ -11,6 +11,7 @@ import com.tianxian.fruit.sync.LedgerBook
 import com.tianxian.fruit.sync.LedgerManager
 import com.tianxian.fruit.ui.SyncUiRefreshBus
 import com.tianxian.fruit.ui.TianXianApp
+import com.tianxian.fruit.weather.WeatherNotificationScheduler
 
 class MainActivity : FragmentActivity() {
     private lateinit var db: AppDatabase
@@ -76,6 +77,11 @@ class MainActivity : FragmentActivity() {
                     ledgerManager.deviceId,
                 deviceName =
                     ledgerManager.deviceName
+            )
+
+        WeatherNotificationScheduler
+            .refresh(
+                applicationContext
             )
 
         setContent {
