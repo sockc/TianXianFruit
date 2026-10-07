@@ -574,6 +574,8 @@ class WeatherNotificationWorker(
             mutableListOf<String>()
         val advice =
             mutableListOf<String>()
+        val riskTags =
+            mutableListOf<String>()
 
         val tempRange =
             temperatureRange(
@@ -596,6 +598,8 @@ class WeatherNotificationWorker(
             metrics.maxTemp >=
             settings.heatThresholdC
         ) {
+            riskTags +=
+                "heat"
             val maxTemp =
                 metrics.maxTemp
             severity =
@@ -633,6 +637,8 @@ class WeatherNotificationWorker(
             metrics.minTemp <=
             settings.coldThresholdC
         ) {
+            riskTags +=
+                "cold"
             val minTemp =
                 metrics.minTemp
             severity =
@@ -691,6 +697,8 @@ class WeatherNotificationWorker(
             swing >=
             settings.temperatureSwingThresholdC
         ) {
+            riskTags +=
+                "swing"
             severity =
                 max(
                     severity,
@@ -719,6 +727,8 @@ class WeatherNotificationWorker(
                     0.05
                 )
         ) {
+            riskTags +=
+                "rain"
             severity =
                 max(
                     severity,
@@ -761,6 +771,8 @@ class WeatherNotificationWorker(
             metrics.maxWind >=
             settings.windSpeedThresholdKmh
         ) {
+            riskTags +=
+                "wind"
             severity =
                 max(
                     severity,
@@ -820,9 +832,19 @@ class WeatherNotificationWorker(
                 }
             }
 
+        val riskSignature =
+            riskTags
+                .sorted()
+                .joinToString(
+                    "_"
+                )
+                .ifBlank {
+                    "normal"
+                }
+
         return Notice(
             key =
-                "${kind}_${date}",
+                "${kind}_${date}_$riskSignature",
             title =
                 title,
             body =
