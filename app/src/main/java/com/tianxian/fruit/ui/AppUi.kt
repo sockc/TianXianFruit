@@ -3189,11 +3189,41 @@ private fun HomeBusinessAdviceCard(
                                 fontWeight = FontWeight.SemiBold,
                                 style = MaterialTheme.typography.bodySmall
                             )
-                            val compact = listOf(
-                                modelMeta.specialReminder.takeIf { it.isNotBlank() },
-                                score.weatherSummary.takeIf { it.isNotBlank() },
-                                score.historySummary.takeIf { it.isNotBlank() }
-                            ).filterNotNull().distinct().joinToString(" · ")
+                            val riskReasons =
+                                remember(
+                                    score.detailsJson,
+                                    score.totalScore,
+                                    score.weatherScore,
+                                    score.historyScore,
+                                    score.calendarScore,
+                                    score.trendScore
+                                ) {
+                                    businessRiskReasons(
+                                        score
+                                    )
+                                }
+                            val compact =
+                                if (
+                                    modelMeta.recommendation ==
+                                        "谨慎营业" &&
+                                    riskReasons.isNotEmpty()
+                                ) {
+                                    "主因：" +
+                                        riskReasons
+                                            .first()
+                                            .text
+                                } else {
+                                    listOf(
+                                        modelMeta.specialReminder.takeIf { it.isNotBlank() },
+                                        score.weatherSummary.takeIf { it.isNotBlank() },
+                                        score.historySummary.takeIf { it.isNotBlank() }
+                                    )
+                                        .filterNotNull()
+                                        .distinct()
+                                        .joinToString(
+                                            " · "
+                                        )
+                                }
                             Text(
                                 compact.ifBlank { "正在积累同位置历史数据" },
                                 style = MaterialTheme.typography.labelSmall,
@@ -3249,6 +3279,259 @@ private fun businessReasonList(detailsJson: String, key: String): List<String> =
             }
         }
     }.getOrDefault(emptyList())
+
+private data class BusinessRiskReasonUi(
+    val category: String,
+    val text: String,
+    val index: Double,
+    val severity: Int
+)
+
+private fun businessRiskReasons(
+    score: BusinessScoreRecord
+): List<BusinessRiskReasonUi> {
+    val explicit =
+        runCatching {
+            val arr =
+                JSONObject(
+                    score.detailsJson
+                        .ifBlank {
+                            "{}"
+                        }
+                ).optJSONArray(
+                    "risk_reasons"
+                )
+                    ?: return@runCatching emptyList()
+
+            buildList {
+                for (
+                    index in
+                    0 until arr.length()
+                ) {
+                    val item =
+                        arr.optJSONObject(
+                            index
+                        )
+                            ?: continue
+                    val text =
+                        item.optString(
+                            "text",
+                            ""
+                        )
+                    if (
+                        text.isBlank()
+                    ) {
+                        continue
+                    }
+                    add(
+                        BusinessRiskReasonUi(
+                            category =
+                                item.optString(
+                                    "category",
+                                    "经营"
+                                ),
+                            text = text,
+                            index =
+                                item.optDouble(
+                                    "index",
+                                    70.0
+                                ),
+                            severity =
+                                item.optInt(
+                                    "severity",
+                                    1
+                                )
+                                    .coerceAtLeast(
+                                        1
+                                    )
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(
+            emptyList()
+        )
+
+    if (
+        explicit.isNotEmpty()
+    ) {
+        return explicit
+            .sortedByDescending {
+                it.severity
+            }
+            .take(3)
+    }
+
+    fun fallbackText(
+        key: String,
+        summary: String
+    ): String {
+        val reasons =
+            businessReasonList(
+                score.detailsJson,
+                key
+            )
+        val keywords =
+            when (key) {
+                "weather" ->
+                    listOf(
+                        "降雨",
+                        "有雨",
+                        "雨量",
+                        "偏冷",
+                        "偏热",
+                        "较差",
+                        "湿度",
+                        "风",
+                        "预警",
+                        "缺失",
+                        "过期"
+                    )
+
+                "history",
+                "trend" ->
+                    listOf(
+                        "营业额",
+                        "客流",
+                        "客单价",
+                        "偏弱",
+                        "样本少"
+                    )
+
+                else ->
+                    listOf(
+                        "表现约为基准",
+                        "样本不足",
+                        "偏弱"
+                    )
+            }
+
+        return reasons
+            .firstOrNull {
+                reason ->
+                keywords.any {
+                    reason.contains(it)
+                } &&
+                    !reason.contains(
+                        "风险低"
+                    ) &&
+                    !reason.contains(
+                        "基本无雨"
+                    )
+            }
+            ?: summary
+    }
+
+    val fallback =
+        listOf(
+            Triple(
+                "天气",
+                "weather",
+                score.weatherScore to
+                    score.weatherSummary
+            ),
+            Triple(
+                "历史",
+                "history",
+                score.historyScore to
+                    score.historySummary
+            ),
+            Triple(
+                "日期",
+                "calendar",
+                score.calendarScore to
+                    score.calendarSummary
+            ),
+            Triple(
+                "趋势",
+                "trend",
+                score.trendScore to
+                    score.trendSummary
+            )
+        )
+            .filter {
+                it.third.first <
+                    75.0
+            }
+            .map {
+                item ->
+                BusinessRiskReasonUi(
+                    category =
+                        item.first,
+                    text =
+                        fallbackText(
+                            item.second,
+                            item.third.second
+                        ),
+                    index =
+                        item.third.first,
+                    severity =
+                        (
+                            75.0 -
+                                item.third.first
+                            )
+                            .roundToInt()
+                            .coerceAtLeast(
+                                1
+                            )
+                )
+            }
+            .sortedByDescending {
+                it.severity
+            }
+
+    if (
+        fallback.isNotEmpty()
+    ) {
+        return fallback.take(3)
+    }
+
+    if (
+        score.totalScore <
+            75
+    ) {
+        val lowest =
+            listOf(
+                BusinessRiskReasonUi(
+                    "天气",
+                    score.weatherSummary,
+                    score.weatherScore,
+                    1
+                ),
+                BusinessRiskReasonUi(
+                    "历史",
+                    score.historySummary,
+                    score.historyScore,
+                    1
+                ),
+                BusinessRiskReasonUi(
+                    "日期",
+                    score.calendarSummary,
+                    score.calendarScore,
+                    1
+                ),
+                BusinessRiskReasonUi(
+                    "趋势",
+                    score.trendSummary,
+                    score.trendScore,
+                    1
+                )
+            ).minByOrNull {
+                it.index
+            }
+
+        if (
+            lowest != null &&
+            lowest.text.isNotBlank()
+        ) {
+            return listOf(
+                lowest
+            )
+        }
+    }
+
+    return emptyList()
+}
 
 private data class BusinessScoreModelUi(
     val version: String = "V1",
@@ -3437,6 +3720,19 @@ private fun BusinessAdviceDetailContent(
                             remember(score.detailsJson) {
                                 businessScoreModelUi(score.detailsJson)
                             }
+                        val riskReasons =
+                            remember(
+                                score.detailsJson,
+                                score.totalScore,
+                                score.weatherScore,
+                                score.historyScore,
+                                score.calendarScore,
+                                score.trendScore
+                            ) {
+                                businessRiskReasons(
+                                    score
+                                )
+                            }
                         Row(verticalAlignment = Alignment.Bottom) {
                             Text(
                                 "${score.totalScore}分",
@@ -3473,6 +3769,27 @@ private fun BusinessAdviceDetailContent(
                                 color = Color(0xFFB26A00)
                             )
                         }
+                        if (
+                            modelMeta.recommendation ==
+                                "谨慎营业" &&
+                            riskReasons.isNotEmpty()
+                        ) {
+                            Text(
+                                "主要原因：" +
+                                    riskReasons
+                                        .first()
+                                        .text,
+                                style =
+                                    MaterialTheme.typography
+                                        .bodySmall,
+                                color =
+                                    Color(
+                                        0xFFB26A00
+                                    ),
+                                fontWeight =
+                                    FontWeight.SemiBold
+                            )
+                        }
                         Text(score.historySummary, color = Color.DarkGray)
                     }
                     state.loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -3483,6 +3800,19 @@ private fun BusinessAdviceDetailContent(
 
         state.score?.let { score ->
             val modelMeta = remember(score.detailsJson) { businessScoreModelUi(score.detailsJson) }
+            val riskReasons =
+                remember(
+                    score.detailsJson,
+                    score.totalScore,
+                    score.weatherScore,
+                    score.historyScore,
+                    score.calendarScore,
+                    score.trendScore
+                ) {
+                    businessRiskReasons(
+                        score
+                    )
+                }
             val isV2 = modelMeta.version.startsWith("V2") || modelMeta.version.startsWith("V3")
             Card(shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -3540,6 +3870,38 @@ private fun BusinessAdviceDetailContent(
                         fontWeight = FontWeight.SemiBold,
                         color = BrandGreen
                     )
+                    if (
+                        modelMeta.recommendation ==
+                            "谨慎营业" &&
+                        riskReasons.isNotEmpty()
+                    ) {
+                        Text(
+                            "主要原因",
+                            style =
+                                MaterialTheme.typography
+                                    .labelMedium,
+                            fontWeight =
+                                FontWeight.SemiBold,
+                            color =
+                                Color(
+                                    0xFFB26A00
+                                )
+                        )
+                        riskReasons
+                            .take(3)
+                            .forEachIndexed {
+                                index,
+                                reason ->
+                                Text(
+                                    "${index + 1}. ${reason.category}：${reason.text}",
+                                    style =
+                                        MaterialTheme.typography
+                                            .bodySmall,
+                                    color =
+                                        Color.DarkGray
+                                )
+                            }
+                    }
                     if (modelMeta.revenueRangeLow > 0.0 && modelMeta.revenueRangeHigh > 0.0) {
                         Text(
                             "历史营业额参考 ${money(modelMeta.revenueRangeLow)} ～ ${money(modelMeta.revenueRangeHigh)}",
