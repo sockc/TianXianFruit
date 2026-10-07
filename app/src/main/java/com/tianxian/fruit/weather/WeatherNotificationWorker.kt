@@ -344,6 +344,7 @@ class WeatherNotificationWorker(
             }
 
         if (
+            cached != null &&
             cachedOverview != null &&
             cached.expiresAt >
                 now
