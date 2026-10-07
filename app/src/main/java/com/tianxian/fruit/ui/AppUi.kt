@@ -10609,7 +10609,13 @@ private fun PurchaseDraftRowEditor(
                     modifier = Modifier.weight(15f)
                 )
                 Box(Modifier.weight(10f)) {
-                    CompactSelectButton("单位", row.unit, Modifier.fillMaxWidth()) { unitMenu = true }
+                    PurchaseUnitSelectField(
+                        label = "单位",
+                        value = row.unit,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        unitMenu = true
+                    }
                     DropdownMenu(expanded = unitMenu, onDismissRequest = { unitMenu = false }) {
                         listOf("箱", "筐", "件", "袋").forEach { unit ->
                             DropdownMenuItem(text = { Text(unit) }, onClick = {
@@ -27959,6 +27965,44 @@ private fun CompactNumberField(label: String, value: String, onValue: (String) -
         accept = { it.matches(Regex("^\\d*(\\.\\d{0,2})?$")) },
         onValue = onValue
     )
+}
+
+@Composable
+private fun PurchaseUnitSelectField(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Column(modifier) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.Gray,
+            maxLines = 1
+        )
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(36.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .border(1.dp, Color(0xFFB8BDC5), RoundedCornerShape(8.dp))
+                .background(Color.White)
+                .clickable(onClick = onClick)
+                .padding(horizontal = 4.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            Text(
+                value,
+                style =
+                    MaterialTheme.typography.bodyMedium.copy(
+                        fontSize = 13.sp,
+                        color = Color(0xFF222222)
+                    ),
+                maxLines = 1
+            )
+        }
+    }
 }
 
 @Composable
