@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.tianxian.fruit.data.AppDatabase
 import com.tianxian.fruit.sync.LedgerBook
@@ -994,12 +995,21 @@ private fun SettingsSmallDivider() {
 
 private fun notificationsAllowed(
     context: android.content.Context
-): Boolean =
-    Build.VERSION.SDK_INT <
-        33 ||
-        ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission
-                .POST_NOTIFICATIONS
-        ) ==
-        PackageManager.PERMISSION_GRANTED
+): Boolean {
+    val permissionGranted =
+        Build.VERSION.SDK_INT <
+            33 ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission
+                    .POST_NOTIFICATIONS
+            ) ==
+            PackageManager.PERMISSION_GRANTED
+
+    return permissionGranted &&
+        NotificationManagerCompat
+            .from(
+                context
+            )
+            .areNotificationsEnabled()
+}
