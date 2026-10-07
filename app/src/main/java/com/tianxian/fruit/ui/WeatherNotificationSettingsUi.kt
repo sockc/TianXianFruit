@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -45,7 +46,6 @@ import androidx.core.content.ContextCompat
 import com.tianxian.fruit.data.AppDatabase
 import com.tianxian.fruit.sync.LedgerBook
 import com.tianxian.fruit.weather.WeatherNotificationScheduler
-import com.tianxian.fruit.weather.WeatherNotificationSettings
 import com.tianxian.fruit.weather.WeatherNotificationSettingsManager
 import kotlin.math.roundToInt
 
@@ -760,7 +760,7 @@ fun WeatherNotificationSettingsContent(
 @Composable
 private fun WeatherSettingsCard(
     title: String,
-    content: @Composable Column.() -> Unit
+    content: @Composable ColumnScope.() -> Unit
 ) {
     Card(
         shape =
