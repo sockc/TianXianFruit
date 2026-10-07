@@ -2,8 +2,10 @@ package com.tianxian.fruit.ui
 
 import android.Manifest
 import android.app.TimePickerDialog
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -114,9 +116,16 @@ fun WeatherNotificationSettingsContent(
         ) {
             granted ->
             permissionGranted =
-                granted ||
-                    Build.VERSION.SDK_INT <
-                    33
+                (
+                    granted ||
+                        Build.VERSION.SDK_INT <
+                        33
+                    ) &&
+                    NotificationManagerCompat
+                        .from(
+                            context
+                        )
+                        .areNotificationsEnabled()
             if (
                 permissionGranted
             ) {
@@ -137,23 +146,47 @@ fun WeatherNotificationSettingsContent(
         }
 
     fun requestPermission() {
-        if (
-            Build.VERSION.SDK_INT >=
-            33 &&
-            !notificationsAllowed(
+        val runtimeGranted =
+            runtimeNotificationPermissionGranted(
                 context
             )
-        ) {
-            permissionLauncher.launch(
-                Manifest.permission
-                    .POST_NOTIFICATIONS
-            )
-        } else {
-            permissionGranted = true
-            settings =
-                settings.copy(
-                    enabled = true
+
+        when {
+            !runtimeGranted &&
+                Build.VERSION.SDK_INT >=
+                33 -> {
+                permissionLauncher.launch(
+                    Manifest.permission
+                        .POST_NOTIFICATIONS
                 )
+            }
+
+            !NotificationManagerCompat
+                .from(
+                    context
+                )
+                .areNotificationsEnabled() -> {
+                context.startActivity(
+                    Intent(
+                        Settings.ACTION_APP_NOTIFICATION_SETTINGS
+                    ).apply {
+                        putExtra(
+                            Settings.EXTRA_APP_PACKAGE,
+                            context.packageName
+                        )
+                    }
+                )
+                message =
+                    "系统已关闭天鲜账本通知，请在系统页面打开通知后返回"
+            }
+
+            else -> {
+                permissionGranted = true
+                settings =
+                    settings.copy(
+                        enabled = true
+                    )
+            }
         }
     }
 
@@ -993,23 +1026,26 @@ private fun SettingsSmallDivider() {
     )
 }
 
+private fun runtimeNotificationPermissionGranted(
+    context: android.content.Context
+): Boolean =
+    Build.VERSION.SDK_INT <
+        33 ||
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission
+                .POST_NOTIFICATIONS
+        ) ==
+        PackageManager.PERMISSION_GRANTED
+
 private fun notificationsAllowed(
     context: android.content.Context
-): Boolean {
-    val permissionGranted =
-        Build.VERSION.SDK_INT <
-            33 ||
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission
-                    .POST_NOTIFICATIONS
-            ) ==
-            PackageManager.PERMISSION_GRANTED
-
-    return permissionGranted &&
+): Boolean =
+    runtimeNotificationPermissionGranted(
+        context
+    ) &&
         NotificationManagerCompat
             .from(
                 context
             )
             .areNotificationsEnabled()
-}
