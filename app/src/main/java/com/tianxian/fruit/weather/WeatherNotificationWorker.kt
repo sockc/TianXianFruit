@@ -1312,14 +1312,34 @@ class WeatherNotificationWorker(
                     }
                 )
 
-        NotificationManagerCompat
-            .from(
-                context
-            )
-            .notify(
-                notificationId,
-                builder.build()
-            )
+        if (
+            Build.VERSION.SDK_INT >=
+                33 &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+
+        try {
+            NotificationManagerCompat
+                .from(
+                    context
+                )
+                .notify(
+                    notificationId,
+                    builder.build()
+                )
+        } catch (
+            _: SecurityException
+        ) {
+            // Permission or system notification state may change between the
+            // background check and actual delivery. Skip safely in that case.
+            return
+        }
     }
 
     private fun ensureChannels(
