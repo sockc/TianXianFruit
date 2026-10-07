@@ -33,6 +33,7 @@ import java.time.LocalDateTime
 import java.time.OffsetDateTime
 import java.time.ZonedDateTime
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -258,6 +259,10 @@ class WeatherNotificationWorker(
 
             Result.success()
         } catch (
+            cancelled: CancellationException
+        ) {
+            throw cancelled
+        } catch (
             _: Throwable
         ) {
             // Weather notifications are advisory. Never keep retrying aggressively
@@ -399,7 +404,7 @@ class WeatherNotificationWorker(
                 cached != null &&
                     now -
                         cached.fetchedAt <=
-                    6L *
+                    2L *
                         60L *
                         60L *
                         1000L
