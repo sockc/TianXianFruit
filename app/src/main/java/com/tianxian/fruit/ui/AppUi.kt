@@ -12287,28 +12287,28 @@ private data class PartnerFundDetailUiSnapshot(
 )
 
 private object FundBalanceUiCache {
-    private val overview =
+    private val overviewValues =
         LinkedHashMap<String, FundBalanceOverviewUiSnapshot>()
-    private val details =
+    private val detailValues =
         LinkedHashMap<String, PartnerFundDetailUiSnapshot>()
 
     fun overview(
         key: String
     ): FundBalanceOverviewUiSnapshot? =
-        synchronized(overview) {
-            overview[key]
+        synchronized(overviewValues) {
+            overviewValues[key]
         }
 
     fun putOverview(
         key: String,
         value: FundBalanceOverviewUiSnapshot
     ) {
-        synchronized(overview) {
-            overview.remove(key)
-            overview[key] = value
-            while (overview.size > 12) {
-                overview.remove(
-                    overview.entries
+        synchronized(overviewValues) {
+            overviewValues.remove(key)
+            overviewValues[key] = value
+            while (overviewValues.size > 12) {
+                overviewValues.remove(
+                    overviewValues.entries
                         .first()
                         .key
                 )
@@ -12319,20 +12319,20 @@ private object FundBalanceUiCache {
     fun detail(
         key: String
     ): PartnerFundDetailUiSnapshot? =
-        synchronized(details) {
-            details[key]
+        synchronized(detailValues) {
+            detailValues[key]
         }
 
     fun putDetail(
         key: String,
         value: PartnerFundDetailUiSnapshot
     ) {
-        synchronized(details) {
-            details.remove(key)
-            details[key] = value
-            while (details.size > 24) {
-                details.remove(
-                    details.entries
+        synchronized(detailValues) {
+            detailValues.remove(key)
+            detailValues[key] = value
+            while (detailValues.size > 24) {
+                detailValues.remove(
+                    detailValues.entries
                         .first()
                         .key
                 )
