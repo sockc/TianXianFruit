@@ -126,6 +126,7 @@ class WeatherNotificationWorker(
         val maxPop: Double,
         val totalRain: Double,
         val maxWind: Double,
+        val hotHours: List<String>,
         val wetHours: List<String>
     )
 
@@ -490,7 +491,10 @@ class WeatherNotificationWorker(
                 endTime =
                     store.defaultEndTime,
                 leadHours = 3,
-                graceHours = 1
+                // Keep checking through the whole business window. A later
+                // forecast update can therefore surface rain that was not
+                // present in the pre-opening forecast.
+                graceHours = 24
             )
         ) {
             val rows =
@@ -583,6 +587,43 @@ class WeatherNotificationWorker(
                 "$label $tempRange"
         } else {
             facts += label
+        }
+
+        if (
+            settings.heatEnabled &&
+            metrics.maxTemp !=
+            null &&
+            metrics.maxTemp >=
+            settings.heatThresholdC
+        ) {
+            val maxTemp =
+                metrics.maxTemp
+            severity =
+                max(
+                    severity,
+                    when {
+                        maxTemp >= 40.0 -> 3
+                        maxTemp >= 37.0 -> 2
+                        else -> 1
+                    }
+                )
+            facts +=
+                "最高约 ${maxTemp.roundToInt()}℃"
+            if (
+                metrics.hotHours.isNotEmpty()
+            ) {
+                facts +=
+                    "高温时段 ${metrics.hotHours.take(3).joinToString("、")}"
+            }
+            advice +=
+                if (
+                    adviceContext ==
+                    "营业"
+                ) {
+                    "注意遮阳补水，水果避免暴晒"
+                } else {
+                    "注意防暑补水"
+                }
         }
 
         if (
@@ -753,7 +794,7 @@ class WeatherNotificationWorker(
             severity <= 0
         ) {
             facts +=
-                "暂未发现明显风雨或低温风险"
+                "暂未发现明显风雨或高低温风险"
         }
 
         val body =
@@ -969,6 +1010,32 @@ class WeatherNotificationWorker(
                 it.windSpeed
             }.maxOrNull()
                 ?: 0.0
+        val hotHours =
+            rows.mapNotNull {
+                row ->
+                val temp =
+                    forecastTemperature(
+                        row
+                    )
+                        ?: return@mapNotNull null
+                if (
+                    settings.heatEnabled &&
+                    temp >=
+                    settings.heatThresholdC
+                ) {
+                    hourTime(
+                        row
+                    )
+                        ?.let {
+                            "%02d:%02d".format(
+                                it.hour,
+                                it.minute
+                            )
+                        }
+                } else {
+                    null
+                }
+            }
         val wetHours =
             rows.mapNotNull {
                 row ->
@@ -1014,6 +1081,9 @@ class WeatherNotificationWorker(
                 totalRain,
             maxWind =
                 maxWind,
+            hotHours =
+                hotHours
+                    .distinct(),
             wetHours =
                 wetHours
                     .distinct()
@@ -1363,7 +1433,7 @@ class WeatherNotificationWorker(
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
                 description =
-                    "采购、营业、低温、温差、降雨、大风和快速降温提醒"
+                    "采购、营业、高温、低温、温差、降雨、大风和快速降温提醒"
             }
         )
         manager.createNotificationChannel(
