@@ -9,6 +9,8 @@ data class WeatherNotificationSettings(
     val procurementStartTime: String = "06:00",
     val procurementEndTime: String = "10:00",
     val businessEnabled: Boolean = true,
+    val heatEnabled: Boolean = true,
+    val heatThresholdC: Double = 35.0,
     val coldEnabled: Boolean = true,
     val coldThresholdC: Double = 15.0,
     val temperatureSwingEnabled: Boolean = true,
@@ -80,6 +82,16 @@ class WeatherNotificationSettingsManager(
                 prefs.getBoolean(
                     "${prefix}_business_enabled",
                     true
+                ),
+            heatEnabled =
+                prefs.getBoolean(
+                    "${prefix}_heat_enabled",
+                    true
+                ),
+            heatThresholdC =
+                doubleValue(
+                    "heat_threshold",
+                    35.0
                 ),
             coldEnabled =
                 prefs.getBoolean(
@@ -175,6 +187,15 @@ class WeatherNotificationSettingsManager(
             .putBoolean(
                 "${prefix}_business_enabled",
                 settings.businessEnabled
+            )
+            .putBoolean(
+                "${prefix}_heat_enabled",
+                settings.heatEnabled
+            )
+            .putString(
+                "${prefix}_heat_threshold",
+                settings.heatThresholdC
+                    .toString()
             )
             .putBoolean(
                 "${prefix}_cold_enabled",

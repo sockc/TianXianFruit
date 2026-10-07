@@ -298,7 +298,7 @@ fun WeatherNotificationSettingsContent(
                     )
 
                     Text(
-                        "每小时后台检查一次；同类风险当天只提醒一次，风险明显升级时才再次提醒。",
+                        "每小时后台检查一次；高温或未来时段降雨也会提醒。同类风险当天只提醒一次；新增风险类型或风险升级时可再次提醒。",
                         style =
                             MaterialTheme.typography
                                 .bodySmall,
@@ -439,7 +439,7 @@ fun WeatherNotificationSettingsContent(
                     title =
                         "采购前提醒",
                     subtitle =
-                        "在采购前约2小时开始检查低温、风雨和温差",
+                        "在采购前约2小时开始检查高温、低温、风雨和温差",
                     checked =
                         settings.procurementEnabled,
                     onChecked = {
@@ -511,7 +511,7 @@ fun WeatherNotificationSettingsContent(
                     title =
                         "开摊前提醒",
                     subtitle =
-                        "自动读取通知位置保存的营业时间，提前约3小时检查",
+                        "提前约3小时开始检查，并持续关注到收摊",
                     checked =
                         settings.businessEnabled,
                     onChecked = {
@@ -530,6 +530,37 @@ fun WeatherNotificationSettingsContent(
                 title =
                     "提醒条件"
             ) {
+                WeatherThresholdRow(
+                    title =
+                        "高温",
+                    subtitle =
+                        "采购/营业时段最高温达到阈值",
+                    checked =
+                        settings.heatEnabled,
+                    value =
+                        settings.heatThresholdC,
+                    valueRange =
+                        28f..42f,
+                    unit =
+                        "℃",
+                    onChecked = {
+                        settings =
+                            settings.copy(
+                                heatEnabled =
+                                    it
+                            )
+                    },
+                    onValue = {
+                        settings =
+                            settings.copy(
+                                heatThresholdC =
+                                    it
+                            )
+                    }
+                )
+
+                SettingsSmallDivider()
+
                 WeatherThresholdRow(
                     title =
                         "低温",
