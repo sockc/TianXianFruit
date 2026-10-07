@@ -11910,6 +11910,185 @@ private fun MoneyCollectorRow(
     }
 }
 
+private data class FundBalanceOverviewUiSnapshot(
+    val partners: List<PartnerOption>,
+    val balances: Map<Long, PartnerFundBalanceSummary>,
+    val windows: Map<Long, PartnerOutstandingWindow?>,
+    val periodSummary: FundPeriodSummary?,
+    val partnerPeriodStats: Map<Long, PartnerFundPeriodSummary>,
+    val settlementCenter: PartnerOption?
+)
+
+private data class PartnerFundDetailUiSnapshot(
+    val rows: List<PartnerDailyFundBalanceRecord>,
+    val events: List<SettlementTransferRecord>
+)
+
+private object FundBalanceUiCache {
+    private val overview =
+        LinkedHashMap<String, FundBalanceOverviewUiSnapshot>()
+    private val details =
+        LinkedHashMap<String, PartnerFundDetailUiSnapshot>()
+
+    fun overview(
+        key: String
+    ): FundBalanceOverviewUiSnapshot? =
+        synchronized(overview) {
+            overview[key]
+        }
+
+    fun putOverview(
+        key: String,
+        value: FundBalanceOverviewUiSnapshot
+    ) {
+        synchronized(overview) {
+            overview.remove(key)
+            overview[key] = value
+            while (overview.size > 12) {
+                overview.remove(
+                    overview.entries
+                        .first()
+                        .key
+                )
+            }
+        }
+    }
+
+    fun detail(
+        key: String
+    ): PartnerFundDetailUiSnapshot? =
+        synchronized(details) {
+            details[key]
+        }
+
+    fun putDetail(
+        key: String,
+        value: PartnerFundDetailUiSnapshot
+    ) {
+        synchronized(details) {
+            details.remove(key)
+            details[key] = value
+            while (details.size > 24) {
+                details.remove(
+                    details.entries
+                        .first()
+                        .key
+                )
+            }
+        }
+    }
+}
+
+private fun fundBalanceOverviewCacheKey(
+    db: AppDatabase,
+    dataVersion: Int,
+    date: String,
+    rangeStart: String?,
+    rangeEnd: String,
+    invalidCustom: Boolean
+): String =
+    listOf(
+        System.identityHashCode(db),
+        dataVersion,
+        date,
+        rangeStart.orEmpty(),
+        rangeEnd,
+        invalidCustom
+    ).joinToString("|")
+
+private fun partnerFundDetailCacheKey(
+    db: AppDatabase,
+    dataVersion: Int,
+    partnerId: Long,
+    rangeStart: String?,
+    rangeEnd: String
+): String =
+    listOf(
+        System.identityHashCode(db),
+        dataVersion,
+        partnerId,
+        rangeStart.orEmpty(),
+        rangeEnd
+    ).joinToString("|")
+
+private fun loadFundBalanceOverview(
+    db: AppDatabase,
+    date: String,
+    rangeStart: String?,
+    rangeEnd: String,
+    invalidCustom: Boolean
+): FundBalanceOverviewUiSnapshot {
+    val partners =
+        db.getPartners()
+    val balances =
+        db.getPartnerFundBalances(
+            endDate = date
+        ).associateBy {
+            it.partnerId
+        }
+    val settlementCenter =
+        db.getSettlementCenter()
+    val windows =
+        partners.associate {
+            partner ->
+            partner.id to
+                db.getPartnerOutstandingWindow(
+                    partner.id,
+                    date
+                )
+        }
+    val periodSummary =
+        if (invalidCustom) {
+            null
+        } else {
+            db.getFundPeriodSummary(
+                rangeStart,
+                rangeEnd
+            )
+        }
+    val partnerPeriodStats =
+        if (invalidCustom) {
+            emptyMap()
+        } else {
+            db.getPartnerFundPeriodSummaries(
+                rangeStart,
+                rangeEnd
+            ).associateBy {
+                it.partnerId
+            }
+        }
+
+    return FundBalanceOverviewUiSnapshot(
+        partners = partners,
+        balances = balances,
+        windows = windows,
+        periodSummary = periodSummary,
+        partnerPeriodStats = partnerPeriodStats,
+        settlementCenter = settlementCenter
+    )
+}
+
+private fun loadPartnerFundDetail(
+    db: AppDatabase,
+    partnerId: Long,
+    rangeStart: String?,
+    rangeEnd: String
+): PartnerFundDetailUiSnapshot =
+    PartnerFundDetailUiSnapshot(
+        rows =
+            db.getPartnerDailyFundBalances(
+                partnerId,
+                rangeStart,
+                rangeEnd
+            ),
+        events =
+            db.getPartnerSettlementEvents(
+                partnerId,
+                rangeStart,
+                rangeEnd
+            )
+    )
+
 @Composable
 private fun SettlementScreen(
     db: AppDatabase,
@@ -11920,6 +12099,52 @@ private fun SettlementScreen(
     onChanged: () -> Unit
 ) {
     var view by remember { mutableStateOf(SettlementView.DAY) }
+
+    LaunchedEffect(
+        db,
+        dataVersion
+    ) {
+        val today =
+            LocalDate.now()
+        val date =
+            today.toString()
+        val rangeStart =
+            today.minusDays(29)
+                .toString()
+        val key =
+            fundBalanceOverviewCacheKey(
+                db = db,
+                dataVersion = dataVersion,
+                date = date,
+                rangeStart = rangeStart,
+                rangeEnd = date,
+                invalidCustom = false
+            )
+
+        if (
+            FundBalanceUiCache
+                .overview(key) ==
+            null
+        ) {
+            val snapshot =
+                withContext(
+                    Dispatchers.IO
+                ) {
+                    loadFundBalanceOverview(
+                        db = db,
+                        date = date,
+                        rangeStart = rangeStart,
+                        rangeEnd = date,
+                        invalidCustom = false
+                    )
+                }
+            FundBalanceUiCache
+                .putOverview(
+                    key,
+                    snapshot
+                )
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -13045,63 +13270,74 @@ private fun SettlementBatchContent(
         filter == HistoryTimeFilter.CUSTOM &&
             customStart > customEnd
 
-    val partners =
-        remember(dataVersion) {
-            db.getPartners()
-        }
-    val balances =
-        remember(dataVersion, date) {
-            db.getPartnerFundBalances(endDate = date)
-                .associateBy { it.partnerId }
-        }
-    val windows =
-        remember(dataVersion, date, partners) {
-            partners.associate { partner ->
-                partner.id to
-                    db.getPartnerOutstandingWindow(
-                        partner.id,
-                        date
-                    )
-            }
-        }
-    val periodSummary =
+    val overviewCacheKey =
+        fundBalanceOverviewCacheKey(
+            db = db,
+            dataVersion = dataVersion,
+            date = date,
+            rangeStart = rangeStart,
+            rangeEnd = rangeEnd,
+            invalidCustom = invalidCustom
+        )
+    val cachedOverview =
         remember(
-            dataVersion,
-            rangeStart,
-            rangeEnd,
-            invalidCustom
+            overviewCacheKey
         ) {
-            if (invalidCustom) {
-                null
-            } else {
-                db.getFundPeriodSummary(
-                    rangeStart,
-                    rangeEnd
+            FundBalanceUiCache
+                .overview(
+                    overviewCacheKey
                 )
-            }
         }
-    val partnerPeriodStats =
-        remember(
-            dataVersion,
-            rangeStart,
-            rangeEnd,
-            invalidCustom
+    val overviewSnapshot by
+        produceState<FundBalanceOverviewUiSnapshot?>(
+            initialValue =
+                cachedOverview,
+            overviewCacheKey
         ) {
-            if (invalidCustom) {
-                emptyMap()
-            } else {
-                db.getPartnerFundPeriodSummaries(
-                    rangeStart,
-                    rangeEnd
-                ).associateBy {
-                    it.partnerId
+            val fresh =
+                withContext(
+                    Dispatchers.IO
+                ) {
+                    loadFundBalanceOverview(
+                        db = db,
+                        date = date,
+                        rangeStart = rangeStart,
+                        rangeEnd = rangeEnd,
+                        invalidCustom = invalidCustom
+                    )
                 }
-            }
+            FundBalanceUiCache
+                .putOverview(
+                    overviewCacheKey,
+                    fresh
+                )
+            value = fresh
         }
+
+    val overviewLoading =
+        overviewSnapshot == null
+    val partners =
+        overviewSnapshot
+            ?.partners
+            .orEmpty()
+    val balances =
+        overviewSnapshot
+            ?.balances
+            .orEmpty()
+    val windows =
+        overviewSnapshot
+            ?.windows
+            .orEmpty()
+    val periodSummary =
+        overviewSnapshot
+            ?.periodSummary
+    val partnerPeriodStats =
+        overviewSnapshot
+            ?.partnerPeriodStats
+            .orEmpty()
     val settlementCenter =
-        remember(dataVersion) {
-            db.getSettlementCenter()
-        }
+        overviewSnapshot
+            ?.settlementCenter
 
     LaunchedEffect(partners) {
         if (
@@ -13121,42 +13357,80 @@ private fun SettlementBatchContent(
 
     val selectedPartner =
         partners.firstOrNull { it.id == selectedPartnerId }
+    val selectedDetailKey =
+        selectedPartner
+            ?.takeIf {
+                !invalidCustom
+            }
+            ?.let {
+                partner ->
+                partnerFundDetailCacheKey(
+                    db = db,
+                    dataVersion = dataVersion,
+                    partnerId = partner.id,
+                    rangeStart = rangeStart,
+                    rangeEnd = rangeEnd
+                )
+            }
+    val cachedDetail =
+        remember(
+            selectedDetailKey
+        ) {
+            selectedDetailKey
+                ?.let {
+                    FundBalanceUiCache
+                        .detail(it)
+                }
+        }
+    val selectedDetail by
+        produceState<PartnerFundDetailUiSnapshot?>(
+            initialValue =
+                cachedDetail,
+            selectedDetailKey
+        ) {
+            val partner =
+                selectedPartner
+            val key =
+                selectedDetailKey
+            if (
+                partner == null ||
+                key == null
+            ) {
+                value = null
+                return@produceState
+            }
+
+            val fresh =
+                withContext(
+                    Dispatchers.IO
+                ) {
+                    loadPartnerFundDetail(
+                        db = db,
+                        partnerId = partner.id,
+                        rangeStart = rangeStart,
+                        rangeEnd = rangeEnd
+                    )
+                }
+            FundBalanceUiCache
+                .putDetail(
+                    key,
+                    fresh
+                )
+            value = fresh
+        }
+
+    val selectedDetailLoading =
+        selectedPartner != null &&
+            !invalidCustom &&
+            selectedDetail == null
     val selectedRows =
-        remember(
-            dataVersion,
-            selectedPartner?.id,
-            rangeStart,
-            rangeEnd,
-            invalidCustom
-        ) {
-            if (selectedPartner != null && !invalidCustom) {
-                db.getPartnerDailyFundBalances(
-                    selectedPartner.id,
-                    rangeStart,
-                    rangeEnd
-                )
-            } else {
-                emptyList()
-            }
-        }
+        selectedDetail
+            ?.rows
+            .orEmpty()
     val selectedSettlementEvents =
-        remember(
-            dataVersion,
-            selectedPartner?.id,
-            rangeStart,
-            rangeEnd,
-            invalidCustom
-        ) {
-            if (selectedPartner != null && !invalidCustom) {
-                db.getPartnerSettlementEvents(
-                    selectedPartner.id,
-                    rangeStart,
-                    rangeEnd
-                )
-            } else {
-                emptyList()
-            }
-        }
+        selectedDetail
+            ?.events
+            .orEmpty()
 
     val centerPendingReceivable =
         settlementCenter?.let { center ->
@@ -13348,6 +13622,35 @@ private fun SettlementBatchContent(
                     "开始日期不能晚于结束日期",
                     color = MaterialTheme.colorScheme.error
                 )
+            }
+        }
+
+        if (
+            overviewLoading ||
+            selectedDetailLoading
+        ) {
+            item {
+                Column(
+                    verticalArrangement =
+                        Arrangement.spacedBy(
+                            4.dp
+                        )
+                ) {
+                    LinearProgressIndicator(
+                        Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        if (overviewLoading) {
+                            "正在读取资金余额…"
+                        } else {
+                            "正在读取个人资金明细…"
+                        },
+                        style =
+                            MaterialTheme.typography
+                                .labelSmall,
+                        color = Color.Gray
+                    )
+                }
             }
         }
 
