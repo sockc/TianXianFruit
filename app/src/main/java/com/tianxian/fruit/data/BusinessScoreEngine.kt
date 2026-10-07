@@ -74,6 +74,210 @@ class BusinessScoreEngine(
         val ratio: Double = 1.0
     )
 
+    private data class RiskReason(
+        val category: String,
+        val text: String,
+        val index: Double,
+        val severity: Int
+    )
+
+    private fun pickRiskReason(
+        category: String,
+        component: ComponentResult
+    ): String {
+        val riskKeywords =
+            when (category) {
+                "天气" ->
+                    listOf(
+                        "降雨",
+                        "有雨",
+                        "雨量",
+                        "偏冷",
+                        "偏热",
+                        "较差",
+                        "湿度",
+                        "风",
+                        "预警",
+                        "缺失",
+                        "过期"
+                    )
+
+                "历史" ->
+                    listOf(
+                        "营业额",
+                        "客流",
+                        "客单价",
+                        "样本少",
+                        "经营偏弱"
+                    )
+
+                "日期" ->
+                    listOf(
+                        "表现约为基准",
+                        "历史样本不足"
+                    )
+
+                else ->
+                    listOf(
+                        "营业额",
+                        "客流",
+                        "客单价",
+                        "偏弱",
+                        "下降",
+                        "下调"
+                    )
+            }
+
+        return component.reasons
+            .firstOrNull { reason ->
+                riskKeywords.any {
+                    keyword ->
+                    reason.contains(
+                        keyword
+                    )
+                } &&
+                    !reason.contains(
+                        "风险低"
+                    ) &&
+                    !reason.contains(
+                        "基本无雨"
+                    )
+            }
+            ?: component.summary
+    }
+
+    private fun buildRiskReasons(
+        totalScore: Int,
+        recommendation: String,
+        weather: ComponentResult,
+        history: ComponentResult,
+        calendar: ComponentResult,
+        trend: ComponentResult,
+        calibration: Pair<Int, Double>
+    ): List<RiskReason> {
+        if (
+            recommendation !=
+                "谨慎营业"
+        ) {
+            return emptyList()
+        }
+
+        val candidates =
+            listOf(
+                "天气" to weather,
+                "历史" to history,
+                "日期" to calendar,
+                "趋势" to trend
+            )
+                .filter {
+                    (_, component) ->
+                    component.index <
+                        75.0
+                }
+                .map {
+                    (category, component) ->
+                    RiskReason(
+                        category =
+                            category,
+                        text =
+                            pickRiskReason(
+                                category,
+                                component
+                            ),
+                        index =
+                            component.index,
+                        severity =
+                            (
+                                75.0 -
+                                    component.index
+                                )
+                                .roundToInt()
+                                .coerceAtLeast(
+                                    1
+                                )
+                    )
+                }
+                .sortedWith(
+                    compareByDescending<RiskReason> {
+                        it.severity
+                    }.thenBy {
+                        it.category
+                    }
+                )
+                .toMutableList()
+
+        if (
+            calibration.second <
+                -0.5
+        ) {
+            candidates +=
+                RiskReason(
+                    category = "校准",
+                    text =
+                        "本位置过去预测与最终实绩存在偏高，模型本次自动下调 " +
+                            String.format(
+                                "%.1f",
+                                -calibration.second
+                            ) +
+                            " 分",
+                    index =
+                        totalScore.toDouble(),
+                    severity =
+                        kotlin.math.abs(
+                            calibration.second
+                        )
+                            .roundToInt()
+                            .coerceAtLeast(
+                                1
+                            )
+                )
+        }
+
+        if (
+            candidates.isEmpty()
+        ) {
+            val lowest =
+                listOf(
+                    "天气" to weather,
+                    "历史" to history,
+                    "日期" to calendar,
+                    "趋势" to trend
+                ).minByOrNull {
+                    it.second.index
+                }
+            if (lowest != null) {
+                candidates +=
+                    RiskReason(
+                        category =
+                            lowest.first,
+                        text =
+                            pickRiskReason(
+                                lowest.first,
+                                lowest.second
+                            ),
+                        index =
+                            lowest.second.index,
+                        severity =
+                            (
+                                75.0 -
+                                    lowest.second.index
+                                )
+                                .roundToInt()
+                                .coerceAtLeast(
+                                    1
+                                )
+                    )
+            }
+        }
+
+        return candidates
+            .distinctBy {
+                it.category to
+                    it.text
+            }
+            .take(3)
+    }
+
     fun calculate(
         date: LocalDate,
         store: StoreOption,
@@ -330,8 +534,19 @@ class BusinessScoreEngine(
                 }
                 .orEmpty()
 
+        val riskReasons =
+            buildRiskReasons(
+                totalScore = total,
+                recommendation = recommendation,
+                weather = weatherPart,
+                history = historyPart,
+                calendar = calendarPart,
+                trend = trendPart,
+                calibration = calibration
+            )
+
         val details = JSONObject().apply {
-            put("score_version", "V3_DECISION_GUARDRAILS")
+            put("score_version", "V3_RISK_REASONS")
             put("model", "STORE_BASELINE_SIMILAR_DAY_STAGED_CALIBRATION")
             put("recommendation", recommendation)
             put("snapshot_stage", snapshotStage)
@@ -388,6 +603,34 @@ class BusinessScoreEngine(
                 put("revenue_range_high", revenueRangeHigh)
                 put("special_factor_reminder", specialReminder)
             })
+            put(
+                "risk_reasons",
+                JSONArray().apply {
+                    riskReasons.forEach {
+                        reason ->
+                        put(
+                            JSONObject().apply {
+                                put(
+                                    "category",
+                                    reason.category
+                                )
+                                put(
+                                    "text",
+                                    reason.text
+                                )
+                                put(
+                                    "index",
+                                    reason.index
+                                )
+                                put(
+                                    "severity",
+                                    reason.severity
+                                )
+                            }
+                        )
+                    }
+                }
+            )
             put("reasons", JSONObject().apply {
                 put("weather", JSONArray(weatherPart.reasons))
                 put(

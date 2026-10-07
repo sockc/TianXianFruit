@@ -11720,6 +11720,16 @@ class AppDatabase(
     ): StoreDailySaveResult {
         val editingOld = recordId?.let { getStoreDailyRecordById(it) }
 
+        if (
+            editingOld != null &&
+            editingOld.date != date
+        ) {
+            return StoreDailySaveResult(
+                false,
+                "保存失败：正在编辑的是 ${editingOld.date} 的营业记录，不能保存到 $date；请退出编辑后再切换日期"
+            )
+        }
+
         val activeStore = getStoreById(store.id)
         val freshStore = when {
             activeStore != null -> activeStore

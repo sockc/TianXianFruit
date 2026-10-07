@@ -3189,11 +3189,41 @@ private fun HomeBusinessAdviceCard(
                                 fontWeight = FontWeight.SemiBold,
                                 style = MaterialTheme.typography.bodySmall
                             )
-                            val compact = listOf(
-                                modelMeta.specialReminder.takeIf { it.isNotBlank() },
-                                score.weatherSummary.takeIf { it.isNotBlank() },
-                                score.historySummary.takeIf { it.isNotBlank() }
-                            ).filterNotNull().distinct().joinToString(" · ")
+                            val riskReasons =
+                                remember(
+                                    score.detailsJson,
+                                    score.totalScore,
+                                    score.weatherScore,
+                                    score.historyScore,
+                                    score.calendarScore,
+                                    score.trendScore
+                                ) {
+                                    businessRiskReasons(
+                                        score
+                                    )
+                                }
+                            val compact =
+                                if (
+                                    modelMeta.recommendation ==
+                                        "谨慎营业" &&
+                                    riskReasons.isNotEmpty()
+                                ) {
+                                    "主因：" +
+                                        riskReasons
+                                            .first()
+                                            .text
+                                } else {
+                                    listOf(
+                                        modelMeta.specialReminder.takeIf { it.isNotBlank() },
+                                        score.weatherSummary.takeIf { it.isNotBlank() },
+                                        score.historySummary.takeIf { it.isNotBlank() }
+                                    )
+                                        .filterNotNull()
+                                        .distinct()
+                                        .joinToString(
+                                            " · "
+                                        )
+                                }
                             Text(
                                 compact.ifBlank { "正在积累同位置历史数据" },
                                 style = MaterialTheme.typography.labelSmall,
@@ -3249,6 +3279,259 @@ private fun businessReasonList(detailsJson: String, key: String): List<String> =
             }
         }
     }.getOrDefault(emptyList())
+
+private data class BusinessRiskReasonUi(
+    val category: String,
+    val text: String,
+    val index: Double,
+    val severity: Int
+)
+
+private fun businessRiskReasons(
+    score: BusinessScoreRecord
+): List<BusinessRiskReasonUi> {
+    val explicit =
+        runCatching {
+            val arr =
+                JSONObject(
+                    score.detailsJson
+                        .ifBlank {
+                            "{}"
+                        }
+                ).optJSONArray(
+                    "risk_reasons"
+                )
+                    ?: return@runCatching emptyList()
+
+            buildList {
+                for (
+                    index in
+                    0 until arr.length()
+                ) {
+                    val item =
+                        arr.optJSONObject(
+                            index
+                        )
+                            ?: continue
+                    val text =
+                        item.optString(
+                            "text",
+                            ""
+                        )
+                    if (
+                        text.isBlank()
+                    ) {
+                        continue
+                    }
+                    add(
+                        BusinessRiskReasonUi(
+                            category =
+                                item.optString(
+                                    "category",
+                                    "经营"
+                                ),
+                            text = text,
+                            index =
+                                item.optDouble(
+                                    "index",
+                                    70.0
+                                ),
+                            severity =
+                                item.optInt(
+                                    "severity",
+                                    1
+                                )
+                                    .coerceAtLeast(
+                                        1
+                                    )
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(
+            emptyList()
+        )
+
+    if (
+        explicit.isNotEmpty()
+    ) {
+        return explicit
+            .sortedByDescending {
+                it.severity
+            }
+            .take(3)
+    }
+
+    fun fallbackText(
+        key: String,
+        summary: String
+    ): String {
+        val reasons =
+            businessReasonList(
+                score.detailsJson,
+                key
+            )
+        val keywords =
+            when (key) {
+                "weather" ->
+                    listOf(
+                        "降雨",
+                        "有雨",
+                        "雨量",
+                        "偏冷",
+                        "偏热",
+                        "较差",
+                        "湿度",
+                        "风",
+                        "预警",
+                        "缺失",
+                        "过期"
+                    )
+
+                "history",
+                "trend" ->
+                    listOf(
+                        "营业额",
+                        "客流",
+                        "客单价",
+                        "偏弱",
+                        "样本少"
+                    )
+
+                else ->
+                    listOf(
+                        "表现约为基准",
+                        "样本不足",
+                        "偏弱"
+                    )
+            }
+
+        return reasons
+            .firstOrNull {
+                reason ->
+                keywords.any {
+                    reason.contains(it)
+                } &&
+                    !reason.contains(
+                        "风险低"
+                    ) &&
+                    !reason.contains(
+                        "基本无雨"
+                    )
+            }
+            ?: summary
+    }
+
+    val fallback =
+        listOf(
+            Triple(
+                "天气",
+                "weather",
+                score.weatherScore to
+                    score.weatherSummary
+            ),
+            Triple(
+                "历史",
+                "history",
+                score.historyScore to
+                    score.historySummary
+            ),
+            Triple(
+                "日期",
+                "calendar",
+                score.calendarScore to
+                    score.calendarSummary
+            ),
+            Triple(
+                "趋势",
+                "trend",
+                score.trendScore to
+                    score.trendSummary
+            )
+        )
+            .filter {
+                it.third.first <
+                    75.0
+            }
+            .map {
+                item ->
+                BusinessRiskReasonUi(
+                    category =
+                        item.first,
+                    text =
+                        fallbackText(
+                            item.second,
+                            item.third.second
+                        ),
+                    index =
+                        item.third.first,
+                    severity =
+                        (
+                            75.0 -
+                                item.third.first
+                            )
+                            .roundToInt()
+                            .coerceAtLeast(
+                                1
+                            )
+                )
+            }
+            .sortedByDescending {
+                it.severity
+            }
+
+    if (
+        fallback.isNotEmpty()
+    ) {
+        return fallback.take(3)
+    }
+
+    if (
+        score.totalScore <
+            75
+    ) {
+        val lowest =
+            listOf(
+                BusinessRiskReasonUi(
+                    "天气",
+                    score.weatherSummary,
+                    score.weatherScore,
+                    1
+                ),
+                BusinessRiskReasonUi(
+                    "历史",
+                    score.historySummary,
+                    score.historyScore,
+                    1
+                ),
+                BusinessRiskReasonUi(
+                    "日期",
+                    score.calendarSummary,
+                    score.calendarScore,
+                    1
+                ),
+                BusinessRiskReasonUi(
+                    "趋势",
+                    score.trendSummary,
+                    score.trendScore,
+                    1
+                )
+            ).minByOrNull {
+                it.index
+            }
+
+        if (
+            lowest != null &&
+            lowest.text.isNotBlank()
+        ) {
+            return listOf(
+                lowest
+            )
+        }
+    }
+
+    return emptyList()
+}
 
 private data class BusinessScoreModelUi(
     val version: String = "V1",
@@ -3437,6 +3720,19 @@ private fun BusinessAdviceDetailContent(
                             remember(score.detailsJson) {
                                 businessScoreModelUi(score.detailsJson)
                             }
+                        val riskReasons =
+                            remember(
+                                score.detailsJson,
+                                score.totalScore,
+                                score.weatherScore,
+                                score.historyScore,
+                                score.calendarScore,
+                                score.trendScore
+                            ) {
+                                businessRiskReasons(
+                                    score
+                                )
+                            }
                         Row(verticalAlignment = Alignment.Bottom) {
                             Text(
                                 "${score.totalScore}分",
@@ -3473,6 +3769,27 @@ private fun BusinessAdviceDetailContent(
                                 color = Color(0xFFB26A00)
                             )
                         }
+                        if (
+                            modelMeta.recommendation ==
+                                "谨慎营业" &&
+                            riskReasons.isNotEmpty()
+                        ) {
+                            Text(
+                                "主要原因：" +
+                                    riskReasons
+                                        .first()
+                                        .text,
+                                style =
+                                    MaterialTheme.typography
+                                        .bodySmall,
+                                color =
+                                    Color(
+                                        0xFFB26A00
+                                    ),
+                                fontWeight =
+                                    FontWeight.SemiBold
+                            )
+                        }
                         Text(score.historySummary, color = Color.DarkGray)
                     }
                     state.loading -> LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -3483,6 +3800,19 @@ private fun BusinessAdviceDetailContent(
 
         state.score?.let { score ->
             val modelMeta = remember(score.detailsJson) { businessScoreModelUi(score.detailsJson) }
+            val riskReasons =
+                remember(
+                    score.detailsJson,
+                    score.totalScore,
+                    score.weatherScore,
+                    score.historyScore,
+                    score.calendarScore,
+                    score.trendScore
+                ) {
+                    businessRiskReasons(
+                        score
+                    )
+                }
             val isV2 = modelMeta.version.startsWith("V2") || modelMeta.version.startsWith("V3")
             Card(shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -3540,6 +3870,38 @@ private fun BusinessAdviceDetailContent(
                         fontWeight = FontWeight.SemiBold,
                         color = BrandGreen
                     )
+                    if (
+                        modelMeta.recommendation ==
+                            "谨慎营业" &&
+                        riskReasons.isNotEmpty()
+                    ) {
+                        Text(
+                            "主要原因",
+                            style =
+                                MaterialTheme.typography
+                                    .labelMedium,
+                            fontWeight =
+                                FontWeight.SemiBold,
+                            color =
+                                Color(
+                                    0xFFB26A00
+                                )
+                        )
+                        riskReasons
+                            .take(3)
+                            .forEachIndexed {
+                                index,
+                                reason ->
+                                Text(
+                                    "${index + 1}. ${reason.category}：${reason.text}",
+                                    style =
+                                        MaterialTheme.typography
+                                            .bodySmall,
+                                    color =
+                                        Color.DarkGray
+                                )
+                            }
+                    }
                     if (modelMeta.revenueRangeLow > 0.0 && modelMeta.revenueRangeHigh > 0.0) {
                         Text(
                             "历史营业额参考 ${money(modelMeta.revenueRangeLow)} ～ ${money(modelMeta.revenueRangeHigh)}",
@@ -10332,6 +10694,7 @@ private fun SessionScreen(
     var actualEndTime by remember { mutableStateOf("24:00") }
 
     var editingRecordId by remember { mutableStateOf<Long?>(null) }
+    var editingRecordDate by remember { mutableStateOf<String?>(null) }
     var newBusinessFormExpanded by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
@@ -10416,6 +10779,7 @@ private fun SessionScreen(
 
     fun currentBusinessFingerprint(): String = buildString {
         append(editingRecordId ?: 0L).append('|')
+        append(editingRecordDate.orEmpty()).append('|')
         append(storeId ?: 0L).append('|')
         append(expense).append('|').append(expensePayerId ?: 0L).append('|')
         append(openingStock).append('|').append(closingStock).append('|')
@@ -10430,6 +10794,7 @@ private fun SessionScreen(
     fun clearForm(keepDate: Boolean = true) {
         if (!keepDate) onWorkDateChange(LocalDate.now().toString())
         editingRecordId = null
+        editingRecordDate = null
         historicalStoreName = ""
         historicalExpensePayerName = ""
         expense = ""
@@ -10455,6 +10820,7 @@ private fun SessionScreen(
 
     fun loadRecord(r: StoreDailyRecord) {
         editingRecordId = r.id
+        editingRecordDate = r.date
         onWorkDateChange(r.date)
         storeId = r.storeId
         historicalStoreName = r.storeName
@@ -10713,6 +11079,17 @@ private fun SessionScreen(
     }
 
     fun saveBusinessEdits(): Boolean {
+        if (
+            editingRecordId != null &&
+            editingRecordDate != null &&
+            editingRecordDate != date
+        ) {
+            message =
+                "当前正在编辑 ${editingRecordDate} 的营业记录，不能保存到 $date；请先退出编辑再切换日期"
+            isError = true
+            return false
+        }
+
         val wNow = receiptRows.sumOf { it.wechat.toDoubleOrNull() ?: 0.0 }
         val aNow = receiptRows.sumOf { it.alipay.toDoubleOrNull() ?: 0.0 }
         val cNow = receiptRows.sumOf { it.cash.toDoubleOrNull() ?: 0.0 }
@@ -10840,9 +11217,31 @@ private fun SessionScreen(
         (editingRecordId != null || newBusinessFormExpanded) &&
             businessBaselineFingerprint.isNotBlank() &&
             currentBusinessFingerprint() != businessBaselineFingerprint
+    fun changeBusinessDate(
+        nextDate: String
+    ) {
+        if (nextDate == date) {
+            return
+        }
+
+        if (
+            !businessDirtyNow &&
+            (
+                editingRecordId != null ||
+                    newBusinessFormExpanded
+                )
+        ) {
+            discardBusinessEdits()
+        }
+
+        onWorkDateChange(
+            nextDate
+        )
+    }
+
     val latestBusinessSave = rememberUpdatedState<() -> Boolean>({ saveBusinessEdits() })
     val latestBusinessDiscard = rememberUpdatedState<() -> Unit>({ discardBusinessEdits() })
-    LaunchedEffect(businessDirtyNow, date, editingRecordId, newBusinessFormExpanded) {
+    LaunchedEffect(businessDirtyNow, date, editingRecordId, editingRecordDate, newBusinessFormExpanded) {
         onEditGuardChange(
             businessDirtyNow,
             if (editingRecordId != null) "营业记录修改" else "营业录入",
@@ -10896,7 +11295,7 @@ private fun SessionScreen(
             BusinessDateHeader(
                 pageTitle = "营业",
                 date = date,
-                onDate = onWorkDateChange,
+                onDate = ::changeBusinessDate,
                 db = db,
                 dataVersion = dataVersion,
                 showPurchaseBusinessHistory = true
@@ -11873,6 +12272,185 @@ private fun MoneyCollectorRow(
     }
 }
 
+private data class FundBalanceOverviewUiSnapshot(
+    val partners: List<PartnerOption>,
+    val balances: Map<Long, PartnerFundBalanceSummary>,
+    val windows: Map<Long, PartnerOutstandingWindow?>,
+    val periodSummary: FundPeriodSummary?,
+    val partnerPeriodStats: Map<Long, PartnerFundPeriodSummary>,
+    val settlementCenter: PartnerOption?
+)
+
+private data class PartnerFundDetailUiSnapshot(
+    val rows: List<PartnerDailyFundBalanceRecord>,
+    val events: List<SettlementTransferRecord>
+)
+
+private object FundBalanceUiCache {
+    private val overviewValues =
+        LinkedHashMap<String, FundBalanceOverviewUiSnapshot>()
+    private val detailValues =
+        LinkedHashMap<String, PartnerFundDetailUiSnapshot>()
+
+    fun overview(
+        key: String
+    ): FundBalanceOverviewUiSnapshot? =
+        synchronized(overviewValues) {
+            overviewValues[key]
+        }
+
+    fun putOverview(
+        key: String,
+        value: FundBalanceOverviewUiSnapshot
+    ) {
+        synchronized(overviewValues) {
+            overviewValues.remove(key)
+            overviewValues[key] = value
+            while (overviewValues.size > 12) {
+                overviewValues.remove(
+                    overviewValues.entries
+                        .first()
+                        .key
+                )
+            }
+        }
+    }
+
+    fun detail(
+        key: String
+    ): PartnerFundDetailUiSnapshot? =
+        synchronized(detailValues) {
+            detailValues[key]
+        }
+
+    fun putDetail(
+        key: String,
+        value: PartnerFundDetailUiSnapshot
+    ) {
+        synchronized(detailValues) {
+            detailValues.remove(key)
+            detailValues[key] = value
+            while (detailValues.size > 24) {
+                detailValues.remove(
+                    detailValues.entries
+                        .first()
+                        .key
+                )
+            }
+        }
+    }
+}
+
+private fun fundBalanceOverviewCacheKey(
+    db: AppDatabase,
+    dataVersion: Int,
+    date: String,
+    rangeStart: String?,
+    rangeEnd: String,
+    invalidCustom: Boolean
+): String =
+    listOf(
+        System.identityHashCode(db),
+        dataVersion,
+        date,
+        rangeStart.orEmpty(),
+        rangeEnd,
+        invalidCustom
+    ).joinToString("|")
+
+private fun partnerFundDetailCacheKey(
+    db: AppDatabase,
+    dataVersion: Int,
+    partnerId: Long,
+    rangeStart: String?,
+    rangeEnd: String
+): String =
+    listOf(
+        System.identityHashCode(db),
+        dataVersion,
+        partnerId,
+        rangeStart.orEmpty(),
+        rangeEnd
+    ).joinToString("|")
+
+private fun loadFundBalanceOverview(
+    db: AppDatabase,
+    date: String,
+    rangeStart: String?,
+    rangeEnd: String,
+    invalidCustom: Boolean
+): FundBalanceOverviewUiSnapshot {
+    val partners =
+        db.getPartners()
+    val balances =
+        db.getPartnerFundBalances(
+            endDate = date
+        ).associateBy {
+            it.partnerId
+        }
+    val settlementCenter =
+        db.getSettlementCenter()
+    val windows =
+        partners.associate {
+            partner ->
+            partner.id to
+                db.getPartnerOutstandingWindow(
+                    partner.id,
+                    date
+                )
+        }
+    val periodSummary =
+        if (invalidCustom) {
+            null
+        } else {
+            db.getFundPeriodSummary(
+                rangeStart,
+                rangeEnd
+            )
+        }
+    val partnerPeriodStats =
+        if (invalidCustom) {
+            emptyMap()
+        } else {
+            db.getPartnerFundPeriodSummaries(
+                rangeStart,
+                rangeEnd
+            ).associateBy {
+                it.partnerId
+            }
+        }
+
+    return FundBalanceOverviewUiSnapshot(
+        partners = partners,
+        balances = balances,
+        windows = windows,
+        periodSummary = periodSummary,
+        partnerPeriodStats = partnerPeriodStats,
+        settlementCenter = settlementCenter
+    )
+}
+
+private fun loadPartnerFundDetail(
+    db: AppDatabase,
+    partnerId: Long,
+    rangeStart: String?,
+    rangeEnd: String
+): PartnerFundDetailUiSnapshot =
+    PartnerFundDetailUiSnapshot(
+        rows =
+            db.getPartnerDailyFundBalances(
+                partnerId,
+                rangeStart,
+                rangeEnd
+            ),
+        events =
+            db.getPartnerSettlementEvents(
+                partnerId,
+                rangeStart,
+                rangeEnd
+            )
+    )
+
 @Composable
 private fun SettlementScreen(
     db: AppDatabase,
@@ -11883,6 +12461,52 @@ private fun SettlementScreen(
     onChanged: () -> Unit
 ) {
     var view by remember { mutableStateOf(SettlementView.DAY) }
+
+    LaunchedEffect(
+        db,
+        dataVersion
+    ) {
+        val today =
+            LocalDate.now()
+        val date =
+            today.toString()
+        val rangeStart =
+            today.minusDays(29)
+                .toString()
+        val key =
+            fundBalanceOverviewCacheKey(
+                db = db,
+                dataVersion = dataVersion,
+                date = date,
+                rangeStart = rangeStart,
+                rangeEnd = date,
+                invalidCustom = false
+            )
+
+        if (
+            FundBalanceUiCache
+                .overview(key) ==
+            null
+        ) {
+            val snapshot =
+                withContext(
+                    Dispatchers.IO
+                ) {
+                    loadFundBalanceOverview(
+                        db = db,
+                        date = date,
+                        rangeStart = rangeStart,
+                        rangeEnd = date,
+                        invalidCustom = false
+                    )
+                }
+            FundBalanceUiCache
+                .putOverview(
+                    key,
+                    snapshot
+                )
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -13008,63 +13632,74 @@ private fun SettlementBatchContent(
         filter == HistoryTimeFilter.CUSTOM &&
             customStart > customEnd
 
-    val partners =
-        remember(dataVersion) {
-            db.getPartners()
-        }
-    val balances =
-        remember(dataVersion, date) {
-            db.getPartnerFundBalances(endDate = date)
-                .associateBy { it.partnerId }
-        }
-    val windows =
-        remember(dataVersion, date, partners) {
-            partners.associate { partner ->
-                partner.id to
-                    db.getPartnerOutstandingWindow(
-                        partner.id,
-                        date
-                    )
-            }
-        }
-    val periodSummary =
+    val overviewCacheKey =
+        fundBalanceOverviewCacheKey(
+            db = db,
+            dataVersion = dataVersion,
+            date = date,
+            rangeStart = rangeStart,
+            rangeEnd = rangeEnd,
+            invalidCustom = invalidCustom
+        )
+    val cachedOverview =
         remember(
-            dataVersion,
-            rangeStart,
-            rangeEnd,
-            invalidCustom
+            overviewCacheKey
         ) {
-            if (invalidCustom) {
-                null
-            } else {
-                db.getFundPeriodSummary(
-                    rangeStart,
-                    rangeEnd
+            FundBalanceUiCache
+                .overview(
+                    overviewCacheKey
                 )
-            }
         }
-    val partnerPeriodStats =
-        remember(
-            dataVersion,
-            rangeStart,
-            rangeEnd,
-            invalidCustom
+    val overviewSnapshot by
+        produceState<FundBalanceOverviewUiSnapshot?>(
+            initialValue =
+                cachedOverview,
+            overviewCacheKey
         ) {
-            if (invalidCustom) {
-                emptyMap()
-            } else {
-                db.getPartnerFundPeriodSummaries(
-                    rangeStart,
-                    rangeEnd
-                ).associateBy {
-                    it.partnerId
+            val fresh =
+                withContext(
+                    Dispatchers.IO
+                ) {
+                    loadFundBalanceOverview(
+                        db = db,
+                        date = date,
+                        rangeStart = rangeStart,
+                        rangeEnd = rangeEnd,
+                        invalidCustom = invalidCustom
+                    )
                 }
-            }
+            FundBalanceUiCache
+                .putOverview(
+                    overviewCacheKey,
+                    fresh
+                )
+            value = fresh
         }
+
+    val overviewLoading =
+        overviewSnapshot == null
+    val partners =
+        overviewSnapshot
+            ?.partners
+            .orEmpty()
+    val balances =
+        overviewSnapshot
+            ?.balances
+            .orEmpty()
+    val windows =
+        overviewSnapshot
+            ?.windows
+            .orEmpty()
+    val periodSummary =
+        overviewSnapshot
+            ?.periodSummary
+    val partnerPeriodStats =
+        overviewSnapshot
+            ?.partnerPeriodStats
+            .orEmpty()
     val settlementCenter =
-        remember(dataVersion) {
-            db.getSettlementCenter()
-        }
+        overviewSnapshot
+            ?.settlementCenter
 
     LaunchedEffect(partners) {
         if (
@@ -13084,42 +13719,80 @@ private fun SettlementBatchContent(
 
     val selectedPartner =
         partners.firstOrNull { it.id == selectedPartnerId }
+    val selectedDetailKey =
+        selectedPartner
+            ?.takeIf {
+                !invalidCustom
+            }
+            ?.let {
+                partner ->
+                partnerFundDetailCacheKey(
+                    db = db,
+                    dataVersion = dataVersion,
+                    partnerId = partner.id,
+                    rangeStart = rangeStart,
+                    rangeEnd = rangeEnd
+                )
+            }
+    val cachedDetail =
+        remember(
+            selectedDetailKey
+        ) {
+            selectedDetailKey
+                ?.let {
+                    FundBalanceUiCache
+                        .detail(it)
+                }
+        }
+    val selectedDetail by
+        produceState<PartnerFundDetailUiSnapshot?>(
+            initialValue =
+                cachedDetail,
+            selectedDetailKey
+        ) {
+            val partner =
+                selectedPartner
+            val key =
+                selectedDetailKey
+            if (
+                partner == null ||
+                key == null
+            ) {
+                value = null
+                return@produceState
+            }
+
+            val fresh =
+                withContext(
+                    Dispatchers.IO
+                ) {
+                    loadPartnerFundDetail(
+                        db = db,
+                        partnerId = partner.id,
+                        rangeStart = rangeStart,
+                        rangeEnd = rangeEnd
+                    )
+                }
+            FundBalanceUiCache
+                .putDetail(
+                    key,
+                    fresh
+                )
+            value = fresh
+        }
+
+    val selectedDetailLoading =
+        selectedPartner != null &&
+            !invalidCustom &&
+            selectedDetail == null
     val selectedRows =
-        remember(
-            dataVersion,
-            selectedPartner?.id,
-            rangeStart,
-            rangeEnd,
-            invalidCustom
-        ) {
-            if (selectedPartner != null && !invalidCustom) {
-                db.getPartnerDailyFundBalances(
-                    selectedPartner.id,
-                    rangeStart,
-                    rangeEnd
-                )
-            } else {
-                emptyList()
-            }
-        }
+        selectedDetail
+            ?.rows
+            .orEmpty()
     val selectedSettlementEvents =
-        remember(
-            dataVersion,
-            selectedPartner?.id,
-            rangeStart,
-            rangeEnd,
-            invalidCustom
-        ) {
-            if (selectedPartner != null && !invalidCustom) {
-                db.getPartnerSettlementEvents(
-                    selectedPartner.id,
-                    rangeStart,
-                    rangeEnd
-                )
-            } else {
-                emptyList()
-            }
-        }
+        selectedDetail
+            ?.events
+            .orEmpty()
 
     val centerPendingReceivable =
         settlementCenter?.let { center ->
@@ -13311,6 +13984,35 @@ private fun SettlementBatchContent(
                     "开始日期不能晚于结束日期",
                     color = MaterialTheme.colorScheme.error
                 )
+            }
+        }
+
+        if (
+            overviewLoading ||
+            selectedDetailLoading
+        ) {
+            item {
+                Column(
+                    verticalArrangement =
+                        Arrangement.spacedBy(
+                            4.dp
+                        )
+                ) {
+                    LinearProgressIndicator(
+                        Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        if (overviewLoading) {
+                            "正在读取资金余额…"
+                        } else {
+                            "正在读取个人资金明细…"
+                        },
+                        style =
+                            MaterialTheme.typography
+                                .labelSmall,
+                        color = Color.Gray
+                    )
+                }
             }
         }
 
