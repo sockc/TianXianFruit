@@ -298,7 +298,7 @@ fun WeatherNotificationSettingsContent(
                     )
 
                     Text(
-                        "每小时后台检查一次；高温或未来时段降雨也会提醒，同类风险当天只提醒一次，风险明显升级时才再次提醒。",
+                        "每小时后台检查一次；高温或未来时段降雨也会提醒。同类风险当天只提醒一次；新增风险类型或风险升级时可再次提醒。",
                         style =
                             MaterialTheme.typography
                                 .bodySmall,
