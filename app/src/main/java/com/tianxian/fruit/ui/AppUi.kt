@@ -10332,6 +10332,7 @@ private fun SessionScreen(
     var actualEndTime by remember { mutableStateOf("24:00") }
 
     var editingRecordId by remember { mutableStateOf<Long?>(null) }
+    var editingRecordDate by remember { mutableStateOf<String?>(null) }
     var newBusinessFormExpanded by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
@@ -10416,6 +10417,7 @@ private fun SessionScreen(
 
     fun currentBusinessFingerprint(): String = buildString {
         append(editingRecordId ?: 0L).append('|')
+        append(editingRecordDate.orEmpty()).append('|')
         append(storeId ?: 0L).append('|')
         append(expense).append('|').append(expensePayerId ?: 0L).append('|')
         append(openingStock).append('|').append(closingStock).append('|')
@@ -10430,6 +10432,7 @@ private fun SessionScreen(
     fun clearForm(keepDate: Boolean = true) {
         if (!keepDate) onWorkDateChange(LocalDate.now().toString())
         editingRecordId = null
+        editingRecordDate = null
         historicalStoreName = ""
         historicalExpensePayerName = ""
         expense = ""
@@ -10455,6 +10458,7 @@ private fun SessionScreen(
 
     fun loadRecord(r: StoreDailyRecord) {
         editingRecordId = r.id
+        editingRecordDate = r.date
         onWorkDateChange(r.date)
         storeId = r.storeId
         historicalStoreName = r.storeName
@@ -10713,6 +10717,17 @@ private fun SessionScreen(
     }
 
     fun saveBusinessEdits(): Boolean {
+        if (
+            editingRecordId != null &&
+            editingRecordDate != null &&
+            editingRecordDate != date
+        ) {
+            message =
+                "当前正在编辑 ${editingRecordDate} 的营业记录，不能保存到 $date；请先退出编辑再切换日期"
+            isError = true
+            return false
+        }
+
         val wNow = receiptRows.sumOf { it.wechat.toDoubleOrNull() ?: 0.0 }
         val aNow = receiptRows.sumOf { it.alipay.toDoubleOrNull() ?: 0.0 }
         val cNow = receiptRows.sumOf { it.cash.toDoubleOrNull() ?: 0.0 }
@@ -10840,9 +10855,31 @@ private fun SessionScreen(
         (editingRecordId != null || newBusinessFormExpanded) &&
             businessBaselineFingerprint.isNotBlank() &&
             currentBusinessFingerprint() != businessBaselineFingerprint
+    fun changeBusinessDate(
+        nextDate: String
+    ) {
+        if (nextDate == date) {
+            return
+        }
+
+        if (
+            !businessDirtyNow &&
+            (
+                editingRecordId != null ||
+                    newBusinessFormExpanded
+                )
+        ) {
+            discardBusinessEdits()
+        }
+
+        onWorkDateChange(
+            nextDate
+        )
+    }
+
     val latestBusinessSave = rememberUpdatedState<() -> Boolean>({ saveBusinessEdits() })
     val latestBusinessDiscard = rememberUpdatedState<() -> Unit>({ discardBusinessEdits() })
-    LaunchedEffect(businessDirtyNow, date, editingRecordId, newBusinessFormExpanded) {
+    LaunchedEffect(businessDirtyNow, date, editingRecordId, editingRecordDate, newBusinessFormExpanded) {
         onEditGuardChange(
             businessDirtyNow,
             if (editingRecordId != null) "营业记录修改" else "营业录入",
@@ -10896,7 +10933,7 @@ private fun SessionScreen(
             BusinessDateHeader(
                 pageTitle = "营业",
                 date = date,
-                onDate = onWorkDateChange,
+                onDate = ::changeBusinessDate,
                 db = db,
                 dataVersion = dataVersion,
                 showPurchaseBusinessHistory = true
