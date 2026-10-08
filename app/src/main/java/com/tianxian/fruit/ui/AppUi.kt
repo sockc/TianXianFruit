@@ -6699,6 +6699,7 @@ private fun InventoryScreen(
     var costEditValue by remember { mutableStateOf("") }
     var retailEditItem by remember { mutableStateOf<InventoryDayItemRecord?>(null) }
     var retailEditValue by remember { mutableStateOf("") }
+    var retailEditUnit by remember { mutableStateOf("斤") }
 
     val inventoryItems = remember(dataVersion, date) {
         db.getInventoryDayItems(date)
@@ -6946,10 +6947,11 @@ private fun InventoryScreen(
                                 modifier = Modifier.weight(1f),
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 15.sp,
-                                maxLines = 1
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                item.effectiveUnitCost?.let { "成${fmt(it)}/${item.unit}" } ?: "成—",
+                                item.effectiveUnitCost?.let { "成本 ${fmt(it)}/${item.unit}" } ?: "成本 —",
                                 modifier = Modifier.clickable {
                                     costEditItem = item
                                     costEditValue = cleanNumber(item.effectiveUnitCost ?: 0.0)
@@ -6960,23 +6962,27 @@ private fun InventoryScreen(
                                 maxLines = 1
                             )
                             Text(
-                                item.retailPricePerJin?.let { "零售${fmt(it)}/斤" } ?: "零售—",
+                                item.retailPricePerJin?.takeIf { it > 0.0 }?.let { "零售 ${fmt(it)}/${item.retailPriceUnit}" } ?: "零售 —",
                                 modifier = Modifier.clickable {
                                     retailEditItem = item
                                     retailEditValue = cleanNumber(item.retailPricePerJin ?: 0.0)
+                                    retailEditUnit = item.retailPriceUnit.takeIf { it == "斤" || it == item.unit } ?: "斤"
                                 }.padding(horizontal = 2.dp),
                                 color = BrandGreen,
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Medium,
                                 maxLines = 1
                             )
-                            Text(
-                                if (item.purchasedQuantity > 0.000001) "有" else "无",
-                                color = if (item.purchasedQuantity > 0.000001) BrandGreen else Color.Black,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1
-                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("采购", color = Color.DarkGray, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                                Text(
+                                    if (item.purchasedQuantity > 0.000001) "有" else "无",
+                                    color = if (item.purchasedQuantity > 0.000001) BrandGreen else Color.Black,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1
+                                )
+                            }
                             if (item.saved) {
                                 Text("√", color = BrandGreen, fontWeight = FontWeight.Bold)
                             }
@@ -7050,7 +7056,7 @@ private fun InventoryScreen(
 
         item {
             Text(
-                "说明：损耗默认0；无库存时剩余库存默认0。成本优先读取真实非零采购价，没有真实价格才使用人工参考成本；今日零售价按商品＋日期独立保存。",
+                "说明：剩余库存按采购单位盘点；成本不依赖每件重量。零售可按斤或按件设置，每个商品每日保存一个零售价（含单位），不回写历史。",
                 color = Color.Gray,
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(vertical = 6.dp)
@@ -7083,11 +7089,32 @@ private fun InventoryScreen(
         AlertDialog(
             onDismissRequest = { retailEditItem = null },
             title = { Text("今日零售价 · ${item.fruitName}") },
-            text = { CompactNumberField("零售价（元/斤）", retailEditValue, { retailEditValue = it }, Modifier.fillMaxWidth()) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("选择售价单位：按斤需要每件重量，按${item.unit}无需重量。",
+                        style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = retailEditUnit == "斤",
+                            onClick = { retailEditUnit = "斤" },
+                            label = { Text("按斤") }
+                        )
+                        if (item.unit != "斤") {
+                            FilterChip(
+                                selected = retailEditUnit == item.unit,
+                                onClick = { retailEditUnit = item.unit },
+                                label = { Text("按${item.unit}") }
+                            )
+                        }
+                    }
+                    CompactNumberField("零售价（元/$retailEditUnit）", retailEditValue,
+                        { retailEditValue = it }, Modifier.fillMaxWidth())
+                }
+            },
             confirmButton = {
                 TextButton(onClick = {
                     val value = retailEditValue.toDoubleOrNull() ?: 0.0
-                    if (db.saveDailyRetailPrice(date, item.fruitId, item.fruitName, value)) {
+                    if (db.saveDailyRetailPrice(date, item.fruitId, item.fruitName, value, retailEditUnit)) {
                         retailEditItem = null; onChanged()
                     }
                 }) { Text("保存") }
@@ -16116,7 +16143,7 @@ private fun ProfitProjectionContent(db: AppDatabase, dataVersion: Int, initialDa
                     else "仅今日采购全部卖光的潜在毛利",
                     fontWeight = FontWeight.SemiBold
                 )
-                Text("零售价×数量×规格重量－货品成本；无须今日盘点，未扣将来损耗与开销。",
+                Text("按斤售价：数量×规格重量×每斤售价；按件售价：数量×单件售价。均减去货品成本，无须当天盘点。",
                     color = Color.Gray, style = MaterialTheme.typography.bodySmall)
             }
             val visible = potential.items.filter { if (mode == 0) it.hasAvailable else it.hasPurchased }
@@ -16134,12 +16161,13 @@ private fun ProfitProjectionContent(db: AppDatabase, dataVersion: Int, initialDa
                         }
                         Text("结转 ${fmt(input.openingQuantity)}${input.unit} · 今日采购 ${fmt(input.purchasedQuantity)}${input.unit}",
                             style = MaterialTheme.typography.bodySmall)
-                        Text("零售 ${input.retailPricePerJin?.let { money(it) + "/斤" } ?: "—"} · 重量 ${input.weightPerUnitJin?.let { fmt(it) + "斤/${input.unit}" } ?: "—"}",
+                        Text("零售 ${input.retailPricePerJin?.let { money(it) + "/" + input.retailPriceUnit } ?: "—"} · 重量 ${input.weightPerUnitJin?.let { fmt(it) + "斤/${input.unit}" } ?: "—"}",
                             style = MaterialTheme.typography.bodySmall, color = Color.DarkGray)
                         if (gross == null) {
                             val missing = buildList {
                                 if ((input.retailPricePerJin ?: 0.0) <= 0.0) add("零售价")
-                                if ((input.weightPerUnitJin ?: 0.0) <= 0.0) add("每件重量")
+                                if (input.retailPriceUnit == "斤" && (input.weightPerUnitJin ?: 0.0) <= 0.0) add("每件重量")
+                                if (input.retailPriceUnit != "斤" && input.retailPriceUnit != input.unit) add("售价单位不匹配")
                                 if (mode == 0 && input.openingQuantity > 0.000001 && input.openingCost == null) add("结转成本")
                                 if (input.purchasedQuantity > 0.000001 && input.purchasedCost == null) add("采购成本")
                             }
@@ -16516,7 +16544,7 @@ private fun OperatingAnalysisContent(
                             color = Color.DarkGray
                         )
                         Text(
-                            "估算重量 ${item.estimatedSoldWeightJin?.let { fmt(it) + "斤" } ?: "—"}  ·  今日零售 ${item.retailPricePerJin?.let { money(it) + "/斤" } ?: "—"}  ·  估算收入 ${item.estimatedSalesRevenue?.let { money(it) } ?: "—"}  ·  单品估算毛利 ${item.estimatedProductGrossProfit?.let { money(it) } ?: "—"}",
+                            "估算重量 ${item.estimatedSoldWeightJin?.let { fmt(it) + "斤" } ?: "—"}  ·  今日零售 ${item.retailPricePerJin?.let { money(it) + "/" + item.retailPriceUnit } ?: "—"}  ·  估算收入 ${item.estimatedSalesRevenue?.let { money(it) } ?: "—"}  ·  单品估算毛利 ${item.estimatedProductGrossProfit?.let { money(it) } ?: "—"}",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color(0xFF7A5A00)
                         )
@@ -22408,7 +22436,7 @@ private fun HistoryContent(
                                     "暂无采购价"
                                 }
                             val latestRetailText =
-                                summary.latestRetailPricePerJin?.let { "${money(it)}/斤" }
+                                summary.latestRetailPricePerJin?.let { "${money(it)}/${summary.latestRetailPriceUnit}" }
                                     ?: "暂无零售价"
 
                             Card(
@@ -22576,7 +22604,7 @@ private fun HistoryContent(
                                 ) {
                                     Row(Modifier.fillMaxWidth()) {
                                         Text(
-                                            "最近 ${summary.latestRetailPricePerJin?.let { money(it) + "/斤" } ?: "—"}",
+                                            "最近 ${summary.latestRetailPricePerJin?.let { money(it) + "/" + summary.latestRetailPriceUnit } ?: "—"}",
                                             modifier = Modifier.weight(1f),
                                             fontWeight = FontWeight.SemiBold,
                                             color = BrandGreen
@@ -22584,8 +22612,8 @@ private fun HistoryContent(
                                         Text("记录 ${summary.retailDayCount}天", color = Color.Gray)
                                     }
                                     Text(
-                                        "最低 ${summary.minRetailPricePerJin?.let { money(it) + "/斤" } ?: "—"} · " +
-                                            "最高 ${summary.maxRetailPricePerJin?.let { money(it) + "/斤" } ?: "—"}",
+                                        "每斤最低 ${summary.minRetailPricePerJin?.let { money(it) + "/斤" } ?: "—"} · " +
+                                            "每斤最高 ${summary.maxRetailPricePerJin?.let { money(it) + "/斤" } ?: "—"}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = Color.DarkGray
                                     )
@@ -22596,7 +22624,7 @@ private fun HistoryContent(
                                         detail.retailPrices.take(60).forEach { row ->
                                             Row(Modifier.fillMaxWidth()) {
                                                 Text(row.date, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                                                Text("${money(row.pricePerJin)}/斤", style = MaterialTheme.typography.bodySmall)
+                                                Text("${money(row.pricePerJin)}/${row.priceUnit}", style = MaterialTheme.typography.bodySmall)
                                             }
                                         }
                                         if (detail.retailPrices.size > 60) {
@@ -22697,7 +22725,7 @@ private fun HistoryContent(
 
                         item {
                             Text(
-                                "说明：采购次数按包含该商品的正式采购单计算；采购均价按数量加权。箱/件/筐等只有录入每件重量时才能折合为斤，未录规格的历史数量仍按原单位保留。零售价为每日主零售价，不等同于实际成交均价。",
+                                "说明：采购次数按包含该商品的正式采购单计算；采购均价按数量加权。箱/件/筐等只有录入每件重量时才能折合为斤，未录规格的历史数量仍按原单位保留。零售价保留单位（斤/箱/件等），不等同于实际成交均价。",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.Gray,
                                 modifier = Modifier.padding(bottom = 8.dp)

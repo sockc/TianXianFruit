@@ -102,7 +102,8 @@ data class InventoryDayItemRecord(
     val effectiveUnitCost: Double? = null,
     val costSource: String = "NONE",
     val retailPricePerJin: Double? = null,
-    val unitWeightJin: Double? = null
+    val unitWeightJin: Double? = null,
+    val retailPriceUnit: String = "斤"
 )
 
 data class EffectiveCostRecord(
@@ -116,7 +117,8 @@ data class DailyRetailPriceRecord(
     val fruitId: Long,
     val fruitName: String,
     val pricePerJin: Double,
-    val inherited: Boolean = false
+    val inherited: Boolean = false,
+    val priceUnit: String = "斤"
 )
 
 data class BusinessWeatherHistoryRecord(
@@ -275,7 +277,8 @@ data class OperatingAnalysisItemRecord(
     val estimatedSalesRevenue: Double? = null,
     val estimatedProductGrossProfit: Double? = null,
     val costSource: String = "NONE",
-    val purchaseCostAvailable: Boolean = true
+    val purchaseCostAvailable: Boolean = true,
+    val retailPriceUnit: String = "斤"
 )
 
 data class OperatingAnalysisRecord(
@@ -407,7 +410,8 @@ data class ProductHistorySummary(
     val minRetailPricePerJin: Double?,
     val maxRetailPricePerJin: Double?,
     val lossByUnit: List<ProductHistoryQuantitySummary>,
-    val latestRemainingByUnit: List<ProductHistoryQuantitySummary>
+    val latestRemainingByUnit: List<ProductHistoryQuantitySummary>,
+    val latestRetailPriceUnit: String = "斤"
 )
 
 data class ProductHistoryPurchaseEntry(
@@ -426,7 +430,8 @@ data class ProductHistoryPurchaseEntry(
 
 data class ProductHistoryRetailEntry(
     val date: String,
-    val pricePerJin: Double
+    val pricePerJin: Double,
+    val priceUnit: String = "斤"
 )
 
 data class ProductHistoryInventoryEntry(
@@ -9897,7 +9902,8 @@ class AppDatabase(
                 effectiveUnitCost = cost.unitCost,
                 costSource = cost.source,
                 retailPricePerJin = retail?.pricePerJin,
-                unitWeightJin = unitWeight
+                unitWeightJin = unitWeight,
+                retailPriceUnit = retail?.priceUnit ?: "斤"
             )
         }.sortedWith(
             compareByDescending<InventoryDayItemRecord> { it.purchasedQuantity > 0.000001 }
@@ -10213,28 +10219,33 @@ class AppDatabase(
     fun getDailyRetailPrice(date: String, fruitId: Long, fruitName: String = ""): DailyRetailPriceRecord? {
         if (fruitId <= 0L) return null
         val exact = readableDatabase.rawQuery(
-            "SELECT date,fruit_name,price_per_jin FROM daily_retail_price WHERE date=? AND fruit_id=? AND deleted=0 LIMIT 1",
+            "SELECT date,fruit_name,price_per_jin,price_unit FROM daily_retail_price WHERE date=? AND fruit_id=? AND deleted=0 LIMIT 1",
             arrayOf(date, fruitId.toString())
         ).use { c ->
-            if (c.moveToFirst()) DailyRetailPriceRecord(c.str("date"), fruitId, c.str("fruit_name").ifBlank { fruitName }, c.dbl("price_per_jin"), false) else null
+            if (c.moveToFirst()) DailyRetailPriceRecord(c.str("date"), fruitId, c.str("fruit_name").ifBlank { fruitName }, c.dbl("price_per_jin"), false, c.str("price_unit").ifBlank { "斤" }) else null
         }
         if (exact != null) return exact
         return readableDatabase.rawQuery(
-            "SELECT date,fruit_name,price_per_jin FROM daily_retail_price WHERE date<? AND fruit_id=? AND deleted=0 AND price_per_jin>0 ORDER BY date DESC,id DESC LIMIT 1",
+            "SELECT date,fruit_name,price_per_jin,price_unit FROM daily_retail_price WHERE date<? AND fruit_id=? AND deleted=0 AND price_per_jin>0 ORDER BY date DESC,id DESC LIMIT 1",
             arrayOf(date, fruitId.toString())
         ).use { c ->
-            if (c.moveToFirst()) DailyRetailPriceRecord(date, fruitId, c.str("fruit_name").ifBlank { fruitName }, c.dbl("price_per_jin"), true) else null
+            if (c.moveToFirst()) DailyRetailPriceRecord(date, fruitId, c.str("fruit_name").ifBlank { fruitName }, c.dbl("price_per_jin"), true, c.str("price_unit").ifBlank { "斤" }) else null
         }
     }
 
-    fun saveDailyRetailPrice(date: String, fruitId: Long, fruitName: String, pricePerJin: Double): Boolean {
-        if (runCatching { LocalDate.parse(date) }.isFailure || fruitId <= 0L || !pricePerJin.isFinite() || pricePerJin < 0) return false
+    fun saveDailyRetailPrice(
+        date: String, fruitId: Long, fruitName: String,
+        pricePerJin: Double, priceUnit: String = "斤"
+    ): Boolean {
+        val cleanUnit = priceUnit.trim()
+        if (runCatching { LocalDate.parse(date) }.isFailure || fruitId <= 0L ||
+            !pricePerJin.isFinite() || pricePerJin < 0 || cleanUnit.isBlank() || cleanUnit.length > 16) return false
         val db = writableDatabase
         val now = System.currentTimeMillis()
         val values = ContentValues().apply {
             put("fruit_name", fruitName.trim())
             put("price_per_jin", pricePerJin.coerceAtLeast(0.0))
-            put("price_unit", "斤")
+            put("price_unit", cleanUnit)
             put("deleted", 0)
             put("sync_status", 2)
             put("updated_at", now)
@@ -10297,6 +10308,7 @@ class AppDatabase(
             var retailDayCount: Int = 0,
             var latestRetailDate: String = "",
             var latestRetailPrice: Double? = null,
+            var latestRetailPriceUnit: String = "斤",
             var minRetailPrice: Double? = null,
             var maxRetailPrice: Double? = null,
             val lossByUnit: LinkedHashMap<String, Double> = linkedMapOf(),
@@ -10439,8 +10451,8 @@ class AppDatabase(
             """
             SELECT fruit_id,MAX(fruit_name) AS fruit_name,
                    COUNT(DISTINCT date) AS retail_days,
-                   MIN(CASE WHEN price_per_jin>0.000001 THEN price_per_jin END) AS min_price,
-                   MAX(CASE WHEN price_per_jin>0.000001 THEN price_per_jin END) AS max_price
+                   MIN(CASE WHEN price_unit='斤' AND price_per_jin>0.000001 THEN price_per_jin END) AS min_price,
+                   MAX(CASE WHEN price_unit='斤' AND price_per_jin>0.000001 THEN price_per_jin END) AS max_price
             FROM daily_retail_price
             WHERE deleted=0 AND price_per_jin>0.000001
               $retailRange
@@ -10459,7 +10471,7 @@ class AppDatabase(
         val retailLatestSeen = mutableSetOf<Long>()
         readableDatabase.rawQuery(
             """
-            SELECT fruit_id,fruit_name,date,price_per_jin
+            SELECT fruit_id,fruit_name,date,price_per_jin,price_unit
             FROM daily_retail_price
             WHERE deleted=0 AND price_per_jin>0.000001
               $retailRange
@@ -10473,6 +10485,7 @@ class AppDatabase(
                 val acc = product(fruitId, c.str("fruit_name"))
                 acc.latestRetailDate = c.str("date")
                 acc.latestRetailPrice = c.dbl("price_per_jin")
+                acc.latestRetailPriceUnit = c.str("price_unit").ifBlank { "斤" }
             }
         }
 
@@ -10543,6 +10556,7 @@ class AppDatabase(
                     retailDayCount = acc.retailDayCount,
                     latestRetailDate = acc.latestRetailDate,
                     latestRetailPricePerJin = acc.latestRetailPrice?.let(::roundMoney),
+                    latestRetailPriceUnit = acc.latestRetailPriceUnit,
                     minRetailPricePerJin = acc.minRetailPrice?.let(::roundMoney),
                     maxRetailPricePerJin = acc.maxRetailPrice?.let(::roundMoney),
                     lossByUnit = acc.lossByUnit.map { ProductHistoryQuantitySummary(it.key, roundMoney(it.value)) },
@@ -10618,7 +10632,7 @@ class AppDatabase(
         val retailArgs = arrayOf(fruitId.toString(), *retailRangeArgs)
         val retail = readableDatabase.rawQuery(
             """
-            SELECT date,price_per_jin
+            SELECT date,price_per_jin,price_unit
             FROM daily_retail_price
             WHERE fruit_id=? AND deleted=0 AND price_per_jin>0.000001
               $retailRange
@@ -10627,7 +10641,9 @@ class AppDatabase(
             retailArgs
         ).use { c ->
             buildList {
-                while (c.moveToNext()) add(ProductHistoryRetailEntry(c.str("date"), roundMoney(c.dbl("price_per_jin"))))
+                while (c.moveToNext()) add(ProductHistoryRetailEntry(
+                    c.str("date"), roundMoney(c.dbl("price_per_jin")), c.str("price_unit").ifBlank { "斤" }
+                ))
             }
         }
 
@@ -11289,10 +11305,17 @@ class AppDatabase(
                     null
                 }
             val unitWeightJin = getLatestUnitWeightJin(item.fruitId, item.unit, date)
-            val retailPrice = getDailyRetailPrice(date, item.fruitId, item.fruitName)?.pricePerJin
+            val retail = getDailyRetailPrice(date, item.fruitId, item.fruitName)
+            val retailPrice = retail?.pricePerJin
+            val retailUnit = retail?.priceUnit ?: "斤"
             val estimatedSoldWeightJin = unitWeightJin?.let { roundMoney(soldQuantity * it) }
-            val estimatedSalesRevenue =
-                if (estimatedSoldWeightJin != null && retailPrice != null) roundMoney(estimatedSoldWeightJin * retailPrice) else null
+            val estimatedSalesRevenue = when {
+                retailPrice == null || retailPrice <= 0.0 -> null
+                retailUnit == "斤" && estimatedSoldWeightJin != null ->
+                    roundMoney(estimatedSoldWeightJin * retailPrice)
+                retailUnit == item.unit -> roundMoney(soldQuantity * retailPrice)
+                else -> null
+            }
             val estimatedProductGrossProfit =
                 if (estimatedSalesRevenue != null && consumedCost != null) roundMoney(estimatedSalesRevenue - consumedCost) else null
             val effectiveCost = getEffectiveUnitCost(item.fruitId, item.fruitName, item.unit, date)
@@ -11320,6 +11343,7 @@ class AppDatabase(
                 costAvailable = costAvailable,
                 unitWeightJin = unitWeightJin,
                 retailPricePerJin = retailPrice,
+                retailPriceUnit = retailUnit,
                 estimatedSoldWeightJin = estimatedSoldWeightJin,
                 estimatedSalesRevenue = estimatedSalesRevenue,
                 estimatedProductGrossProfit = estimatedProductGrossProfit,
