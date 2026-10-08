@@ -278,7 +278,7 @@ data class OperatingAnalysisItemRecord(
     val purchaseCostAvailable: Boolean = true
 )
 
-data class OperatingAnalysisRecord
+data class OperatingAnalysisRecord(
     val date: String,
     val revenue: Double,
     val expense: Double,
