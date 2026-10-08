@@ -6744,51 +6744,93 @@ private fun InventoryScreen(
         remainingInputs.keys.any { it !in remainingBaseline } ||
         lossInputs.keys.any { it !in lossBaseline } || inventoryItems.any { item ->
         val key = itemKey(item)
-        val remaining = remainingInputs[key]?.toDoubleOrNull() ?: 0.0
-        val loss = lossInputs[key]?.toDoubleOrNull() ?: 0.0
-        kotlin.math.abs(remaining - item.remainingQuantity) > 0.000001 ||
-            kotlin.math.abs(loss - item.lossQuantity) > 0.000001
+        val values = InventoryAutoSavePolicy.validate(
+            remainingInputs[key].orEmpty(),
+            lossInputs[key].orEmpty(),
+            item.openingQuantity + item.purchasedQuantity
+        )
+        values == null ||
+            kotlin.math.abs(values.remaining - item.remainingQuantity) > 0.000001 ||
+            kotlin.math.abs(values.loss - item.lossQuantity) > 0.000001
     }
 
-    fun saveInventoryEdits(): Boolean {
-        val activeKeys = inventoryItems.map(::itemKey).toSet()
-        if (remainingInputs.keys.any { it !in activeKeys } || lossInputs.keys.any { it !in activeKeys }) {
-            message = "有正在编辑的商品已在云端删除，草稿仍保留；请核对后放弃草稿并重新盘点"
+    fun saveInventoryItems(targets: List<InventoryDayItemRecord>): Boolean {
+        if (targets.isEmpty()) return true
+        val liveKeys = db.getInventoryDayItems(date).map(::itemKey).toSet()
+        if (targets.any { itemKey(it) !in liveKeys }) {
+            message = "有正在编辑的商品已在云端删除，草稿仍保留；请核对后重新盘点"
             isError = true
             return false
         }
-        val invalid = inventoryItems.firstOrNull { item ->
-            val remaining = remainingInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0
-            val loss = lossInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0
-            val available = item.openingQuantity + item.purchasedQuantity
-            remaining < 0 || loss < 0 || remaining + loss > available + 0.000001
+        val drafts = targets.map { item ->
+            item to InventoryAutoSavePolicy.validate(
+                remainingInputs[itemKey(item)].orEmpty(),
+                lossInputs[itemKey(item)].orEmpty(),
+                item.openingQuantity + item.purchasedQuantity
+            )
         }
+        val invalid = drafts.firstOrNull { it.second == null }
         if (invalid != null) {
-            message = "${invalid.fruitName} 的损耗和剩余库存不能为负数，且合计不能超过可售库存"
+            message = "${invalid.first.fruitName} 的剩余库存或损耗无效，且两项之和不能超过可售合计"
             isError = true
             return false
         }
-        val saved = db.saveInventoryDay(
-            date = date,
-            items = inventoryItems.map { item ->
+        val inputs = drafts.mapNotNull { (item, values) ->
+            values?.let {
                 InventorySaveInput(
                     fruitId = item.fruitId,
                     fruitName = item.fruitName,
                     unit = item.unit,
-                    lossQuantity = lossInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0,
-                    remainingQuantity = remainingInputs[itemKey(item)]?.toDoubleOrNull() ?: 0.0
+                    lossQuantity = it.loss,
+                    remainingQuantity = it.remaining
                 )
             }
-        )
+        }
+        val saved = db.saveInventoryDay(date, inputs)
         if (saved) {
-            message = "库存盘点已保存"
+            message = ""
             isError = false
             onChanged()
             return true
         }
-        message = "库存保存失败，请检查数据后重试"
+        message = "库存自动保存失败，请重试"
         isError = true
         return false
+    }
+
+    fun autoSaveInventoryItem(item: InventoryDayItemRecord) {
+        val key = itemKey(item)
+        val values = InventoryAutoSavePolicy.validate(
+            remainingInputs[key].orEmpty(),
+            lossInputs[key].orEmpty(),
+            item.openingQuantity + item.purchasedQuantity
+        )
+        if (values != null && item.saved &&
+            kotlin.math.abs(values.remaining - item.remainingQuantity) < 0.000001 &&
+            kotlin.math.abs(values.loss - item.lossQuantity) < 0.000001
+        ) return
+        saveInventoryItems(listOf(item))
+    }
+
+    fun saveInventoryEdits(): Boolean {
+        val changed = inventoryItems.filter { item ->
+            val key = itemKey(item)
+            val values = InventoryAutoSavePolicy.validate(
+                remainingInputs[key].orEmpty(),
+                lossInputs[key].orEmpty(),
+                item.openingQuantity + item.purchasedQuantity
+            )
+            values == null ||
+                kotlin.math.abs(values.remaining - item.remainingQuantity) > 0.000001 ||
+                kotlin.math.abs(values.loss - item.lossQuantity) > 0.000001
+        }
+        val activeKeys = inventoryItems.map(::itemKey).toSet()
+        if (remainingInputs.keys.any { it !in activeKeys } || lossInputs.keys.any { it !in activeKeys }) {
+            message = "有正在编辑的商品已在云端删除，请核对后重试"
+            isError = true
+            return false
+        }
+        return saveInventoryItems(changed)
     }
 
     fun discardInventoryEdits() {
@@ -6983,9 +7025,6 @@ private fun InventoryScreen(
                                     maxLines = 1
                                 )
                             }
-                            if (item.saved) {
-                                Text("√", color = BrandGreen, fontWeight = FontWeight.Bold)
-                            }
                         }
 
                         Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -7010,7 +7049,8 @@ private fun InventoryScreen(
                                 defaultValue = "0",
                                 stateKey = "inventory-loss-$date-$key",
                                 onValue = { lossInputs[key] = it },
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                onFocusLost = { autoSaveInventoryItem(item) }
                             )
                             PurchaseDefaultNumberField(
                                 label = "剩余库存",
@@ -7018,7 +7058,8 @@ private fun InventoryScreen(
                                 defaultValue = "0",
                                 stateKey = "inventory-remaining-$date-$key",
                                 onValue = { remainingInputs[key] = it },
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                onFocusLost = { autoSaveInventoryItem(item) }
                             )
                         }
 
@@ -7034,14 +7075,6 @@ private fun InventoryScreen(
                 }
             }
 
-            item {
-                Button(
-                    onClick = { saveInventoryEdits() },
-                    modifier = Modifier.fillMaxWidth().height(44.dp)
-                ) {
-                    Text("保存库存")
-                }
-            }
         }
 
         if (message.isNotBlank()) {
@@ -7056,7 +7089,7 @@ private fun InventoryScreen(
 
         item {
             Text(
-                "说明：剩余库存按采购单位盘点；成本不依赖每件重量。零售可按斤或按件设置，每个商品每日保存一个零售价（含单位），不回写历史。",
+                "说明：修改损耗或剩余库存后，离开输入框自动保存当前商品；超出可售量或输入无效时不会保存。成本不依赖每件重量。零售可按斤或按件设置，不回写历史。",
                 color = Color.Gray,
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.padding(vertical = 6.dp)
@@ -8454,6 +8487,7 @@ private fun PurchaseScreen(
                             Spacer(Modifier.width(4.dp))
                             AssistBillImportButton(
                                 db = db,
+                                label = "导入账单",
                                 onChanged = onChanged,
                                 onResult = {
                                     message = it
@@ -28174,7 +28208,8 @@ private fun PurchaseDefaultNumberField(
     defaultValue: String,
     stateKey: String,
     onValue: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onFocusLost: (() -> Unit)? = null
 ) {
     var fieldValue by remember(stateKey) {
         mutableStateOf(
@@ -28186,6 +28221,8 @@ private fun PurchaseDefaultNumberField(
     }
     var defaultSelectionPending by remember(stateKey) { mutableStateOf(true) }
     var firstEditPending by remember(stateKey) { mutableStateOf(true) }
+    var wasFocused by remember(stateKey) { mutableStateOf(false) }
+    val latestFocusLost by rememberUpdatedState(onFocusLost)
 
     LaunchedEffect(value) {
         if (fieldValue.text != value) {
@@ -28259,16 +28296,17 @@ private fun PurchaseDefaultNumberField(
                     Modifier
                         .fillMaxWidth()
                         .onFocusChanged { state ->
-                            if (
-                                state.isFocused &&
-                                defaultSelectionPending &&
-                                fieldValue.text == defaultValue
-                            ) {
-                                fieldValue =
-                                    fieldValue.copy(
+                            if (state.isFocused) {
+                                wasFocused = true
+                                if (defaultSelectionPending && fieldValue.text == defaultValue) {
+                                    fieldValue = fieldValue.copy(
                                         selection = TextRange(0, fieldValue.text.length)
                                     )
-                                defaultSelectionPending = false
+                                    defaultSelectionPending = false
+                                }
+                            } else if (wasFocused) {
+                                wasFocused = false
+                                latestFocusLost?.invoke()
                             }
                         }
             )
