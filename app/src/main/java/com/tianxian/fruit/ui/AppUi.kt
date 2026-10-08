@@ -127,6 +127,7 @@ private enum class MorePage {
     PURCHASE_ACTIVITY,
     STATS,
     OPERATING_ANALYSIS,
+    PROFIT_PROJECTION,
     PERSONAL_SUMMARY,
     BACKUP,
     STORES,
@@ -753,6 +754,9 @@ fun TianXianApp(
             HistorySection.BUSINESS
         )
     }
+    var profitProjectionDate by remember(currentBook.id) {
+        mutableStateOf(LocalDate.now().toString())
+    }
     var weatherDetailDate by remember(currentBook.id) {
         mutableStateOf(LocalDate.now().toString())
     }
@@ -1310,6 +1314,11 @@ fun TianXianApp(
                             businessAdviceReturnPage = AppPage.HOME
                             businessAdviceVisible = true
                         },
+                        onOpenProfitProjection = { date ->
+                            profitProjectionDate = date
+                            moreTarget = MorePage.PROFIT_PROJECTION
+                            page = AppPage.MORE
+                        },
                         onMore = {
                             moreTarget =
                                 MorePage.MENU
@@ -1325,6 +1334,8 @@ fun TianXianApp(
                         InventoryScreen(
                             db = db,
                             dataVersion = dataVersion,
+                            currentBook = liveCurrentBook,
+                            cloudSyncManager = cloudSyncManager,
                             workDate = workDate,
                             onWorkDateChange = { newDate -> requestLeave { workDate = newDate } },
                             onChanged = { notifyDataChanged() },
@@ -1406,6 +1417,7 @@ fun TianXianApp(
                         dataVersion = dataVersion,
                         initialSub = moreTarget,
                         initialHistorySection = historyTarget,
+                        initialProjectionDate = profitProjectionDate,
                         ledgerManager =
                             ledgerManager,
                         cloudSyncManager =
@@ -5606,6 +5618,7 @@ private fun HomeScreen(
     onInventory: () -> Unit,
     onOpenWeather: (String, Long?) -> Unit,
     onOpenBusinessAdvice: (String, Long) -> Unit,
+    onOpenProfitProjection: (String) -> Unit,
     onMore: () -> Unit,
     onOpenMore: (MorePage) -> Unit
 ) {
@@ -5719,6 +5732,9 @@ private fun HomeScreen(
     }
     val operatingAnalysis = remember(dataVersion, selectedDateString) {
         db.getOperatingAnalysis(selectedDateString)
+    }
+    val profitOpportunity = remember(operatingAnalysis) {
+        ProfitOpportunityCalculator.calculate(operatingAnalysis.items.map(::opportunityInput))
     }
     val records = remember(dataVersion, selectedDateString) {
         db.getDailyRecords(selectedDateString)
@@ -6214,27 +6230,13 @@ private fun HomeScreen(
                                     "🧮",
                                     "预估利润",
                                     when {
-                                        !operatingAnalysis.inventoryComplete -> "待盘点"
-                                        !operatingAnalysis.costComplete -> {
-                                            val missing = operatingAnalysis.items.count { row ->
-                                                !row.costAvailable && (
-                                                    row.availableQuantity > 0.000001 ||
-                                                        row.lossQuantity > 0.000001 ||
-                                                        row.remainingQuantity > 0.000001 ||
-                                                        row.consumedQuantity > 0.000001
-                                                )
-                                            }
-                                            "缺成本${missing}种"
-                                        }
-                                        else ->
-                                            operatingAnalysis.operatingProfit
-                                                ?.let {
-                                                    wholeMoney(it)
-                                                }
-                                                ?: "—"
+                                        !profitOpportunity.hasAvailableGoods -> "—"
+                                        profitOpportunity.missingAvailable > 0 -> "缺资料${profitOpportunity.missingAvailable}种"
+                                        else -> wholeMoney(profitOpportunity.knownAvailableProfit)
                                     },
                                     SoftPurple,
-                                    Modifier.weight(1f)
+                                    Modifier.weight(1f),
+                                    onClick = { onOpenProfitProjection(selectedDateString) }
                                 )
                             }
     
@@ -6679,6 +6681,8 @@ private fun chineseWeekday(date: LocalDate): String = when (date.dayOfWeek.value
 private fun InventoryScreen(
     db: AppDatabase,
     dataVersion: Int,
+    currentBook: LedgerBook,
+    cloudSyncManager: CloudSyncManager,
     workDate: String,
     onWorkDateChange: (String) -> Unit,
     onChanged: () -> Unit,
@@ -6698,6 +6702,12 @@ private fun InventoryScreen(
 
     val inventoryItems = remember(dataVersion, date) {
         db.getInventoryDayItems(date)
+    }
+    val retailPending = remember(dataVersion, currentBook.id) {
+        db.getPendingSyncChangeCount(setOf("daily_retail_price"))
+    }
+    val retailError = remember(dataVersion, currentBook.id) {
+        cloudSyncManager.getTableSyncError(currentBook.id, "daily_retail_price")
     }
 
     fun itemKey(item: InventoryDayItemRecord): String =
@@ -6861,6 +6871,14 @@ private fun InventoryScreen(
                     modifier = Modifier.padding(top = 3.dp)
                 )
             }
+            if (retailError.isNotBlank() || retailPending > 0) {
+                Text(
+                    if (retailError.isNotBlank()) "零售价同步异常：$retailError" else "零售价待同步 $retailPending 条",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (retailError.isNotBlank()) MaterialTheme.colorScheme.error else Color(0xFFB26A00),
+                    maxLines = 2
+                )
+            }
             if (inventoryItems.isNotEmpty()) {
                 Text(
                     if (savedCount == inventoryItems.size) {
@@ -6931,48 +6949,37 @@ private fun InventoryScreen(
                                 maxLines = 1
                             )
                             Text(
-                                item.effectiveUnitCost?.let { "成本 ${money(it)}/${item.unit}" } ?: "暂无单价",
+                                item.effectiveUnitCost?.let { "成${fmt(it)}/${item.unit}" } ?: "成—",
                                 modifier = Modifier.clickable {
                                     costEditItem = item
                                     costEditValue = cleanNumber(item.effectiveUnitCost ?: 0.0)
-                                }.padding(horizontal = 5.dp),
+                                }.padding(horizontal = 2.dp),
                                 color = if (item.effectiveUnitCost != null) Color.DarkGray else Color(0xFFB26A00),
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Medium,
                                 maxLines = 1
                             )
                             Text(
-                                item.retailPricePerJin?.let { "今日零售 ${money(it)}/斤" } ?: "今日零售 暂无",
+                                item.retailPricePerJin?.let { "零售${fmt(it)}/斤" } ?: "零售—",
                                 modifier = Modifier.clickable {
                                     retailEditItem = item
                                     retailEditValue = cleanNumber(item.retailPricePerJin ?: 0.0)
-                                }.padding(horizontal = 5.dp),
+                                }.padding(horizontal = 2.dp),
                                 color = BrandGreen,
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Medium,
                                 maxLines = 1
                             )
                             Text(
-                                buildString {
-                                    append(
-                                        if (item.purchasedQuantity > 0.000001) {
-                                            "今日有采购"
-                                        } else {
-                                            "历史结转"
-                                        }
-                                    )
-                                    if (item.saved) append(" · 已保存")
-                                },
-                                color =
-                                    if (item.purchasedQuantity > 0.000001 || item.saved) {
-                                        BrandGreen
-                                    } else {
-                                        Color.Gray
-                                    },
+                                if (item.purchasedQuantity > 0.000001) "有" else "无",
+                                color = if (item.purchasedQuantity > 0.000001) BrandGreen else Color.Black,
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.Medium,
                                 maxLines = 1
                             )
+                            if (item.saved) {
+                                Text("√", color = BrandGreen, fontWeight = FontWeight.Bold)
+                            }
                         }
 
                         Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -11382,15 +11389,18 @@ private fun SessionScreen(
 
         if (todayRecords.isNotEmpty()) {
             item {
-                Text(
-                    "当天营业记录",
-                    fontWeight =
-                        FontWeight.Bold,
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodyMedium
-                )
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("当天营业记录", fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    val positionCount = todayRecords.map { row ->
+                        if (row.storeId > 0L) "id:${row.storeId}" else "name:${row.storeName}"
+                    }.distinct().size
+                    if (positionCount > 1) {
+                        Text("当日合计 ${money(todayRecords.sumOf { it.revenue })}",
+                            color = BrandGreen, fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                }
             }
 
             items(
@@ -14995,6 +15005,7 @@ private fun MoreScreen(
     dataVersion: Int,
     initialSub: MorePage = MorePage.MENU,
     initialHistorySection: HistorySection = HistorySection.BUSINESS,
+    initialProjectionDate: String,
     ledgerManager: LedgerManager,
     cloudSyncManager: CloudSyncManager,
     currentBook: LedgerBook,
@@ -15666,6 +15677,12 @@ private fun MoreScreen(
             }
         }
 
+        MorePage.PROFIT_PROJECTION -> {
+            SubPage("利润分析", { sub = MorePage.MENU }) {
+                ProfitProjectionContent(db, dataVersion, initialProjectionDate)
+            }
+        }
+
         MorePage.PERSONAL_SUMMARY -> {
             SubPage(
                 "个人汇总",
@@ -16037,6 +16054,123 @@ private fun HomeSettingsCombinedContent(
                     onChanged =
                         onChanged
                 )
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun ProfitProjectionContent(db: AppDatabase, dataVersion: Int, initialDate: String) {
+    var date by remember(initialDate) { mutableStateOf(initialDate) }
+    var mode by remember { mutableIntStateOf(0) }
+    val analysis = remember(dataVersion, date) { db.getOperatingAnalysis(date) }
+    val summary = remember(dataVersion, date) { db.getDailySummary(date) }
+    val potential = remember(analysis) {
+        ProfitOpportunityCalculator.calculate(analysis.items.map(::opportunityInput))
+    }
+    val titles = listOf("预估利润", "估算利润", "实际利润")
+    val amounts = listOf(
+        when {
+            !potential.hasAvailableGoods -> "—"
+            potential.missingAvailable > 0 -> "缺${potential.missingAvailable}种"
+            else -> wholeMoney(potential.knownAvailableProfit)
+        },
+        when {
+            !potential.hasPurchasedGoods -> "—"
+            potential.missingPurchased > 0 -> "缺${potential.missingPurchased}种"
+            else -> wholeMoney(potential.knownPurchasedProfit)
+        },
+        wholeMoney(summary.profit)
+    )
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            CompactDateSelector("分析日期", date, Modifier.fillMaxWidth(), showWeekday = true, onDate = { date = it })
+        }
+        item {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                titles.forEachIndexed { index, title ->
+                    Card(
+                        onClick = { mode = index },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = if (mode == index) SoftGreen else Color(0xFFF6F7F9))
+                    ) {
+                        Column(Modifier.fillMaxWidth().padding(8.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Text(title, fontSize = 12.sp, maxLines = 1)
+                            Text(amounts[index], fontWeight = FontWeight.Bold, fontSize = 17.sp, maxLines = 1)
+                            Text(listOf("结转＋采购","仅采购","原账本")[index], fontSize = 10.sp, color = Color.Gray)
+                        }
+                    }
+                }
+            }
+        }
+        if (mode < 2) {
+            item {
+                Text(
+                    if (mode == 0) "昨日结转＋今日采购全部卖光的潜在毛利"
+                    else "仅今日采购全部卖光的潜在毛利",
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text("零售价×数量×规格重量－货品成本；无须今日盘点，未扣将来损耗与开销。",
+                    color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            }
+            val visible = potential.items.filter { if (mode == 0) it.hasAvailable else it.hasPurchased }
+            if (visible.isEmpty()) item { Text("当日没有可计算的商品。", color = Color.Gray) }
+            items(visible) { row ->
+                val input = row.input
+                val gross = if (mode == 0) row.availableGrossProfit else row.purchasedGrossProfit
+                Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                    Column(Modifier.fillMaxWidth().padding(11.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(input.name, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                            Text(gross?.let(::wholeMoney) ?: "缺资料",
+                                color = if (gross == null) Color(0xFFB26A00) else BrandGreen,
+                                fontWeight = FontWeight.SemiBold)
+                        }
+                        Text("结转 ${fmt(input.openingQuantity)}${input.unit} · 今日采购 ${fmt(input.purchasedQuantity)}${input.unit}",
+                            style = MaterialTheme.typography.bodySmall)
+                        Text("零售 ${input.retailPricePerJin?.let { money(it) + "/斤" } ?: "—"} · 重量 ${input.weightPerUnitJin?.let { fmt(it) + "斤/${input.unit}" } ?: "—"}",
+                            style = MaterialTheme.typography.bodySmall, color = Color.DarkGray)
+                        if (gross == null) {
+                            val missing = buildList {
+                                if ((input.retailPricePerJin ?: 0.0) <= 0.0) add("零售价")
+                                if ((input.weightPerUnitJin ?: 0.0) <= 0.0) add("每件重量")
+                                if (mode == 0 && input.openingQuantity > 0.000001 && input.openingCost == null) add("结转成本")
+                                if (input.purchasedQuantity > 0.000001 && input.purchasedCost == null) add("采购成本")
+                            }
+                            Text("待补：${missing.joinToString("、")}", color = Color(0xFFB26A00),
+                                style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            }
+            item {
+                val missing = if (mode == 0) potential.missingAvailable else potential.missingPurchased
+                val known = if (mode == 0) potential.knownAvailableProfit else potential.knownPurchasedProfit
+                Text(if (missing > 0) "已知商品毛利 ${wholeMoney(known)}；另有${missing}种缺资料，未计入完整总额。"
+                    else "以上仅为潜在毛利，不参与实际利润分配和资金结算。",
+                    color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            }
+        } else {
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                        Text("今日实际利润 · 与原账本一致", fontWeight = FontWeight.Bold)
+                        AnalysisFormulaRow("营业额", wholeMoney(summary.revenue))
+                        AnalysisFormulaRow("＋ 原账本剩余库存", wholeMoney(summary.closingStockValue))
+                        AnalysisFormulaRow("－ 原账本期初库存", wholeMoney(summary.openingStockValue))
+                        AnalysisFormulaRow("－ 今日采购", wholeMoney(summary.purchaseCost))
+                        AnalysisFormulaRow("－ 日常开销", wholeMoney(summary.expense))
+                        AnalysisFormulaRow("＝ 实际利润", wholeMoney(summary.profit), true)
+                        Text("保留原正式结算口径；以库存消耗核算的经营利润仍在经营分析查看。",
+                            color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
             }
         }
     }

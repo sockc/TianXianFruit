@@ -274,10 +274,11 @@ data class OperatingAnalysisItemRecord(
     val estimatedSoldWeightJin: Double? = null,
     val estimatedSalesRevenue: Double? = null,
     val estimatedProductGrossProfit: Double? = null,
-    val costSource: String = "NONE"
+    val costSource: String = "NONE",
+    val purchaseCostAvailable: Boolean = true
 )
 
-data class OperatingAnalysisRecord(
+data class OperatingAnalysisRecord
     val date: String,
     val revenue: Double,
     val expense: Double,
@@ -11322,7 +11323,8 @@ class AppDatabase(
                 estimatedSoldWeightJin = estimatedSoldWeightJin,
                 estimatedSalesRevenue = estimatedSalesRevenue,
                 estimatedProductGrossProfit = estimatedProductGrossProfit,
-                costSource = effectiveCost.source
+                costSource = effectiveCost.source,
+                purchaseCostAvailable = purchase?.costAvailable ?: true
             )
         }
 
