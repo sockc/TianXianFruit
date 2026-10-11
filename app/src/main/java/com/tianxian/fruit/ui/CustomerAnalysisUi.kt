@@ -48,6 +48,7 @@ private enum class CustomerRange(val label: String) {
 
 private enum class CustomerAnalysisTab(val label: String) {
     OVERVIEW("概览"),
+    RHYTHM("经营节奏"),
     REPEAT("复购"),
     RANKING("排行"),
     LIFECYCLE("生命周期"),
@@ -672,6 +673,14 @@ internal fun CustomerAnalysisContent(
             Modifier.fillMaxSize()
         ) {
             when {
+                tab == CustomerAnalysisTab.RHYTHM ->
+                    CustomerBusinessRhythmContent(
+                        db = db,
+                        dataVersion = dataVersion,
+                        startDate = dateRange.first,
+                        endDate = dateRange.second
+                    )
+
                 rawRecords.isEmpty() ->
                     EmptyCustomerAnalysis()
 
@@ -735,6 +744,8 @@ internal fun CustomerAnalysisContent(
                                         }
                                 }
                             )
+
+                        CustomerAnalysisTab.RHYTHM -> Unit
 
                         CustomerAnalysisTab.REPEAT ->
                             CustomerRepeatAnalysis(
