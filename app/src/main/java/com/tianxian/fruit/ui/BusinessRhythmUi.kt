@@ -16,6 +16,7 @@ import com.tianxian.fruit.data.BusinessRhythmReport
 import com.tianxian.fruit.data.RhythmBusinessDay
 import com.tianxian.fruit.data.StoreDailyRecord
 import java.time.LocalDate
+import java.time.ZoneId
 import java.util.Locale
 
 /**
@@ -56,7 +57,7 @@ internal fun CustomerBusinessRhythmContent(
                 Triple(
                     latest.storeName,
                     BusinessRhythmAnalyzer.evaluate(latestDate, days),
-                    BusinessRhythmAnalyzer.evaluate(LocalDate.now().plusDays(1), days)
+                    BusinessRhythmAnalyzer.evaluate(LocalDate.now(ZoneId.of("Asia/Shanghai")).plusDays(1), days)
                 )
             }
             .sortedByDescending { it.second.date }
@@ -84,7 +85,7 @@ internal fun CustomerBusinessRhythmContent(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        items(cards, key = { it.first }) { (storeName, actual, tomorrow) ->
+        items(cards) { (storeName, actual, tomorrow) ->
             Card(
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(
