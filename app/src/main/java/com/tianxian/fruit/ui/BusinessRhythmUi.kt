@@ -1,0 +1,141 @@
+package com.tianxian.fruit.ui
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.tianxian.fruit.data.AppDatabase
+import com.tianxian.fruit.data.BusinessRhythmAnalyzer
+import com.tianxian.fruit.data.BusinessRhythmReport
+import com.tianxian.fruit.data.RhythmBusinessDay
+import com.tianxian.fruit.data.StoreDailyRecord
+import java.time.LocalDate
+import java.util.Locale
+
+/**
+ * 客户分析下的经营节奏页。读已有营业记录，不增加服务器表、不额外写同步数据。
+ * 详细经营诊断只使用该位置有真实营业额的日期；未归属客户数据不给出“老客流失”结论。
+ */
+@Composable
+internal fun CustomerBusinessRhythmContent(
+    db: AppDatabase,
+    dataVersion: Int,
+    startDate: String?,
+    endDate: String?
+) {
+    val allRecords = remember(dataVersion) { db.getRecentDailyRecords(700) }
+    val cards = remember(allRecords, startDate, endDate) {
+        allRecords
+            .filter { it.revenue > 0.0 }
+            .groupBy { it.storeId }
+            .mapNotNull { (_, rows) ->
+                val visible = rows.filter {
+                    (startDate == null || it.date >= startDate) &&
+                        (endDate == null || it.date <= endDate)
+                }
+                val latest = visible.maxByOrNull { it.date } ?: return@mapNotNull null
+                val days = rows.mapNotNull { row ->
+                    runCatching { LocalDate.parse(row.date) }.getOrNull()?.let { day ->
+                        RhythmBusinessDay(
+                            date = day,
+                            revenue = row.revenue,
+                            customers = row.customerTotal,
+                            newCustomers = row.newCustomer,
+                            oldCustomers = row.oldCustomer
+                        )
+                    }
+                }
+                val latestDate = runCatching { LocalDate.parse(latest.date) }.getOrNull()
+                    ?: return@mapNotNull null
+                Triple(
+                    latest.storeName,
+                    BusinessRhythmAnalyzer.evaluate(latestDate, days),
+                    BusinessRhythmAnalyzer.evaluate(LocalDate.now().plusDays(1), days)
+                )
+            }
+            .sortedByDescending { it.second.date }
+    }
+
+    if (cards.isEmpty()) {
+        Text(
+            "该时间范围内没有可分析的营业记录。经营节奏使用正式营业额，不依赖已导入的收款账单。",
+            modifier = Modifier.padding(16.dp),
+            style = MaterialTheme.typography.bodyMedium
+        )
+        return
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            Text("经营节奏分析", fontWeight = FontWeight.Bold)
+            Text(
+                "按位置比较连续出摊天数与历史同星期；营业额下降不代表一定是老客需求饱和。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        items(cards, key = { it.first }) { (storeName, actual, tomorrow) ->
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                )
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Text(storeName, fontWeight = FontWeight.Bold)
+                    Text(
+                        "${actual.date} · 最近经营诊断 · 连续${actual.consecutiveDays}天",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Text(actual.headline, color = MaterialTheme.colorScheme.primary)
+                    val comparison = actual.revenueChangePercent
+                    Text(
+                        "营业额 ${rhythmMoney(actual.revenue)} · 同星期样本 ${actual.comparableDays}天" +
+                            if (comparison != null) " · 较历史 ${String.format(Locale.CHINA, "%+.0f", comparison)}%" else " · 历史不足",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    if (actual.customers != null) {
+                        Text(
+                            "客户 ${actual.customers} · 客单价 ${rhythmMoney(actual.averageTicket)}" +
+                                (actual.newCustomerShare?.let { " · 新客 ${(it * 100).toInt()}%" } ?: ""),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    } else {
+                        Text("客户数据不足：不推断新老客变化", style = MaterialTheme.typography.bodySmall)
+                    }
+                    actual.reasons.take(4).forEach { reason ->
+                        Text("• $reason", style = MaterialTheme.typography.bodySmall)
+                    }
+                    HorizontalDivider()
+                    Text("明日出摊提示", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        tomorrow.recommendation,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        "证据：${when(actual.evidence) {
+                            "MODERATE" -> "部分客流可比"
+                            "PARTIAL" -> "仅营业额可比"
+                            else -> "同星期样本不足"
+                        }}。尚未控制天气、工厂调休和品种变化；建议结合库存及利润判断。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun rhythmMoney(value: Double?): String =
+    if (value == null) "未知" else "¥" + String.format(Locale.CHINA, "%.0f", value)
