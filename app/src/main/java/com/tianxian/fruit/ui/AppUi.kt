@@ -2783,6 +2783,24 @@ private fun HomeWeatherCard(
     val businessHours = storeBusinessHours(overview?.hourly.orEmpty(), dateString, selectedStore)
     val maxPop = businessHours.mapNotNull { it.precipitationProbability }.maxOrNull()
     val rainAmount = businessHours.sumOf { it.precipitation ?: 0.0 }
+    val rainReminder = remember(
+        overview?.rawJson,
+        selectedDate,
+        selectedStore?.id
+    ) {
+        HomeRainReminderPolicy.evaluate(
+            date = selectedDate,
+            now = LocalDateTime.now(ZoneId.of("Asia/Shanghai")),
+            dayHours = overview?.hourly.orEmpty().filter { it.time.startsWith(dateString) },
+            preOpenHours = storePreBusinessHours(
+                overview?.hourly.orEmpty(),
+                selectedDate,
+                selectedStore
+            ),
+            businessHours = businessHours,
+            day = day
+        )
+    }
     val headline = current?.text?.takeIf { selectedDate == LocalDate.now() }
         ?: day?.textDay.orEmpty().ifBlank { businessHours.firstOrNull()?.text.orEmpty() }
     val temp = current?.temperature?.takeIf { selectedDate == LocalDate.now() }
@@ -2871,6 +2889,35 @@ private fun HomeWeatherCard(
                 }
                 Spacer(Modifier.weight(1f))
                 Text(weatherDateLabel(selectedDate), style = MaterialTheme.typography.labelMedium, color = Color.DarkGray)
+            }
+
+            if (rainReminder != null && !state.loading && state.error.isBlank()) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (rainReminder.strong) Color(0xFFFFE8E2) else Color(0xFFFFF2D8),
+                    border = BorderStroke(
+                        1.dp,
+                        if (rainReminder.strong) Color(0xFFE5A08C) else Color(0xFFE4BE72)
+                    )
+                ) {
+                    Column(
+                        Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            rainReminder.headline,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFF854516)
+                        )
+                        Text(
+                            rainReminder.detail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF714B27)
+                        )
+                    }
+                }
             }
 
             when {
@@ -11854,8 +11901,8 @@ private fun SessionScreen(
                     label = "客户合计",
                     value = "${n + o}",
                     modifier = Modifier.weight(1.15f),
-                    leadingActionText = if (customerImportLoading) "读取中" else "导入客户",
-                    onLeadingAction = {
+                    trailingActionText = if (customerImportLoading) "读取中" else "导入",
+                    onTrailingAction = {
                         val selectedId = selectedStore?.id
                         if (selectedId == null) {
                             message = "请先选择营业位置，再导入客户"
@@ -11888,7 +11935,7 @@ private fun SessionScreen(
                             }
                         }
                     },
-                    leadingActionEnabled = hasImportedBusinessPayments && selectedStore != null && !customerImportLoading
+                    trailingActionEnabled = hasImportedBusinessPayments && selectedStore != null && !customerImportLoading
                 )
             }
         }
@@ -28437,24 +28484,24 @@ private fun CompactReadOnlyField(
     label: String,
     value: String,
     modifier: Modifier = Modifier,
-    leadingActionText: String? = null,
-    onLeadingAction: (() -> Unit)? = null,
-    leadingActionEnabled: Boolean = true
+    trailingActionText: String? = null,
+    onTrailingAction: (() -> Unit)? = null,
+    trailingActionEnabled: Boolean = true
 ) {
     Column(modifier) {
-        if (leadingActionText != null && onLeadingAction != null) {
+        if (trailingActionText != null && onTrailingAction != null) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray, maxLines = 1)
                 Text(
-                    leadingActionText,
-                    modifier = Modifier.clickable(enabled = leadingActionEnabled) { onLeadingAction() },
+                    trailingActionText,
+                    modifier = Modifier.clickable(enabled = trailingActionEnabled) { onTrailingAction() },
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (leadingActionEnabled) BrandGreen else Color.Gray,
+                    color = if (trailingActionEnabled) BrandGreen else Color.Gray,
                     maxLines = 1
                 )
-                Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray, maxLines = 1)
             }
         } else {
             Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray, maxLines = 1)
