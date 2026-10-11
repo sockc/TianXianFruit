@@ -4,7 +4,6 @@ import com.tianxian.fruit.sync.WeatherDay
 import com.tianxian.fruit.sync.WeatherHour
 import java.time.LocalDate
 import java.time.LocalDateTime
-import java.util.Locale
 
 /**
  * 首页重点降雨提示：营业时段 > 开摊前三小时 > 当日其他时段 > 日级预报。
@@ -41,7 +40,7 @@ internal object HomeRainReminderPolicy {
                 (hour.precipitationProbability ?: 0.0) >= 40.0 ||
                 label.contains("雨") ||
                 label.contains("雷暴") ||
-                hour.code.toIntOrNull() in 300..399
+                (hour.code.toIntOrNull() ?: -1) in 300..399
         }
 
         val business = businessHours.filter(::future).filter(::wet)
@@ -85,8 +84,8 @@ internal object HomeRainReminderPolicy {
             (day.precipitation ?: 0.0) > 0.05 ||
                 (day.precipitationProbability ?: 0.0) >= 40.0 ||
                 dailyText.contains("雨") ||
-                day.codeDay.toIntOrNull() in 300..399 ||
-                day.codeNight.toIntOrNull() in 300..399
+                (day.codeDay.toIntOrNull() ?: -1) in 300..399 ||
+                (day.codeNight.toIntOrNull() ?: -1) in 300..399
         )
         if (!dailyRain) return null
         if (date == now.toLocalDate() && now.hour >= 23) return null
@@ -94,7 +93,7 @@ internal object HomeRainReminderPolicy {
             " · 降雨概率 ${it.toInt().coerceIn(0, 100)}%"
         }.orEmpty()
         return HomeRainReminder(
-            headline = "🌧 今日预报有雨".replace("今日", if (date == now.toLocalDate()) "今日" else "所选日期"),
+            headline = if (date == now.toLocalDate()) "🌧 今日预报有雨" else "🌧 所选日期预报有雨",
             detail = "暂无可靠逐小时降雨时间，请留意天气变化" + pop,
             strong = (day.precipitation ?: 0.0) >= 2.0 ||
                 (day.precipitationProbability ?: 0.0) >= 70.0 ||
