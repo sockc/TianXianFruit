@@ -10780,6 +10780,10 @@ private fun SessionScreen(
     var pendingBusinessSupplementRecordId by remember(date) {
         mutableStateOf<Long?>(null)
     }
+    var pendingCustomerImport by remember(date, storeId) {
+        mutableStateOf<BusinessCustomerImportPreview?>(null)
+    }
+    var customerImportLoading by remember(date, storeId) { mutableStateOf(false) }
     var businessBaselineFingerprint by remember(date) { mutableStateOf("") }
     val businessFormBringIntoViewRequester =
         remember {
@@ -11847,6 +11851,46 @@ private fun SessionScreen(
                 CompactIntegerField("新客", newCustomer, { newCustomer = it }, Modifier.weight(1f))
                 CompactIntegerField("老客", oldCustomer, { oldCustomer = it }, Modifier.weight(1f))
                 CompactReadOnlyField("客户合计", "${n + o}", Modifier.weight(1f))
+                OutlinedButton(
+                    onClick = {
+                        val selectedId = selectedStore?.id
+                        if (selectedId == null) {
+                            message = "请先选择营业位置，再导入客户"
+                            isError = true
+                        } else {
+                            customerImportLoading = true
+                            businessFormScrollScope.launch {
+                                val outcome = withContext(Dispatchers.IO) {
+                                    runCatching {
+                                        val payments = db.getCustomerPayments(endDate = date)
+                                        val included = CustomerAnalyticsEngine.filterRecords(
+                                            payments,
+                                            db.getCustomerAnalysisSettings()
+                                        ).included
+                                        BusinessCustomerImportEngine.preview(date, selectedId, included)
+                                    }
+                                }
+                                customerImportLoading = false
+                                outcome.onSuccess { preview ->
+                                    if (preview.valid) {
+                                        pendingCustomerImport = preview
+                                    } else {
+                                        message = preview.explanation
+                                        isError = true
+                                    }
+                                }.onFailure {
+                                    message = "读取客户账单失败：${it.message ?: "未知错误"}"
+                                    isError = true
+                                }
+                            }
+                        }
+                    },
+                    enabled = hasImportedBusinessPayments && selectedStore != null && !customerImportLoading,
+                    modifier = Modifier.weight(1.12f).height(36.dp),
+                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp)
+                ) {
+                    Text(if (customerImportLoading) "读取中" else "导入客户", fontSize = 11.sp, maxLines = 1)
+                }
             }
         }
 
@@ -12074,6 +12118,36 @@ private fun SessionScreen(
             }
         }
 
+    }
+
+    pendingCustomerImport?.let { preview ->
+        AlertDialog(
+            onDismissRequest = { pendingCustomerImport = null },
+            title = { Text("只导入客户人数？") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Text(preview.explanation)
+                    Text("当前新客 ${newCustomer.ifBlank { "0" }} → ${preview.newCustomers} · 老客 ${oldCustomer.ifBlank { "0" }} → ${preview.oldCustomers}")
+                    Text(
+                        "只填入新客、老客两个输入框；不会修改微信、支付宝、现金、营业额或历史记录。请核对后再保存营业记录。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.Gray
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    newCustomer = preview.newCustomers.toString()
+                    oldCustomer = preview.oldCustomers.toString()
+                    pendingCustomerImport = null
+                    message = "客户数据已填入（${preview.uniqueCustomers}名可识别电子支付客户）；营业额不变，请检查后保存"
+                    isError = false
+                }) { Text("确认填入") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingCustomerImport = null }) { Text("取消") }
+            }
+        )
     }
 
     pendingBusinessSupplement?.let { amounts ->
