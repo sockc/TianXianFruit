@@ -11850,9 +11850,12 @@ private fun SessionScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 CompactIntegerField("新客", newCustomer, { newCustomer = it }, Modifier.weight(1f))
                 CompactIntegerField("老客", oldCustomer, { oldCustomer = it }, Modifier.weight(1f))
-                CompactReadOnlyField("客户合计", "${n + o}", Modifier.weight(1f))
-                OutlinedButton(
-                    onClick = {
+                CompactReadOnlyField(
+                    label = "客户合计",
+                    value = "${n + o}",
+                    modifier = Modifier.weight(1.15f),
+                    leadingActionText = if (customerImportLoading) "读取中" else "导入客户",
+                    onLeadingAction = {
                         val selectedId = selectedStore?.id
                         if (selectedId == null) {
                             message = "请先选择营业位置，再导入客户"
@@ -11885,12 +11888,8 @@ private fun SessionScreen(
                             }
                         }
                     },
-                    enabled = hasImportedBusinessPayments && selectedStore != null && !customerImportLoading,
-                    modifier = Modifier.weight(1.12f).height(36.dp),
-                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp)
-                ) {
-                    Text(if (customerImportLoading) "读取中" else "导入客户", fontSize = 11.sp, maxLines = 1)
-                }
+                    leadingActionEnabled = hasImportedBusinessPayments && selectedStore != null && !customerImportLoading
+                )
             }
         }
 
@@ -28434,9 +28433,32 @@ private fun CompactBasicField(
 }
 
 @Composable
-private fun CompactReadOnlyField(label: String, value: String, modifier: Modifier = Modifier) {
+private fun CompactReadOnlyField(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    leadingActionText: String? = null,
+    onLeadingAction: (() -> Unit)? = null,
+    leadingActionEnabled: Boolean = true
+) {
     Column(modifier) {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray, maxLines = 1)
+        if (leadingActionText != null && onLeadingAction != null) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    leadingActionText,
+                    modifier = Modifier.clickable(enabled = leadingActionEnabled) { onLeadingAction() },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (leadingActionEnabled) BrandGreen else Color.Gray,
+                    maxLines = 1
+                )
+                Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray, maxLines = 1)
+            }
+        } else {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray, maxLines = 1)
+        }
         Box(
             Modifier
                 .fillMaxWidth()
