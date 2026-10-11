@@ -441,7 +441,7 @@ internal fun CustomerAnalysisContent(
                         if (importing) {
                             "导入中"
                         } else {
-                            "导入"
+                            "导入账单"
                         }
                     )
                 }
@@ -1616,6 +1616,18 @@ private fun CustomerOverview(
                                 .bodySmall
                     )
                     Text(
+                        "识别覆盖：${s.identifiedCustomerCount}/${s.customerCount} 位客户（${if(s.customerCount > 0) (s.identifiedCustomerCount * 100.0 / s.customerCount).toInt() else 0}%）。",
+                        color = if (s.customerCount > 0 && s.identifiedCustomerCount * 100 < s.customerCount * 70) Color(0xFF9A6700) else Color(0xFF087D4E),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    if (s.lowConfidenceCount > 0) {
+                        Text(
+                            "提示：匿名或低可信身份不能证明是首次购买；新客占比、复购率可能存在偏差，尽量以稳定身份样本判断老客变化。",
+                            color = Color(0xFF9A6700),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Text(
                         "这里统计的是电子支付可识别客户；现金客户不会被账单识别。",
                         style =
                             MaterialTheme
@@ -2301,6 +2313,9 @@ private fun CustomerRepeatAnalysis(profiles: List<CustomerProfileAnalysis>) {
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         item {
+            CustomerRepeatIntervalSummary(rows)
+        }
+        item {
             Text(
                 "优先看“多久来一次”和“稳定指数”，比只看累计消费更适合判断固定位置的老客。",
                 color = Color.Gray,
@@ -2308,6 +2323,51 @@ private fun CustomerRepeatAnalysis(profiles: List<CustomerProfileAnalysis>) {
             )
         }
         items(rows, key = { it.customerKey }) { CustomerProfileCard(it, true) }
+    }
+}
+
+@Composable
+private fun CustomerRepeatIntervalSummary(profiles: List<CustomerProfileAnalysis>) {
+    val reliable = profiles.filter {
+        it.identityConfidence != "LOW" &&
+            it.lifetimeVisits >= 2 &&
+            (it.averageIntervalDays ?: 0.0) > 0.0
+    }
+    Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Column(
+            Modifier.fillMaxWidth().padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Text("老客复购间隔", fontWeight = FontWeight.Bold)
+            if (reliable.isEmpty()) {
+                Text("稳定身份且至少购买两次的客户不足，暂不能判断最佳出摊间隔。",
+                    style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            } else {
+                val bands = listOf(
+                    "约1天" to reliable.count { it.averageIntervalDays!! < 1.5 },
+                    "2—3天" to reliable.count { it.averageIntervalDays!! in 1.5..3.5 },
+                    "4—7天" to reliable.count { it.averageIntervalDays!! > 3.5 && it.averageIntervalDays!! <= 7.5 },
+                    "超过7天" to reliable.count { it.averageIntervalDays!! > 7.5 }
+                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    bands.forEach { (label, count) ->
+                        Column(Modifier.weight(1f)) {
+                            Text(label, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                            Text("$count", fontWeight = FontWeight.Bold, color = Color(0xFF087D4E))
+                            Text("${(count * 100.0 / reliable.size).toInt()}%",
+                                style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        }
+                    }
+                }
+                Text(
+                    "共 ${reliable.size} 位可分析复购客户。按每人平均再次购买间隔分组，不等于推荐出摊天数；需结合利润、天气和工厂排班。",
+                    style = MaterialTheme.typography.bodySmall, color = Color.Gray
+                )
+            }
+        }
     }
 }
 
