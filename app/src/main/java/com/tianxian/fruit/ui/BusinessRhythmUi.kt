@@ -7,6 +7,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -14,10 +16,14 @@ import com.tianxian.fruit.data.AppDatabase
 import com.tianxian.fruit.data.BusinessRhythmAnalyzer
 import com.tianxian.fruit.data.BusinessRhythmReport
 import com.tianxian.fruit.data.RhythmBusinessDay
+import com.tianxian.fruit.data.RetailPriceSignal
+import com.tianxian.fruit.data.RetailPriceSignalAnalyzer
 import com.tianxian.fruit.data.StoreDailyRecord
 import java.time.LocalDate
 import java.time.ZoneId
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * 客户分析下的经营节奏页。读已有营业记录，不增加服务器表、不额外写同步数据。
@@ -63,6 +69,22 @@ internal fun CustomerBusinessRhythmContent(
             .sortedByDescending { it.second.date }
     }
 
+    // Show product price clues only for the most recent business day in this view.
+    // Stock and retail prices are ledger-wide; do not assign their effects to a single stall.
+    val examinedDate = cards.maxOfOrNull { it.second.date }
+    val priceSignals by produceState(
+        initialValue = emptyList<RetailPriceSignal>(),
+        key1 = dataVersion,
+        key2 = examinedDate
+    ) {
+        value = withContext(Dispatchers.IO) {
+            examinedDate?.let { day ->
+                runCatching { RetailPriceSignalAnalyzer.fromDatabase(db, day) }
+                    .getOrDefault(emptyList())
+            }.orEmpty()
+        }
+    }
+
     if (cards.isEmpty()) {
         Text(
             "该时间范围内没有可分析的营业记录。经营节奏使用正式营业额，不依赖已导入的收款账单。",
@@ -84,6 +106,47 @@ internal fun CustomerBusinessRhythmContent(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+        if (examinedDate != null) {
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Text("商品价格线索 · ${examinedDate}", fontWeight = FontWeight.SemiBold)
+                        val discounted = priceSignals.filter { it.isReduced }
+                        if (discounted.isEmpty()) {
+                            Text(
+                                "当前没有发现可比较的已记录降价。若未保存今日零售价，无法判断商品是否实际调价。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            Text(
+                                "有 ${discounted.size} 款商品的已记录零售价下调：",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            discounted.take(4).forEach { signal ->
+                                Text(
+                                    "• ${signal.fruitName} ${rhythmPrice(signal.oldPrice)} → ${rhythmPrice(signal.newPrice)}/${signal.priceUnit}" +
+                                        if (signal.hasCarryover) "（有结转库存）" else "",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            Text(
+                                "售价下调可能影响客单价；有结转库存时也可能与隔夜货有关，但不能仅凭降价认定水果不新鲜。",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        Text(
+                            "零售价和库存当前按全账本统计，多位置无法确定属于哪个摊位；每日售价也不代表每笔实际成交价。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
         }
         items(cards) { (storeName, actual, tomorrow) ->
             Card(
@@ -137,6 +200,9 @@ internal fun CustomerBusinessRhythmContent(
         }
     }
 }
+
+private fun rhythmPrice(value: Double): String =
+    "¥" + String.format(Locale.CHINA, "%.2f", value).trimEnd('0').trimEnd('.')
 
 private fun rhythmMoney(value: Double?): String =
     if (value == null) "未知" else "¥" + String.format(Locale.CHINA, "%.0f", value)
