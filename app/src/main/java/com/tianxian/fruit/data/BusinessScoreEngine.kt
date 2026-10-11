@@ -534,6 +534,30 @@ class BusinessScoreEngine(
                 }
                 .orEmpty()
 
+        // 同位置节奏诊断只提供可追溯解释，不直接改变预测分或赚钱概率。
+        val rhythm = BusinessRhythmAnalyzer.evaluate(
+            targetDate = date,
+            history = rawPositionHistory.mapNotNull { row ->
+                runCatching { LocalDate.parse(row.date) }.getOrNull()?.let { day ->
+                    RhythmBusinessDay(
+                        date = day,
+                        revenue = row.revenue,
+                        customers = row.customerTotal,
+                        newCustomers = row.newCustomer,
+                        oldCustomers = row.oldCustomer
+                    )
+                }
+            } + listOfNotNull(db.getStoreDailyRecord(dateString, store.id)).map { row ->
+                RhythmBusinessDay(
+                    date = date,
+                    revenue = row.revenue,
+                    customers = row.customerTotal,
+                    newCustomers = row.newCustomer,
+                    oldCustomers = row.oldCustomer
+                )
+            }
+        )
+
         val riskReasons =
             buildRiskReasons(
                 totalScore = total,
@@ -546,9 +570,30 @@ class BusinessScoreEngine(
             )
 
         val details = JSONObject().apply {
-            put("score_version", "V3_RISK_REASONS")
+            put("score_version", "V4_RHYTHM_EXPLAINABLE")
             put("model", "STORE_BASELINE_SIMILAR_DAY_STAGED_CALIBRATION")
             put("recommendation", recommendation)
+            put("business_rhythm", JSONObject().apply {
+                put("analysis_version", 1)
+                put("date", rhythm.date.toString())
+                put("stage", if (rhythm.hasActual) "FINAL" else "PRE_OPEN")
+                put("headline", rhythm.headline)
+                put("evidence", rhythm.evidence)
+                put("consecutive_days", rhythm.consecutiveDays)
+                put("comparable_same_weekday_days", rhythm.comparableDays)
+                put("revenue", rhythm.revenue)
+                put("weekday_average_revenue", rhythm.weekdayAverage)
+                put("revenue_change_percent", rhythm.revenueChangePercent)
+                put("customers", rhythm.customers)
+                put("average_ticket", rhythm.averageTicket)
+                put("customer_change_percent", rhythm.customerChangePercent)
+                put("ticket_change_percent", rhythm.ticketChangePercent)
+                put("new_customer_share", rhythm.newCustomerShare)
+                put("old_customer_change_percent", rhythm.oldCustomerChangePercent)
+                put("reasons", JSONArray(rhythm.reasons))
+                put("recommendation", rhythm.recommendation)
+                put("limitation", "同星期对比尚未排除工厂特殊排班和商品结构影响；不直接推断因果")
+            })
             put("snapshot_stage", snapshotStage)
             put("position_sample_count", positionHistory.size)
             put("raw_position_sample_count", rawPositionHistory.size)
@@ -599,6 +644,7 @@ class BusinessScoreEngine(
             put("actions", JSONObject().apply {
                 put("business_window_tip", businessWindowTip)
                 put("inventory_advice", inventoryAdvice)
+                put("rhythm_advice", rhythm.recommendation)
                 put("revenue_range_low", revenueRangeLow)
                 put("revenue_range_high", revenueRangeHigh)
                 put("special_factor_reminder", specialReminder)
@@ -658,7 +704,7 @@ class BusinessScoreEngine(
                                 .orEmpty()
                     )
                 )
-                put("trend", JSONArray(trendPart.reasons + calibrationReason(calibration)))
+                put("trend", JSONArray(trendPart.reasons + calibrationReason(calibration) + rhythm.reasons.take(2)))
             })
             put("similar_dates", JSONArray().apply {
                 similar.forEach { h ->
