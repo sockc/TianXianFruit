@@ -12660,51 +12660,8 @@ private fun SettlementScreen(
 ) {
     var view by remember { mutableStateOf(SettlementView.DAY) }
 
-    LaunchedEffect(
-        db,
-        dataVersion
-    ) {
-        val today =
-            LocalDate.now()
-        val date =
-            today.toString()
-        val rangeStart =
-            today.minusDays(29)
-                .toString()
-        val key =
-            fundBalanceOverviewCacheKey(
-                db = db,
-                dataVersion = dataVersion,
-                date = date,
-                rangeStart = rangeStart,
-                rangeEnd = date,
-                invalidCustom = false
-            )
-
-        if (
-            FundBalanceUiCache
-                .overview(key) ==
-            null
-        ) {
-            val snapshot =
-                withContext(
-                    Dispatchers.IO
-                ) {
-                    loadFundBalanceOverview(
-                        db = db,
-                        date = date,
-                        rangeStart = rangeStart,
-                        rangeEnd = date,
-                        invalidCustom = false
-                    )
-                }
-            FundBalanceUiCache
-                .putOverview(
-                    key,
-                    snapshot
-                )
-        }
-    }
+    // Avoid a full history scan on the daily settlement screen.
+    // Fund balances load only when the balance tab is opened.
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -13801,7 +13758,7 @@ private fun SettlementBatchContent(
 ) {
     val context = LocalContext.current
     var date by remember { mutableStateOf(LocalDate.now().toString()) }
-    var filter by remember { mutableStateOf(HistoryTimeFilter.LAST_30) }
+    var filter by remember { mutableStateOf(HistoryTimeFilter.LAST_7) }
     var customStart by remember {
         mutableStateOf(LocalDate.now().minusDays(29).toString())
     }
@@ -13854,6 +13811,10 @@ private fun SettlementBatchContent(
                 cachedOverview,
             overviewCacheKey
         ) {
+            if (cachedOverview != null) {
+                value = cachedOverview
+                return@produceState
+            }
             val fresh =
                 withContext(
                     Dispatchers.IO
@@ -13960,6 +13921,10 @@ private fun SettlementBatchContent(
                 return@produceState
             }
 
+            if (cachedDetail != null) {
+                value = cachedDetail
+                return@produceState
+            }
             val fresh =
                 withContext(
                     Dispatchers.IO
@@ -28491,8 +28456,9 @@ private fun CompactReadOnlyField(
     Column(modifier) {
         if (trailingActionText != null && onTrailingAction != null) {
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray, maxLines = 1)
                 Text(
