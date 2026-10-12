@@ -89,6 +89,33 @@ internal fun CustomerBusinessRhythmContent(
         }
     }
 
+    val ledgerStock by produceState<LedgerStockHint?>(
+        initialValue = null,
+        key1 = dataVersion,
+        key2 = examinedDate
+    ) {
+        value = withContext(Dispatchers.IO) {
+            examinedDate?.let { date ->
+                runCatching {
+                    val data = db.getOperatingAnalysis(date.toString())
+                    LedgerStockHint(
+                        complete = data.inventoryComplete,
+                        products = data.items
+                            .filter { it.inventorySaved && !it.quantityAnomaly && it.consumedQuantity > 0.001 }
+                            .sortedByDescending { it.estimatedSalesRevenue ?: 0.0 }
+                            .take(3)
+                            .map { item ->
+                                val weight = item.estimatedSoldWeightJin?.let { "，估计${String.format(Locale.CHINA, "%.1f", it)}斤" }.orEmpty()
+                                "${item.fruitName}：消耗${String.format(Locale.CHINA, "%.1f", item.consumedQuantity)}${item.unit}$weight"
+                            },
+                        unsavedCount = data.items.count { !it.inventorySaved },
+                        anomalyCount = data.items.count { it.quantityAnomaly }
+                    )
+                }.getOrNull()
+            }
+        }
+    }
+
     if (cards.isEmpty()) {
         Text(
             "该时间范围内没有可分析的营业记录。经营节奏使用正式营业额，不依赖已导入的收款账单。",
@@ -142,6 +169,22 @@ internal fun CustomerBusinessRhythmContent(
                                 "售价下调可能影响客单价；有结转库存时也可能与隔夜货有关，但不能仅凭降价认定水果不新鲜。",
                                 style = MaterialTheme.typography.bodySmall
                             )
+                        }
+                        ledgerStock?.let { stock ->
+                            HorizontalDivider()
+                            Text("库存消耗线索（全账本）", fontWeight = FontWeight.Medium, style = MaterialTheme.typography.bodySmall)
+                            stock.products.forEach { product ->
+                                Text("• $product", style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (!stock.complete) {
+                                Text(
+                                    "库存盘点尚不完整：${stock.unsavedCount}款未盘点、${stock.anomalyCount}款数量异常；未盘点商品不视作售罄。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            } else if (stock.products.isEmpty()) {
+                                Text("本日没有可确认的库存销售耗用记录。", style = MaterialTheme.typography.bodySmall)
+                            }
                         }
                         Text(
                             "零售价和库存当前按全账本统计，多位置无法确定属于哪个摊位；每日售价也不代表每笔实际成交价。",
@@ -213,6 +256,13 @@ internal fun CustomerBusinessRhythmContent(
         }
     }
 }
+
+private data class LedgerStockHint(
+    val complete: Boolean,
+    val products: List<String>,
+    val unsavedCount: Int,
+    val anomalyCount: Int
+)
 
 private data class RhythmStoreCard(
     val storeId: Long,
