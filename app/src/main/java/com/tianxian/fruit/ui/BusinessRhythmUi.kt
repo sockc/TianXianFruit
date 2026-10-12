@@ -9,6 +9,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -18,7 +20,8 @@ import com.tianxian.fruit.data.BusinessRhythmReport
 import com.tianxian.fruit.data.RhythmBusinessDay
 import com.tianxian.fruit.data.RetailPriceSignal
 import com.tianxian.fruit.data.RetailPriceSignalAnalyzer
-import com.tianxian.fruit.data.StoreDailyRecord
+import com.tianxian.fruit.data.RainImpactAnalyzer
+import com.tianxian.fruit.data.RainImpactReport
 import java.time.LocalDate
 import java.time.ZoneId
 import java.util.Locale
@@ -60,18 +63,19 @@ internal fun CustomerBusinessRhythmContent(
                 }
                 val latestDate = runCatching { LocalDate.parse(latest.date) }.getOrNull()
                     ?: return@mapNotNull null
-                Triple(
-                    latest.storeName,
-                    BusinessRhythmAnalyzer.evaluate(latestDate, days),
-                    BusinessRhythmAnalyzer.evaluate(LocalDate.now(ZoneId.of("Asia/Shanghai")).plusDays(1), days)
+                RhythmStoreCard(
+                    storeId = latest.storeId,
+                    storeName = latest.storeName,
+                    actual = BusinessRhythmAnalyzer.evaluate(latestDate, days),
+                    tomorrow = BusinessRhythmAnalyzer.evaluate(LocalDate.now(ZoneId.of("Asia/Shanghai")).plusDays(1), days)
                 )
             }
-            .sortedByDescending { it.second.date }
+            .sortedByDescending { it.actual.date }
     }
 
     // Show product price clues only for the most recent business day in this view.
     // Stock and retail prices are ledger-wide; do not assign their effects to a single stall.
-    val examinedDate = cards.maxOfOrNull { it.second.date }
+    val examinedDate = cards.maxOfOrNull { it.actual.date }
     val priceSignals by produceState(
         initialValue = emptyList<RetailPriceSignal>(),
         key1 = dataVersion,
@@ -82,6 +86,33 @@ internal fun CustomerBusinessRhythmContent(
                 runCatching { RetailPriceSignalAnalyzer.fromDatabase(db, day) }
                     .getOrDefault(emptyList())
             }.orEmpty()
+        }
+    }
+
+    val ledgerStock by produceState<LedgerStockHint?>(
+        initialValue = null,
+        key1 = dataVersion,
+        key2 = examinedDate
+    ) {
+        value = withContext(Dispatchers.IO) {
+            examinedDate?.let { date ->
+                runCatching {
+                    val data = db.getOperatingAnalysis(date.toString())
+                    LedgerStockHint(
+                        complete = data.inventoryComplete,
+                        products = data.items
+                            .filter { it.inventorySaved && !it.quantityAnomaly && it.consumedQuantity > 0.001 }
+                            .sortedByDescending { it.estimatedSalesRevenue ?: 0.0 }
+                            .take(3)
+                            .map { item ->
+                                val weight = item.estimatedSoldWeightJin?.let { "，估计${String.format(Locale.CHINA, "%.1f", it)}斤" }.orEmpty()
+                                "${item.fruitName}：消耗${String.format(Locale.CHINA, "%.1f", item.consumedQuantity)}${item.unit}$weight"
+                            },
+                        unsavedCount = data.items.count { !it.inventorySaved },
+                        anomalyCount = data.items.count { it.quantityAnomaly }
+                    )
+                }.getOrNull()
+            }
         }
     }
 
@@ -139,6 +170,22 @@ internal fun CustomerBusinessRhythmContent(
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
+                        ledgerStock?.let { stock ->
+                            HorizontalDivider()
+                            Text("库存消耗线索（全账本）", fontWeight = FontWeight.Medium, style = MaterialTheme.typography.bodySmall)
+                            stock.products.forEach { product ->
+                                Text("• $product", style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (!stock.complete) {
+                                Text(
+                                    "库存盘点尚不完整：${stock.unsavedCount}款未盘点、${stock.anomalyCount}款数量异常；未盘点商品不视作售罄。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            } else if (stock.products.isEmpty()) {
+                                Text("本日没有可确认的库存销售耗用记录。", style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
                         Text(
                             "零售价和库存当前按全账本统计，多位置无法确定属于哪个摊位；每日售价也不代表每笔实际成交价。",
                             style = MaterialTheme.typography.labelSmall,
@@ -148,7 +195,10 @@ internal fun CustomerBusinessRhythmContent(
                 }
             }
         }
-        items(cards) { (storeName, actual, tomorrow) ->
+        items(cards, key = { it.storeId }) { entry ->
+            val storeName = entry.storeName
+            val actual = entry.actual
+            val tomorrow = entry.tomorrow
             Card(
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(
@@ -197,9 +247,105 @@ internal fun CustomerBusinessRhythmContent(
                     )
                 }
             }
+            RainImpactDiagnosisCard(
+                db = db,
+                dataVersion = dataVersion,
+                storeId = entry.storeId,
+                date = actual.date
+            )
         }
     }
 }
+
+private data class LedgerStockHint(
+    val complete: Boolean,
+    val products: List<String>,
+    val unsavedCount: Int,
+    val anomalyCount: Int
+)
+
+private data class RhythmStoreCard(
+    val storeId: Long,
+    val storeName: String,
+    val actual: com.tianxian.fruit.data.BusinessRhythmReport,
+    val tomorrow: com.tianxian.fruit.data.BusinessRhythmReport
+)
+
+@Composable
+private fun RainImpactDiagnosisCard(
+    db: AppDatabase,
+    dataVersion: Int,
+    storeId: Long,
+    date: LocalDate
+) {
+    val diagnosis by produceState<RainImpactReport?>(
+        initialValue = null,
+        key1 = dataVersion,
+        key2 = storeId,
+        key3 = date
+    ) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { RainImpactAnalyzer.fromDatabase(db, date, storeId) }.getOrNull()
+        }
+    }
+    var expanded by remember(storeId, date) { mutableStateOf(false) }
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Column(
+            Modifier.fillMaxWidth().padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text("逐小时雨天经营诊断 · ${date}", fontWeight = FontWeight.SemiBold)
+            val report = diagnosis
+            if (report == null) {
+                Text(
+                    "正在读取本位置历史天气和收款记录；若持续无结果，请检查天气归档与账单数据。",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            } else {
+                Text(
+                    "本摊实际营业额 ${rainMoney(report.totalOperatingRevenue)} · 实况 ${report.actualWeatherHours}/${report.expectedHours}小时 · 降雨 ${report.wetHours}小时",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                if (report.wetHours > 0) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(report.before, report.rainy, report.after).forEach { period ->
+                            Column(Modifier.weight(1f)) {
+                                Text(period.label, fontWeight = FontWeight.Medium, style = MaterialTheme.typography.labelSmall)
+                                Text("${period.paymentCount}笔", style = MaterialTheme.typography.bodySmall)
+                                Text(rainMoney(period.electronicRevenue), style = MaterialTheme.typography.bodySmall)
+                                Text("${period.observedHours}小时实况", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
+                report.observations.take(3).forEach { observation ->
+                    Text("• $observation", style = MaterialTheme.typography.bodySmall)
+                }
+                if (report.missing.isNotEmpty()) {
+                    TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) {
+                        Text("缺少 ${report.missing.size} 项资料 ${if (expanded) "⌃" else "⌄"}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (expanded) {
+                        report.missing.forEach { missing ->
+                            Text("• $missing", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+                Text(
+                    "分时金额仅统计已导入并匹配本摊位的电子收款，现金不含在内；商品和库存按全账本核算，不能据此认定雨天导致全部营业额变化。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+private fun rainMoney(value: Double): String =
+    "¥" + String.format(Locale.CHINA, "%.0f", value)
 
 private fun rhythmPrice(value: Double): String =
     "¥" + String.format(Locale.CHINA, "%.2f", value).trimEnd('0').trimEnd('.')
