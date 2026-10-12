@@ -939,6 +939,7 @@ class AppDatabase(
         createV37HistoricalPurchaseAssist(db)
         createV38CustomerAnalysisExclusion(db)
         createV39StableBusinessIdentity(db)
+        createV40FundPerformanceIndexes(db)
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -1103,6 +1104,33 @@ class AppDatabase(
             // local legacy aliases first, then enforce one active row per key.
             createV39StableBusinessIdentity(db)
         }
+        if (oldVersion < 40) {
+            // Only adds read-performance indexes. No ledger values or synced rows change.
+            createV40FundPerformanceIndexes(db)
+        }
+    }
+
+    private fun createV40FundPerformanceIndexes(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_fund_transfer_from_date " +
+                "ON settlement_transfer(from_partner_id,date,deleted)"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_fund_transfer_to_date " +
+                "ON settlement_transfer(to_partner_id,date,deleted)"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_fund_cash_settlement_date " +
+                "ON daily_cash_settlement(date,deleted)"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_fund_purchase_buyer_date " +
+                "ON purchase_order(buyer_id,date,deleted)"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_fund_profit_date_partner " +
+                "ON profit_distribution(date,partner_id,deleted)"
+        )
     }
 
     private fun createV39StableBusinessIdentity(
@@ -16504,7 +16532,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 39
+        const val DB_VERSION = 40
 
         private val CUSTOMER_PAYMENT_DATE_TIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
