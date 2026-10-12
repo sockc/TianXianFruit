@@ -14152,12 +14152,15 @@ class AppDatabase(
         val ledgerByDate = ledger.associateBy { it.date }
         val centerId = getSettlementCenter()?.id
         val counterparts = if (centerId == partnerId) {
-            getPartners()
-                .filter { it.id != partnerId }
-                .map { other ->
-                    buildPartnerFundLedger(other.id, actualEnd)
-                        .associate { it.date to it.endBalance }
-                }
+            // Match the official center calculation, including partners
+            // who have since been disabled but remain in historical transfers.
+            val ids = getPartnerFundBalances(endDate = actualEnd)
+                .map { it.partnerId }
+                .filter { it != partnerId }
+            ids.map { otherId ->
+                buildPartnerFundLedger(otherId, actualEnd)
+                    .associate { it.date to it.endBalance }
+            }
         } else {
             emptyList()
         }
