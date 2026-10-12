@@ -14151,24 +14151,21 @@ class AppDatabase(
         val ledger = buildPartnerFundLedger(partnerId, actualEnd)
         val ledgerByDate = ledger.associateBy { it.date }
         val centerId = getSettlementCenter()?.id
-        val balancesByDate: Map<String, Double> =
-            if (centerId == partnerId) {
-                val counterpartLedgers = getPartners()
-                    .filter { it.id != partnerId }
-                    .map { other ->
-                        buildPartnerFundLedger(other.id, actualEnd)
-                            .associate { it.date to it.endBalance }
-                    }
-                ledger.associate { day ->
-                    day.date to roundMoney(
-                        FundBalancePolicy.centerBalance(
-                            counterpartLedgers.map { it[day.date] ?: 0.0 }
-                        )
-                    )
+        val counterparts = if (centerId == partnerId) {
+            getPartners()
+                .filter { it.id != partnerId }
+                .map { other ->
+                    buildPartnerFundLedger(other.id, actualEnd)
+                        .associate { it.date to it.endBalance }
                 }
-            } else {
-                ledger.associate { it.date to it.endBalance }
-            }
+        } else {
+            emptyList()
+        }
+        val balancesByDate = FundBalanceTimeline.indexedBalances(
+            fullLedger = ledger.map { it.date to it.endBalance },
+            isSettlementCenter = centerId == partnerId,
+            counterparts = counterparts
+        )
 
         // Match the original displayed business-day scope; hide empty days.
         // The underlying ledger also includes transfer-only dates so their
