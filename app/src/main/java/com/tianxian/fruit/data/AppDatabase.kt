@@ -14131,132 +14131,98 @@ class AppDatabase(
         ) > 0
     }
 
+    /**
+     * 资金明细性能优化：
+     * 过去每一日期调用 getPartnerFundBalances(endDate=date)，而该方法会把
+     * 此前所有经营日与所有合伙人重新核算，形成历史天数的平方级查询量。
+     * 现在只计算一次完整累计流水，再把各个日期的结果映射到页面明细。
+     *
+     * 不能只按筛选起始日计算，否则会丢失此前亏损、部分结清及跨日清零。
+     * 资金中心余额仍按其余合伙人的未结余额镜像，保持旧版正确口径。
+     */
     fun getPartnerDailyFundBalances(
         partnerId: Long,
         startDate: String? = null,
         endDate: String? = null
     ): List<PartnerDailyFundBalanceRecord> {
-        val clauses = mutableListOf<String>()
-        val args = mutableListOf<String>()
-        if (startDate != null) {
-            clauses += "date>=?"
-            args += startDate
-        }
-        if (endDate != null) {
-            clauses += "date<=?"
-            args += endDate
-        }
-        val where =
-            if (clauses.isEmpty()) ""
-            else "WHERE " + clauses.joinToString(" AND ")
+        val actualEnd = endDate ?: LocalDate.now().toString()
 
-        val dates =
-            readableDatabase.rawQuery(
-                """
-                SELECT date FROM (
-                    SELECT date FROM purchase_order WHERE deleted=0
-                    UNION
-                    SELECT date FROM store_daily_record WHERE deleted=0
-                    UNION
-                    SELECT date FROM profit_distribution WHERE deleted=0
-                )
-                $where
-                ORDER BY date DESC
-                """.trimIndent(),
-                args.toTypedArray()
-            ).use { c ->
-                buildList {
-                    while (c.moveToNext()) add(c.str("date"))
+        // Full history is calculated once regardless of the visible seven-day window.
+        val ledger = buildPartnerFundLedger(partnerId, actualEnd)
+        val ledgerByDate = ledger.associateBy { it.date }
+        val centerId = getSettlementCenter()?.id
+        val balancesByDate: Map<String, Double> =
+            if (centerId == partnerId) {
+                val counterpartLedgers = getPartners()
+                    .filter { it.id != partnerId }
+                    .map { other ->
+                        buildPartnerFundLedger(other.id, actualEnd)
+                            .associate { it.date to it.endBalance }
+                    }
+                ledger.associate { day ->
+                    day.date to roundMoney(
+                        FundBalancePolicy.centerBalance(
+                            counterpartLedgers.map { it[day.date] ?: 0.0 }
+                        )
+                    )
                 }
+            } else {
+                ledger.associate { it.date to it.endBalance }
             }
 
+        // Match the original displayed business-day scope; hide empty days.
+        // The underlying ledger also includes transfer-only dates so their
+        // adjustments are correctly carried into following day balances.
+        val dates = readableDatabase.rawQuery(
+            """
+            SELECT date FROM (
+                SELECT date FROM purchase_order WHERE deleted=0
+                UNION
+                SELECT date FROM store_daily_record WHERE deleted=0
+                UNION
+                SELECT date FROM profit_distribution WHERE deleted=0
+            )
+            WHERE date<=?
+            """.trimIndent(),
+            arrayOf(actualEnd)
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    val day = c.str("date")
+                    if ((startDate == null || day >= startDate) && day <= actualEnd) {
+                        add(day)
+                    }
+                }
+            }.sortedDescending()
+        }
+
         return dates.mapNotNull { date ->
-            val purchase =
-                getPurchaseTotalsByPartner(date)
-                    .firstOrNull { it.partnerId == partnerId }
-            val expense =
-                getExpenseTotalsByPartner(date)
-                    .firstOrNull { it.partnerId == partnerId }
-            val receipt =
-                getReceiptsByPartner(date)
-                    .firstOrNull { it.partnerId == partnerId }
-            val profit =
-                getEffectiveProfitShares(date)
-                    .firstOrNull { it.partnerId == partnerId }
-            val bundle = getCashSettlement(date)
-            val settlementPartner =
-                bundle?.partners?.firstOrNull { it.partnerId == partnerId }
+            val day = ledgerByDate[date] ?: return@mapNotNull null
+            val relatedTransfers = getSettlementTransfersForPartnerOnDate(partnerId, date)
+            val hasActivity =
+                kotlin.math.abs(day.dayRawBalance) > 0.005 ||
+                    relatedTransfers.isNotEmpty()
+            if (!hasActivity) return@mapNotNull null
 
-            val name =
-                settlementPartner?.partnerName
-                    ?: profit?.partnerName
-                    ?: purchase?.partnerName
-                    ?: receipt?.partnerName
-                    ?: expense?.partnerName
-                    ?: getPartnerFundBalances(endDate = date)
-                        .firstOrNull { it.partnerId == partnerId }
-                        ?.partnerName
-                    ?: "合伙人$partnerId"
-
-            val purchaseAmount = roundMoney(purchase?.amount ?: 0.0)
-            val expenseAmount = roundMoney(expense?.amount ?: 0.0)
-            val receiptAmount = roundMoney(receipt?.amount ?: 0.0)
-            val profitAmount = roundMoney(profit?.amount ?: 0.0)
-            val sourceBalance =
-                roundMoney(
-                    purchaseAmount +
-                        expenseAmount +
-                        profitAmount -
-                        receiptAmount
-                )
-
-            val relatedTransfers =
-                getSettlementTransfersForPartnerOnDate(
-                    partnerId,
-                    date
-                )
-
-            val settledAmount =
-                roundMoney(
+            val settlement = getCashSettlement(date)
+            PartnerDailyFundBalanceRecord(
+                date = date,
+                partnerId = partnerId,
+                partnerName = day.partnerName,
+                purchasePaid = day.purchasePaid,
+                expensePaid = day.expensePaid,
+                revenueReceived = day.revenueReceived,
+                profitShare = day.profitShare,
+                dayBalance = day.dayRawBalance,
+                settledAmount = roundMoney(
                     relatedTransfers
                         .filter { it.settledAmount > 0.005 }
                         .sumOf { it.settledAmount }
-                )
-
-            // “资金余额”是当日结算后的扩展视图。
-            // 这里的 remainingBalance 表示截至该日的累计未结余额，
-            // 包括当天最少转账方案以及“结清截至今日”产生的真实转账。
-            val remaining =
-                getPartnerFundBalances(endDate = date)
-                    .firstOrNull { it.partnerId == partnerId }
-                    ?.currentBalance
-                    ?.let(::roundMoney)
-                    ?: 0.0
-
-            val hasActivity =
-                kotlin.math.abs(purchaseAmount) > 0.005 ||
-                    kotlin.math.abs(expenseAmount) > 0.005 ||
-                    kotlin.math.abs(receiptAmount) > 0.005 ||
-                    kotlin.math.abs(profitAmount) > 0.005 ||
-                    relatedTransfers.isNotEmpty()
-            if (!hasActivity) {
-                null
-            } else {
-                PartnerDailyFundBalanceRecord(
-                    date = date,
-                    partnerId = partnerId,
-                    partnerName = name,
-                    purchasePaid = purchaseAmount,
-                    expensePaid = expenseAmount,
-                    revenueReceived = receiptAmount,
-                    profitShare = profitAmount,
-                    dayBalance = sourceBalance,
-                    settledAmount = settledAmount,
-                    remainingBalance = remaining,
-                    settlementId = bundle?.settlement?.id ?: 0L,
-                    transfers = relatedTransfers
-                )
-            }
+                ),
+                remainingBalance = roundMoney(balancesByDate[date] ?: 0.0),
+                settlementId = settlement?.settlement?.id ?: 0L,
+                transfers = relatedTransfers
+            )
         }
     }
 
