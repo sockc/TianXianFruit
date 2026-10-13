@@ -43,17 +43,20 @@ private enum class CustomerRange(val label: String) {
     LAST_7("近7天"),
     THIS_MONTH("本月"),
     LAST_30("近30天"),
-    ALL("全部")
+    ALL("全部"),
+    CUSTOM("自定义")
 }
 
 private enum class CustomerAnalysisTab(val label: String) {
     OVERVIEW("概览"),
-    RHYTHM("经营节奏"),
+    CUSTOMERS("客户"),
+    RECORDS("账单")
+}
+
+private enum class CustomerDetailSection(val label: String) {
     REPEAT("复购"),
     RANKING("排行"),
-    LIFECYCLE("生命周期"),
-    STORE("位置"),
-    RECORDS("收款记录")
+    LIFECYCLE("生命周期")
 }
 
 private enum class CustomerRecordFilter(val label: String) {
@@ -131,6 +134,10 @@ internal fun CustomerAnalysisContent(
             }
         }
     var tab by remember { mutableStateOf(CustomerAnalysisTab.OVERVIEW) }
+    var customerSection by remember { mutableStateOf(CustomerDetailSection.REPEAT) }
+    var showRhythmDetails by remember { mutableStateOf(false) }
+    var customStart by remember { mutableStateOf(today.withDayOfMonth(1)) }
+    var customEnd by remember { mutableStateOf(today) }
     var selectedPlatform by remember { mutableStateOf(CustomerPaymentPlatform.ALL) }
     var selectedStoreId by remember { mutableLongStateOf(0L) }
     var showStoreMenu by remember { mutableStateOf(false) }
@@ -190,7 +197,9 @@ internal fun CustomerAnalysisContent(
             range,
             today,
             monthAnchor,
-            dayAnchor
+            dayAnchor,
+            customStart,
+            customEnd
         ) {
             when (range) {
                 CustomerRange.TODAY ->
@@ -225,6 +234,9 @@ internal fun CustomerAnalysisContent(
 
                 CustomerRange.ALL ->
                     null to null
+
+                CustomerRange.CUSTOM ->
+                    customStart.toString() to customEnd.toString()
             }
         }
 
@@ -277,9 +289,29 @@ internal fun CustomerAnalysisContent(
                     )
                 )
 
+            CustomerRange.CUSTOM ->
+                customStart.format(DateTimeFormatter.ofPattern("M/d")) + "–" +
+                    customEnd.format(DateTimeFormatter.ofPattern("M/d"))
+
             else ->
                 range.label
         }
+
+    fun pickDate(
+        initial: LocalDate,
+        minDate: LocalDate? = null,
+        onSelected: (LocalDate) -> Unit
+    ) {
+        val dialog = android.app.DatePickerDialog(
+            context,
+            { _, year, month, day -> onSelected(LocalDate.of(year, month + 1, day)) },
+            initial.year, initial.monthValue - 1, initial.dayOfMonth
+        )
+        val zone = java.time.ZoneId.systemDefault()
+        minDate?.let { dialog.datePicker.minDate = it.atStartOfDay(zone).toInstant().toEpochMilli() }
+        dialog.datePicker.maxDate = today.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli() - 1
+        dialog.show()
+    }
 
     val hourlyTraffic =
         remember(
@@ -338,8 +370,7 @@ internal fun CustomerAnalysisContent(
             dateRange
         ) {
             if (
-                range ==
-                    CustomerRange.THIS_MONTH &&
+                range != CustomerRange.TODAY &&
                 dateRange.first != null &&
                 dateRange.second != null
             ) {
