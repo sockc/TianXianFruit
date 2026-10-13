@@ -127,16 +127,30 @@ class LedgerUiSettingsManager(
         ledgerId: String
     ): List<String> {
         val prefix = keyPrefix(ledgerId)
-        val raw = prefs.getString(
-            "${prefix}_home_quick_actions",
-            DEFAULT_HOME_QUICK_ACTIONS
-        ).orEmpty()
-
-        return raw.split(',')
+        val key = "${prefix}_home_quick_actions"
+        val raw = prefs.getString(key, DEFAULT_HOME_QUICK_ACTIONS).orEmpty()
+        val actions = raw.split(',')
             .map { it.trim() }
             .filter { it.isNotBlank() }
             .distinct()
             .take(8)
+
+        // One-time upgrade for existing customized home shortcuts. Add the new
+        // customer analysis tile only if a free slot exists, without discarding
+        // any current selection or repeatedly restoring a user-hidden tile.
+        val migrationKey = "${prefix}_customer_shortcut_v1"
+        if (prefs.contains(key) && !prefs.getBoolean(migrationKey, false)) {
+            val migrated = if (actions.isNotEmpty() && actions.size < 8 &&
+                "CUSTOMER_ANALYSIS" !in actions
+            ) actions + "CUSTOMER_ANALYSIS" else actions
+            prefs.edit()
+                .putString(key, migrated.joinToString(","))
+                .putBoolean(migrationKey, true)
+                .apply()
+            return migrated
+        }
+
+        return actions
     }
 
     fun saveHomeQuickActions(
@@ -154,6 +168,7 @@ class LedgerUiSettingsManager(
                     .take(8)
                     .joinToString(",")
             )
+            .putBoolean("${prefix}_customer_shortcut_v1", true)
             .apply()
     }
 
@@ -398,7 +413,7 @@ class LedgerUiSettingsManager(
             "新鲜水果 · 从这里开始！"
 
         private const val DEFAULT_HOME_QUICK_ACTIONS =
-            "STATS,PROFIT,REPORT,HISTORY"
+            "STATS,CUSTOMER_ANALYSIS,PROFIT,REPORT,HISTORY"
 
         private const val MAX_IMAGE_WIDTH =
             1920
