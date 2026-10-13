@@ -19,11 +19,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -109,30 +105,10 @@ internal fun CustomerAnalysisContent(
             today
         )
     }
-    var chromeVisible by remember {
-        mutableStateOf(
-            true
-        )
-    }
-    val immersiveScrollConnection =
-        remember {
-            object :
-                NestedScrollConnection {
-                override fun onPreScroll(
-                    available: Offset,
-                    source: NestedScrollSource
-                ): Offset {
-                    when {
-                        available.y < -8f ->
-                            chromeVisible = false
-
-                        available.y > 8f ->
-                            chromeVisible = true
-                    }
-                    return Offset.Zero
-                }
-            }
-        }
+    // Keep the filters and navigation tabs fixed. The old onPreScroll handler
+    // hid/showed them for every small drag delta, resizing the list while
+    // the finger was still moving and causing visible jumps.
+    val chromeVisible = true
     var tab by remember { mutableStateOf(CustomerAnalysisTab.OVERVIEW) }
     var customerSection by remember { mutableStateOf(CustomerDetailSection.REPEAT) }
     var showRhythmDetails by remember { mutableStateOf(false) }
@@ -425,9 +401,6 @@ internal fun CustomerAnalysisContent(
                     0xFFF7F8F8
                 )
             )
-            .nestedScroll(
-                immersiveScrollConnection
-            )
     ) {
         AnimatedVisibility(
             visible =
@@ -694,9 +667,8 @@ internal fun CustomerAnalysisContent(
         }
         }
 
-        Box(
-            Modifier.fillMaxSize()
-        ) {
+        // Only the content below the fixed header consumes remaining height.
+        Box(Modifier.fillMaxWidth().weight(1f)) {
             when {
                 showRhythmDetails && tab == CustomerAnalysisTab.OVERVIEW ->
                     Column(Modifier.fillMaxSize()) {
@@ -783,8 +755,6 @@ internal fun CustomerAnalysisContent(
                                                 day
                                             range =
                                                 CustomerRange.TODAY
-                                            chromeVisible =
-                                                true
                                         }
                                 }
                             )
