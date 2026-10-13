@@ -483,7 +483,7 @@ internal fun CustomerAnalysisContent(
                         if (importing) {
                             "导入中"
                         } else {
-                            "导入账单"
+                            "导入"
                         }
                     )
                 }
@@ -496,186 +496,98 @@ internal fun CustomerAnalysisContent(
                             horizontal = 8.dp
                         )
                 ) {
-                    Text("设置")
+                    Text("⚙", style = MaterialTheme.typography.titleLarge)
                 }
             }
 
             Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment =
-                    androidx.compose.ui.Alignment.CenterVertically,
-                horizontalArrangement =
-                    Arrangement.Center
-            ) {
-                TextButton(
-                    onClick = {
-                        when (range) {
-                            CustomerRange.THIS_MONTH ->
-                                monthAnchor =
-                                    monthAnchor.minusMonths(
-                                        1
-                                    )
-
-                            CustomerRange.TODAY ->
-                                dayAnchor =
-                                    dayAnchor.minusDays(
-                                        1
-                                    )
-
-                            else ->
-                                Unit
-                        }
-                    },
-                    enabled =
-                        range ==
-                            CustomerRange.THIS_MONTH ||
-                            range ==
-                                CustomerRange.TODAY,
-                    contentPadding =
-                        PaddingValues(
-                            horizontal = 8.dp
-                        )
-                ) {
-                    Text("‹")
-                }
-
-                Box {
-                    TextButton(
-                        onClick = {
-                            showRangeMenu = true
-                        },
-                        contentPadding =
-                            PaddingValues(
-                                horizontal = 10.dp
-                            )
-                    ) {
-                        Text(
-                            "$rangeLabel ▼",
-                            fontWeight =
-                                FontWeight.SemiBold
-                        )
-                    }
-                    DropdownMenu(
-                        expanded =
-                            showRangeMenu,
-                        onDismissRequest = {
-                            showRangeMenu = false
-                        }
-                    ) {
-                        listOf(
-                            CustomerRange.THIS_MONTH,
-                            CustomerRange.TODAY,
-                            CustomerRange.LAST_7,
-                            CustomerRange.LAST_30,
-                            CustomerRange.ALL
-                        ).forEach { option ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        option.label
-                                    )
-                                },
-                                onClick = {
-                                    range =
-                                        option
-                                    if (
-                                        option ==
-                                        CustomerRange.THIS_MONTH
-                                    ) {
-                                        monthAnchor =
-                                            currentMonth
-                                    }
-                                    if (
-                                        option ==
-                                        CustomerRange.TODAY
-                                    ) {
-                                        dayAnchor =
-                                            today
-                                    }
-                                    chromeVisible =
-                                        true
-                                    showRangeMenu =
-                                        false
-                                }
-                            )
-                        }
-                    }
-                }
-
-                TextButton(
-                    onClick = {
-                        when (range) {
-                            CustomerRange.THIS_MONTH ->
-                                if (
-                                    monthAnchor <
-                                    currentMonth
-                                ) {
-                                    monthAnchor =
-                                        monthAnchor.plusMonths(
-                                            1
-                                        )
-                                }
-
-                            CustomerRange.TODAY ->
-                                if (
-                                    dayAnchor <
-                                    today
-                                ) {
-                                    dayAnchor =
-                                        dayAnchor.plusDays(
-                                            1
-                                        )
-                                }
-
-                            else ->
-                                Unit
-                        }
-                    },
-                    enabled =
-                        (
-                            range ==
-                                CustomerRange.THIS_MONTH &&
-                                monthAnchor <
-                                    currentMonth
-                            ) ||
-                            (
-                                range ==
-                                    CustomerRange.TODAY &&
-                                    dayAnchor <
-                                        today
-                                ),
-                    contentPadding =
-                        PaddingValues(
-                            horizontal = 8.dp
-                        )
-                ) {
-                    Text("›")
-                }
-            }
-
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 40.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                CustomerPaymentPlatform.entries.forEach { option ->
-                    FilterChip(
-                        selected = selectedPlatform == option,
-                        onClick = { selectedPlatform = option },
-                        label = { Text(option.label) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "‹",
+                        modifier = Modifier.width(30.dp).clickable {
+                            when (range) {
+                                CustomerRange.THIS_MONTH -> monthAnchor = monthAnchor.minusMonths(1)
+                                CustomerRange.TODAY -> dayAnchor = dayAnchor.minusDays(1)
+                                else -> Unit
+                            }
+                        },
+                        color = Color(0xFF087D4E),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Box {
+                        Text(
+                            "$rangeLabel ▾",
+                            modifier = Modifier.clickable { showRangeMenu = true }.padding(vertical = 9.dp, horizontal = 3.dp),
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1
+                        )
+                        DropdownMenu(
+                            expanded = showRangeMenu,
+                            onDismissRequest = { showRangeMenu = false }
+                        ) {
+                            CustomerRange.entries.forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option.label) },
+                                    onClick = {
+                                        showRangeMenu = false
+                                        when (option) {
+                                            CustomerRange.THIS_MONTH -> {
+                                                monthAnchor = currentMonth
+                                                range = option
+                                            }
+                                            CustomerRange.TODAY -> pickDate(dayAnchor) {
+                                                dayAnchor = it
+                                                range = CustomerRange.TODAY
+                                            }
+                                            CustomerRange.CUSTOM -> pickDate(customStart) { start ->
+                                                pickDate(maxOf(start, customEnd), minDate = start) { finish ->
+                                                    customStart = start
+                                                    customEnd = finish
+                                                    range = CustomerRange.CUSTOM
+                                                }
+                                            }
+                                            else -> range = option
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        "›",
+                        modifier = Modifier.width(30.dp).clickable {
+                            when (range) {
+                                CustomerRange.THIS_MONTH ->
+                                    if (monthAnchor < currentMonth) monthAnchor = monthAnchor.plusMonths(1)
+                                CustomerRange.TODAY ->
+                                    if (dayAnchor < today) dayAnchor = dayAnchor.plusDays(1)
+                                else -> Unit
+                            }
+                        },
+                        color = if ((range == CustomerRange.TODAY && dayAnchor >= today) ||
+                            (range == CustomerRange.THIS_MONTH && monthAnchor >= currentMonth))
+                            Color.LightGray else Color(0xFF087D4E),
+                        style = MaterialTheme.typography.titleMedium
                     )
                 }
                 Box {
                     val storeName = when (selectedStoreId) {
                         0L -> "全部位置"
                         -1L -> "未匹配"
-                        else -> storeOptions.firstOrNull { it.first == selectedStoreId }?.second ?: "位置失效"
+                        else -> storeOptions.firstOrNull { it.first == selectedStoreId }?.second ?: "已失效位置"
                     }
-                    TextButton(onClick = { showStoreMenu = true }) { Text("$storeName ▼") }
-                    DropdownMenu(
-                        expanded = showStoreMenu,
-                        onDismissRequest = { showStoreMenu = false }
-                    ) {
+                    Text(
+                        "$storeName ▾",
+                        modifier = Modifier.clickable { showStoreMenu = true }.padding(8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1
+                    )
+                    DropdownMenu(expanded = showStoreMenu, onDismissRequest = { showStoreMenu = false }) {
                         DropdownMenuItem(text = { Text("全部位置") }, onClick = {
                             selectedStoreId = 0L
                             showStoreMenu = false
@@ -686,12 +598,33 @@ internal fun CustomerAnalysisContent(
                                 showStoreMenu = false
                             })
                         }
-                        if (hasUnmatchedStore) {
-                            DropdownMenuItem(text = { Text("未匹配位置") }, onClick = {
-                                selectedStoreId = -1L
-                                showStoreMenu = false
-                            })
-                        }
+                        if (hasUnmatchedStore) DropdownMenuItem(text = { Text("未匹配位置") }, onClick = {
+                            selectedStoreId = -1L
+                            showStoreMenu = false
+                        })
+                    }
+                }
+            }
+
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                CustomerPaymentPlatform.entries.forEach { option ->
+                    val selected = selectedPlatform == option
+                    Surface(
+                        color = if (selected) Color.White else Color(0xFFE8EFEB),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.weight(1f).clickable { selectedPlatform = option }
+                    ) {
+                        Text(
+                            option.label,
+                            modifier = Modifier.padding(vertical = 9.dp),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            color = if (selected) Color(0xFF087D4E) else Color.DarkGray,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
             }
