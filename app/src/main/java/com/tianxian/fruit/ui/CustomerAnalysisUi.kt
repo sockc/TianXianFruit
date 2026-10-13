@@ -663,10 +663,8 @@ internal fun CustomerAnalysisContent(
             visible =
                 chromeVisible
         ) {
-        ScrollableTabRow(
-            selectedTabIndex =
-                tab.ordinal,
-            edgePadding = 4.dp
+        TabRow(
+            selectedTabIndex = tab.ordinal
         ) {
             CustomerAnalysisTab.entries.forEach {
                 item ->
@@ -675,6 +673,7 @@ internal fun CustomerAnalysisContent(
                         tab == item,
                     onClick = {
                         tab = item
+                        showRhythmDetails = false
                     },
                     text = {
                         Text(
@@ -690,13 +689,24 @@ internal fun CustomerAnalysisContent(
             Modifier.fillMaxSize()
         ) {
             when {
-                tab == CustomerAnalysisTab.RHYTHM ->
-                    CustomerBusinessRhythmContent(
-                        db = db,
-                        dataVersion = dataVersion,
-                        startDate = dateRange.first,
-                        endDate = dateRange.second
-                    )
+                showRhythmDetails && tab == CustomerAnalysisTab.OVERVIEW ->
+                    Column(Modifier.fillMaxSize()) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = { showRhythmDetails = false }) { Text("‹ 返回概览") }
+                            Text("经营节奏 · 正式营业数据",
+                                style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        }
+                        Box(Modifier.weight(1f)) {
+                            CustomerBusinessRhythmContent(
+                                db = db,
+                                dataVersion = dataVersion,
+                                startDate = dateRange.first,
+                                endDate = dateRange.second,
+                                storeFilterId = selectedStoreId
+                            )
+                        }
+                    }
 
                 rawRecords.isEmpty() ->
                     EmptyCustomerAnalysis()
@@ -747,8 +757,9 @@ internal fun CustomerAnalysisContent(
                                 sameWeekdayComparisons =
                                     sameWeekdayComparisons,
                                 singleDay =
-                                    range ==
-                                        CustomerRange.TODAY,
+                                    range == CustomerRange.TODAY,
+                                payments = periodRawRecords.filter { it.netAmount > 0.005 },
+                                onRhythm = { showRhythmDetails = true },
                                 onSelectDay = {
                                     selected ->
                                     runCatching {
@@ -768,31 +779,14 @@ internal fun CustomerAnalysisContent(
                                 }
                             )
 
-                        CustomerAnalysisTab.RHYTHM -> Unit
-
-                        CustomerAnalysisTab.REPEAT ->
-                            CustomerRepeatAnalysis(
-                                analysis.profiles
+                        CustomerAnalysisTab.CUSTOMERS ->
+                            CustomerDetailsContent(
+                                result = analysis,
+                                section = customerSection,
+                                onSectionChange = { customerSection = it }
                             )
 
-                        CustomerAnalysisTab.RANKING ->
-                            CustomerRankingAnalysis(
-                                analysis.profiles
-                            )
-
-                        CustomerAnalysisTab.LIFECYCLE ->
-                            CustomerLifecycleAnalysis(
-                                analysis.lifecycles,
-                                analysis.profiles
-                            )
-
-                        CustomerAnalysisTab.STORE ->
-                            CustomerStoreAnalysisContent(
-                                analysis.stores
-                            )
-
-                        CustomerAnalysisTab.RECORDS ->
-                            Unit
+                        CustomerAnalysisTab.RECORDS -> Unit
                     }
             }
         }
