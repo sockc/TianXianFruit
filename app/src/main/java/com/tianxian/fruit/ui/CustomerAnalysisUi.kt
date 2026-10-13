@@ -159,11 +159,6 @@ internal fun CustomerAnalysisContent(
     val scopedRawRecords = remember(rawRecords, selectedPlatform, selectedStoreId) {
         PaymentTrafficAnalytics.select(rawRecords, selectedPlatform.name, selectedStoreId)
     }
-    val platformCoverage = remember(rawRecords, selectedStoreId) {
-        PaymentTrafficAnalytics.coverage(
-            PaymentTrafficAnalytics.select(rawRecords, storeId = selectedStoreId)
-        )
-    }
     val settings =
         remember(dataVersion) {
             db.getCustomerAnalysisSettings()
@@ -1028,6 +1023,8 @@ private fun CustomerPaymentRecordsContent(
         )
     }
 
+    var showImportHistory by remember { mutableStateOf(false) }
+
     val payments =
         remember(
             records
@@ -1079,9 +1076,23 @@ private fun CustomerPaymentRecordsContent(
             }
         }
 
-    Column(
-        Modifier.fillMaxSize()
-    ) {
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("收款记录 · ${visible.size}笔", style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray)
+            TextButton(onClick = { showImportHistory = !showImportHistory }) {
+                Text(if (showImportHistory) "收起导入历史⌃" else "导入历史⌄")
+            }
+        }
+        AnimatedVisibility(showImportHistory) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                ImportBatchList(importBatches.take(5))
+            }
+        }
         Row(
             Modifier
                 .fillMaxWidth()
@@ -1718,8 +1729,9 @@ private fun HourlyCustomerTrafficCard(
     var metric by remember { mutableStateOf(CustomerTrafficMetric.PAYMENTS) }
     val byHour = remember(platformHours) { platformHours.associateBy { it.hour } }
     val active = points.filter { it.paymentCount > 0 || kotlin.math.abs(it.amount) > 0.005 }
-    val firstHour = (active.minOfOrNull { it.hour } ?: 16).coerceIn(0, 23)
-    val lastHour = (active.maxOfOrNull { it.hour } ?: 23).coerceIn(firstHour, 23)
+    // Display zero-traffic hours too: do not make short periods look like the full shift.
+    val firstHour = if (active.any { it.hour < 16 }) 0 else 16
+    val lastHour = 23
     val visible = points.filter { it.hour in firstHour..lastHour }
     var selectedHour by remember(points) {
         mutableIntStateOf(active.maxByOrNull { it.paymentCount }?.hour ?: 18)
@@ -1768,7 +1780,7 @@ private fun HourlyCustomerTrafficCard(
                     val a = platformValue(point.hour, "ALIPAY")
                     val total = w + a
                     val label = if (metric == CustomerTrafficMetric.AMOUNT)
-                        money(total) else total.toInt().toString()
+                        total.toInt().toString() else total.toInt().toString()
                     Column(
                         Modifier.width(44.dp).clickable { selectedHour = point.hour; detailsExpanded = true },
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1782,12 +1794,12 @@ private fun HourlyCustomerTrafficCard(
                                 horizontalAlignment = Alignment.CenterHorizontally) {
                                 if (a > 0.0) {
                                     Box(Modifier.width(22.dp)
-                                        .height((2f + 76f * (a / maxValue).toFloat()).dp)
+                                        .height((2f + 74f * (a / maxValue).toFloat()).dp)
                                         .background(Color(0xFF4D9AE8), RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)))
                                 }
                                 if (w > 0.0) {
                                     Box(Modifier.width(22.dp)
-                                        .height((2f + 76f * (w / maxValue).toFloat()).dp)
+                                        .height((2f + 74f * (w / maxValue).toFloat()).dp)
                                         .background(Color(0xFF22AA70), RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)))
                                 }
                             }
