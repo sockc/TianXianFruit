@@ -57,8 +57,8 @@ internal object PaymentTrafficAnalytics {
             val alipay = values.filter { it.platform == "ALIPAY" }
             PaymentPlatformHour(
                 hour = hour,
-                wechatPayments = wechat.count { it.amount > 0.005 },
-                alipayPayments = alipay.count { it.amount > 0.005 },
+                wechatPayments = wechat.count { it.netAmount > 0.005 },
+                alipayPayments = alipay.count { it.netAmount > 0.005 },
                 wechatCustomers = identifiedCount(wechat),
                 alipayCustomers = identifiedCount(alipay),
                 wechatAmount = round(wechat.sumOf { it.netAmount }),
@@ -73,7 +73,7 @@ internal object PaymentTrafficAnalytics {
 
     private fun identifiedCount(rows: List<CustomerPaymentRecord>): Int =
         rows.asSequence()
-            .filter { it.amount > 0.005 && isIdentified(it) }
+            .filter { it.netAmount > 0.005 && isIdentified(it) }
             .map { it.customerKey }
             .distinct()
             .count()
