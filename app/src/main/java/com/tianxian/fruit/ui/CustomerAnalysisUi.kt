@@ -63,6 +63,10 @@ private enum class CustomerRecordFilter(val label: String) {
     EXCLUDED("已排除")
 }
 
+private enum class CustomerPaymentPlatform(val label: String) {
+    ALL("合并"), WECHAT("微信"), ALIPAY("支付宝")
+}
+
 private enum class CustomerTrafficMetric(val label: String) {
     CUSTOMERS("客户"),
     AMOUNT("金额"),
@@ -127,6 +131,9 @@ internal fun CustomerAnalysisContent(
             }
         }
     var tab by remember { mutableStateOf(CustomerAnalysisTab.OVERVIEW) }
+    var selectedPlatform by remember { mutableStateOf(CustomerPaymentPlatform.ALL) }
+    var selectedStoreId by remember { mutableLongStateOf(0L) }
+    var showStoreMenu by remember { mutableStateOf(false) }
     var showRangeMenu by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
 
@@ -134,17 +141,33 @@ internal fun CustomerAnalysisContent(
         remember(dataVersion) {
             db.getCustomerPayments()
         }
+    val storeOptions = remember(rawRecords) {
+        rawRecords.filter { it.storeId > 0L }.groupBy { it.storeId }
+            .map { (id, rows) ->
+                id to rows.firstOrNull { it.storeName.isNotBlank() }
+                    ?.storeName.orEmpty().ifBlank { "位置 #$id" }
+            }.sortedBy { it.second }
+    }
+    val hasUnmatchedStore = remember(rawRecords) { rawRecords.any { it.storeId <= 0L } }
+    val scopedRawRecords = remember(rawRecords, selectedPlatform, selectedStoreId) {
+        PaymentTrafficAnalytics.select(rawRecords, selectedPlatform.name, selectedStoreId)
+    }
+    val platformCoverage = remember(rawRecords, selectedStoreId) {
+        PaymentTrafficAnalytics.coverage(
+            PaymentTrafficAnalytics.select(rawRecords, storeId = selectedStoreId)
+        )
+    }
     val settings =
         remember(dataVersion) {
             db.getCustomerAnalysisSettings()
         }
     val filterResult =
         remember(
-            rawRecords,
+            scopedRawRecords,
             settings
         ) {
             CustomerAnalyticsEngine.filterRecords(
-                allRecords = rawRecords,
+                allRecords = scopedRawRecords,
                 settings = settings
             )
         }
@@ -221,10 +244,10 @@ internal fun CustomerAnalysisContent(
 
     val periodRawRecords =
         remember(
-            rawRecords,
+            scopedRawRecords,
             dateRange
         ) {
-            rawRecords.filter { record ->
+            scopedRawRecords.filter { record ->
                 (
                     dateRange.first == null ||
                         record.businessDate >=
@@ -279,6 +302,14 @@ internal fun CustomerAnalysisContent(
             }
         }
 
+    val platformHourlyTraffic = remember(allRecords, range, dayAnchor) {
+        if (range == CustomerRange.TODAY) PaymentTrafficAnalytics.hourly(allRecords, dayAnchor.toString())
+        else emptyList()
+    }
+    val singleDayRecords = remember(allRecords, range, dayAnchor) {
+        if (range == CustomerRange.TODAY) allRecords.filter { it.businessDate == dayAnchor.toString() }
+        else emptyList()
+    }
     val sameWeekdayComparisons =
         remember(
             allRecords,
@@ -325,49 +356,29 @@ internal fun CustomerAnalysisContent(
             }
         }
 
-    val launcher =
-        rememberLauncherForActivityResult(
-            ActivityResultContracts.OpenDocument()
-        ) { uri ->
-            if (
-                uri == null ||
-                importing
-            ) {
-                return@rememberLauncherForActivityResult
-            }
-            importing = true
-            message = "正在解析账单…"
-            scope.launch {
-                val result =
-                    withContext(
-                        Dispatchers.IO
-                    ) {
-                        runCatching {
-                            importPaymentFile(
-                                db = db,
-                                uri = uri,
-                                resolver =
-                                    context.contentResolver
-                            )
-                        }
-                    }
-                result.onSuccess { outcome ->
-                    message =
-                        if (
-                            outcome.duplicateFile
-                        ) {
-                            "这个账单文件已经导入过，没有重复写入"
-                        } else {
-                            "导入完成：新增 ${outcome.insertedRows} 笔经营收款"
-                        }
-                    onChanged()
-                }.onFailure { error ->
-                    message =
-                        "导入失败：${error.message ?: "无法读取账单"}"
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isEmpty() || importing) return@rememberLauncherForActivityResult
+        importing = true
+        message = "正在导入 ${uris.size} 个账单…"
+        scope.launch {
+            val results = withContext(Dispatchers.IO) {
+                uris.take(20).map { uri ->
+                    runCatching { importPaymentFile(db, uri, context.contentResolver) }
                 }
-                importing = false
             }
+            val imported = results.mapNotNull { it.getOrNull() }
+            val failures = results.mapNotNull { it.exceptionOrNull()?.message }
+            message = "账单 ${imported.size}/${uris.size} 个成功 · 新增 ${imported.sumOf { it.insertedRows }} 笔 · " +
+                "重复 ${imported.sumOf { it.duplicateRows }} 笔 · 忽略 ${imported.sumOf { it.ignoredRows }} 笔 · " +
+                "异常 ${imported.sumOf { it.errorRows }} 笔" +
+                (if (uris.size > 20) " · 单次最多20个文件" else "") +
+                (if (failures.isNotEmpty()) " · ${failures.size} 个失败：${failures.first()}" else "")
+            if (imported.isNotEmpty()) onChanged()
+            importing = false
         }
+    }
 
     Column(
         Modifier
@@ -611,6 +622,48 @@ internal fun CustomerAnalysisContent(
                 }
             }
 
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                CustomerPaymentPlatform.entries.forEach { option ->
+                    FilterChip(
+                        selected = selectedPlatform == option,
+                        onClick = { selectedPlatform = option },
+                        label = { Text(option.label) }
+                    )
+                }
+                Box {
+                    val storeName = when (selectedStoreId) {
+                        0L -> "全部位置"
+                        -1L -> "未匹配"
+                        else -> storeOptions.firstOrNull { it.first == selectedStoreId }?.second ?: "位置失效"
+                    }
+                    TextButton(onClick = { showStoreMenu = true }) { Text("$storeName ▼") }
+                    DropdownMenu(
+                        expanded = showStoreMenu,
+                        onDismissRequest = { showStoreMenu = false }
+                    ) {
+                        DropdownMenuItem(text = { Text("全部位置") }, onClick = {
+                            selectedStoreId = 0L
+                            showStoreMenu = false
+                        })
+                        storeOptions.forEach { (id, name) ->
+                            DropdownMenuItem(text = { Text(name) }, onClick = {
+                                selectedStoreId = id
+                                showStoreMenu = false
+                            })
+                        }
+                        if (hasUnmatchedStore) {
+                            DropdownMenuItem(text = { Text("未匹配位置") }, onClick = {
+                                selectedStoreId = -1L
+                                showStoreMenu = false
+                            })
+                        }
+                    }
+                }
+            }
             if (importing) {
                 LinearProgressIndicator(
                     Modifier.fillMaxWidth()
@@ -684,6 +737,9 @@ internal fun CustomerAnalysisContent(
                 rawRecords.isEmpty() ->
                     EmptyCustomerAnalysis()
 
+                scopedRawRecords.isEmpty() ->
+                    SimpleEmpty("当前支付平台或营业位置没有已导入的收款记录。")
+
                 tab ==
                     CustomerAnalysisTab.RECORDS ->
                     CustomerPaymentRecordsContent(
@@ -719,6 +775,9 @@ internal fun CustomerAnalysisContent(
                                     analysis,
                                 hourlyTraffic =
                                     hourlyTraffic,
+                                 platformHourlyTraffic = platformHourlyTraffic,
+                                 singleDayRecords = singleDayRecords,
+                                 platformCoverage = platformCoverage,
                                 dailyTraffic =
                                     dailyTraffic,
                                 sameWeekdayComparisons =
