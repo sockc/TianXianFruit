@@ -37,12 +37,13 @@ internal fun CustomerBusinessRhythmContent(
     db: AppDatabase,
     dataVersion: Int,
     startDate: String?,
-    endDate: String?
+    endDate: String?,
+    storeFilterId: Long = 0L
 ) {
     val allRecords = remember(dataVersion) { db.getRecentDailyRecords(700) }
-    val cards = remember(allRecords, startDate, endDate) {
+    val cards = remember(allRecords, startDate, endDate, storeFilterId) {
         allRecords
-            .filter { it.revenue > 0.0 }
+            .filter { it.revenue > 0.0 && (storeFilterId == 0L || it.storeId == storeFilterId) }
             .groupBy { it.storeId }
             .mapNotNull { (_, rows) ->
                 val visible = rows.filter {
