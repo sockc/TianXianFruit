@@ -444,7 +444,7 @@ class CloudSyncManager(
             body = null,
             token = token
         ) as JSONObject
-        if (!me.optString("username").equals(previous.username, ignoreCase = true)) {
+        if (!CloudAuthRecoveryPolicy.sameAccount(previous.username, me.optString("username"))) {
             throw CloudApiException(403, "重新验证得到的账号与当前账号不同，已拒绝切换以保护未上传记录")
         }
         val renewed = previous.copy(
@@ -3236,8 +3236,9 @@ class CloudSyncManager(
         return try {
             requestJsonOnce(baseUrl, method, path, body, effectiveToken)
         } catch (error: CloudApiException) {
-            if (error.statusCode != 401 || effectiveToken == null ||
-                path == "/api/v1/auth/login" || path == "/api/v1/auth/refresh"
+            if (!CloudAuthRecoveryPolicy.mayRefresh(
+                    error.statusCode, path, effectiveToken != null
+                )
             ) throw error
             val newToken = renewAccessToken(effectiveToken)
                 ?: throw CloudApiException(
@@ -3285,7 +3286,7 @@ class CloudSyncManager(
             } catch (_: Exception) {
                 return@synchronized null
             }
-            if (!me.optString("username").equals(oldSession.username, ignoreCase = true)) {
+            if (!CloudAuthRecoveryPolicy.sameAccount(oldSession.username, me.optString("username"))) {
                 return@synchronized null
             }
             val rotated = response.optString("refresh_token")
