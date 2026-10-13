@@ -111,6 +111,7 @@ enum class AppPage(val title: String, val emoji: String) {
 private enum class MorePage {
     MENU,
     BUSINESS_CENTER,
+    CUSTOMER_ANALYSIS,
     PRODUCT_CENTER,
     BOOK_COLLAB,
     HOME_SETTINGS,
@@ -145,6 +146,7 @@ private enum class HomeQuickAction(
     HISTORY("🧾", "历史记录", MorePage.HISTORY),
     PURCHASE_ACTIVITY("🛒", "协作采购", MorePage.PURCHASE_ACTIVITY),
     STATS("📊", "经营统计", MorePage.STATS),
+    CUSTOMER_ANALYSIS("👥", "客户分析", MorePage.CUSTOMER_ANALYSIS),
     OPERATING_ANALYSIS("🧮", "经营分析", MorePage.OPERATING_ANALYSIS),
     PERSONAL_SUMMARY("👤", "个人汇总", MorePage.PERSONAL_SUMMARY),
     REPORT("📄", "生成报表", MorePage.REPORT),
@@ -174,6 +176,7 @@ private fun homeQuickActionAllowed(
             allowed(BookPermissions.PURCHASE_ACTIVITY_VIEW) ||
                 allowed(BookPermissions.PURCHASE_PLAN_EDIT)
         HomeQuickAction.STATS,
+        HomeQuickAction.CUSTOMER_ANALYSIS,
         HomeQuickAction.OPERATING_ANALYSIS,
         HomeQuickAction.PERSONAL_SUMMARY -> allowed(BookPermissions.STATS_VIEW)
         HomeQuickAction.REPORT -> allowed(BookPermissions.REPORT_VIEW)
@@ -15257,12 +15260,20 @@ private fun MoreScreen(
                             SettingsRow(
                                 "📊",
                                 "经营分析中心",
-                                trailing = "统计 · 天气 · 客户 · 个人"
+                                trailing = "统计 · 天气 · 个人"
                             ) {
                                 sub =
                                     MorePage.BUSINESS_CENTER
                             }
                             hasPrevious = true
+                            if (hasPrevious) SettingsDivider()
+                            SettingsRow(
+                                "👥",
+                                "客户分析",
+                                trailing = "客流 · 复购 · 账单"
+                            ) {
+                                sub = MorePage.CUSTOMER_ANALYSIS
+                            }
                         }
 
                         if (
@@ -15515,14 +15526,25 @@ private fun MoreScreen(
                     dataVersion = dataVersion,
                     currentBook = currentBook,
                     cloudSyncManager = cloudSyncManager,
-                    canImportCustomerPayments =
-                        BookPermissions.has(
-                            currentBook,
-                            systemRole,
-                            BookPermissions.BASIC_EDIT
-                        ),
-                    onChanged = onChanged
                 )
+            }
+        }
+
+        MorePage.CUSTOMER_ANALYSIS -> {
+            if (BookPermissions.has(currentBook, systemRole, BookPermissions.STATS_VIEW)) {
+                CustomerAnalysisContent(
+                    db = db,
+                    dataVersion = dataVersion,
+                    canImport = BookPermissions.has(
+                        currentBook, systemRole, BookPermissions.BASIC_EDIT
+                    ),
+                    onChanged = onChanged,
+                    onBack = { sub = MorePage.MENU }
+                )
+            } else {
+                SubPage("客户分析", { sub = MorePage.MENU }) {
+                    Text("当前账号无权查看客户分析。", modifier = Modifier.padding(16.dp))
+                }
             }
         }
 
@@ -15933,9 +15955,7 @@ private fun BusinessCenterContent(
     db: AppDatabase,
     dataVersion: Int,
     currentBook: LedgerBook,
-    cloudSyncManager: CloudSyncManager,
-    canImportCustomerPayments: Boolean,
-    onChanged: () -> Unit
+    cloudSyncManager: CloudSyncManager
 ) {
     var tab by remember { mutableIntStateOf(0) }
     val labels =
@@ -15943,8 +15963,7 @@ private fun BusinessCenterContent(
             "经营统计",
             "经营分析",
             "经营天气",
-            "个人汇总",
-            "客户分析"
+            "个人汇总"
         )
 
     Column(Modifier.fillMaxSize()) {
@@ -15988,18 +16007,10 @@ private fun BusinessCenterContent(
                         initialStoreId = null
                     )
 
-                3 ->
+                else ->
                     PersonalSummaryContent(
                         db = db,
                         dataVersion = dataVersion
-                    )
-
-                else ->
-                    CustomerAnalysisContent(
-                        db = db,
-                        dataVersion = dataVersion,
-                        canImport = canImportCustomerPayments,
-                        onChanged = onChanged
                     )
             }
         }

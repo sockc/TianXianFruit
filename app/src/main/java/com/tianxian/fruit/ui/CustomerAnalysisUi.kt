@@ -84,7 +84,8 @@ internal fun CustomerAnalysisContent(
     db: AppDatabase,
     dataVersion: Int,
     canImport: Boolean,
-    onChanged: () -> Unit
+    onChanged: () -> Unit,
+    onBack: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -423,6 +424,13 @@ internal fun CustomerAnalysisContent(
                 verticalAlignment =
                     androidx.compose.ui.Alignment.CenterVertically
             ) {
+                TextButton(
+                    onClick = onBack,
+                    modifier = Modifier.width(32.dp),
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text("‹", style = MaterialTheme.typography.headlineSmall)
+                }
                 Text(
                     "客户分析",
                     fontWeight =
