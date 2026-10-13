@@ -404,42 +404,13 @@ class CloudSyncManager(
         return result
     }
 
-    fun verifyCurrentAccountPassword(
-        password: String
-    ): Boolean {
+    fun verifyCurrentAccountPassword(password: String): Boolean {
         if (password.isBlank()) return false
-
-        val current = requireSession()
-        val loginJson =
-            requestJson(
-                baseUrl = current.baseUrl,
-                method = "POST",
-                path = "/api/v1/auth/login",
-                body =
-                    JSONObject().apply {
-                        put("username", current.username)
-                        put("password", password)
-                        put("device_id", serverDeviceId(current.username))
-                        put("device_name", ledgerManager.deviceName)
-                        put("platform", "android")
-                        put("app_version", APP_VERSION)
-                    },
-                token = null
-            ) as JSONObject
-
-        val token = loginJson.optString("access_token")
-        if (token.isBlank()) return false
-
-        val me =
-            requestJson(
-                baseUrl = current.baseUrl,
-                method = "GET",
-                path = "/api/v1/auth/me",
-                body = null,
-                token = token
-            ) as JSONObject
-
-        return me.optString("username") == current.username
+        // The server may replace the previous device token on a successful
+        // password check. Persist that NEW token rather than leaving sync
+        // bound to the old, now invalid, token.
+        reauthenticate(password)
+        return true
     }
 
     /**
@@ -3294,12 +3265,10 @@ class CloudSyncManager(
                     body = JSONObject().apply { put("refresh_token", refreshToken) },
                     token = null
                 ) as JSONObject
-            } catch (_: CloudApiException) {
-                // Expired/revoked refresh credentials or unsupported endpoint.
-                // Never auto-login with a stored password and never clear local edits.
-                return@synchronized null
-            } catch (_: Exception) {
-                // Network errors should not result in logout or lost data.
+            } catch (error: CloudApiException) {
+                if (error.statusCode !in setOf(400, 401, 403, 404, 405)) throw error
+                // Credentials denied or old server has no refresh endpoint.
+                // Never erase pending changes or use a saved password.
                 return@synchronized null
             }
             val freshToken = response.optString("access_token")
