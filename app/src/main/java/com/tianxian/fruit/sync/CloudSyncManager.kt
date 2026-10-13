@@ -455,6 +455,9 @@ class CloudSyncManager(
         registerDevice(renewed)
         synchronized(renewalLock) {
             replacedAccessTokens.clear()
+            // Existing in-flight requests from this same account can finish
+            // using the newly verified token, not the superseded device token.
+            replacedAccessTokens.add(previous.token)
             runCatching { refreshTokenStore.put(response.optString("refresh_token")) }
                 .onFailure { refreshTokenStore.clear() }
             prefs.edit().putString(KEY_TOKEN, token)
