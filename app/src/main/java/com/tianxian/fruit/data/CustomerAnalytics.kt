@@ -1469,6 +1469,17 @@ internal object CustomerAnalyticsEngine {
                     1
             )
 
+        // Revenue-change decomposition requires every receipt to have a stable payer.
+        // Otherwise unexplained anonymous revenue would be incorrectly attributed to identified customers.
+        if (allRecords.any {
+                it.businessDate >= previousStart.toString() &&
+                    it.businessDate <= end.toString() &&
+                    it.netAmount > 0.005 &&
+                    !PaymentTrafficAnalytics.isIdentified(it)
+            }) {
+            return CustomerChangeBreakdown(available = false)
+        }
+
         val current =
             compactSummary(
                 allRecords.filter {
