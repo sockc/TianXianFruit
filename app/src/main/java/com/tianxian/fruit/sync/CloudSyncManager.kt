@@ -3243,7 +3243,7 @@ class CloudSyncManager(
                     error.statusCode, path, effectiveToken != null
                 )
             ) throw error
-            val newToken = renewAccessToken(effectiveToken)
+            val newToken = renewAccessToken(effectiveToken ?: throw error)
                 ?: throw CloudApiException(
                     401,
                     "登录已失效，自动续期不可用。请到更多 → 云端账号 → 重新验证登录；未上传账本记录已保留"
