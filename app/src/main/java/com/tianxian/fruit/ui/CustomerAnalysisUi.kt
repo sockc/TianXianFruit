@@ -512,7 +512,7 @@ internal fun CustomerAnalysisContent(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
+                    if (range == CustomerRange.THIS_MONTH || range == CustomerRange.TODAY) Text(
                         "‹",
                         modifier = Modifier.width(30.dp).clickable {
                             when (range) {
@@ -564,9 +564,12 @@ internal fun CustomerAnalysisContent(
                             }
                         }
                     }
-                    Text(
+                    if (range == CustomerRange.THIS_MONTH || range == CustomerRange.TODAY) Text(
                         "›",
-                        modifier = Modifier.width(30.dp).clickable {
+                        modifier = Modifier.width(30.dp).clickable(
+                            enabled = (range == CustomerRange.THIS_MONTH && monthAnchor < currentMonth) ||
+                                (range == CustomerRange.TODAY && dayAnchor < today)
+                        ) {
                             when (range) {
                                 CustomerRange.THIS_MONTH ->
                                     if (monthAnchor < currentMonth) monthAnchor = monthAnchor.plusMonths(1)
@@ -1567,6 +1570,7 @@ private fun CustomerOverview(
 ) {
     val s = result.summary
     var showQualityDetails by remember { mutableStateOf(false) }
+    var showStores by remember { mutableStateOf(false) }
     val reliablePayments = remember(payments) {
         payments.count { PaymentTrafficAnalytics.isIdentified(it) }
     }
@@ -1663,6 +1667,41 @@ private fun CustomerOverview(
                     )
                     Text("以上为可识别付款方样本；微信与支付宝无法自动认定为同一个人，现金不计入。",
                         style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                }
+            }
+        }
+        if (result.stores.size > 1) {
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                    Column {
+                        Row(
+                            Modifier.fillMaxWidth().clickable { showStores = !showStores }
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("营业位置对比 · ${result.stores.size} 个位置",
+                                fontWeight = FontWeight.SemiBold)
+                            Text(if (showStores) "收起⌃" else "展开⌄",
+                                style = MaterialTheme.typography.labelSmall, color = Color(0xFF087D4E))
+                        }
+                        AnimatedVisibility(showStores) {
+                            Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                result.stores.forEach { store ->
+                                    HorizontalDivider()
+                                    Row(Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text(store.storeName, style = MaterialTheme.typography.bodySmall,
+                                            modifier = Modifier.weight(1f), maxLines = 1)
+                                        Text("${store.paymentCount}笔 · ${money(store.netRevenue)}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color(0xFF087D4E))
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
