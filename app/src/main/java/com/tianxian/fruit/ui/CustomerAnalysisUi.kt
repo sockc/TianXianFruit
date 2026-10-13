@@ -180,17 +180,11 @@ internal fun CustomerAnalysisContent(
         }
     val allRecords =
         filterResult.included
-    val importBatches =
-        remember(
-            dataVersion,
-            showSettings
-        ) {
-            if (showSettings) {
-                db.getPaymentImportBatches(5)
-            } else {
-                emptyList()
-            }
-        }
+    val importBatches = remember(dataVersion, showSettings, tab) {
+        if (showSettings || tab == CustomerAnalysisTab.RECORDS) {
+            db.getPaymentImportBatches(10)
+        } else emptyList()
+    }
 
     val dateRange =
         remember(
@@ -239,6 +233,15 @@ internal fun CustomerAnalysisContent(
                     customStart.toString() to customEnd.toString()
             }
         }
+
+    val periodPlatformCoverage = remember(rawRecords, selectedStoreId, dateRange) {
+        PaymentTrafficAnalytics.coverage(
+            PaymentTrafficAnalytics.select(rawRecords, storeId = selectedStoreId).filter {
+                (dateRange.first == null || it.businessDate >= dateRange.first!!) &&
+                    (dateRange.second == null || it.businessDate <= dateRange.second!!)
+            }
+        )
+    }
 
     val analysis =
         remember(
@@ -727,6 +730,7 @@ internal fun CustomerAnalysisContent(
                     CustomerPaymentRecordsContent(
                         records =
                             periodRawRecords,
+                        importBatches = importBatches,
                         settings =
                             settings,
                         excludedIds =
@@ -759,7 +763,7 @@ internal fun CustomerAnalysisContent(
                                     hourlyTraffic,
                                  platformHourlyTraffic = platformHourlyTraffic,
                                  singleDayRecords = singleDayRecords,
-                                 platformCoverage = platformCoverage,
+                                 platformCoverage = periodPlatformCoverage,
                                 dailyTraffic =
                                     dailyTraffic,
                                 sameWeekdayComparisons =
@@ -1012,6 +1016,7 @@ private fun CustomerAnalysisSettingsDialog(
 @Composable
 private fun CustomerPaymentRecordsContent(
     records: List<CustomerPaymentRecord>,
+    importBatches: List<PaymentImportBatchRecord>,
     settings: CustomerAnalysisSettings,
     excludedIds: Set<Long>,
     autoLargeIds: Set<Long>,
