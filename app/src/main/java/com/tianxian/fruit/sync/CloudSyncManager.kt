@@ -139,6 +139,11 @@ class CloudSyncManager(
 
     private val autoExecutor =
         Executors.newSingleThreadExecutor()
+    private val refreshTokenStore = SecureRefreshTokenStore(appContext)
+    private val renewalLock = Any()
+    // Only tokens actually replaced by this same manager are eligible for
+    // the new token; explicit logout/account switching clears these aliases.
+    private val replacedAccessTokens = linkedSetOf<String>()
 
     private val autoRunning =
         AtomicBoolean(false)
@@ -361,6 +366,11 @@ class CloudSyncManager(
         ledgerManager
             .revokeCloudBooksForAccountSwitch()
 
+        synchronized(renewalLock) {
+            replacedAccessTokens.clear()
+            runCatching { refreshTokenStore.put(loginJson.optString("refresh_token")) }
+                .onFailure { refreshTokenStore.clear() }
+        }
         prefs.edit()
             .putString(
                 KEY_BASE_URL,
@@ -432,7 +442,63 @@ class CloudSyncManager(
         return me.optString("username") == current.username
     }
 
+    /**
+     * Re-login as the SAME account without revoking local book permissions
+     * and without deleting queued edits. No password is persisted on disk.
+     */
+    fun reauthenticate(password: String): CloudSession {
+        require(password.isNotBlank()) { "请输入当前云端账号密码" }
+        val previous = requireSession()
+        val response = requestJsonOnce(
+            baseUrl = previous.baseUrl,
+            method = "POST",
+            path = "/api/v1/auth/login",
+            body = JSONObject().apply {
+                put("username", previous.username)
+                put("password", password)
+                put("device_id", serverDeviceId(previous.username))
+                put("device_name", ledgerManager.deviceName)
+                put("platform", "android")
+                put("app_version", APP_VERSION)
+            },
+            token = null
+        ) as JSONObject
+        val token = response.optString("access_token")
+            .takeIf { it.isNotBlank() }
+            ?: throw CloudApiException(401, "服务器未返回有效登录令牌")
+        val me = requestJsonOnce(
+            baseUrl = previous.baseUrl,
+            method = "GET",
+            path = "/api/v1/auth/me",
+            body = null,
+            token = token
+        ) as JSONObject
+        if (!me.optString("username").equals(previous.username, ignoreCase = true)) {
+            throw CloudApiException(403, "重新验证得到的账号与当前账号不同，已拒绝切换以保护未上传记录")
+        }
+        val renewed = previous.copy(
+            displayName = me.optString("display_name", previous.displayName),
+            systemRole = me.optString("system_role", previous.systemRole),
+            token = token
+        )
+        registerDevice(renewed)
+        synchronized(renewalLock) {
+            replacedAccessTokens.clear()
+            runCatching { refreshTokenStore.put(response.optString("refresh_token")) }
+                .onFailure { refreshTokenStore.clear() }
+            prefs.edit().putString(KEY_TOKEN, token)
+                .putString(KEY_DISPLAY_NAME, renewed.displayName)
+                .putString(KEY_SYSTEM_ROLE, renewed.systemRole)
+                .apply()
+        }
+        return renewed
+    }
+
     fun logout() {
+        synchronized(renewalLock) {
+            replacedAccessTokens.clear()
+            refreshTokenStore.clear()
+        }
         ledgerManager
             .revokeCloudBooksForAccountSwitch()
 
@@ -461,6 +527,7 @@ class CloudSyncManager(
 
         val refreshed =
             current.copy(
+                token = session()?.token ?: current.token,
                 username =
                     me.getString(
                         "username"
@@ -3175,7 +3242,104 @@ class CloudSyncManager(
     ): String =
         "$tableName|$syncId|$rowVersion"
 
+    /**
+     * Retry exactly the rejected request, never an already accepted push.
+     * The queue is untouched until the server confirms success.
+     *
+     * Refresh tokens are optional: old servers do not issue them and may not
+     * implement /auth/refresh. In that case fail with a precise re-login
+     * instruction rather than silently signing out or storing a password.
+     */
     private fun requestJson(
+        baseUrl: String,
+        method: String,
+        path: String,
+        body: JSONObject?,
+        token: String?
+    ): Any {
+        val effectiveToken = synchronized(renewalLock) {
+            if (token != null && token in replacedAccessTokens) {
+                session()?.token ?: token
+            } else token
+        }
+        return try {
+            requestJsonOnce(baseUrl, method, path, body, effectiveToken)
+        } catch (error: CloudApiException) {
+            if (error.statusCode != 401 || effectiveToken == null ||
+                path == "/api/v1/auth/login" || path == "/api/v1/auth/refresh"
+            ) throw error
+            val newToken = renewAccessToken(effectiveToken)
+                ?: throw CloudApiException(
+                    401,
+                    "登录已失效，自动续期不可用。请到更多 → 云端账号 → 重新验证登录；未上传账本记录已保留"
+                )
+            requestJsonOnce(baseUrl, method, path, body, newToken)
+        }
+    }
+
+    private fun renewAccessToken(expiredAccessToken: String): String? =
+        synchronized(renewalLock) {
+            val oldSession = session() ?: return@synchronized null
+            if (expiredAccessToken != oldSession.token) {
+                return@synchronized if (expiredAccessToken in replacedAccessTokens) {
+                    oldSession.token
+                } else null
+            }
+            val refreshToken = refreshTokenStore.get() ?: return@synchronized null
+            val response = try {
+                requestJsonOnce(
+                    baseUrl = oldSession.baseUrl,
+                    method = "POST",
+                    path = "/api/v1/auth/refresh",
+                    body = JSONObject().apply { put("refresh_token", refreshToken) },
+                    token = null
+                ) as JSONObject
+            } catch (_: CloudApiException) {
+                // Expired/revoked refresh credentials or unsupported endpoint.
+                // Never auto-login with a stored password and never clear local edits.
+                return@synchronized null
+            } catch (_: Exception) {
+                // Network errors should not result in logout or lost data.
+                return@synchronized null
+            }
+            val freshToken = response.optString("access_token")
+                .takeIf { it.isNotBlank() }
+                ?: return@synchronized null
+            val me = try {
+                requestJsonOnce(
+                    baseUrl = oldSession.baseUrl,
+                    method = "GET",
+                    path = "/api/v1/auth/me",
+                    body = null,
+                    token = freshToken
+                ) as JSONObject
+            } catch (_: Exception) {
+                return@synchronized null
+            }
+            if (!me.optString("username").equals(oldSession.username, ignoreCase = true)) {
+                return@synchronized null
+            }
+            val rotated = response.optString("refresh_token")
+            if (rotated.isNotBlank() && rotated != refreshToken) {
+                // Refresh-token rotation must be persisted before moving the
+                // access token; otherwise a crash could strand the session.
+                if (runCatching { refreshTokenStore.put(rotated) }.isFailure) {
+                    return@synchronized null
+                }
+            }
+            replacedAccessTokens.add(expiredAccessToken)
+            while (replacedAccessTokens.size > 8) {
+                replacedAccessTokens.remove(replacedAccessTokens.first())
+            }
+            prefs.edit()
+                .putString(KEY_TOKEN, freshToken)
+                .putString(KEY_DISPLAY_NAME, me.optString("display_name", oldSession.displayName))
+                .putString(KEY_SYSTEM_ROLE, me.optString("system_role", oldSession.systemRole))
+                .apply()
+            freshToken
+        }
+
+    private fun requestJsonOnce(
         baseUrl: String,
         method: String,
         path: String,
