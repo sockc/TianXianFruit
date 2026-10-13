@@ -18821,6 +18821,7 @@ private fun LedgerManagementContent(
     var cloudPassword by remember {
         mutableStateOf("")
     }
+    var showSameAccountReauth by remember { mutableStateOf(false) }
 
     var addDialog by remember {
         mutableStateOf(false)
@@ -19353,6 +19354,62 @@ private fun LedgerManagementContent(
                                     .bodySmall,
                             color = Color.Gray
                         )
+
+                        val loginExpired =
+                            cloudLocalStatus.lastError.contains("登录已失效") ||
+                                cloudLocalStatus.lastError.contains("请先登录") ||
+                                cloudLocalStatus.lastError.contains("401")
+                        if (loginExpired) {
+                            Text(
+                                "登录会话失效，未上传的账本记录仍在本机。可直接验证原账号密码，无需退出登录或清除数据。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        if (loginExpired || showSameAccountReauth) {
+                            OutlinedTextField(
+                                value = cloudPassword,
+                                onValueChange = { cloudPassword = it },
+                                label = { Text("当前账号密码（仅本次验证）") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Button(
+                                onClick = {
+                                    if (cloudPassword.isBlank()) {
+                                        cloudMessage = "请输入当前云端账号密码"
+                                    } else {
+                                        val passwordForAttempt = cloudPassword
+                                        runCloudTask(
+                                            busyText = "正在重新验证当前账号…",
+                                            block = {
+                                                cloudSyncManager.reauthenticate(passwordForAttempt)
+                                                val result = cloudSyncManager.syncCurrentBook(
+                                                    db = db,
+                                                    book = ledgerManager.getBook(currentBook.id) ?: currentBook
+                                                )
+                                                "重新验证成功；${result.message}"
+                                            },
+                                            onSuccess = {
+                                                showSameAccountReauth = false
+                                            }
+                                        )
+                                    }
+                                },
+                                enabled = !cloudBusy,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("重新验证并同步")
+                            }
+                        } else {
+                            TextButton(
+                                onClick = { showSameAccountReauth = true },
+                                enabled = !cloudBusy
+                            ) {
+                                Text("重新验证登录")
+                            }
+                        }
 
                         Button(
                             onClick = {
