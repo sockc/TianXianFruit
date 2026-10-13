@@ -1530,6 +1530,9 @@ private fun EmptyCustomerAnalysis() {
 private fun CustomerOverview(
     result: CustomerAnalysisResult,
     hourlyTraffic: List<CustomerHourlyPoint>,
+    platformHourlyTraffic: List<PaymentPlatformHour>,
+    singleDayRecords: List<CustomerPaymentRecord>,
+    platformCoverage: List<PaymentPlatformCoverage>,
     dailyTraffic: List<CustomerDailyTrafficPoint>,
     sameWeekdayComparisons: List<CustomerSameWeekdayComparison>,
     singleDay: Boolean,
@@ -1542,6 +1545,9 @@ private fun CustomerOverview(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
+            PaymentSourceCoverageCard(platformCoverage)
+        }
+        item {
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement =
@@ -1550,7 +1556,7 @@ private fun CustomerOverview(
                     )
             ) {
                 Metric(
-                    "客户",
+                    "识别客户",
                     s.customerCount.toString(),
                     Modifier.weight(1f)
                 )
@@ -1586,7 +1592,7 @@ private fun CustomerOverview(
                     Modifier.weight(1f)
                 )
                 Metric(
-                    "平均客单",
+                    "笔均收款",
                     money(s.averageTicket),
                     Modifier.weight(1f)
                 )
@@ -1608,8 +1614,9 @@ private fun CustomerOverview(
         ) {
             item {
                 HourlyCustomerTrafficCard(
-                    points =
-                        hourlyTraffic
+                    points = hourlyTraffic,
+                    platformHours = platformHourlyTraffic,
+                    dayRecords = singleDayRecords
                 )
             }
 
@@ -1668,7 +1675,7 @@ private fun CustomerOverview(
                             FontWeight.Bold
                     )
                     Text(
-                        "稳定标识 ${s.highConfidenceCount} · 昵称识别 ${s.mediumConfidenceCount} · 匿名 ${s.lowConfidenceCount}",
+                        "稳定标识 ${s.highConfidenceCount} · 昵称识别 ${s.mediumConfidenceCount} · 匿名交易 ${s.lowConfidenceCount} 笔",
                         style =
                             MaterialTheme
                                 .typography
