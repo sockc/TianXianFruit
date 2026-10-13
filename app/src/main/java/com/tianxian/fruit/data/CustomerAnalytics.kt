@@ -180,7 +180,7 @@ internal object CustomerAnalyticsEngine {
     ): List<CustomerHourlyPoint> {
         val positiveAll =
             allRecords.filter {
-                it.netAmount > 0.005
+                it.netAmount > 0.005 && PaymentTrafficAnalytics.isIdentified(it)
             }
         val firstDateByCustomer =
             positiveAll
@@ -196,8 +196,8 @@ internal object CustomerAnalyticsEngine {
                 }
 
         val dayPositive =
-            positiveAll.filter {
-                it.businessDate == date
+            allRecords.filter {
+                it.businessDate == date && it.netAmount > 0.005
             }
         val dayNet =
             allRecords.filter {
@@ -219,10 +219,8 @@ internal object CustomerAnalyticsEngine {
                     ) == hour
                 }
             val customers =
-                positiveHour
-                    .map {
-                        it.customerKey
-                    }
+                positiveHour.filter { PaymentTrafficAnalytics.isIdentified(it) }
+                    .map { it.customerKey }
                     .toSet()
             val newCustomers =
                 customers.count {
@@ -317,9 +315,8 @@ internal object CustomerAnalyticsEngine {
                     date = key,
                     customerCount =
                         dayPositive
-                            .map {
-                                it.customerKey
-                            }
+                            .filter { PaymentTrafficAnalytics.isIdentified(it) }
+                            .map { it.customerKey }
                             .toSet()
                             .size,
                     paymentCount =
@@ -353,6 +350,8 @@ internal object CustomerAnalyticsEngine {
         val positive =
             allRecords.filter {
                 it.netAmount > 0.005 &&
+                    PaymentTrafficAnalytics.isIdentified(it) &&
+                    it.storeId > 0L &&
                     it.storeName.isNotBlank() &&
                     it.storeName !=
                         "未匹配位置"
@@ -595,11 +594,9 @@ internal object CustomerAnalyticsEngine {
         today: LocalDate = LocalDate.now()
     ): CustomerAnalysisResult {
         val positiveAll =
-            allRecords
-                .filter {
-                    it.netAmount >
-                        0.005
-                }
+            allRecords.filter {
+                it.netAmount > 0.005 && PaymentTrafficAnalytics.isIdentified(it)
+            }
 
         val filtered =
             allRecords
@@ -625,7 +622,7 @@ internal object CustomerAnalyticsEngine {
                 }
 
         val allByCustomer =
-            allRecords.groupBy {
+            allRecords.filter { PaymentTrafficAnalytics.isIdentified(it) }.groupBy {
                 it.customerKey
             }
 
@@ -635,12 +632,12 @@ internal object CustomerAnalyticsEngine {
             }
 
         val periodAllByCustomer =
-            filtered.groupBy {
+            filtered.filter { PaymentTrafficAnalytics.isIdentified(it) }.groupBy {
                 it.customerKey
             }
 
         val periodByCustomer =
-            positive.groupBy {
+            positive.filter { PaymentTrafficAnalytics.isIdentified(it) }.groupBy {
                 it.customerKey
             }
 
@@ -722,15 +719,11 @@ internal object CustomerAnalyticsEngine {
         val customerCount =
             periodCustomers.size
 
+        // Unidentified receipts contribute to revenue, not customer averages.
         val averageCustomerValue =
-            if (
-                customerCount >
-                0
-            ) {
-                roundMoney(
-                    netRevenue /
-                        customerCount
-                )
+            if (customerCount > 0) {
+                roundMoney(filtered.filter { PaymentTrafficAnalytics.isIdentified(it) }
+                    .sumOf { it.netAmount } / customerCount)
             } else {
                 0.0
             }
@@ -758,6 +751,7 @@ internal object CustomerAnalyticsEngine {
 
         val amount90ByCustomer =
             allRecords
+                .filter { PaymentTrafficAnalytics.isIdentified(it) }
                 .filter {
                     runCatching {
                         LocalDate.parse(
@@ -854,9 +848,8 @@ internal object CustomerAnalyticsEngine {
                     }
 
                     val keys =
-                        positiveRecords.map {
-                            it.customerKey
-                        }
+                        positiveRecords.filter { PaymentTrafficAnalytics.isIdentified(it) }
+                            .map { it.customerKey }
                             .toSet()
 
                     val repeat =
@@ -984,10 +977,7 @@ internal object CustomerAnalyticsEngine {
                             "MEDIUM"
                     },
                 lowConfidenceCount =
-                    confidenceByCustomer.count {
-                        it.value ==
-                            "LOW"
-                    }
+                    positive.count { !PaymentTrafficAnalytics.isIdentified(it) }
             )
 
         return CustomerAnalysisResult(
