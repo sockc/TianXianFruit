@@ -43,17 +43,20 @@ private enum class CustomerRange(val label: String) {
     LAST_7("近7天"),
     THIS_MONTH("本月"),
     LAST_30("近30天"),
-    ALL("全部")
+    ALL("全部"),
+    CUSTOM("自定义")
 }
 
 private enum class CustomerAnalysisTab(val label: String) {
     OVERVIEW("概览"),
-    RHYTHM("经营节奏"),
+    CUSTOMERS("客户"),
+    RECORDS("账单")
+}
+
+private enum class CustomerDetailSection(val label: String) {
     REPEAT("复购"),
     RANKING("排行"),
-    LIFECYCLE("生命周期"),
-    STORE("位置"),
-    RECORDS("收款记录")
+    LIFECYCLE("生命周期")
 }
 
 private enum class CustomerRecordFilter(val label: String) {
@@ -131,6 +134,10 @@ internal fun CustomerAnalysisContent(
             }
         }
     var tab by remember { mutableStateOf(CustomerAnalysisTab.OVERVIEW) }
+    var customerSection by remember { mutableStateOf(CustomerDetailSection.REPEAT) }
+    var showRhythmDetails by remember { mutableStateOf(false) }
+    var customStart by remember { mutableStateOf(today.withDayOfMonth(1)) }
+    var customEnd by remember { mutableStateOf(today) }
     var selectedPlatform by remember { mutableStateOf(CustomerPaymentPlatform.ALL) }
     var selectedStoreId by remember { mutableLongStateOf(0L) }
     var showStoreMenu by remember { mutableStateOf(false) }
@@ -152,11 +159,6 @@ internal fun CustomerAnalysisContent(
     val scopedRawRecords = remember(rawRecords, selectedPlatform, selectedStoreId) {
         PaymentTrafficAnalytics.select(rawRecords, selectedPlatform.name, selectedStoreId)
     }
-    val platformCoverage = remember(rawRecords, selectedStoreId) {
-        PaymentTrafficAnalytics.coverage(
-            PaymentTrafficAnalytics.select(rawRecords, storeId = selectedStoreId)
-        )
-    }
     val settings =
         remember(dataVersion) {
             db.getCustomerAnalysisSettings()
@@ -173,24 +175,20 @@ internal fun CustomerAnalysisContent(
         }
     val allRecords =
         filterResult.included
-    val importBatches =
-        remember(
-            dataVersion,
-            showSettings
-        ) {
-            if (showSettings) {
-                db.getPaymentImportBatches(5)
-            } else {
-                emptyList()
-            }
-        }
+    val importBatches = remember(dataVersion, showSettings, tab) {
+        if (showSettings || tab == CustomerAnalysisTab.RECORDS) {
+            db.getPaymentImportBatches(10)
+        } else emptyList()
+    }
 
     val dateRange =
         remember(
             range,
             today,
             monthAnchor,
-            dayAnchor
+            dayAnchor,
+            customStart,
+            customEnd
         ) {
             when (range) {
                 CustomerRange.TODAY ->
@@ -225,8 +223,20 @@ internal fun CustomerAnalysisContent(
 
                 CustomerRange.ALL ->
                     null to null
+
+                CustomerRange.CUSTOM ->
+                    customStart.toString() to customEnd.toString()
             }
         }
+
+    val periodPlatformCoverage = remember(rawRecords, selectedStoreId, dateRange) {
+        PaymentTrafficAnalytics.coverage(
+            PaymentTrafficAnalytics.select(rawRecords, storeId = selectedStoreId).filter {
+                (dateRange.first == null || it.businessDate >= dateRange.first!!) &&
+                    (dateRange.second == null || it.businessDate <= dateRange.second!!)
+            }
+        )
+    }
 
     val analysis =
         remember(
@@ -241,6 +251,14 @@ internal fun CustomerAnalysisContent(
                 today = today
             )
         }
+
+    val periodPayments = remember(allRecords, dateRange) {
+        allRecords.filter {
+            it.netAmount > 0.005 &&
+                (dateRange.first == null || it.businessDate >= dateRange.first!!) &&
+                (dateRange.second == null || it.businessDate <= dateRange.second!!)
+        }
+    }
 
     val periodRawRecords =
         remember(
@@ -277,9 +295,29 @@ internal fun CustomerAnalysisContent(
                     )
                 )
 
+            CustomerRange.CUSTOM ->
+                customStart.format(DateTimeFormatter.ofPattern("M/d")) + "–" +
+                    customEnd.format(DateTimeFormatter.ofPattern("M/d"))
+
             else ->
                 range.label
         }
+
+    fun pickDate(
+        initial: LocalDate,
+        minDate: LocalDate? = null,
+        onSelected: (LocalDate) -> Unit
+    ) {
+        val dialog = android.app.DatePickerDialog(
+            context,
+            { _, year, month, day -> onSelected(LocalDate.of(year, month + 1, day)) },
+            initial.year, initial.monthValue - 1, initial.dayOfMonth
+        )
+        val zone = java.time.ZoneId.systemDefault()
+        minDate?.let { dialog.datePicker.minDate = it.atStartOfDay(zone).toInstant().toEpochMilli() }
+        dialog.datePicker.maxDate = today.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli() - 1
+        dialog.show()
+    }
 
     val hourlyTraffic =
         remember(
@@ -338,8 +376,7 @@ internal fun CustomerAnalysisContent(
             dateRange
         ) {
             if (
-                range ==
-                    CustomerRange.THIS_MONTH &&
+                range != CustomerRange.TODAY &&
                 dateRange.first != null &&
                 dateRange.second != null
             ) {
@@ -452,7 +489,7 @@ internal fun CustomerAnalysisContent(
                         if (importing) {
                             "导入中"
                         } else {
-                            "导入账单"
+                            "导入"
                         }
                     )
                 }
@@ -465,186 +502,101 @@ internal fun CustomerAnalysisContent(
                             horizontal = 8.dp
                         )
                 ) {
-                    Text("设置")
+                    Text("⚙", style = MaterialTheme.typography.titleLarge)
                 }
             }
 
             Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment =
-                    androidx.compose.ui.Alignment.CenterVertically,
-                horizontalArrangement =
-                    Arrangement.Center
-            ) {
-                TextButton(
-                    onClick = {
-                        when (range) {
-                            CustomerRange.THIS_MONTH ->
-                                monthAnchor =
-                                    monthAnchor.minusMonths(
-                                        1
-                                    )
-
-                            CustomerRange.TODAY ->
-                                dayAnchor =
-                                    dayAnchor.minusDays(
-                                        1
-                                    )
-
-                            else ->
-                                Unit
-                        }
-                    },
-                    enabled =
-                        range ==
-                            CustomerRange.THIS_MONTH ||
-                            range ==
-                                CustomerRange.TODAY,
-                    contentPadding =
-                        PaddingValues(
-                            horizontal = 8.dp
-                        )
-                ) {
-                    Text("‹")
-                }
-
-                Box {
-                    TextButton(
-                        onClick = {
-                            showRangeMenu = true
-                        },
-                        contentPadding =
-                            PaddingValues(
-                                horizontal = 10.dp
-                            )
-                    ) {
-                        Text(
-                            "$rangeLabel ▼",
-                            fontWeight =
-                                FontWeight.SemiBold
-                        )
-                    }
-                    DropdownMenu(
-                        expanded =
-                            showRangeMenu,
-                        onDismissRequest = {
-                            showRangeMenu = false
-                        }
-                    ) {
-                        listOf(
-                            CustomerRange.THIS_MONTH,
-                            CustomerRange.TODAY,
-                            CustomerRange.LAST_7,
-                            CustomerRange.LAST_30,
-                            CustomerRange.ALL
-                        ).forEach { option ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        option.label
-                                    )
-                                },
-                                onClick = {
-                                    range =
-                                        option
-                                    if (
-                                        option ==
-                                        CustomerRange.THIS_MONTH
-                                    ) {
-                                        monthAnchor =
-                                            currentMonth
-                                    }
-                                    if (
-                                        option ==
-                                        CustomerRange.TODAY
-                                    ) {
-                                        dayAnchor =
-                                            today
-                                    }
-                                    chromeVisible =
-                                        true
-                                    showRangeMenu =
-                                        false
-                                }
-                            )
-                        }
-                    }
-                }
-
-                TextButton(
-                    onClick = {
-                        when (range) {
-                            CustomerRange.THIS_MONTH ->
-                                if (
-                                    monthAnchor <
-                                    currentMonth
-                                ) {
-                                    monthAnchor =
-                                        monthAnchor.plusMonths(
-                                            1
-                                        )
-                                }
-
-                            CustomerRange.TODAY ->
-                                if (
-                                    dayAnchor <
-                                    today
-                                ) {
-                                    dayAnchor =
-                                        dayAnchor.plusDays(
-                                            1
-                                        )
-                                }
-
-                            else ->
-                                Unit
-                        }
-                    },
-                    enabled =
-                        (
-                            range ==
-                                CustomerRange.THIS_MONTH &&
-                                monthAnchor <
-                                    currentMonth
-                            ) ||
-                            (
-                                range ==
-                                    CustomerRange.TODAY &&
-                                    dayAnchor <
-                                        today
-                                ),
-                    contentPadding =
-                        PaddingValues(
-                            horizontal = 8.dp
-                        )
-                ) {
-                    Text("›")
-                }
-            }
-
-            Row(
-                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 40.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                CustomerPaymentPlatform.entries.forEach { option ->
-                    FilterChip(
-                        selected = selectedPlatform == option,
-                        onClick = { selectedPlatform = option },
-                        label = { Text(option.label) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (range == CustomerRange.THIS_MONTH || range == CustomerRange.TODAY) Text(
+                        "‹",
+                        modifier = Modifier.width(30.dp).clickable {
+                            when (range) {
+                                CustomerRange.THIS_MONTH -> monthAnchor = monthAnchor.minusMonths(1)
+                                CustomerRange.TODAY -> dayAnchor = dayAnchor.minusDays(1)
+                                else -> Unit
+                            }
+                        },
+                        color = Color(0xFF087D4E),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Box {
+                        Text(
+                            "$rangeLabel ▾",
+                            modifier = Modifier.clickable { showRangeMenu = true }.padding(vertical = 9.dp, horizontal = 3.dp),
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1
+                        )
+                        DropdownMenu(
+                            expanded = showRangeMenu,
+                            onDismissRequest = { showRangeMenu = false }
+                        ) {
+                            CustomerRange.entries.forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option.label) },
+                                    onClick = {
+                                        showRangeMenu = false
+                                        when (option) {
+                                            CustomerRange.THIS_MONTH -> {
+                                                monthAnchor = currentMonth
+                                                range = option
+                                            }
+                                            CustomerRange.TODAY -> pickDate(dayAnchor) {
+                                                dayAnchor = it
+                                                range = CustomerRange.TODAY
+                                            }
+                                            CustomerRange.CUSTOM -> pickDate(customStart) { start ->
+                                                pickDate(maxOf(start, customEnd), minDate = start) { finish ->
+                                                    customStart = start
+                                                    customEnd = finish
+                                                    range = CustomerRange.CUSTOM
+                                                }
+                                            }
+                                            else -> range = option
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    if (range == CustomerRange.THIS_MONTH || range == CustomerRange.TODAY) Text(
+                        "›",
+                        modifier = Modifier.width(30.dp).clickable(
+                            enabled = (range == CustomerRange.THIS_MONTH && monthAnchor < currentMonth) ||
+                                (range == CustomerRange.TODAY && dayAnchor < today)
+                        ) {
+                            when (range) {
+                                CustomerRange.THIS_MONTH ->
+                                    if (monthAnchor < currentMonth) monthAnchor = monthAnchor.plusMonths(1)
+                                CustomerRange.TODAY ->
+                                    if (dayAnchor < today) dayAnchor = dayAnchor.plusDays(1)
+                                else -> Unit
+                            }
+                        },
+                        color = if ((range == CustomerRange.TODAY && dayAnchor >= today) ||
+                            (range == CustomerRange.THIS_MONTH && monthAnchor >= currentMonth))
+                            Color.LightGray else Color(0xFF087D4E),
+                        style = MaterialTheme.typography.titleMedium
                     )
                 }
                 Box {
                     val storeName = when (selectedStoreId) {
                         0L -> "全部位置"
                         -1L -> "未匹配"
-                        else -> storeOptions.firstOrNull { it.first == selectedStoreId }?.second ?: "位置失效"
+                        else -> storeOptions.firstOrNull { it.first == selectedStoreId }?.second ?: "已失效位置"
                     }
-                    TextButton(onClick = { showStoreMenu = true }) { Text("$storeName ▼") }
-                    DropdownMenu(
-                        expanded = showStoreMenu,
-                        onDismissRequest = { showStoreMenu = false }
-                    ) {
+                    Text(
+                        "$storeName ▾",
+                        modifier = Modifier.clickable { showStoreMenu = true }.padding(8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1
+                    )
+                    DropdownMenu(expanded = showStoreMenu, onDismissRequest = { showStoreMenu = false }) {
                         DropdownMenuItem(text = { Text("全部位置") }, onClick = {
                             selectedStoreId = 0L
                             showStoreMenu = false
@@ -655,12 +607,33 @@ internal fun CustomerAnalysisContent(
                                 showStoreMenu = false
                             })
                         }
-                        if (hasUnmatchedStore) {
-                            DropdownMenuItem(text = { Text("未匹配位置") }, onClick = {
-                                selectedStoreId = -1L
-                                showStoreMenu = false
-                            })
-                        }
+                        if (hasUnmatchedStore) DropdownMenuItem(text = { Text("未匹配位置") }, onClick = {
+                            selectedStoreId = -1L
+                            showStoreMenu = false
+                        })
+                    }
+                }
+            }
+
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                CustomerPaymentPlatform.entries.forEach { option ->
+                    val selected = selectedPlatform == option
+                    Surface(
+                        color = if (selected) Color.White else Color(0xFFE8EFEB),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.weight(1f).clickable { selectedPlatform = option }
+                    ) {
+                        Text(
+                            option.label,
+                            modifier = Modifier.padding(vertical = 9.dp),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            color = if (selected) Color(0xFF087D4E) else Color.DarkGray,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
             }
@@ -699,10 +672,8 @@ internal fun CustomerAnalysisContent(
             visible =
                 chromeVisible
         ) {
-        ScrollableTabRow(
-            selectedTabIndex =
-                tab.ordinal,
-            edgePadding = 4.dp
+        TabRow(
+            selectedTabIndex = tab.ordinal
         ) {
             CustomerAnalysisTab.entries.forEach {
                 item ->
@@ -711,6 +682,7 @@ internal fun CustomerAnalysisContent(
                         tab == item,
                     onClick = {
                         tab = item
+                        showRhythmDetails = false
                     },
                     text = {
                         Text(
@@ -726,13 +698,24 @@ internal fun CustomerAnalysisContent(
             Modifier.fillMaxSize()
         ) {
             when {
-                tab == CustomerAnalysisTab.RHYTHM ->
-                    CustomerBusinessRhythmContent(
-                        db = db,
-                        dataVersion = dataVersion,
-                        startDate = dateRange.first,
-                        endDate = dateRange.second
-                    )
+                showRhythmDetails && tab == CustomerAnalysisTab.OVERVIEW ->
+                    Column(Modifier.fillMaxSize()) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = { showRhythmDetails = false }) { Text("‹ 返回概览") }
+                            Text("经营节奏 · 正式营业数据",
+                                style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        }
+                        Box(Modifier.weight(1f)) {
+                            CustomerBusinessRhythmContent(
+                                db = db,
+                                dataVersion = dataVersion,
+                                startDate = dateRange.first,
+                                endDate = dateRange.second,
+                                storeFilterId = selectedStoreId
+                            )
+                        }
+                    }
 
                 rawRecords.isEmpty() ->
                     EmptyCustomerAnalysis()
@@ -745,6 +728,7 @@ internal fun CustomerAnalysisContent(
                     CustomerPaymentRecordsContent(
                         records =
                             periodRawRecords,
+                        importBatches = importBatches,
                         settings =
                             settings,
                         excludedIds =
@@ -777,14 +761,15 @@ internal fun CustomerAnalysisContent(
                                     hourlyTraffic,
                                  platformHourlyTraffic = platformHourlyTraffic,
                                  singleDayRecords = singleDayRecords,
-                                 platformCoverage = platformCoverage,
+                                 platformCoverage = periodPlatformCoverage,
                                 dailyTraffic =
                                     dailyTraffic,
                                 sameWeekdayComparisons =
                                     sameWeekdayComparisons,
                                 singleDay =
-                                    range ==
-                                        CustomerRange.TODAY,
+                                    range == CustomerRange.TODAY,
+                                payments = periodPayments,
+                                onRhythm = { showRhythmDetails = true },
                                 onSelectDay = {
                                     selected ->
                                     runCatching {
@@ -804,31 +789,14 @@ internal fun CustomerAnalysisContent(
                                 }
                             )
 
-                        CustomerAnalysisTab.RHYTHM -> Unit
-
-                        CustomerAnalysisTab.REPEAT ->
-                            CustomerRepeatAnalysis(
-                                analysis.profiles
+                        CustomerAnalysisTab.CUSTOMERS ->
+                            CustomerDetailsContent(
+                                result = analysis,
+                                section = customerSection,
+                                onSectionChange = { customerSection = it }
                             )
 
-                        CustomerAnalysisTab.RANKING ->
-                            CustomerRankingAnalysis(
-                                analysis.profiles
-                            )
-
-                        CustomerAnalysisTab.LIFECYCLE ->
-                            CustomerLifecycleAnalysis(
-                                analysis.lifecycles,
-                                analysis.profiles
-                            )
-
-                        CustomerAnalysisTab.STORE ->
-                            CustomerStoreAnalysisContent(
-                                analysis.stores
-                            )
-
-                        CustomerAnalysisTab.RECORDS ->
-                            Unit
+                        CustomerAnalysisTab.RECORDS -> Unit
                     }
             }
         }
@@ -1046,6 +1014,7 @@ private fun CustomerAnalysisSettingsDialog(
 @Composable
 private fun CustomerPaymentRecordsContent(
     records: List<CustomerPaymentRecord>,
+    importBatches: List<PaymentImportBatchRecord>,
     settings: CustomerAnalysisSettings,
     excludedIds: Set<Long>,
     autoLargeIds: Set<Long>,
@@ -1056,6 +1025,8 @@ private fun CustomerPaymentRecordsContent(
             CustomerRecordFilter.ALL
         )
     }
+
+    var showImportHistory by remember { mutableStateOf(false) }
 
     val payments =
         remember(
@@ -1108,9 +1079,23 @@ private fun CustomerPaymentRecordsContent(
             }
         }
 
-    Column(
-        Modifier.fillMaxSize()
-    ) {
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("收款记录 · ${visible.size}笔", style = MaterialTheme.typography.bodySmall,
+                color = Color.Gray)
+            TextButton(onClick = { showImportHistory = !showImportHistory }) {
+                Text(if (showImportHistory) "收起导入历史⌃" else "导入历史⌄")
+            }
+        }
+        AnimatedVisibility(showImportHistory) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                ImportBatchList(importBatches.take(5))
+            }
+        }
         Row(
             Modifier
                 .fillMaxWidth()
@@ -1527,6 +1512,49 @@ private fun EmptyCustomerAnalysis() {
 }
 
 @Composable
+private fun CustomerDetailsContent(
+    result: CustomerAnalysisResult,
+    section: CustomerDetailSection,
+    onSectionChange: (CustomerDetailSection) -> Unit
+) {
+    Column(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Text(
+                "新客 ${result.summary.newCustomerCount} · 老客 ${result.summary.oldCustomerCount} · 复购率 ${percent(result.summary.repeatRate)}",
+                style = MaterialTheme.typography.bodySmall, color = Color(0xFF087D4E),
+                fontWeight = FontWeight.Medium
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                CustomerDetailSection.entries.forEach { item ->
+                    val selected = section == item
+                    Surface(
+                        modifier = Modifier.weight(1f).clickable { onSectionChange(item) },
+                        color = if (selected) Color(0xFFE3F2E9) else Color.White,
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(item.label, modifier = Modifier.padding(vertical = 10.dp),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            color = if (selected) Color(0xFF087D4E) else Color.DarkGray,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
+                    }
+                }
+            }
+        }
+        Box(Modifier.weight(1f)) {
+            when (section) {
+                CustomerDetailSection.REPEAT -> CustomerRepeatAnalysis(result.profiles)
+                CustomerDetailSection.RANKING -> CustomerRankingAnalysis(result.profiles)
+                CustomerDetailSection.LIFECYCLE ->
+                    CustomerLifecycleAnalysis(result.lifecycles, result.profiles)
+            }
+        }
+    }
+}
+
+@Composable
 private fun CustomerOverview(
     result: CustomerAnalysisResult,
     hourlyTraffic: List<CustomerHourlyPoint>,
@@ -1536,82 +1564,80 @@ private fun CustomerOverview(
     dailyTraffic: List<CustomerDailyTrafficPoint>,
     sameWeekdayComparisons: List<CustomerSameWeekdayComparison>,
     singleDay: Boolean,
+    payments: List<CustomerPaymentRecord>,
+    onRhythm: () -> Unit,
     onSelectDay: (String) -> Unit
 ) {
     val s = result.summary
+    var showQualityDetails by remember { mutableStateOf(false) }
+    var showStores by remember { mutableStateOf(false) }
+    val reliablePayments = remember(payments) {
+        payments.count { PaymentTrafficAnalytics.isIdentified(it) }
+    }
+    val identityCoverage = if (payments.isNotEmpty()) {
+        (reliablePayments * 100.0 / payments.size).toInt()
+    } else null
+    val missingPlatform = platformCoverage.filter { it.paymentCount == 0 }
+    val anonymousPayments = payments.size - reliablePayments
+    val unresolved = payments.count { it.storeId <= 0L }
+
     LazyColumn(
         Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(12.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
-            PaymentSourceCoverageCard(platformCoverage)
-        }
-        item {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement =
-                    Arrangement.spacedBy(
-                        8.dp
-                    )
-            ) {
-                Metric(
-                    "识别客户",
-                    s.customerCount.toString(),
-                    Modifier.weight(1f)
-                )
-                Metric(
-                    "新客",
-                    s.newCustomerCount.toString(),
-                    Modifier.weight(1f)
-                )
-                Metric(
-                    "老客",
-                    s.oldCustomerCount.toString(),
-                    Modifier.weight(1f)
-                )
-                Metric(
-                    "复购率",
-                    percent(s.repeatRate),
-                    Modifier.weight(1f)
-                )
+            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Metric("电子收款", money(s.netRevenue), Modifier.weight(1f))
+                    Metric("付款笔数", s.paymentCount.toString(), Modifier.weight(1f))
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Metric("识别付款方", s.customerCount.toString(), Modifier.weight(1f))
+                    Metric("笔均收款", money(s.averageTicket), Modifier.weight(1f))
+                }
             }
         }
-
         item {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement =
-                    Arrangement.spacedBy(
-                        8.dp
-                    )
-            ) {
-                Metric(
-                    "经营收款",
-                    money(s.netRevenue),
-                    Modifier.weight(1f)
-                )
-                Metric(
-                    "笔均收款",
-                    money(s.averageTicket),
-                    Modifier.weight(1f)
-                )
-                Metric(
-                    "客均贡献",
-                    money(s.averageCustomerValue),
-                    Modifier.weight(1f)
-                )
-                Metric(
-                    "收款笔数",
-                    s.paymentCount.toString(),
-                    Modifier.weight(1f)
-                )
+            Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                Column(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { showQualityDetails = !showQualityDetails }
+                            .padding(horizontal = 10.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            "微信${if (platformCoverage.any { it.platform == "WECHAT" && it.paymentCount > 0 }) " ✓" else " —"}" +
+                                "  支付宝${if (platformCoverage.any { it.platform == "ALIPAY" && it.paymentCount > 0 }) " ✓" else " —"}" +
+                                "  · 身份覆盖 ${identityCoverage?.let { "$it%" } ?: "暂无"}",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.labelMedium, maxLines = 2
+                        )
+                        Text(if (showQualityDetails) "收起⌃" else "详情⌄",
+                            color = Color(0xFF087D4E), style = MaterialTheme.typography.labelSmall)
+                    }
+                    AnimatedVisibility(showQualityDetails) {
+                        Column(Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(
+                                "当前范围：有效付款 ${payments.size}笔 · 可靠身份 ${reliablePayments}笔 · 匿名或不可靠 ${anonymousPayments}笔" +
+                                    (if (unresolved > 0) " · 未匹配位置 ${unresolved}笔" else ""),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text("身份覆盖率按可识别付款笔数÷全部有效付款笔数计算；不是到店客流覆盖率。",
+                                style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                            if (missingPlatform.isNotEmpty()) {
+                                Text("有支付平台未导入经营收款，合并数据可能不完整。",
+                                    style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
+                            }
+                            PaymentSourceCoverageCard(platformCoverage)
+                        }
+                    }
+                }
             }
         }
-
-        if (
-            singleDay
-        ) {
+        if (singleDay) {
             item {
                 HourlyCustomerTrafficCard(
                     points = hourlyTraffic,
@@ -1619,106 +1645,82 @@ private fun CustomerOverview(
                     dayRecords = singleDayRecords
                 )
             }
-
-            if (
-                sameWeekdayComparisons
-                    .isNotEmpty()
-            ) {
-                item {
-                    SameWeekdayCustomerCard(
-                        rows =
-                            sameWeekdayComparisons
-                    )
-                }
+            if (sameWeekdayComparisons.isNotEmpty()) {
+                item { SameWeekdayCustomerCard(sameWeekdayComparisons) }
             }
-        } else if (
-            dailyTraffic.isNotEmpty()
-        ) {
+        } else if (dailyTraffic.isNotEmpty()) {
             item {
                 DailyCustomerTrafficCard(
-                    points =
-                        dailyTraffic,
-                    onSelectDay =
-                        onSelectDay
+                    points = dailyTraffic,
+                    onSelectDay = onSelectDay
                 )
             }
         }
-
-        if (result.change.available) {
-            item {
-                RevenueChangeCard(
-                    result.change
-                )
-            }
-        }
-
         item {
-            Card(
-                colors =
-                    CardDefaults.cardColors(
-                        containerColor =
-                            Color.White
+            Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                Column(Modifier.fillMaxWidth().padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("客户概况", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "新客 ${s.newCustomerCount} · 老客 ${s.oldCustomerCount} · 复购率 ${percent(s.repeatRate)}",
+                        color = Color(0xFF087D4E), style = MaterialTheme.typography.bodyMedium
                     )
-            ) {
-                Column(
-                    Modifier.padding(
-                        12.dp
-                    ),
-                    verticalArrangement =
-                        Arrangement.spacedBy(
-                            5.dp
-                        )
+                    Text("以上为可识别付款方样本；微信与支付宝无法自动认定为同一个人，现金不计入。",
+                        style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                }
+            }
+        }
+        if (result.stores.size > 1) {
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                    Column {
+                        Row(
+                            Modifier.fillMaxWidth().clickable { showStores = !showStores }
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("营业位置对比 · ${result.stores.size} 个位置",
+                                fontWeight = FontWeight.SemiBold)
+                            Text(if (showStores) "收起⌃" else "展开⌄",
+                                style = MaterialTheme.typography.labelSmall, color = Color(0xFF087D4E))
+                        }
+                        AnimatedVisibility(showStores) {
+                            Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                result.stores.forEach { store ->
+                                    HorizontalDivider()
+                                    Row(Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween) {
+                                        Text(store.storeName, style = MaterialTheme.typography.bodySmall,
+                                            modifier = Modifier.weight(1f), maxLines = 1)
+                                        Text("${store.paymentCount}笔 · ${money(store.netRevenue)}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color(0xFF087D4E))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (result.change.available) {
+            item { RevenueChangeCard(result.change) }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                Row(
+                    Modifier.fillMaxWidth().clickable(onClick = onRhythm).padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(
-                        "客户识别质量",
-                        fontWeight =
-                            FontWeight.Bold
-                    )
-                    Text(
-                        "稳定标识 ${s.highConfidenceCount} · 昵称识别 ${s.mediumConfidenceCount} · 匿名交易 ${s.lowConfidenceCount} 笔",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall
-                    )
-                    Text(
-                        "识别覆盖：${s.identifiedCustomerCount}/${s.customerCount} 位客户（${if(s.customerCount > 0) (s.identifiedCustomerCount * 100.0 / s.customerCount).toInt() else 0}%）。",
-                        color = if (s.customerCount > 0 && s.identifiedCustomerCount * 100 < s.customerCount * 70) Color(0xFF9A6700) else Color(0xFF087D4E),
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    if (s.lowConfidenceCount > 0) {
-                        Text(
-                            "提示：匿名或低可信身份不能证明是首次购买；新客占比、复购率可能存在偏差，尽量以稳定身份样本判断老客变化。",
-                            color = Color(0xFF9A6700),
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                    Column(Modifier.weight(1f)) {
+                        Text("经营节奏与天气影响", fontWeight = FontWeight.SemiBold)
+                        Text("查看同星期、正式营业记录和降雨诊断",
+                            style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                     }
-                    Text(
-                        "这里统计的是电子支付可识别客户；现金客户不会被账单识别。",
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall,
-                        color =
-                            Color.Gray
-                    )
-                    if (
-                        s.unmatchedStoreCount >
-                        0
-                    ) {
-                        HorizontalDivider()
-                        Text(
-                            "有 ${s.unmatchedStoreCount} 笔收款未能唯一匹配营业位置，多位置同时间营业时不会自动猜位置。",
-                            color =
-                                Color(
-                                    0xFF9A6700
-                                ),
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .bodySmall
-                        )
-                    }
+                    Text("查看 ›", color = Color(0xFF087D4E))
                 }
             }
         }
@@ -1766,8 +1768,9 @@ private fun HourlyCustomerTrafficCard(
     var metric by remember { mutableStateOf(CustomerTrafficMetric.PAYMENTS) }
     val byHour = remember(platformHours) { platformHours.associateBy { it.hour } }
     val active = points.filter { it.paymentCount > 0 || kotlin.math.abs(it.amount) > 0.005 }
-    val firstHour = (active.minOfOrNull { it.hour } ?: 16).coerceIn(0, 23)
-    val lastHour = (active.maxOfOrNull { it.hour } ?: 23).coerceIn(firstHour, 23)
+    // Display zero-traffic hours too: do not make short periods look like the full shift.
+    val firstHour = if (active.any { it.hour < 16 }) 0 else 16
+    val lastHour = 23
     val visible = points.filter { it.hour in firstHour..lastHour }
     var selectedHour by remember(points) {
         mutableIntStateOf(active.maxByOrNull { it.paymentCount }?.hour ?: 18)
@@ -1816,7 +1819,7 @@ private fun HourlyCustomerTrafficCard(
                     val a = platformValue(point.hour, "ALIPAY")
                     val total = w + a
                     val label = if (metric == CustomerTrafficMetric.AMOUNT)
-                        money(total) else total.toInt().toString()
+                        total.toInt().toString() else total.toInt().toString()
                     Column(
                         Modifier.width(44.dp).clickable { selectedHour = point.hour; detailsExpanded = true },
                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1830,12 +1833,12 @@ private fun HourlyCustomerTrafficCard(
                                 horizontalAlignment = Alignment.CenterHorizontally) {
                                 if (a > 0.0) {
                                     Box(Modifier.width(22.dp)
-                                        .height((2f + 76f * (a / maxValue).toFloat()).dp)
+                                        .height((2f + 74f * (a / maxValue).toFloat()).dp)
                                         .background(Color(0xFF4D9AE8), RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)))
                                 }
                                 if (w > 0.0) {
                                     Box(Modifier.width(22.dp)
-                                        .height((2f + 76f * (w / maxValue).toFloat()).dp)
+                                        .height((2f + 74f * (w / maxValue).toFloat()).dp)
                                         .background(Color(0xFF22AA70), RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)))
                                 }
                             }
