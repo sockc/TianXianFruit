@@ -67,9 +67,15 @@ private enum class CustomerPaymentPlatform(val label: String) {
 }
 
 private enum class CustomerTrafficMetric(val label: String) {
-    CUSTOMERS("客户"),
+    CUSTOMERS("可识别客户"),
     AMOUNT("金额"),
     PAYMENTS("笔数")
+}
+
+private enum class CustomerDailyMetric(val label: String) {
+    PAYMENTS("付款笔数"),
+    AMOUNT("收款金额"),
+    AVERAGE("笔均收款")
 }
 
 private enum class CustomerRankingMode(val label: String) {
@@ -84,6 +90,7 @@ internal fun CustomerAnalysisContent(
     db: AppDatabase,
     dataVersion: Int,
     canImport: Boolean,
+    ledgerId: String,
     onChanged: () -> Unit,
     onBack: () -> Unit
 ) {
@@ -771,7 +778,12 @@ internal fun CustomerAnalysisContent(
                             CustomerDetailsContent(
                                 result = analysis,
                                 section = customerSection,
-                                onSectionChange = { customerSection = it }
+                                onSectionChange = { customerSection = it },
+                                ledgerId = ledgerId,
+                                officialDate = if (range == CustomerRange.TODAY) dayAnchor.toString() else null,
+                                showWechatOfficial = selectedStoreId == 0L &&
+                                    selectedPlatform != CustomerPaymentPlatform.ALIPAY,
+                                canEditOfficial = canImport
                             )
 
                         CustomerAnalysisTab.RECORDS -> Unit
@@ -1493,16 +1505,30 @@ private fun EmptyCustomerAnalysis() {
 private fun CustomerDetailsContent(
     result: CustomerAnalysisResult,
     section: CustomerDetailSection,
-    onSectionChange: (CustomerDetailSection) -> Unit
+    onSectionChange: (CustomerDetailSection) -> Unit,
+    ledgerId: String,
+    officialDate: String?,
+    showWechatOfficial: Boolean,
+    canEditOfficial: Boolean
 ) {
     Column(Modifier.fillMaxSize()) {
         Column(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
+            if (showWechatOfficial) {
+                OfficialWechatDailyCard(
+                    ledgerId = ledgerId,
+                    date = officialDate,
+                    canEdit = canEditOfficial
+                )
+            }
             Text(
-                "新客 ${result.summary.newCustomerCount} · 老客 ${result.summary.oldCustomerCount} · 复购率 ${percent(result.summary.repeatRate)}",
-                style = MaterialTheme.typography.bodySmall, color = Color(0xFF087D4E),
+                if (result.summary.customerCount == 0)
+                    "账单暂无可靠的付款人标识，新老客和复购情况无法判定"
+                else "账单可识别样本：首次出现 ${result.summary.newCustomerCount} · 历史出现 ${result.summary.oldCustomerCount} · 样本复购率 ${percent(result.summary.repeatRate)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (result.summary.customerCount == 0) Color(0xFF9A6700) else Color(0xFF087D4E),
                 fontWeight = FontWeight.Medium
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1571,7 +1597,7 @@ private fun CustomerOverview(
                     Metric("付款笔数", s.paymentCount.toString(), Modifier.weight(1f))
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Metric("识别付款方", s.customerCount.toString(), Modifier.weight(1f))
+                    Metric("可靠识别付款方", if (s.customerCount > 0) s.customerCount.toString() else "暂无", Modifier.weight(1f))
                     Metric("笔均收款", money(s.averageTicket), Modifier.weight(1f))
                 }
             }
@@ -1638,12 +1664,15 @@ private fun CustomerOverview(
             Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
                 Column(Modifier.fillMaxWidth().padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("客户概况", fontWeight = FontWeight.SemiBold)
+                    Text("可靠身份客户样本", fontWeight = FontWeight.SemiBold)
                     Text(
-                        "新客 ${s.newCustomerCount} · 老客 ${s.oldCustomerCount} · 复购率 ${percent(s.repeatRate)}",
-                        color = Color(0xFF087D4E), style = MaterialTheme.typography.bodyMedium
+                        if (s.customerCount == 0)
+                            "身份不足：暂不能判断真实的新客、老客及复购率"
+                        else "记录首次出现 ${s.newCustomerCount} · 历史出现 ${s.oldCustomerCount} · 样本复购率 ${percent(s.repeatRate)}",
+                        color = if (s.customerCount == 0) Color(0xFF9A6700) else Color(0xFF087D4E),
+                        style = MaterialTheme.typography.bodyMedium
                     )
-                    Text("以上为可识别付款方样本；微信与支付宝无法自动认定为同一个人，现金不计入。",
+                    Text("只统计有稳定标识的付款方；脱敏昵称不参与，首次出现不等于首次到店。微信官方新老客请到“客户”页单独录入；跨平台不合并。",
                         style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                 }
             }
@@ -1874,167 +1903,68 @@ private fun DailyCustomerTrafficCard(
     points: List<CustomerDailyTrafficPoint>,
     onSelectDay: (String) -> Unit
 ) {
-    val maxCustomers =
-        points.maxOfOrNull {
-            it.customerCount
-        }
-            ?.coerceAtLeast(
-                1
-            )
-            ?: 1
+    var metric by remember { mutableStateOf(CustomerDailyMetric.PAYMENTS) }
+    fun value(p: CustomerDailyTrafficPoint): Double = when (metric) {
+        CustomerDailyMetric.PAYMENTS -> p.paymentCount.toDouble()
+        CustomerDailyMetric.AMOUNT -> p.amount
+        CustomerDailyMetric.AVERAGE ->
+            if (p.paymentCount > 0) p.amount / p.paymentCount else 0.0
+    }
+    val maxValue = (points.maxOfOrNull { value(it) } ?: 0.0).coerceAtLeast(1.0)
 
-    Card(
-        colors =
-            CardDefaults.cardColors(
-                containerColor =
-                    Color.White
-            )
-    ) {
-        Column(
-            Modifier.padding(
-                12.dp
-            ),
-            verticalArrangement =
-                Arrangement.spacedBy(
-                    7.dp
-                )
-        ) {
-            Text(
-                "每日可识别客户",
-                fontWeight =
-                    FontWeight.Bold
-            )
-            Text(
-                "点某一天可直接进入该日逐小时客流",
-                style =
-                    MaterialTheme
-                        .typography
-                        .labelSmall,
-                color =
-                    Color.Gray
-            )
-
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(
-                        rememberScrollState()
-                    ),
-                horizontalArrangement =
-                    Arrangement.spacedBy(
-                        4.dp
-                    ),
-                verticalAlignment =
-                    Alignment.Bottom
-            ) {
-                points.forEach {
-                    point ->
-                    val ratio =
-                        (
-                            point.customerCount
-                                .toFloat() /
-                                maxCustomers
-                                    .toFloat()
-                            )
-                            .coerceIn(
-                                0f,
-                                1f
-                            )
-                    val day =
-                        runCatching {
-                            LocalDate.parse(
-                                point.date
-                            ).dayOfMonth
-                        }.getOrDefault(
-                            0
-                        )
-
+    Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Column(Modifier.fillMaxWidth().padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("每日付款趋势", fontWeight = FontWeight.Bold)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                CustomerDailyMetric.entries.forEach { option ->
+                    FilterChip(selected = metric == option, onClick = { metric = option },
+                        label = { Text(option.label) })
+                }
+            }
+            Text("包含当前筛选范围内的微信与支付宝有效交易；点某天查看逐小时数据。",
+                style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.Bottom) {
+                points.forEach { point ->
+                    val count = value(point)
+                    val ratio = (count.coerceAtLeast(0.0) / maxValue).toFloat().coerceIn(0f, 1f)
                     Column(
-                        modifier =
-                            Modifier
-                                .width(
-                                    30.dp
-                                )
-                                .clickable {
-                                    onSelectDay(
-                                        point.date
-                                    )
-                                },
-                        horizontalAlignment =
-                            Alignment.CenterHorizontally
+                        Modifier.width(43.dp).clickable { onSelectDay(point.date) },
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
                         Text(
-                            if (
-                                point.customerCount >
-                                0
-                            ) {
-                                point.customerCount
-                                    .toString()
-                            } else {
-                                ""
-                            },
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .labelSmall,
-                            color =
-                                Color(
-                                    0xFF087D4E
-                                )
+                            if (count == 0.0) "0"
+                            else if (metric == CustomerDailyMetric.AVERAGE)
+                                String.format(Locale.CHINA, "%.1f", count)
+                            else String.format(Locale.CHINA, "%.0f", count),
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            color = Color(0xFF087D4E)
                         )
-                        Box(
-                            Modifier
-                                .height(
-                                    82.dp
-                                )
-                                .fillMaxWidth(),
-                            contentAlignment =
-                                Alignment.BottomCenter
-                        ) {
+                        Box(Modifier.height(82.dp).width(26.dp),
+                            contentAlignment = Alignment.BottomCenter) {
                             Box(
-                                Modifier
-                                    .width(
-                                        18.dp
-                                    )
-                                    .height(
-                                        if (
-                                            point.customerCount >
-                                            0
-                                        ) {
-                                            (
-                                                5f +
-                                                    70f *
-                                                    ratio
-                                                ).dp
-                                        } else {
-                                            2.dp
-                                        }
-                                    )
-                                    .background(
-                                        Color(
-                                            0xFF5CB98D
-                                        ),
-                                        RoundedCornerShape(
-                                            topStart =
-                                                4.dp,
-                                            topEnd =
-                                                4.dp
-                                        )
-                                    )
+                                Modifier.fillMaxWidth()
+                                    .height(if (count > 0.0) (5f + 70f * ratio).dp else 2.dp)
+                                    .background(Color(0xFF5CB98D),
+                                        RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
                             )
                         }
                         Text(
-                            day.toString(),
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .labelSmall,
-                            color =
-                                Color.Gray
+                            runCatching { LocalDate.parse(point.date)
+                                .format(DateTimeFormatter.ofPattern("M/d")) }
+                                .getOrDefault(point.date.takeLast(5)),
+                            style = MaterialTheme.typography.labelSmall, color = Color.Gray
                         )
                     }
                 }
             }
+            Text("付款笔数 ≠ 独立顾客人数；0笔也可能是尚未导入该日账单。",
+                style = MaterialTheme.typography.labelSmall, color = Color.Gray)
         }
     }
 }
