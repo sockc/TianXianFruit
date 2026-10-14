@@ -34,8 +34,8 @@ internal fun CustomerTrafficQuickPreviewSheet(
         CustomerAnalyticsEngine.filterRecords(source, settings).included
     }
     val selected = payments.filter {
-        it.businessDate == record.date && it.storeId == record.storeId &&
-            it.netAmount > 0.005
+        record.storeId > 0L && it.businessDate == record.date &&
+            it.storeId == record.storeId && it.netAmount > 0.005
     }
     val comparisons = remember(payments, sessions, record.date, record.storeId) {
         if (record.storeId <= 0L) emptyList()
@@ -79,6 +79,10 @@ internal fun CustomerTrafficQuickPreviewSheet(
             comparisons.firstOrNull()?.let { CustomerHourlyComparisonCard(it) }
                 ?: Text("缺少可比较的营业时间或记录，暂不能计算同位置历史变化。",
                     style=MaterialTheme.typography.bodySmall,color=Color.Gray)
+            if (record.storeId <= 0L) {
+                Text("这条旧营业记录没有明确营业位置，不能自动分配未匹配账单。",
+                    style=MaterialTheme.typography.bodySmall,color=Color(0xFF9A6700))
+            }
             if (unmatched > 0) {
                 Text("当日另有${unmatched}笔未匹配位置的收款，未计入此位置。",
                     style=MaterialTheme.typography.bodySmall,color=Color(0xFF9A6700))
