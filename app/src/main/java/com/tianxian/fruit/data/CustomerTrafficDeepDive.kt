@@ -95,7 +95,7 @@ internal object CustomerTrafficDeepDive {
             // Only change business-day attribution for receipts after midnight.
             // A normal daytime receipt keeps its original store, date and sync data.
             if (moment.toLocalDate().toString() == record.businessDate &&
-                moment.hour >= 12) return@map record
+                moment.hour >= 6) return@map record
             val matches = windows.filter { (session, start, end) ->
                 !moment.isBefore(start) && moment.isBefore(end) &&
                     (record.storeId <= 0L || record.storeId == session.storeId)
@@ -159,13 +159,14 @@ internal object CustomerTrafficDeepDive {
             ?: return emptyList()
         val positive = rows.filter { it.netAmount > 0.005 && 
             (platform == "ALL" || it.platform == platform) }
+        val byStoreDay = positive.groupBy { it.storeId to it.businessDate }
         val todaySessions = sessions.filter { it.date == targetDate &&
             (selectedStoreId == 0L || it.storeId == selectedStoreId) }
         val results = todaySessions.mapNotNull { active ->
             val hours = finishedHours(active, now)
             if (hours.isEmpty()) return@mapNotNull null
-            val today = positive.filter { it.businessDate == targetDate &&
-                it.storeId == active.storeId }
+            val today = byStoreDay[active.storeId to targetDate].orEmpty()
+                .filter { tradeTime(it)?.hour in hours }
             val currentSources = today.map { it.platform }.toSet()
             val currentCounts = today.groupingBy { tradeTime(it)?.hour }.eachCount()
             val previous = sessions.asSequence().filter { session ->
@@ -174,8 +175,8 @@ internal object CustomerTrafficDeepDive {
                         .getOrDefault(false) &&
                     finishedHours(session, now).containsAll(hours)
             }.mapNotNull { session ->
-                val dayRows = positive.filter { it.storeId == session.storeId &&
-                    it.businessDate == session.date }
+                val dayRows = byStoreDay[session.storeId to session.date].orEmpty()
+                    .filter { tradeTime(it)?.hour in hours }
                 val sources = dayRows.map { it.platform }.toSet()
                 // Do not compare WeChat-only with WeChat+Alipay when combined.
                 if (dayRows.isEmpty() || sources != currentSources) null
@@ -238,10 +239,11 @@ internal object CustomerTrafficDeepDive {
     ): List<CustomerStoreTrafficPattern> {
         val included = rows.filter { it.netAmount > 0.005 &&
             (platform == "ALL" || it.platform == platform) }
+        val byStoreDay = included.groupBy { it.storeId to it.businessDate }
         return sessions.filter { it.date <= endDate }.groupBy { it.storeId }
             .mapNotNull { (id, days) ->
                 val latest = days.distinctBy { it.date }.sortedByDescending { it.date }
-                    .map { day -> day to included.filter { it.storeId == id && it.businessDate == day.date } }
+                    .map { day -> day to byStoreDay[id to day.date].orEmpty() }
                     .filter { it.second.isNotEmpty() }.take(7)
                 if (latest.isEmpty()) return@mapNotNull null
                 val values = latest.flatMap { it.second }
