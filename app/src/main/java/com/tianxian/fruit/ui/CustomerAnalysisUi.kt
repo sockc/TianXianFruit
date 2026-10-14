@@ -415,6 +415,25 @@ internal fun CustomerAnalysisContent(
             )
         } else emptyList()
     }
+    val observedWeather = remember(dataVersion, trafficComparisons) {
+        trafficComparisons.flatMap { compare ->
+            (listOf(compare.date) + compare.historicDates).distinct().mapNotNull { day ->
+                db.getBusinessWeatherHistory(day, compare.storeId)?.let { history ->
+                    CustomerObservedWeatherParser.fromHistory(
+                        history.copy(date = day, storeId = compare.storeId)
+                    )
+                }
+            }.flatten()
+        }
+    }
+    val weatherResults = remember(trafficComparisons, allRecords, observedWeather, selectedPlatform) {
+        CustomerTrafficWeatherAnalyzer.analyze(
+            comparisons = trafficComparisons,
+            payments = allRecords,
+            weather = observedWeather,
+            platform = selectedPlatform.name
+        )
+    }
     val paymentAmountBands = remember(periodPayments) {
         CustomerTrafficDeepDive.amountBands(periodPayments)
     }
@@ -833,6 +852,7 @@ internal fun CustomerAnalysisContent(
                                 sameWeekdayComparisons =
                                     sameWeekdayComparisons,
                                 trafficComparisons = trafficComparisons,
+                                weatherResults = weatherResults,
                                 amountBands = paymentAmountBands,
                                 storePatterns = storeTrafficPatterns,
                                 savedSessionsForDay = trafficSessions.count {
@@ -1773,6 +1793,7 @@ private fun CustomerOverview(
     dailyTraffic: List<CustomerDailyTrafficPoint>,
     sameWeekdayComparisons: List<CustomerSameWeekdayComparison>,
     trafficComparisons: List<CustomerTrafficComparison>,
+    weatherResults: List<CustomerWeatherTrafficResult>,
     amountBands: List<CustomerPaymentAmountBand>,
     storePatterns: List<CustomerStoreTrafficPattern>,
     savedSessionsForDay: Int,
@@ -1873,6 +1894,9 @@ private fun CustomerOverview(
             if (trafficComparisons.isNotEmpty()) {
                 items(trafficComparisons, key = { "traffic_${it.storeId}" }) {
                     CustomerHourlyComparisonCard(it)
+                }
+                items(weatherResults, key = { "weather_${it.storeId}" }) {
+                    CustomerWeatherTrafficCard(it)
                 }
             } else {
                 item {
