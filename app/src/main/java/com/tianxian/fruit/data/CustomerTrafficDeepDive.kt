@@ -68,10 +68,7 @@ internal object CustomerTrafficDeepDive {
         if (input == "24:00") return d.plusDays(1).atStartOfDay()
         val clock = runCatching { LocalTime.parse(input) }.getOrNull() ?: return null
         val value = d.atTime(clock)
-        return if (isEnd && !value.isAfter(d.atTime(12, 0)) && clock.hour < 12) {
-            // A midnight/early morning closing time belongs to the previous shift.
-            value.plusDays(1)
-        } else value
+        return value // bounds() adds a day only when closing is not after opening
     }
 
     private fun bounds(session: CustomerTrafficSession): Pair<LocalDateTime, LocalDateTime>? {
