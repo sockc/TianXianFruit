@@ -1414,6 +1414,7 @@ fun TianXianApp(
                                 weatherReturnPage = AppPage.SESSION
                                 weatherDetailVisible = true
                             },
+                            canViewCustomerAnalysis = hasPermission(BookPermissions.STATS_VIEW),
                             onOpenCustomerAnalysis = { trafficDate, trafficStoreId ->
                                 customerOpenDate = trafficDate
                                 customerOpenStoreId = trafficStoreId
@@ -10811,6 +10812,7 @@ private fun SessionScreen(
         (String, String, () -> Unit) -> Unit,
     onOpenHistory: () -> Unit,
     onOpenWeather: (String, Long?) -> Unit,
+    canViewCustomerAnalysis: Boolean,
     onOpenCustomerAnalysis: (String, Long?) -> Unit
 ) {
     val date = workDate
@@ -11546,13 +11548,15 @@ private fun SessionScreen(
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("当天营业记录", fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "客流分析 ›", color = BrandGreen,
-                        style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.clickable {
-                            onRequestLeave { onOpenCustomerAnalysis(date, null) }
-                        }.padding(horizontal = 8.dp)
-                    )
+                    if (canViewCustomerAnalysis) {
+                        Text(
+                            "客流分析 ›", color = BrandGreen,
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.clickable {
+                                onRequestLeave { onOpenCustomerAnalysis(date, null) }
+                            }.padding(horizontal = 8.dp)
+                        )
+                    }
                     Spacer(Modifier.weight(1f))
                     val positionCount = todayRecords.map { row ->
                         if (row.storeId > 0L) "id:${row.storeId}" else "name:${row.storeName}"
@@ -11634,14 +11638,16 @@ private fun SessionScreen(
                                     FontWeight.Bold,
                                 maxLines = 1
                             )
-                            Text(
-                                "客流 ›",
-                                color = BrandGreen,
-                                style = MaterialTheme.typography.labelSmall,
-                                modifier = Modifier.clickable {
-                                    onRequestLeave { trafficPreviewRecord = record }
-                                }.padding(horizontal = 8.dp)
-                            )
+                            if (canViewCustomerAnalysis) {
+                                Text(
+                                    "客流 ›",
+                                    color = BrandGreen,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier.clickable {
+                                        onRequestLeave { trafficPreviewRecord = record }
+                                    }.padding(horizontal = 8.dp)
+                                )
+                            }
                             Text(
                                 "营业额 ${money(record.revenue)}",
                                 color =
