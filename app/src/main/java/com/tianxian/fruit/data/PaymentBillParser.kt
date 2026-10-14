@@ -528,8 +528,7 @@ internal object PaymentBillParser {
 
         val identity =
             when {
-                stableIdentity
-                    .isNotBlank() ->
+                hasReliablePayerIdentifier(stableIdentity) ->
                     Triple(
                         sha256Hex(
                             (
@@ -553,25 +552,8 @@ internal object PaymentBillParser {
                         "HIGH"
                     )
 
-                customerDisplay
-                    .isNotBlank() ->
-                    Triple(
-                        sha256Hex(
-                            (
-                                platform.name +
-                                    "|NAME|" +
-                                    normalizeIdentity(
-                                        customerDisplay
-                                    )
-                                )
-                                .toByteArray(
-                                    Charsets.UTF_8
-                                )
-                        ),
-                        customerDisplay,
-                        "MEDIUM"
-                    )
-
+                // A display name or masked nickname is not a unique customer.
+                // Keep the original display label but never merge by name.
                 else ->
                     Triple(
                         sha256Hex(
@@ -586,7 +568,7 @@ internal object PaymentBillParser {
                                     Charsets.UTF_8
                                 )
                         ),
-                        "匿名客户",
+                        customerDisplay.ifBlank { "匿名客户" },
                         "LOW"
                     )
             }
@@ -2005,6 +1987,17 @@ internal object PaymentBillParser {
                 ),
                 ""
             )
+
+    private fun hasReliablePayerIdentifier(value: String): Boolean {
+        val normalized = normalizeIdentity(value)
+        // Placeholders and partially masked numbers/accounts are not stable
+        // identifiers. Avoid treating these as verified OpenIDs.
+        if (normalized.isBlank() ||
+            normalized in setOf("匿名", "未知", "无", "微信用户", "支付宝用户", "-", "--", "null", "n/a")
+        ) return false
+        return normalized.length >= 3 &&
+            normalized.none { it in "*＊•●··" }
+    }
 
     private fun normalizeIdentity(
         value: String
