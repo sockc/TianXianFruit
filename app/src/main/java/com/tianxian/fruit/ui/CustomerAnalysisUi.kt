@@ -91,27 +91,43 @@ internal fun CustomerAnalysisContent(
     dataVersion: Int,
     canImport: Boolean,
     ledgerId: String,
+    initialDate: String? = null,
+    initialStoreId: Long? = null,
     onChanged: () -> Unit,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val prefs = remember(context, ledgerId) {
+        context.getSharedPreferences("customer_analytics_filters_${ledgerId.hashCode()}", android.content.Context.MODE_PRIVATE)
+    }
     val today = LocalDate.now()
+    val routeDate = remember(initialDate) {
+        initialDate?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+    }
     val currentMonth =
         today.withDayOfMonth(1)
 
     var importing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf("") }
-    var range by remember { mutableStateOf(CustomerRange.THIS_MONTH) }
-    var monthAnchor by remember {
+    var range by remember(ledgerId, initialDate) {
         mutableStateOf(
-            currentMonth
+            if (routeDate != null) CustomerRange.TODAY else
+                CustomerRange.entries.firstOrNull {
+                    it.name == prefs.getString("range", "")
+                } ?: CustomerRange.THIS_MONTH
         )
     }
-    var dayAnchor by remember {
+    var monthAnchor by remember(ledgerId, initialDate) {
         mutableStateOf(
-            today
+            runCatching { LocalDate.parse(prefs.getString("month", "") ?: "") }
+                .getOrNull() ?: currentMonth
         )
+    }
+    var dayAnchor by remember(ledgerId, initialDate) {
+        mutableStateOf(routeDate ?: runCatching {
+            LocalDate.parse(prefs.getString("day", "") ?: "")
+        }.getOrNull() ?: today)
     }
     // Keep the filters and navigation tabs fixed. The old onPreScroll handler
     // hid/showed them for every small drag delta, resizing the list while
@@ -122,8 +138,29 @@ internal fun CustomerAnalysisContent(
     var showRhythmDetails by remember { mutableStateOf(false) }
     var customStart by remember { mutableStateOf(today.withDayOfMonth(1)) }
     var customEnd by remember { mutableStateOf(today) }
-    var selectedPlatform by remember { mutableStateOf(CustomerPaymentPlatform.ALL) }
-    var selectedStoreId by remember { mutableLongStateOf(0L) }
+    var selectedPlatform by remember(ledgerId, initialDate) {
+        mutableStateOf(if (routeDate != null) CustomerPaymentPlatform.ALL else
+            CustomerPaymentPlatform.entries.firstOrNull {
+                it.name == prefs.getString("platform", "")
+            } ?: CustomerPaymentPlatform.ALL)
+    }
+    var selectedStoreId by remember(ledgerId, initialDate, initialStoreId) {
+        // A business-title shortcut explicitly means ALL stores; a row shortcut
+        // means its saved store. Only ordinary navigation restores last filters.
+        mutableLongStateOf(
+            if (routeDate != null) initialStoreId ?: 0L
+            else prefs.getLong("store", 0L)
+        )
+    }
+    LaunchedEffect(ledgerId, range, monthAnchor, dayAnchor, selectedPlatform, selectedStoreId) {
+        prefs.edit()
+            .putString("range", range.name)
+            .putString("month", monthAnchor.toString())
+            .putString("day", dayAnchor.toString())
+            .putString("platform", selectedPlatform.name)
+            .putLong("store", selectedStoreId)
+            .apply()
+    }
     var showStoreMenu by remember { mutableStateOf(false) }
     var showRangeMenu by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
@@ -136,13 +173,27 @@ internal fun CustomerAnalysisContent(
             db.getCustomerPayments(), trafficSessions
         )
     }
-    val storeOptions = remember(rawRecords) {
-        rawRecords.filter { it.storeId > 0L }.groupBy { it.storeId }
-            .map { (id, rows) ->
-                id to rows.firstOrNull { it.storeName.isNotBlank() }
-                    ?.storeName.orEmpty().ifBlank { "位置 #$id" }
-            }.sortedBy { it.second }
+    val storeOptions = remember(rawRecords, trafficSessions, dataVersion) {
+        val options = linkedMapOf<Long, String>()
+        db.getStores().forEach { options[it.id] = it.name }
+        trafficSessions.forEach {
+            if (it.storeId > 0L && it.storeName.isNotBlank())
+                options.putIfAbsent(it.storeId, it.storeName)
+        }
+        rawRecords.forEach {
+            if (it.storeId > 0L && it.storeName.isNotBlank())
+                options.putIfAbsent(it.storeId, it.storeName)
+        }
+        options.entries.map { it.key to it.value }.sortedBy { it.second }
     }
+    val businessDatesForSelectedStore = remember(trafficSessions, selectedStoreId) {
+        if (selectedStoreId <= 0L) emptyList() else trafficSessions.asSequence()
+            .filter { it.storeId == selectedStoreId }
+            .mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }
+            .distinct().sorted().toList()
+    }
+    val prevBusinessDay = businessDatesForSelectedStore.lastOrNull { it < dayAnchor }
+    val nextBusinessDay = businessDatesForSelectedStore.firstOrNull { it > dayAnchor }
     val hasUnmatchedStore = remember(rawRecords) { rawRecords.any { it.storeId <= 0L } }
     val scopedRawRecords = remember(rawRecords, selectedPlatform, selectedStoreId) {
         PaymentTrafficAnalytics.select(rawRecords, selectedPlatform.name, selectedStoreId)
@@ -369,6 +420,25 @@ internal fun CustomerAnalysisContent(
             )
         } else emptyList()
     }
+    val observedWeather = remember(dataVersion, trafficComparisons) {
+        trafficComparisons.flatMap { compare ->
+            (listOf(compare.date) + compare.historicDates).distinct().mapNotNull { day ->
+                db.getBusinessWeatherHistory(day, compare.storeId)?.let { history ->
+                    CustomerObservedWeatherParser.fromHistory(
+                        history.copy(date = day, storeId = compare.storeId)
+                    )
+                }
+            }.flatten()
+        }
+    }
+    val weatherResults = remember(trafficComparisons, allRecords, observedWeather, selectedPlatform) {
+        CustomerTrafficWeatherAnalyzer.analyze(
+            comparisons = trafficComparisons,
+            payments = allRecords,
+            weather = observedWeather,
+            platform = selectedPlatform.name
+        )
+    }
     val paymentAmountBands = remember(periodPayments) {
         CustomerTrafficDeepDive.amountBands(periodPayments)
     }
@@ -531,7 +601,9 @@ internal fun CustomerAnalysisContent(
                         modifier = Modifier.width(30.dp).clickable {
                             when (range) {
                                 CustomerRange.THIS_MONTH -> monthAnchor = monthAnchor.minusMonths(1)
-                                CustomerRange.TODAY -> dayAnchor = dayAnchor.minusDays(1)
+                                CustomerRange.TODAY -> dayAnchor =
+                                    if (selectedStoreId > 0L && businessDatesForSelectedStore.isNotEmpty())
+                                        prevBusinessDay ?: dayAnchor else dayAnchor.minusDays(1)
                                 else -> Unit
                             }
                         },
@@ -582,13 +654,16 @@ internal fun CustomerAnalysisContent(
                         "›",
                         modifier = Modifier.width(30.dp).clickable(
                             enabled = (range == CustomerRange.THIS_MONTH && monthAnchor < currentMonth) ||
-                                (range == CustomerRange.TODAY && dayAnchor < today)
+                                (range == CustomerRange.TODAY && dayAnchor < today &&
+                                    (selectedStoreId <= 0L || businessDatesForSelectedStore.isEmpty() || nextBusinessDay != null))
                         ) {
                             when (range) {
                                 CustomerRange.THIS_MONTH ->
                                     if (monthAnchor < currentMonth) monthAnchor = monthAnchor.plusMonths(1)
                                 CustomerRange.TODAY ->
-                                    if (dayAnchor < today) dayAnchor = dayAnchor.plusDays(1)
+                                    if (dayAnchor < today) dayAnchor =
+                                        if (selectedStoreId > 0L && businessDatesForSelectedStore.isNotEmpty())
+                                            nextBusinessDay ?: dayAnchor else dayAnchor.plusDays(1)
                                 else -> Unit
                             }
                         },
@@ -598,7 +673,7 @@ internal fun CustomerAnalysisContent(
                         style = MaterialTheme.typography.titleMedium
                     )
                 }
-                Box {
+                Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
                     val storeName = when (selectedStoreId) {
                         0L -> "全部位置"
                         -1L -> "未匹配"
@@ -608,7 +683,10 @@ internal fun CustomerAnalysisContent(
                         "$storeName ▾",
                         modifier = Modifier.clickable { showStoreMenu = true }.padding(8.dp),
                         style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF087D4E),
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                     )
                     DropdownMenu(expanded = showStoreMenu, onDismissRequest = { showStoreMenu = false }) {
                         DropdownMenuItem(text = { Text("全部位置") }, onClick = {
@@ -780,6 +858,7 @@ internal fun CustomerAnalysisContent(
                                 sameWeekdayComparisons =
                                     sameWeekdayComparisons,
                                 trafficComparisons = trafficComparisons,
+                                weatherResults = weatherResults,
                                 amountBands = paymentAmountBands,
                                 storePatterns = storeTrafficPatterns,
                                 savedSessionsForDay = trafficSessions.count {
@@ -1720,6 +1799,7 @@ private fun CustomerOverview(
     dailyTraffic: List<CustomerDailyTrafficPoint>,
     sameWeekdayComparisons: List<CustomerSameWeekdayComparison>,
     trafficComparisons: List<CustomerTrafficComparison>,
+    weatherResults: List<CustomerWeatherTrafficResult>,
     amountBands: List<CustomerPaymentAmountBand>,
     storePatterns: List<CustomerStoreTrafficPattern>,
     savedSessionsForDay: Int,
@@ -1820,6 +1900,9 @@ private fun CustomerOverview(
             if (trafficComparisons.isNotEmpty()) {
                 items(trafficComparisons, key = { "traffic_${it.storeId}" }) {
                     CustomerHourlyComparisonCard(it)
+                }
+                items(weatherResults, key = { "weather_${it.storeId}" }) {
+                    CustomerWeatherTrafficCard(it)
                 }
             } else {
                 item {

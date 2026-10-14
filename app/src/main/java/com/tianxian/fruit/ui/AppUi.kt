@@ -752,6 +752,9 @@ fun TianXianApp(
             MorePage.MENU
         )
     }
+    var customerOpenDate by remember(currentBook.id) { mutableStateOf<String?>(null) }
+    var customerOpenStoreId by remember(currentBook.id) { mutableStateOf<Long?>(null) }
+    var customerOpenedFromBusiness by remember(currentBook.id) { mutableStateOf(false) }
     var historyTarget by remember {
         mutableStateOf(
             HistorySection.BUSINESS
@@ -1140,6 +1143,9 @@ fun TianXianApp(
                                 requestLeave {
                                     if (item == AppPage.MORE) {
                                         moreTarget = MorePage.MENU
+                                        customerOpenedFromBusiness = false
+                                        customerOpenDate = null
+                                        customerOpenStoreId = null
                                     }
                                     page = item
                                 }
@@ -1329,6 +1335,9 @@ fun TianXianApp(
                                 AppPage.MORE
                         },
                         onOpenMore = { target ->
+                            customerOpenedFromBusiness = false
+                            customerOpenDate = null
+                            customerOpenStoreId = null
                             moreTarget = target
                             page = AppPage.MORE
                         }
@@ -1404,6 +1413,14 @@ fun TianXianApp(
                                 weatherDetailStoreId = storeId
                                 weatherReturnPage = AppPage.SESSION
                                 weatherDetailVisible = true
+                            },
+                            canViewCustomerAnalysis = hasPermission(BookPermissions.STATS_VIEW),
+                            onOpenCustomerAnalysis = { trafficDate, trafficStoreId ->
+                                customerOpenDate = trafficDate
+                                customerOpenStoreId = trafficStoreId
+                                customerOpenedFromBusiness = true
+                                moreTarget = MorePage.CUSTOMER_ANALYSIS
+                                page = AppPage.MORE
                             }
                         )
                     AppPage.SETTLEMENT ->
@@ -1419,6 +1436,15 @@ fun TianXianApp(
                         db = db,
                         dataVersion = dataVersion,
                         initialSub = moreTarget,
+                        customerInitialDate = customerOpenDate,
+                        customerInitialStoreId = customerOpenStoreId,
+                        customerReturnToBusiness = customerOpenedFromBusiness,
+                        onReturnFromCustomer = {
+                            customerOpenedFromBusiness = false
+                            customerOpenDate = null
+                            customerOpenStoreId = null
+                            page = AppPage.SESSION
+                        },
                         initialHistorySection = historyTarget,
                         initialProjectionDate = profitProjectionDate,
                         ledgerManager =
@@ -10785,7 +10811,9 @@ private fun SessionScreen(
     protectHistoricalAction:
         (String, String, () -> Unit) -> Unit,
     onOpenHistory: () -> Unit,
-    onOpenWeather: (String, Long?) -> Unit
+    onOpenWeather: (String, Long?) -> Unit,
+    canViewCustomerAnalysis: Boolean,
+    onOpenCustomerAnalysis: (String, Long?) -> Unit
 ) {
     val date = workDate
     val stores = remember(dataVersion) { db.getStores() }
@@ -11414,6 +11442,19 @@ private fun SessionScreen(
         if (editId == null) todayRecords
         else todayRecords.filter { it.id != editId } + todayRecords.filter { it.id == editId }
     }
+    var trafficPreviewRecord by remember { mutableStateOf<StoreDailyRecord?>(null) }
+    trafficPreviewRecord?.let { record ->
+        CustomerTrafficQuickPreviewSheet(
+            db = db,
+            dataVersion = dataVersion,
+            record = record,
+            onClose = { trafficPreviewRecord = null },
+            onFullAnalysis = {
+                trafficPreviewRecord = null
+                onOpenCustomerAnalysis(record.date, record.storeId.takeIf { it > 0L })
+            }
+        )
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -11506,7 +11547,17 @@ private fun SessionScreen(
             item {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("当天营业记录", fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        style = MaterialTheme.typography.bodyMedium)
+                    if (canViewCustomerAnalysis) {
+                        Text(
+                            "客流分析 ›", color = BrandGreen,
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.clickable {
+                                onRequestLeave { onOpenCustomerAnalysis(date, null) }
+                            }.padding(horizontal = 8.dp)
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
                     val positionCount = todayRecords.map { row ->
                         if (row.storeId > 0L) "id:${row.storeId}" else "name:${row.storeName}"
                     }.distinct().size
@@ -11587,7 +11638,16 @@ private fun SessionScreen(
                                     FontWeight.Bold,
                                 maxLines = 1
                             )
-
+                            if (canViewCustomerAnalysis) {
+                                Text(
+                                    "客流 ›",
+                                    color = BrandGreen,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier.clickable {
+                                        onRequestLeave { trafficPreviewRecord = record }
+                                    }.padding(horizontal = 8.dp)
+                                )
+                            }
                             Text(
                                 "营业额 ${money(record.revenue)}",
                                 color =
@@ -15153,6 +15213,10 @@ private fun MoreScreen(
     db: AppDatabase,
     dataVersion: Int,
     initialSub: MorePage = MorePage.MENU,
+    customerInitialDate: String? = null,
+    customerInitialStoreId: Long? = null,
+    customerReturnToBusiness: Boolean = false,
+    onReturnFromCustomer: () -> Unit = {},
     initialHistorySection: HistorySection = HistorySection.BUSINESS,
     initialProjectionDate: String,
     ledgerManager: LedgerManager,
@@ -15180,8 +15244,11 @@ private fun MoreScreen(
     var sub by remember(initialSub) { mutableStateOf(initialSub) }
 
     fun goBack() {
-        sub =
-            MorePage.MENU
+        if (sub == MorePage.CUSTOMER_ANALYSIS && customerReturnToBusiness) {
+            onReturnFromCustomer()
+        } else {
+            sub = MorePage.MENU
+        }
     }
 
     BackHandler(enabled = sub != MorePage.MENU) {
@@ -15539,8 +15606,10 @@ private fun MoreScreen(
                         currentBook, systemRole, BookPermissions.BASIC_EDIT
                     ),
                     ledgerId = currentBook.id,
+                    initialDate = customerInitialDate,
+                    initialStoreId = customerInitialStoreId,
                     onChanged = onChanged,
-                    onBack = { sub = MorePage.MENU }
+                    onBack = { goBack() }
                 )
             } else {
                 SubPage("客户分析", { sub = MorePage.MENU }) {
