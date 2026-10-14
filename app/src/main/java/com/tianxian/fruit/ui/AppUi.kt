@@ -15538,6 +15538,7 @@ private fun MoreScreen(
                     canImport = BookPermissions.has(
                         currentBook, systemRole, BookPermissions.BASIC_EDIT
                     ),
+                    ledgerId = currentBook.id,
                     onChanged = onChanged,
                     onBack = { sub = MorePage.MENU }
                 )

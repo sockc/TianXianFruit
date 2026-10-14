@@ -67,9 +67,12 @@ internal object PaymentTrafficAnalytics {
         }
     }
 
+    // Display names, including masked WeChat payer names, are not stable IDs.
+    // Apply this at analysis time too: previously imported MEDIUM receipts must
+    // immediately stop creating phantom repeat customers without any reimport.
     fun isIdentified(record: CustomerPaymentRecord): Boolean =
         record.customerKey.isNotBlank() &&
-            record.identityConfidence in setOf("HIGH", "MEDIUM")
+            record.identityConfidence == "HIGH"
 
     private fun identifiedCount(rows: List<CustomerPaymentRecord>): Int =
         rows.asSequence()

@@ -45,9 +45,43 @@ class PaymentBillParserTest {
             result.transactions.single().customerName
         )
         assertEquals(
-            "MEDIUM",
+            "LOW",
             result.transactions.single().identityConfidence
         )
+    }
+
+    @Test
+    fun maskedWechatPayersKeepReceiptsButNeverCreateRepeatCustomers() {
+        val csv = """
+            经营账户明细
+            时间,收支类型,交易类型,明细名称,金额,单号
+            2026/10/13 18:00:00,收入,经营收款,经营收款-来自*雨,20.00,wx-101
+            2026/10/14 19:00:00,收入,经营收款,经营收款-来自*雨,35.00,wx-102
+        """.trimIndent()
+        val parsed = PaymentBillParser.parse(
+            "经营账户明细.csv", csv.toByteArray(Charsets.UTF_8)
+        )
+        assertEquals(PaymentBillPlatform.WECHAT, parsed.platform)
+        assertEquals(2, parsed.acceptedRows)
+        assertEquals(listOf("wx-101", "wx-102"),
+            parsed.transactions.map { it.transactionRef })
+        assertTrue(parsed.transactions.all { it.identityConfidence == "LOW" })
+        assertEquals(2, parsed.transactions.map { it.customerKey }.toSet().size)
+        assertTrue(parsed.transactions.all { it.customerName.contains("*雨") })
+    }
+
+    @Test
+    fun maskedBuyerIdentifierIsNotTrustedAsAnOpenId() {
+        val csv = """
+            微信支付账单
+            交易时间,交易类型,付款方账号,交易对方,收/支,金额(元),当前状态,交易单号
+            2026-10-13 18:00:00,二维码收款,***6789,*雨,收入,25.00,支付成功,wx-masked
+        """.trimIndent()
+        val parsed = PaymentBillParser.parse(
+            "微信账单.csv", csv.toByteArray(Charsets.UTF_8)
+        )
+        assertEquals(1, parsed.acceptedRows)
+        assertEquals("LOW", parsed.transactions.single().identityConfidence)
     }
 
     @Test

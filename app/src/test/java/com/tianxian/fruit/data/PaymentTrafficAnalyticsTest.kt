@@ -93,6 +93,33 @@ class PaymentTrafficAnalyticsTest {
         assertFalse(result.change.available)
     }
 
+    @Test fun legacyNameOnlyPaymentsDoNotBecomeNewOrReturningCustomers() {
+        // Old imports marked masked names MEDIUM. The analysis must exclude
+        // them immediately, even without reimport or altering original bills.
+        val rows = listOf(
+            payment(1, "WECHAT", "2026-10-13 18:00:00", "masked-shared-key", "MEDIUM", amount = 20.0),
+            payment(2, "WECHAT", "2026-10-14 18:20:00", "masked-shared-key", "MEDIUM", amount = 35.0),
+            payment(3, "WECHAT", "2026-10-14 19:30:00", "anon", "LOW", amount = 10.0)
+        )
+        assertFalse(PaymentTrafficAnalytics.isIdentified(rows[0]))
+        assertFalse(PaymentTrafficAnalytics.isIdentified(rows[1]))
+        val result = CustomerAnalyticsEngine.analyze(
+            rows, "2026-10-14", "2026-10-14", LocalDate.parse("2026-10-14")
+        )
+        assertEquals(2, result.summary.paymentCount)
+        assertEquals(45.0, result.summary.netRevenue, 0.001)
+        assertEquals(0, result.summary.customerCount)
+        assertEquals(0, result.summary.newCustomerCount)
+        assertEquals(0, result.summary.oldCustomerCount)
+        assertEquals(0, result.summary.repeatCustomerCount)
+        val daily = CustomerAnalyticsEngine.dailyTraffic(
+            rows, "2026-10-13", "2026-10-14"
+        )
+        assertEquals(listOf(1, 2), daily.map { it.paymentCount })
+        assertEquals(listOf(0, 0), daily.map { it.customerCount })
+        assertEquals(listOf(20.0, 45.0), daily.map { it.amount })
+    }
+
     @Test fun crossPlatformIdentitiesAreNotSilentlyMerged() {
         val rows = listOf(
             payment(1, "WECHAT", "2026-10-12 19:00:00", "wechat-person"),
