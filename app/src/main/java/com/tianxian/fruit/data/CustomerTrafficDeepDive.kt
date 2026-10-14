@@ -75,7 +75,7 @@ internal object CustomerTrafficDeepDive {
         val start = parseTime(session.date, session.startTime, false) ?: return null
         var end = parseTime(session.date, session.endTime, true) ?: return null
         if (!end.isAfter(start)) end = end.plusDays(1)
-        if (ChronoUnit.HOURS.between(start, end) !in 1..24) return null
+        if (ChronoUnit.HOURS.between(start, end) !in 1L..24L) return null
         return start to end
     }
 
