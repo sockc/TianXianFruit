@@ -1558,6 +1558,124 @@ private fun CustomerDetailsContent(
     }
 }
 
+/**
+ * 微信经营码的顾客运营页面有官方新老客统计，但导出交易账单没有
+ * 稳定付款方标识。这里只允许手动保存当天的官方汇总，且明确标记
+ * 本机存储、不参与账单推算或服务端同步。
+ */
+@Composable
+private fun OfficialWechatDailyCard(
+    ledgerId: String,
+    date: String?,
+    canEdit: Boolean
+) {
+    val context = LocalContext.current
+    var saved by remember(ledgerId, date) {
+        mutableStateOf(date?.let { OfficialWechatCustomerStatsLocal.get(context, ledgerId, it) })
+    }
+    var editing by remember(ledgerId, date) { mutableStateOf(false) }
+    var saveError by remember(ledgerId, date) { mutableStateOf(false) }
+
+    Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Column(Modifier.fillMaxWidth().padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("微信官方新老客", fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f))
+                if (date != null && canEdit) {
+                    TextButton(onClick = { editing = true },
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) {
+                        Text(if (saved == null) "录入" else "修改")
+                    }
+                }
+            }
+            if (date == null) {
+                Text("切换顶部日期到“单日”，即可查看或录入微信经营码的官方新老客人数。",
+                    style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            } else {
+                saved?.let { stats ->
+                    Text("${date} · 新客 ${stats.newCustomers} · 老客 ${stats.returningCustomers} · 共 ${stats.total}人",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF087D4E))
+                    if (stats.total > 0) {
+                        Text("官方老客占比 ${String.format(Locale.CHINA, "%.1f", stats.returningCustomers * 100.0 / stats.total)}%",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                } ?: Text("${date} 暂无微信官方顾客统计",
+                    style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                if (saved != null && canEdit) {
+                    TextButton(onClick = {
+                        if (OfficialWechatCustomerStatsLocal.delete(context, ledgerId, date)) {
+                            saved = null
+                            saveError = false
+                        } else saveError = true
+                    }, contentPadding = PaddingValues(0.dp)) {
+                        Text("删除本日录入", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+            if (saveError) {
+                Text("本机保存失败，请检查设备存储空间。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error)
+            }
+            Text("仅为手动摘录的微信经营码官方人数；本机保存、尚不支持云同步。不得与支付宝人数相加，也不能推算个人复购。",
+                style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+        }
+    }
+
+    if (editing && date != null) {
+        var newText by remember(editing, ledgerId, date) {
+            mutableStateOf(saved?.newCustomers?.toString().orEmpty())
+        }
+        var oldText by remember(editing, ledgerId, date) {
+            mutableStateOf(saved?.returningCustomers?.toString().orEmpty())
+        }
+        val newCount = newText.toIntOrNull()
+        val oldCount = oldText.toIntOrNull()
+        val valid = newCount != null && oldCount != null &&
+            newCount >= 0 && oldCount >= 0 &&
+            newCount.toLong() + oldCount.toLong() <= 1_000_000L
+        AlertDialog(
+            onDismissRequest = { editing = false },
+            title = { Text("微信官方顾客统计 · $date") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("请根据微信经营码「顾客运营」中“今日”的统计手动填写，不要录入猜测人数。",
+                        style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = newText,
+                        onValueChange = { newText = it.filter(Char::isDigit).take(7) },
+                        label = { Text("新客人数") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                    OutlinedTextField(
+                        value = oldText,
+                        onValueChange = { oldText = it.filter(Char::isDigit).take(7) },
+                        label = { Text("老客人数") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                    Text("本机临时记录，暂不随账本同步到其他设备。",
+                        style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = valid, onClick = {
+                    if (newCount != null && oldCount != null) {
+                        val stats = OfficialWechatDailyCount(newCount, oldCount)
+                        if (OfficialWechatCustomerStatsLocal.put(context, ledgerId, date, stats)) {
+                            saved = stats
+                            editing = false
+                            saveError = false
+                        } else saveError = true
+                    }
+                }) { Text("保存") }
+            },
+            dismissButton = { TextButton(onClick = { editing = false }) { Text("取消") } }
+        )
+    }
+}
+
 @Composable
 private fun CustomerOverview(
     result: CustomerAnalysisResult,
