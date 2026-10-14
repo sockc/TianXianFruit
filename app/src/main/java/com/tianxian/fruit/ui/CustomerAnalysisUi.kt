@@ -128,10 +128,14 @@ internal fun CustomerAnalysisContent(
     var showRangeMenu by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
 
-    val rawRecords =
-        remember(dataVersion) {
-            db.getCustomerPayments()
-        }
+    val trafficSessions = remember(dataVersion) {
+        db.getCustomerTrafficSessions()
+    }
+    val rawRecords = remember(dataVersion, trafficSessions) {
+        CustomerTrafficDeepDive.attributeBusinessDays(
+            db.getCustomerPayments(), trafficSessions
+        )
+    }
     val storeOptions = remember(rawRecords) {
         rawRecords.filter { it.storeId > 0L }.groupBy { it.storeId }
             .map { (id, rows) ->
@@ -352,6 +356,28 @@ internal fun CustomerAnalysisContent(
                 emptyList()
             }
         }
+
+    val trafficComparisons = remember(allRecords, trafficSessions, range, dayAnchor,
+        selectedStoreId, selectedPlatform) {
+        if (range == CustomerRange.TODAY) {
+            CustomerTrafficDeepDive.compare(
+                rows = allRecords,
+                sessions = trafficSessions,
+                targetDate = dayAnchor.toString(),
+                platform = selectedPlatform.name,
+                selectedStoreId = selectedStoreId
+            )
+        } else emptyList()
+    }
+    val paymentAmountBands = remember(periodPayments) {
+        CustomerTrafficDeepDive.amountBands(periodPayments)
+    }
+    val storeTrafficPatterns = remember(allRecords, trafficSessions, dateRange, selectedPlatform) {
+        CustomerTrafficDeepDive.storePatterns(
+            allRecords, trafficSessions, selectedPlatform.name,
+            dateRange.second ?: today.toString()
+        )
+    }
 
     val dailyTraffic =
         remember(
@@ -753,6 +779,14 @@ internal fun CustomerAnalysisContent(
                                     dailyTraffic,
                                 sameWeekdayComparisons =
                                     sameWeekdayComparisons,
+                                trafficComparisons = trafficComparisons,
+                                amountBands = paymentAmountBands,
+                                storePatterns = storeTrafficPatterns,
+                                savedSessionsForDay = trafficSessions.count {
+                                    it.date == dayAnchor.toString() &&
+                                        (selectedStoreId == 0L || it.storeId == selectedStoreId)
+                                },
+                                selectedStoreId = selectedStoreId,
                                 singleDay =
                                     range == CustomerRange.TODAY,
                                 payments = periodPayments,
@@ -1685,6 +1719,11 @@ private fun CustomerOverview(
     platformCoverage: List<PaymentPlatformCoverage>,
     dailyTraffic: List<CustomerDailyTrafficPoint>,
     sameWeekdayComparisons: List<CustomerSameWeekdayComparison>,
+    trafficComparisons: List<CustomerTrafficComparison>,
+    amountBands: List<CustomerPaymentAmountBand>,
+    storePatterns: List<CustomerStoreTrafficPattern>,
+    savedSessionsForDay: Int,
+    selectedStoreId: Long,
     singleDay: Boolean,
     payments: List<CustomerPaymentRecord>,
     onRhythm: () -> Unit,
@@ -1761,14 +1800,32 @@ private fun CustomerOverview(
         }
         if (singleDay) {
             item {
+                CustomerTrafficCoverageNote(
+                    singleDay = true,
+                    sessions = savedSessionsForDay,
+                    unmatchedPayments = payments.count { it.storeId <= 0L },
+                    selectedStoreId = selectedStoreId,
+                    hasWechat = payments.any { it.platform == "WECHAT" },
+                    hasAlipay = payments.any { it.platform == "ALIPAY" }
+                )
+            }
+            item {
                 HourlyCustomerTrafficCard(
                     points = hourlyTraffic,
                     platformHours = platformHourlyTraffic,
-                    dayRecords = singleDayRecords
+                    dayRecords = singleDayRecords,
+                    businessHours = trafficComparisons.firstOrNull()?.hourRows?.map { it.hour }
                 )
             }
-            if (sameWeekdayComparisons.isNotEmpty()) {
-                item { SameWeekdayCustomerCard(sameWeekdayComparisons) }
+            if (trafficComparisons.isNotEmpty()) {
+                items(trafficComparisons, key = { "traffic_${it.storeId}" }) {
+                    CustomerHourlyComparisonCard(it)
+                }
+            } else {
+                item {
+                    Text("没有可匹配的正式营业位置或完整小时区间；无法验证同位置历史客流。",
+                        color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                }
             }
         } else if (dailyTraffic.isNotEmpty()) {
             item {
@@ -1777,6 +1834,10 @@ private fun CustomerOverview(
                     onSelectDay = onSelectDay
                 )
             }
+        }
+        item { CustomerPaymentAmountBandCard(amountBands) }
+        if (storePatterns.isNotEmpty()) {
+            item { CustomerStoreTrafficPatternCard(storePatterns) }
         }
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
@@ -1888,15 +1949,20 @@ private fun PaymentSourceCoverageCard(coverage: List<PaymentPlatformCoverage>) {
 private fun HourlyCustomerTrafficCard(
     points: List<CustomerHourlyPoint>,
     platformHours: List<PaymentPlatformHour>,
-    dayRecords: List<CustomerPaymentRecord>
+    dayRecords: List<CustomerPaymentRecord>,
+    businessHours: List<Int>? = null
 ) {
     var metric by remember { mutableStateOf(CustomerTrafficMetric.PAYMENTS) }
     val byHour = remember(platformHours) { platformHours.associateBy { it.hour } }
     val active = points.filter { it.paymentCount > 0 || kotlin.math.abs(it.amount) > 0.005 }
     // Display zero-traffic hours too: do not make short periods look like the full shift.
-    val firstHour = if (active.any { it.hour < 16 }) 0 else 16
-    val lastHour = 23
-    val visible = points.filter { it.hour in firstHour..lastHour }
+    // Clock hours across midnight remain in selling-session order.
+    val visible = if (!businessHours.isNullOrEmpty()) {
+        businessHours.mapNotNull { hour -> points.firstOrNull { it.hour == hour } }
+    } else {
+        (16..23).mapNotNull { h -> points.firstOrNull { it.hour == h } } +
+            (0..5).mapNotNull { h -> points.firstOrNull { it.hour == h } }
+    }
     var selectedHour by remember(points) {
         mutableIntStateOf(active.maxByOrNull { it.paymentCount }?.hour ?: 18)
     }
