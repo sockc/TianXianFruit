@@ -405,9 +405,7 @@ private data class BusinessAssistSnapshot(
 
 internal data class BusinessPaymentSupplement(
     val wechatTotal: Double,
-    val alipayTotal: Double,
-    val newCustomerCount: Int,
-    val oldCustomerCount: Int
+    val alipayTotal: Double
 )
 
 private object BusinessAssistMemoryCache {
@@ -486,9 +484,8 @@ internal fun BusinessPaymentAssistCard(
                 withContext(Dispatchers.IO) {
                     val settings =
                         db.getCustomerAnalysisSettings()
-                    // For a selected business date only historical rows up to that
-                    // date are needed to determine new/old customers. Avoid reading
-                    // later bill rows every time the business page is mounted.
+                    // Imported receipts are for payment totals, not actual unique
+                    // customers: anonymous payer names cannot prove new/old counts.
                     val allRawPayments =
                         db.getCustomerPayments(
                             endDate = date
@@ -647,7 +644,7 @@ internal fun BusinessPaymentAssistCard(
                             meaningfulDifference ->
                                 "${assistMoney(importedTotal)} · ${analysis.summary.paymentCount}笔 · 差额 ${signedAssistMoney(difference)}"
                             else ->
-                                "${assistMoney(importedTotal)} · ${analysis.summary.paymentCount}笔 · ${analysis.summary.customerCount}客"
+                                "${assistMoney(importedTotal)} · ${analysis.summary.paymentCount}笔 · 顾客数未知"
                         },
                         style =
                             MaterialTheme.typography
@@ -671,13 +668,7 @@ internal fun BusinessPaymentAssistCard(
                             onSupplementBusiness(
                                 BusinessPaymentSupplement(
                                     wechatTotal = wechatTotal,
-                                    alipayTotal = alipayTotal,
-                                    newCustomerCount =
-                                        analysis.summary
-                                            .newCustomerCount,
-                                    oldCustomerCount =
-                                        analysis.summary
-                                            .oldCustomerCount
+                                    alipayTotal = alipayTotal
                                 )
                             )
                         },
@@ -724,7 +715,7 @@ internal fun BusinessPaymentAssistCard(
             if (expanded) {
                 Text(
                     if (hasManualBusiness) {
-                        "补入只覆盖微信/支付宝，现金及其他手工营业数据保持不动。"
+                        "补入仅更新微信/支付宝收款，现金、手填客户人数及其他营业数据保持不变。"
                     } else {
                         "账单由采购页统一导入；这里仅显示当天经营收款数据。"
                     },
@@ -755,32 +746,23 @@ internal fun BusinessPaymentAssistCard(
                             )
                     ) {
                         AssistMetric(
-                            "客户",
-                            analysis.summary
-                                .customerCount
-                                .toString(),
+                            "付款笔数",
+                            analysis.summary.paymentCount.toString(),
                             Modifier.weight(1f)
                         )
                         AssistMetric(
-                            "新客",
-                            analysis.summary
-                                .newCustomerCount
-                                .toString(),
+                            "电子收款",
+                            assistMoney(importedTotal),
                             Modifier.weight(1f)
                         )
                         AssistMetric(
-                            "老客",
-                            analysis.summary
-                                .oldCustomerCount
-                                .toString(),
+                            "笔均收款",
+                            assistMoney(analysis.summary.averageTicket),
                             Modifier.weight(1f)
                         )
                         AssistMetric(
-                            "平均客单",
-                            assistMoney(
-                                analysis.summary
-                                    .averageTicket
-                            ),
+                            "独立顾客",
+                            "未知",
                             Modifier.weight(1f)
                         )
                     }
@@ -813,7 +795,7 @@ internal fun BusinessPaymentAssistCard(
                 }
 
                 Text(
-                    "电子支付客户不含现金客流；账单辅助数据不参与结算或利润分配。",
+                    "付款笔数不等于顾客人数。匿名账单无法确定新客、老客或独立顾客总数；补入仅核对电子收款。",
                     style =
                         MaterialTheme.typography
                             .labelSmall,

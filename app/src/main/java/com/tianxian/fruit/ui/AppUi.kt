@@ -10858,10 +10858,9 @@ private fun SessionScreen(
     var pendingBusinessSupplementRecordId by remember(date) {
         mutableStateOf<Long?>(null)
     }
-    var pendingCustomerImport by remember(date, storeId) {
-        mutableStateOf<BusinessCustomerImportPreview?>(null)
-    }
-    var customerImportLoading by remember(date, storeId) { mutableStateOf(false) }
+    // Imported bills cannot tell how many unique people visited the stall.
+    // Keep new/returning customers strictly manual; never auto-fill from receipts.
+    var showCustomerCountHelp by remember { mutableStateOf(false) }
     var businessBaselineFingerprint by remember(date) { mutableStateOf("") }
     val businessFormBringIntoViewRequester =
         remember {
@@ -11199,12 +11198,6 @@ private fun SessionScreen(
             supplement.wechatTotal,
             supplement.alipayTotal
         )
-        newCustomer =
-            supplement.newCustomerCount
-                .toString()
-        oldCustomer =
-            supplement.oldCustomerCount
-                .toString()
     }
 
     LaunchedEffect(dataVersion, stores.map { it.id }, partners.map { it.id }, editingRecordId) {
@@ -11493,8 +11486,7 @@ private fun SessionScreen(
                                     supplement
                                 )
                                 message =
-                                    "已补入微信 ${money(supplement.wechatTotal)}、支付宝 ${money(supplement.alipayTotal)}，" +
-                                        "新客 ${supplement.newCustomerCount}、老客 ${supplement.oldCustomerCount}，请检查后保存营业记录"
+                                    "已补入微信 ${money(supplement.wechatTotal)}、支付宝 ${money(supplement.alipayTotal)}；新老顾客未修改，请检查后保存营业记录"
                                 isError = false
                                 businessFormScrollScope.launch {
                                     delay(80)
@@ -11962,43 +11954,10 @@ private fun SessionScreen(
                 CompactIntegerField("老客", oldCustomer, { oldCustomer = it }, Modifier.weight(1f))
                 CompactReadOnlyField(
                     label = "客户合计",
-                    value = "${n + o}",
+                    value = BusinessManualCustomerTotals.total(newCustomer, oldCustomer)?.toString() ?: "—",
                     modifier = Modifier.weight(1.15f),
-                    trailingActionText = if (customerImportLoading) "读取中" else "导入",
-                    onTrailingAction = {
-                        val selectedId = selectedStore?.id
-                        if (selectedId == null) {
-                            message = "请先选择营业位置，再导入客户"
-                            isError = true
-                        } else {
-                            customerImportLoading = true
-                            businessFormScrollScope.launch {
-                                val outcome = withContext(Dispatchers.IO) {
-                                    runCatching {
-                                        val payments = db.getCustomerPayments(endDate = date)
-                                        val included = CustomerAnalyticsEngine.filterRecords(
-                                            payments,
-                                            db.getCustomerAnalysisSettings()
-                                        ).included
-                                        BusinessCustomerImportEngine.preview(date, selectedId, included)
-                                    }
-                                }
-                                customerImportLoading = false
-                                outcome.onSuccess { preview ->
-                                    if (preview.valid) {
-                                        pendingCustomerImport = preview
-                                    } else {
-                                        message = preview.explanation
-                                        isError = true
-                                    }
-                                }.onFailure {
-                                    message = "读取客户账单失败：${it.message ?: "未知错误"}"
-                                    isError = true
-                                }
-                            }
-                        }
-                    },
-                    trailingActionEnabled = hasImportedBusinessPayments && selectedStore != null && !customerImportLoading
+                    trailingActionText = "说明",
+                    onTrailingAction = { showCustomerCountHelp = true }
                 )
             }
         }
@@ -12229,32 +12188,22 @@ private fun SessionScreen(
 
     }
 
-    pendingCustomerImport?.let { preview ->
+    if (showCustomerCountHelp) {
         AlertDialog(
-            onDismissRequest = { pendingCustomerImport = null },
-            title = { Text("只导入客户人数？") },
+            onDismissRequest = { showCustomerCountHelp = false },
+            title = { Text("客户合计如何统计？") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                    Text(preview.explanation)
-                    Text("当前新客 ${newCustomer.ifBlank { "0" }} → ${preview.newCustomers} · 老客 ${oldCustomer.ifBlank { "0" }} → ${preview.oldCustomers}")
-                    Text(
-                        "只填入新客、老客两个输入框；不会修改微信、支付宝、现金、营业额或历史记录。请核对后再保存营业记录。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.Gray
-                    )
-                }
+                Text(
+                    "微信经营码账单中大量付款人已匿名或脱敏，即使付款笔数完整，" +
+                        "也无法由账单准确计算独立顾客总数、新客或老客。\n\n" +
+                        "此处“客户合计”只等于手工填写的新客＋老客；两个输入框都填写（没有则填0）才显示合计，否则为“—”。不会再从账单推算人数。\n\n" +
+                        "要查看当日微信/支付宝逐小时付款笔数，请使用营业记录旁的“客流 ›”。" +
+                        "微信经营码官方顾客统计只适合按其自身口径单独查看，不能按匿名付款自动拆分到不同营业位置。\n\n" +
+                        "旧版本若曾从账单自动填入新老客，请检查对应营业记录并手动纠正；不会擅自清零历史数据。"
+                )
             },
             confirmButton = {
-                TextButton(onClick = {
-                    newCustomer = preview.newCustomers.toString()
-                    oldCustomer = preview.oldCustomers.toString()
-                    pendingCustomerImport = null
-                    message = "客户数据已填入（${preview.uniqueCustomers}名可识别电子支付客户）；营业额不变，请检查后保存"
-                    isError = false
-                }) { Text("确认填入") }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingCustomerImport = null }) { Text("取消") }
+                TextButton(onClick = { showCustomerCountHelp = false }) { Text("知道了") }
             }
         )
     }
@@ -12299,8 +12248,7 @@ private fun SessionScreen(
                             "支付宝 ${money(targetRecord.alipayIncome)} → ${money(amounts.alipayTotal)}"
                         )
                         Text(
-                            "新客 ${targetRecord.newCustomer} → ${amounts.newCustomerCount}   ·   " +
-                                "老客 ${targetRecord.oldCustomer} → ${amounts.oldCustomerCount}"
+                            "新客 ${targetRecord.newCustomer} · 老客 ${targetRecord.oldCustomer}（保持不变）"
                         )
                         Text(
                             "现金 ${money(targetRecord.cashIncome)} 保持不变",
@@ -12310,7 +12258,7 @@ private fun SessionScreen(
                                 FontWeight.SemiBold
                         )
                         Text(
-                            "位置、营业时间、日常开销和其他营业数据都不会改动；客户数按账单客户重新填入。",
+                            "仅修改微信、支付宝电子收款；客户人数、现金、营业时间及其他营业数据保持不变。",
                             style =
                                 MaterialTheme
                                     .typography
@@ -12334,7 +12282,7 @@ private fun SessionScreen(
                                 )
                                 newBusinessFormExpanded = true
                                 message =
-                                    "已覆盖微信/支付宝并补入新客/老客，现金保持不变；请检查后保存修改"
+                                    "已补入微信/支付宝收款，现金与新老顾客人数保持不变；请检查后保存修改"
                                 isError = false
                                 businessFormScrollScope.launch {
                                     delay(80)
