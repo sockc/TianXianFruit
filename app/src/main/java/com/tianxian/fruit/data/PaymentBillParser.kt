@@ -289,6 +289,7 @@ internal object PaymentBillParser {
                 "收支",
                 "资金方向",
                 "收入/支出",
+                "收支类型",
                 "账务类型"
             )
 
@@ -479,7 +480,8 @@ internal object PaymentBillParser {
                 "交易单号",
                 "订单号",
                 "商户订单号",
-                "商家订单号"
+                "商家订单号",
+                "单号"
             )
                 .ifBlank {
                     sha256Hex(
@@ -523,7 +525,8 @@ internal object PaymentBillParser {
                 "对方名称",
                 "对方昵称",
                 "用户昵称",
-                "买家"
+                "买家",
+                "明细名称"
             )
 
         val identity =
@@ -1657,7 +1660,15 @@ internal object PaymentBillParser {
                     Locale.ROOT
                 )
 
+        // 微信经营码 exported 经营账户明细 may have no explicit WeChat
+        // marker in its file name or sheet: identify this specific header set.
+        val isWechatBusinessAccountExport =
+            headers.map(::normalizeHeader).containsAll(
+                listOf("收支类型", "明细名称", "单号").map(::normalizeHeader)
+            ) && text.contains("经营收款-来自")
+
         return when {
+            isWechatBusinessAccountExport ||
             text.contains(
                 "微信"
             ) ||
@@ -2099,6 +2110,10 @@ internal object PaymentBillParser {
     private val KNOWN_HEADER_WORDS =
         listOf(
             "交易时间",
+            "时间",
+            "收支类型",
+            "明细名称",
+            "单号",
             "交易类型",
             "交易分类",
             "交易对方",
