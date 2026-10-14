@@ -15771,6 +15771,35 @@ class AppDatabase(
         }
     }
 
+    /** Read-only saved business sessions for reliable traffic comparison.
+     *  Deleted business rows are never treated as observed selling days.
+     */
+    fun getCustomerTrafficSessions(): List<CustomerTrafficSession> =
+        readableDatabase.rawQuery(
+            """
+            SELECT r.date,r.store_id,r.store_name,
+                   COALESCE(NULLIF(r.actual_start_time,''),s.default_start_time,'16:00') AS traffic_start,
+                   COALESCE(NULLIF(r.actual_end_time,''),s.default_end_time,'24:00') AS traffic_end
+            FROM store_daily_record r
+            LEFT JOIN store s ON s.id=r.store_id
+            WHERE r.deleted=0 AND r.store_id>0
+            ORDER BY r.date DESC,r.store_id
+            """.trimIndent(),
+            null
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(CustomerTrafficSession(
+                        date = cursor.str("date"),
+                        storeId = cursor.long("store_id"),
+                        storeName = cursor.str("store_name"),
+                        startTime = cursor.str("traffic_start").ifBlank { "16:00" },
+                        endTime = cursor.str("traffic_end").ifBlank { "24:00" }
+                    ))
+                }
+            }
+        }
+
     fun getCustomerPayments(
         startDate: String? = null,
         endDate: String? = null
