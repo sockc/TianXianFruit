@@ -673,7 +673,7 @@ internal fun CustomerAnalysisContent(
                         style = MaterialTheme.typography.titleMedium
                     )
                 }
-                Box {
+                Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
                     val storeName = when (selectedStoreId) {
                         0L -> "全部位置"
                         -1L -> "未匹配"
@@ -685,7 +685,8 @@ internal fun CustomerAnalysisContent(
                         style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.SemiBold,
                         color = Color(0xFF087D4E),
-                        maxLines = 1
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                     )
                     DropdownMenu(expanded = showStoreMenu, onDismissRequest = { showStoreMenu = false }) {
                         DropdownMenuItem(text = { Text("全部位置") }, onClick = {
