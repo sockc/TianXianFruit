@@ -145,7 +145,12 @@ internal fun CustomerAnalysisContent(
             } ?: CustomerPaymentPlatform.ALL)
     }
     var selectedStoreId by remember(ledgerId, initialDate, initialStoreId) {
-        mutableLongStateOf(initialStoreId ?: prefs.getLong("store", 0L))
+        // A business-title shortcut explicitly means ALL stores; a row shortcut
+        // means its saved store. Only ordinary navigation restores last filters.
+        mutableLongStateOf(
+            if (routeDate != null) initialStoreId ?: 0L
+            else prefs.getLong("store", 0L)
+        )
     }
     LaunchedEffect(ledgerId, range, monthAnchor, dayAnchor, selectedPlatform, selectedStoreId) {
         prefs.edit()
