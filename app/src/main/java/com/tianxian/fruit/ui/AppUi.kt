@@ -11954,7 +11954,7 @@ private fun SessionScreen(
                 CompactIntegerField("老客", oldCustomer, { oldCustomer = it }, Modifier.weight(1f))
                 CompactReadOnlyField(
                     label = "客户合计",
-                    value = if (newCustomer.isBlank() && oldCustomer.isBlank()) "—" else "${n + o}",
+                    value = BusinessManualCustomerTotals.total(newCustomer, oldCustomer)?.toString() ?: "—",
                     modifier = Modifier.weight(1.15f),
                     trailingActionText = "说明",
                     onTrailingAction = { showCustomerCountHelp = true }
@@ -12196,7 +12196,7 @@ private fun SessionScreen(
                 Text(
                     "微信经营码账单中大量付款人已匿名或脱敏，即使付款笔数完整，" +
                         "也无法由账单准确计算独立顾客总数、新客或老客。\n\n" +
-                        "此处“客户合计”只等于你手工填写的新客＋老客；未填写显示“—”，不再自动导入账单推算人数。\n\n" +
+                        "此处“客户合计”只等于手工填写的新客＋老客；两个输入框都填写（没有则填0）才显示合计，否则为“—”。不会再从账单推算人数。\n\n" +
                         "要查看当日微信/支付宝逐小时付款笔数，请使用营业记录旁的“客流 ›”。" +
                         "微信经营码官方顾客统计只适合按其自身口径单独查看，不能按匿名付款自动拆分到不同营业位置。\n\n" +
                         "旧版本若曾从账单自动填入新老客，请检查对应营业记录并手动纠正；不会擅自清零历史数据。"
