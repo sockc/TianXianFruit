@@ -7,6 +7,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
+import com.tianxian.fruit.sync.CustomerCloudBridge
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -27,9 +29,15 @@ import java.time.YearMonth
 internal fun CustomerImportCoverageStrip(
     records: List<CustomerPaymentRecord>,
     sessions: List<CustomerTrafficSession>,
-    initialMonth: YearMonth
+    initialMonth: YearMonth,
+    ledgerId: String,
+    dataVersion: Long
 ) {
     val coverage = remember(records) { CustomerImportCoverageEngine.overview(records) }
+    val context = LocalContext.current
+    val syncStatus = remember(ledgerId, dataVersion) {
+        CustomerCloudBridge.syncStatus(context, ledgerId)
+    }
     var detailedPlatform by remember { mutableStateOf<String?>(null) }
     val wechatGreen = Color(0xFF087D4E)
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -62,7 +70,7 @@ internal fun CustomerImportCoverageStrip(
             }
         }
         Text(
-            "以上仅为本机实际发现经营收款的日期，不代表完整导出范围；账单尚未接入云同步。",
+            "已发现的经营收款日期不等于完整导出范围 · $syncStatus",
             color = Color.Gray,
             style = MaterialTheme.typography.labelSmall,
             modifier = Modifier.padding(start = 6.dp, end = 4.dp, bottom = 3.dp)
