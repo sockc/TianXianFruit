@@ -43,7 +43,8 @@ internal object CustomerCloudBridge {
         fun json(): JSONObject = JSONObject()
             .put("kind", kind).put("key", key).put("payload", payload)
             .apply {
-                if (kind == "OFFICIAL" && revision > 0) put("expected_revision", revision)
+                if (kind in setOf("OFFICIAL", "ASSIGNMENT") && revision > 0)
+                    put("expected_revision", revision)
             }
     }
 
@@ -65,6 +66,10 @@ internal object CustomerCloudBridge {
         JSONObject().put("date", date).put("new_customers", stats?.newCustomers ?: 0)
             .put("returning_customers", stats?.returningCustomers ?: 0)
             .put("deleted", stats == null)
+
+    private fun assignmentPayload(date: String, storeSyncId: String): JSONObject =
+        JSONObject().put("date", date).put("store_sync_id", storeSyncId)
+            .put("deleted", storeSyncId.isBlank())
 
     private fun pending(context: Context, db: AppDatabase, bookId: String, limit: Int): List<SyncItem> {
         val ack = ackMap(db.readableDatabase)
@@ -137,6 +142,11 @@ internal object CustomerCloudBridge {
                 if (include("OFFICIAL", date, officialPayload(date, stats))) break
             }
         }
+        if (results.size < limit) {
+            for ((date, stableStoreId) in db.getCustomerStoreDayAssignments().toSortedMap()) {
+                if (include("ASSIGNMENT", date, assignmentPayload(date, stableStoreId))) break
+            }
+        }
         return results
     }
 
@@ -155,7 +165,10 @@ internal object CustomerCloudBridge {
 
     private fun applyRemote(context: Context, db: AppDatabase, bookId: String, changes: JSONArray, next: Long) {
         val database = db.writableDatabase
-        val knownAck = ackMap(database)
+        // Mutable within one downloaded event page: a single key may have
+        // several sequential revisions on the server. Each later event must
+        // see the ACK from the immediately preceding event.
+        val knownAck = ackMap(database).toMutableMap()
         val currentIdentity = database.rawQuery(
             "SELECT server_identity FROM customer_cloud_cursor WHERE id=1", null
         ).use { if (it.moveToFirst()) it.getString(0) ?: "" else "" }
@@ -240,7 +253,26 @@ internal object CustomerCloudBridge {
                         if (!OfficialWechatCustomerStatsLocal.applyFromCloud(context, bookId, key, remote)) {
                             throw IllegalStateException("写入云端官方顾客记录失败")
                         }
-                        ack(database, kind, key, digest(officialPayload(key, remote).toString()), version)
+                        val digestValue = digest(officialPayload(key, remote).toString())
+                        ack(database, kind, key, digestValue, version)
+                        knownAck[kind to key] = Ack(digestValue, version)
+                    }
+                    "ASSIGNMENT" -> {
+                        if (key != body.str("date")) continue
+                        val chosen = if (body.optBoolean("deleted", false)) ""
+                            else body.str("store_sync_id")
+                        val local = db.getCustomerStoreDayAssignments()[key]
+                        val lastAck = knownAck[kind to key]
+                        // Never overwrite an unsynced local choice or undo.
+                        val localDirty = local != null &&
+                            lastAck?.hash != digest(assignmentPayload(key, local).toString())
+                        if (localDirty) continue
+                        if (!db.applyCustomerStoreDayAssignmentFromCloud(key, chosen)) {
+                            throw IllegalStateException("恢复云端统一归属失败：$key")
+                        }
+                        val digestValue = digest(assignmentPayload(key, chosen).toString())
+                        ack(database, kind, key, digestValue, version)
+                        knownAck[kind to key] = Ack(digestValue, version)
                     }
                     else -> throw IllegalStateException("未知客流同步数据类型：$kind")
                 }
@@ -283,7 +315,7 @@ internal object CustomerCloudBridge {
         fun pull() {
             for (page in 0 until 400) {
                 val before = serverCursor(database)
-                val response = request("GET", "$endpoint/changes?cursor=$before&limit=200", null)
+                val response = request("GET", "$endpoint/changes?cursor=$before&limit=200&include_assignments=true", null)
                 val changes = response.getJSONArray("changes")
                 val next = response.getLong("next_cursor")
                 if (next < before || (changes.length() > 0 && next == before)) {

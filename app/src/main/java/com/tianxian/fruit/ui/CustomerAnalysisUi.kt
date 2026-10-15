@@ -165,14 +165,29 @@ internal fun CustomerAnalysisContent(
     var showRangeMenu by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
 
+    var locationEditTick by remember { mutableIntStateOf(0) }
+    var showUnifiedStoreDialog by remember { mutableStateOf(false) }
     val trafficSessions = remember(dataVersion) {
         db.getCustomerTrafficSessions()
     }
-    val rawRecords = remember(dataVersion, trafficSessions) {
+    val enabledStores = remember(dataVersion, locationEditTick) { db.getStores() }
+    val locationAssignments = remember(dataVersion, locationEditTick) {
+        db.getCustomerStoreDayAssignments()
+    }
+    val autoRecords = remember(dataVersion, trafficSessions) {
         CustomerTrafficDeepDive.attributeBusinessDays(
             db.getCustomerPayments(), trafficSessions
         )
     }
+    val rawRecords = remember(autoRecords, enabledStores, locationAssignments) {
+        CustomerUnifiedStoreAttribution.apply(autoRecords, locationAssignments, enabledStores)
+    }
+    val unmatchedBeforeUnified = remember(autoRecords, dayAnchor) {
+        CustomerUnifiedStoreAttribution.unmatchedOnDate(autoRecords, dayAnchor.toString())
+    }
+    val assignedStoreName = enabledStores.firstOrNull {
+        it.syncId.isNotBlank() && it.syncId == locationAssignments[dayAnchor.toString()]
+    }?.name
     val storeOptions = remember(rawRecords, trafficSessions, dataVersion) {
         val options = linkedMapOf<Long, String>()
         db.getStores().forEach { options[it.id] = it.name }
@@ -907,6 +922,9 @@ internal fun CustomerAnalysisContent(
                                 selectedStoreId = selectedStoreId,
                                 singleDay =
                                     range == CustomerRange.TODAY,
+                                unmatchedBeforeUnified = unmatchedBeforeUnified,
+                                assignedStoreName = assignedStoreName,
+                                onUnifiedStore = { showUnifiedStoreDialog = true },
                                 payments = periodPayments,
                                 onRhythm = { showRhythmDetails = true },
                                 onSelectDay = {
@@ -942,6 +960,21 @@ internal fun CustomerAnalysisContent(
                     }
             }
         }
+    }
+
+    if (showUnifiedStoreDialog) {
+        CustomerUnifiedStoreDialog(
+            db = db,
+            date = dayAnchor.toString(),
+            unmatchedPayments = unmatchedBeforeUnified,
+            defaultStoreId = selectedStoreId,
+            onDismiss = { showUnifiedStoreDialog = false },
+            onSaved = {
+                showUnifiedStoreDialog = false
+                locationEditTick++
+                onChanged()
+            }
+        )
     }
 
     if (showSettings) {
@@ -1861,6 +1894,9 @@ private fun CustomerOverview(
     savedSessionsForDay: Int,
     selectedStoreId: Long,
     singleDay: Boolean,
+    unmatchedBeforeUnified: Int,
+    assignedStoreName: String?,
+    onUnifiedStore: () -> Unit,
     payments: List<CustomerPaymentRecord>,
     onRhythm: () -> Unit,
     onSelectDay: (String) -> Unit
@@ -1884,6 +1920,26 @@ private fun CustomerOverview(
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        if (singleDay && (unmatchedBeforeUnified > 0 || assignedStoreName != null)) {
+            item {
+                Row(
+                    Modifier.fillMaxWidth().clickable(onClick = onUnifiedStore)
+                        .padding(horizontal = 5.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (assignedStoreName != null)
+                            "统一归属：$assignedStoreName · 人为归类"
+                        else "未匹配位置 $unmatchedBeforeUnified 笔",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF9A6700)
+                    )
+                    Text("指定位置 ›", style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF087D4E))
+                }
+            }
+        }
         item {
             Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

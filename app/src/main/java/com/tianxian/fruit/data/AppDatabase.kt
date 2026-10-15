@@ -942,6 +942,7 @@ class AppDatabase(
         createV40FundPerformanceIndexes(db)
         createV41CustomerImportCoverageIndex(db)
         createV42CustomerCloudState(db)
+        createV43CustomerStoreDayAssignment(db)
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -1117,6 +1118,9 @@ class AppDatabase(
         }
         if (oldVersion < 42) {
             createV42CustomerCloudState(db)
+        }
+        if (oldVersion < 43) {
+            createV43CustomerStoreDayAssignment(db)
         }
     }
 
@@ -3577,6 +3581,18 @@ class AppDatabase(
      * Isolated customer-data sync state. Existing ledger cloud triggers and
      * official accounting tables are intentionally not changed.
      */
+    private fun createV43CustomerStoreDayAssignment(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS customer_store_day_assignment (
+                business_date TEXT PRIMARY KEY,
+                store_sync_id TEXT NOT NULL DEFAULT '',
+                updated_at INTEGER NOT NULL DEFAULT 0
+            )
+            """.trimIndent()
+        )
+    }
+
     private fun createV42CustomerCloudState(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE IF NOT EXISTS customer_cloud_ack (
@@ -15824,6 +15840,53 @@ class AppDatabase(
             }
         }
 
+    /**
+     * Single explicit ANALYTICS-ONLY location choice for otherwise unmatched
+     * receipts on a business day. Empty stable ID represents a synced undo.
+     * Neither receipts nor authoritative sales rows are modified.
+     */
+    fun getCustomerStoreDayAssignments(): Map<String, String> =
+        readableDatabase.rawQuery(
+            "SELECT business_date,store_sync_id FROM customer_store_day_assignment",
+            null
+        ).use { c ->
+            buildMap {
+                while (c.moveToNext()) put(c.str("business_date"), c.str("store_sync_id"))
+            }
+        }
+
+    fun setCustomerStoreDayAssignment(date: String, storeSyncId: String): Boolean {
+        if (runCatching { LocalDate.parse(date) }.isFailure) return false
+        if (storeSyncId.isNotBlank()) {
+            val valid = readableDatabase.rawQuery(
+                "SELECT 1 FROM store WHERE sync_id=? AND deleted=0 LIMIT 1",
+                arrayOf(storeSyncId)
+            ).use { it.moveToFirst() }
+            if (!valid) return false
+        }
+        val values = ContentValues().apply {
+            put("business_date", date)
+            put("store_sync_id", storeSyncId)
+            put("updated_at", System.currentTimeMillis())
+        }
+        return writableDatabase.insertWithOnConflict(
+            "customer_store_day_assignment", null, values,
+            SQLiteDatabase.CONFLICT_REPLACE
+        ) != -1L
+    }
+
+    /** Server events refer to stable store IDs; accept temporarily missing stores. */
+    fun applyCustomerStoreDayAssignmentFromCloud(date: String, storeSyncId: String): Boolean {
+        if (runCatching { LocalDate.parse(date) }.isFailure || storeSyncId.length > 100) return false
+        return writableDatabase.insertWithOnConflict(
+            "customer_store_day_assignment", null, ContentValues().apply {
+                put("business_date", date)
+                put("store_sync_id", storeSyncId)
+                put("updated_at", System.currentTimeMillis())
+            }, SQLiteDatabase.CONFLICT_REPLACE
+        ) != -1L
+    }
+
     fun getCustomerPayments(
         startDate: String? = null,
         endDate: String? = null
@@ -16609,7 +16672,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 42
+        const val DB_VERSION = 43
 
         private val CUSTOMER_PAYMENT_DATE_TIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
