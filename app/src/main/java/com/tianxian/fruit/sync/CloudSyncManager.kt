@@ -2296,6 +2296,47 @@ class CloudSyncManager(
                     "同步完成：上传 $uploadedCount 条，下载 $downloadedCount 条"
             }
 
+        // Customer receipts use an isolated, server-versioned API. Errors do
+        // not masquerade as full success and never roll back ledger accounting.
+        var customerSyncNote = ""
+        val canViewCustomer = cloudBook.role in setOf("OWNER", "SUPERADMIN") ||
+            "stats.view" in cloudBook.permissions
+        if (canViewCustomer) {
+            val customer = runCatching {
+                CustomerCloudBridge.sync(
+                    context = appContext,
+                    db = db,
+                    bookId = book.id,
+                    identity = current.baseUrl + "|" + current.username,
+                    canWrite = cloudBook.role in setOf("OWNER", "SUPERADMIN") ||
+                        cloudBook.permissions.any { it in setOf("basic.edit", "business.edit") },
+                    request = { method, path, body ->
+                        requestJson(
+                            baseUrl = current.baseUrl,
+                            method = method,
+                            path = path,
+                            body = body,
+                            token = current.token
+                        ) as JSONObject
+                    }
+                )
+            }
+            if (customer.isSuccess) {
+                val count = customer.getOrThrow()
+                customerSyncNote = "客流：上传 ${count.uploaded} 条，下载 ${count.downloaded} 条"
+            } else {
+                val problem = customer.exceptionOrNull()?.message.orEmpty()
+                val status = if (problem.contains("404") ||
+                    problem.contains("Not Found", ignoreCase = true)) {
+                    "服务器尚未提供客流同步接口"
+                } else problem.take(90).ifBlank { "暂时失败" }
+                appContext.getSharedPreferences(
+                    "customer_cloud_sync_status_v1",
+                    Context.MODE_PRIVATE
+                ).edit().putString("error_${book.id}", status).apply()
+                customerSyncNote = "客流未同步：$status（本机数据仍保留）"
+            }
+        }
         return CloudSyncResult(
             uploaded =
                 uploadedCount,
@@ -2305,7 +2346,8 @@ class CloudSyncManager(
                 conflictCount,
             serverCursor =
                 cursor,
-            message = message
+            message = if (customerSyncNote.isBlank()) message
+                else "$message；$customerSyncNote"
         )
     }
 
