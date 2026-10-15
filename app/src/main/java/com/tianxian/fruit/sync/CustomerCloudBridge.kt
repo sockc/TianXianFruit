@@ -72,7 +72,9 @@ internal object CustomerCloudBridge {
         fun include(kind: String, key: String, payload: JSONObject): Boolean {
             val prev = ack[kind to key]
             val item = jsonItem(kind, key, payload, prev)
-            if (prev?.hash != item.hash) results.add(item)
+            // A server-origin row is immutable. Never echo it back or overwrite
+            // a verified cloud row with platform/source metadata reconstructed locally.
+            if (prev?.hash != item.hash && prev?.hash != "REMOTE") results.add(item)
             return results.size >= limit
         }
 
@@ -170,7 +172,7 @@ internal object CustomerCloudBridge {
                         val platform = body.str("platform")
                         val hash = body.str("file_hash")
                         if ("$platform|$hash" != key) continue
-                        database.insertWithOnConflict("payment_import_batch", null, ContentValues().apply {
+                        val inserted = database.insertWithOnConflict("payment_import_batch", null, ContentValues().apply {
                             put("platform", platform); put("file_hash", hash)
                             put("file_name", body.str("file_name"))
                             put("total_rows", body.optInt("total_rows"))
@@ -185,6 +187,7 @@ internal object CustomerCloudBridge {
                             put("observed_receipt_days", body.optInt("receipt_days"))
                             put("observed_receipt_rows", body.optInt("receipt_count"))
                         }, SQLiteDatabase.CONFLICT_IGNORE)
+                        if (inserted > 0L) ack(database, kind, key, "REMOTE", version)
                     }
                     "RECEIPT" -> {
                         val platform = body.str("platform")
@@ -198,7 +201,7 @@ internal object CustomerCloudBridge {
                         val batchId = if (fileHash.isNotBlank()) database.rawQuery(
                             "SELECT id FROM payment_import_batch WHERE file_hash=? LIMIT 1", arrayOf(fileHash)
                         ).use { if (it.moveToFirst()) it.getLong(0) else 0L } else 0L
-                        database.insertWithOnConflict(
+                        val inserted = database.insertWithOnConflict(
                             "customer_payment_transaction", null, ContentValues().apply {
                                 put("platform", platform); put("dedupe_key", receiptKey)
                                 put("transaction_ref", body.str("transaction_ref"))
@@ -219,6 +222,7 @@ internal object CustomerCloudBridge {
                                 put("created_at", System.currentTimeMillis())
                             }, SQLiteDatabase.CONFLICT_IGNORE
                         )
+                        if (inserted > 0L) ack(database, kind, key, "REMOTE", version)
                     }
                     "OFFICIAL" -> {
                         val local = OfficialWechatCustomerStatsLocal.get(context, bookId, key)
