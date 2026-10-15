@@ -55,7 +55,8 @@ internal object CustomerCalendarSelection {
 internal fun CustomerCalendarDialog(
     initialDate: LocalDate,
     onDismiss: () -> Unit,
-    onConfirm: (CustomerCalendarChoice) -> Unit
+    onConfirm: (CustomerCalendarChoice) -> Unit,
+    onQuickRange: (String) -> Unit
 ) {
     var year by remember { mutableIntStateOf(initialDate.year) }
     var first by remember { mutableStateOf<YearMonth?>(null) }
@@ -144,6 +145,14 @@ internal fun CustomerCalendarDialog(
                                     )
                                 }
                             }
+                        }
+                    }
+                }
+                HorizontalDivider()
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    listOf("近7天" to "LAST_7", "近30天" to "LAST_30", "全部" to "ALL").forEach { (label, range) ->
+                        TextButton(onClick = { onQuickRange(range) }) {
+                            Text(label, style = MaterialTheme.typography.labelSmall)
                         }
                     }
                 }
