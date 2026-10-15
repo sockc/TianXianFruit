@@ -941,6 +941,7 @@ class AppDatabase(
         createV39StableBusinessIdentity(db)
         createV40FundPerformanceIndexes(db)
         createV41CustomerImportCoverageIndex(db)
+        createV42CustomerCloudState(db)
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -1113,6 +1114,9 @@ class AppDatabase(
             // Receipt source-batch index enables date-range introspection for old
             // and new imports without touching any signed business/ledger data.
             createV41CustomerImportCoverageIndex(db)
+        }
+        if (oldVersion < 42) {
+            createV42CustomerCloudState(db)
         }
     }
 
@@ -3567,6 +3571,29 @@ class AppDatabase(
             "CREATE INDEX IF NOT EXISTS idx_payment_import_time " +
                 "ON payment_import_batch(imported_at)"
         )
+    }
+
+    /**
+     * Isolated customer-data sync state. Existing ledger cloud triggers and
+     * official accounting tables are intentionally not changed.
+     */
+    private fun createV42CustomerCloudState(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS customer_cloud_ack (
+                kind TEXT NOT NULL,
+                entity_key TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                remote_revision INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(kind,entity_key)
+            )
+        """.trimIndent())
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS customer_cloud_cursor (
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                server_identity TEXT NOT NULL DEFAULT '',
+                next_cursor INTEGER NOT NULL DEFAULT 0
+            )
+        """.trimIndent())
     }
 
     private fun createV41CustomerImportCoverageIndex(db: SQLiteDatabase) {
@@ -16582,7 +16609,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 41
+        const val DB_VERSION = 42
 
         private val CUSTOMER_PAYMENT_DATE_TIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")

@@ -762,7 +762,9 @@ internal fun CustomerAnalysisContent(
                 initialMonth = java.time.YearMonth.from(
                     if (range == CustomerRange.THIS_MONTH) monthAnchor else
                         if (range == CustomerRange.TODAY) dayAnchor else today
-                )
+                ),
+                ledgerId = ledgerId,
+                dataVersion = dataVersion.toLong()
             )
             if (importing) {
                 LinearProgressIndicator(
@@ -1784,7 +1786,7 @@ private fun OfficialWechatDailyCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error)
             }
-            Text("仅为手动摘录的微信经营码官方人数；本机保存、尚不支持云同步。不得与支付宝人数相加，也不能推算个人复购。",
+            Text("仅为手动摘录的微信经营码官方人数；只有客流云同步成功后才在其他设备可见。不得与支付宝人数相加，也不能推算个人复购。",
                 style = MaterialTheme.typography.labelSmall, color = Color.Gray)
         }
     }
@@ -1820,7 +1822,7 @@ private fun OfficialWechatDailyCard(
                         label = { Text("老客人数") }, singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                     )
-                    Text("本机临时记录，暂不随账本同步到其他设备。",
+                    Text("本机保存，账本与客流云同步成功后才能在其他设备恢复。",
                         style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                 }
             },

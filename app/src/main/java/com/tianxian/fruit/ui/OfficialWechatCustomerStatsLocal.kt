@@ -22,12 +22,16 @@ internal data class OfficialWechatDailyCount(
 internal object OfficialWechatCustomerStatsLocal {
     private const val PREF_FILE = "wechat_official_customer_daily_local_v1"
 
-    private fun key(bookId: String, date: String): String {
-        LocalDate.parse(date) // reject malformed dates rather than mis-keying rows
+    private fun bookPrefix(bookId: String): String {
         val bookHash = MessageDigest.getInstance("SHA-256")
             .digest(bookId.toByteArray(Charsets.UTF_8))
             .take(12).joinToString("") { "%02x".format(it) }
-        return "$bookHash:$date"
+        return "$bookHash:"
+    }
+
+    private fun key(bookId: String, date: String): String {
+        LocalDate.parse(date) // reject malformed dates rather than mis-keying rows
+        return bookPrefix(bookId) + date
     }
 
     fun get(context: Context, bookId: String, date: String): OfficialWechatDailyCount? {
@@ -50,7 +54,43 @@ internal object OfficialWechatCustomerStatsLocal {
             .commit()
     }
 
+    /** Tombstone must sync; a true delete cannot be represented by removing a preference. */
     fun delete(context: Context, bookId: String, date: String): Boolean =
         context.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE).edit()
-            .remove(key(bookId, date)).commit()
+            .putString(key(bookId, date), "DELETED").commit()
+
+    fun hasLocalEntry(context: Context, bookId: String, date: String): Boolean =
+        context.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE)
+            .contains(key(bookId, date))
+
+    /** Null value means a local delete tombstone, not a missing entry. */
+    fun allForBook(context: Context, bookId: String): Map<String, OfficialWechatDailyCount?> {
+        val prefix = bookPrefix(bookId)
+        return context.getSharedPreferences(PREF_FILE, Context.MODE_PRIVATE).all
+            .asSequence()
+            .filter { (name, _) -> name.startsWith(prefix) }
+            .mapNotNull { (name, raw) ->
+                val date = name.removePrefix(prefix)
+                val valid = runCatching { LocalDate.parse(date) }.getOrNull()
+                    ?: return@mapNotNull null
+                val value = raw as? String ?: return@mapNotNull null
+                if (value == "DELETED") date to null
+                else {
+                    val fields = value.split(",")
+                    val n = fields.getOrNull(0)?.toIntOrNull()
+                    val o = fields.getOrNull(1)?.toIntOrNull()
+                    if (n == null || o == null || n < 0 || o < 0 || n + o > 1_000_000)
+                        null else date to OfficialWechatDailyCount(n, o)
+                }
+            }
+            .sortedBy { it.first }
+            .toMap()
+    }
+
+    /** Called only after remote revision and dirty-local checks have passed. */
+    fun applyFromCloud(
+        context: Context, bookId: String, date: String,
+        stats: OfficialWechatDailyCount?
+    ): Boolean = if (stats == null) delete(context, bookId, date)
+    else put(context, bookId, date, stats)
 }
