@@ -15875,6 +15875,18 @@ class AppDatabase(
         ) != -1L
     }
 
+    /** Server events refer to stable store IDs; accept temporarily missing stores. */
+    fun applyCustomerStoreDayAssignmentFromCloud(date: String, storeSyncId: String): Boolean {
+        if (runCatching { LocalDate.parse(date) }.isFailure || storeSyncId.length > 100) return false
+        return writableDatabase.insertWithOnConflict(
+            "customer_store_day_assignment", null, ContentValues().apply {
+                put("business_date", date)
+                put("store_sync_id", storeSyncId)
+                put("updated_at", System.currentTimeMillis())
+            }, SQLiteDatabase.CONFLICT_REPLACE
+        ) != -1L
+    }
+
     fun getCustomerPayments(
         startDate: String? = null,
         endDate: String? = null
