@@ -154,6 +154,9 @@ internal object CustomerCloudBridge {
     private fun applyRemote(context: Context, db: AppDatabase, bookId: String, changes: JSONArray, next: Long) {
         val database = db.writableDatabase
         val knownAck = ackMap(database)
+        val currentIdentity = database.rawQuery(
+            "SELECT server_identity FROM customer_cloud_cursor WHERE id=1", null
+        ).use { if (it.moveToFirst()) it.getString(0) ?: "" else "" }
         database.beginTransaction()
         try {
             for (i in 0 until changes.length()) {
@@ -237,7 +240,7 @@ internal object CustomerCloudBridge {
                 }
             }
             database.insertWithOnConflict("customer_cloud_cursor", null, ContentValues().apply {
-                put("id", 1); put("server_identity", ""); put("next_cursor", next)
+                put("id", 1); put("server_identity", currentIdentity); put("next_cursor", next)
             }, SQLiteDatabase.CONFLICT_REPLACE)
             database.setTransactionSuccessful()
         } finally { database.endTransaction() }
@@ -272,7 +275,7 @@ internal object CustomerCloudBridge {
 
         var totalDownload = 0
         fun pull() {
-            repeat(400) {
+            for (page in 0 until 400) {
                 val before = serverCursor(database)
                 val response = request("GET", "$endpoint/changes?cursor=$before&limit=200", null)
                 val changes = response.getJSONArray("changes")
@@ -291,9 +294,9 @@ internal object CustomerCloudBridge {
         pull()
         var uploaded = 0
         if (canWrite) {
-            repeat(400) {
+            for (page in 0 until 400) {
                 val batch = pending(context, db, bookId, MAX_BATCH)
-                if (batch.isEmpty()) return@repeat
+                if (batch.isEmpty()) break
                 val body = JSONObject().put("items", JSONArray().apply {
                     batch.forEach { put(it.json()) }
                 })
@@ -317,7 +320,7 @@ internal object CustomerCloudBridge {
                     }
                     database.setTransactionSuccessful()
                 } finally { database.endTransaction() }
-                if (batch.size < MAX_BATCH) return@repeat
+                if (batch.size < MAX_BATCH) break
             }
             if (pending(context, db, bookId, 1).isNotEmpty()) {
                 throw IllegalStateException("待同步客流记录较多，已分批上传，仍有未确认记录")
