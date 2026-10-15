@@ -45,4 +45,20 @@ class CustomerCalendarSelectionTest {
         assertEquals(LocalDate.of(2025, 11, 1), range.start)
         assertEquals(LocalDate.of(2026, 2, 28), range.end)
     }
+    @Test fun dateRangeWorksAcrossMonthsAndReverseSelection() {
+        val range = CustomerCalendarSelection.days(
+            LocalDate.of(2026, 3, 2), LocalDate.of(2026, 2, 25)
+        )
+        assertEquals(CustomerCalendarChoice.Kind.DAYS, range.kind)
+        assertEquals(LocalDate.of(2026, 2, 25), range.start)
+        assertEquals(LocalDate.of(2026, 3, 2), range.end)
+    }
+
+    @Test fun dateRangeMayBeExactlyOneDay() {
+        val date = LocalDate.of(2026, 10, 16)
+        val range = CustomerCalendarSelection.days(date, date)
+        assertEquals(date, range.start)
+        assertEquals(date, range.end)
+    }
+
 }
