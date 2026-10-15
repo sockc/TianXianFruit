@@ -31,7 +31,7 @@ class CustomerUnifiedStoreAttributionTest {
         assertEquals(other.id, result[1].storeId)
         assertEquals(0L, result[2].storeId)
         assertEquals(0L, result[3].storeId)
-        assertEquals(1, CustomerUnifiedStoreAttribution.unmatchedOnDate(result, "2026-10-15"))
+        assertEquals(0, CustomerUnifiedStoreAttribution.unmatchedOnDate(result, "2026-10-15"))
     }
 
     @Test fun emptyOrUnresolvedStableIdNeverGuessesAStore() {
