@@ -164,6 +164,11 @@ internal fun CustomerAnalysisContent(
     var showStoreMenu by remember { mutableStateOf(false) }
     var showCalendarDialog by remember { mutableStateOf(false) }
     var showBillStatus by remember { mutableStateOf(false) }
+    var showImportCollectorPicker by remember { mutableStateOf(false) }
+    var importingCollectorSyncId by remember { mutableStateOf("") }
+    var editBatchCollector by remember { mutableStateOf<PaymentImportBatchRecord?>(null) }
+    var selectedCollectorSyncId by remember { mutableStateOf("*") }
+    var showCollectorMenu by remember { mutableStateOf(false) }
     var showMessageDetails by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
 
@@ -212,8 +217,20 @@ internal fun CustomerAnalysisContent(
     val prevBusinessDay = businessDatesForSelectedStore.lastOrNull { it < dayAnchor }
     val nextBusinessDay = businessDatesForSelectedStore.firstOrNull { it > dayAnchor }
     val hasUnmatchedStore = remember(rawRecords) { rawRecords.any { it.storeId <= 0L } }
-    val scopedRawRecords = remember(rawRecords, selectedPlatform, selectedStoreId) {
-        PaymentTrafficAnalytics.select(rawRecords, selectedPlatform.name, selectedStoreId)
+    val collectorOptions = remember(dataVersion) { db.getCollectorSyncOptions() }
+    val collectorAssignments = remember(dataVersion) { db.getCustomerBillCollectorAssignments() }
+    val collectorByBatch = remember(dataVersion) { db.getCustomerCollectorByBatchId() }
+    val scopedRawRecords = remember(
+        rawRecords, selectedPlatform, selectedStoreId, selectedCollectorSyncId,
+        collectorByBatch
+    ) {
+        PaymentTrafficAnalytics.select(rawRecords, selectedPlatform.name, selectedStoreId).filter { record ->
+            when (selectedCollectorSyncId) {
+                "*" -> true
+                "?" -> collectorByBatch[record.sourceBatchId].isNullOrBlank()
+                else -> collectorByBatch[record.sourceBatchId] == selectedCollectorSyncId
+            }
+        }
     }
     val settings =
         remember(dataVersion) {
@@ -517,7 +534,15 @@ internal fun CustomerAnalysisContent(
         scope.launch {
             val results = withContext(Dispatchers.IO) {
                 uris.take(20).map { uri ->
-                    runCatching { importPaymentFile(db, uri, context.contentResolver) }
+                    runCatching {
+                        importPaymentFile(db, uri, context.contentResolver).also { outcome ->
+                            if (!db.setCustomerBillCollectorForBatch(
+                                    outcome.batchId, importingCollectorSyncId
+                                )) {
+                                throw IllegalStateException("账单已解析，但设置收款人失败，请在导入历史里补选")
+                            }
+                        }
+                    }
                 }
             }
             val imported = results.mapNotNull { it.getOrNull() }
@@ -596,34 +621,13 @@ internal fun CustomerAnalysisContent(
                 )
                 TextButton(
                     onClick = {
-                        launcher.launch(
-                            arrayOf(
-                                "text/*",
-                                "text/csv",
-                                "application/csv",
-                                "application/zip",
-                                "application/vnd.ms-excel",
-                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                "application/octet-stream"
-                            )
-                        )
+                        showImportCollectorPicker = true
                     },
-                    enabled =
-                        canImport &&
-                            !importing,
-                    contentPadding =
-                        PaddingValues(
-                            horizontal = 8.dp
-                        )
-                ) {
-                    Text(
-                        if (importing) {
-                            "导入中"
-                        } else {
-                            "导入"
-                        }
-                    )
-                }
+                    enabled = canImport && !importing,
+                    contentPadding = PaddingValues(horizontal = 5.dp)
+                ) { Text(if (importing) "导入中" else "导入") }
+                /* File picker follows the collector confirmation. */
+                
                 TextButton(
                     onClick = {
                         showSettings = true
@@ -687,6 +691,35 @@ internal fun CustomerAnalysisContent(
                         }
                         if (hasUnmatchedStore) DropdownMenuItem(text = { Text("未匹配位置") }, onClick = {
                             selectedStoreId = -1L; showStoreMenu = false
+                        })
+                    }
+                }
+                Box(modifier = Modifier.weight(1.1f), contentAlignment = Alignment.CenterEnd) {
+                    val collectorLabel = when (selectedCollectorSyncId) {
+                        "*" -> "全部收款人"
+                        "?" -> "未指定"
+                        else -> collectorOptions.firstOrNull { it.first == selectedCollectorSyncId }?.second
+                            ?: "已失效人员"
+                    }
+                    Text("$collectorLabel ▾",
+                        modifier = Modifier.fillMaxWidth().clickable { showCollectorMenu = true }
+                            .padding(horizontal = 2.dp, vertical = 9.dp),
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                        style = MaterialTheme.typography.labelSmall, color = Color(0xFF087D4E))
+                    DropdownMenu(expanded = showCollectorMenu,
+                        onDismissRequest = { showCollectorMenu = false }) {
+                        DropdownMenuItem(text = { Text("全部收款人") }, onClick = {
+                            selectedCollectorSyncId = "*"; showCollectorMenu = false
+                        })
+                        collectorOptions.forEach { (id, name) ->
+                            DropdownMenuItem(text = { Text(name) }, onClick = {
+                                selectedCollectorSyncId = id; showCollectorMenu = false
+                            })
+                        }
+                        DropdownMenuItem(text = { Text("未指定收款人") }, onClick = {
+                            selectedCollectorSyncId = "?"; showCollectorMenu = false
                         })
                     }
                 }
@@ -801,7 +834,10 @@ internal fun CustomerAnalysisContent(
                                 onStateChange = { id, state ->
                                     db.setCustomerPaymentAnalysisState(id, state)
                                     onChanged()
-                                }
+                                },
+                                collectorAssignments = collectorAssignments,
+                                collectorOptions = collectorOptions,
+                                onAssignBatch = { editBatchCollector = it }
                             )
                         }
                     }
@@ -877,6 +913,39 @@ internal fun CustomerAnalysisContent(
                     }
             }
         }
+    }
+
+    if (showImportCollectorPicker) {
+        CustomerBillCollectorPicker(
+            options = collectorOptions,
+            current = importingCollectorSyncId,
+            title = "导入账单 · 选择收款人",
+            onDismiss = { showImportCollectorPicker = false },
+            onConfirm = { chosen ->
+                importingCollectorSyncId = chosen
+                showImportCollectorPicker = false
+                launcher.launch(arrayOf(
+                    "text/*", "text/csv", "application/csv", "application/zip",
+                    "application/vnd.ms-excel",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "application/octet-stream"
+                ))
+            }
+        )
+    }
+    editBatchCollector?.let { batch ->
+        CustomerBillCollectorPicker(
+            options = collectorOptions,
+            current = collectorAssignments["${batch.platform}|${batch.fileHash}"].orEmpty(),
+            title = "历史账单 · 收款人",
+            onDismiss = { editBatchCollector = null },
+            onConfirm = { chosen ->
+                if (db.setCustomerBillCollector(batch.platform, batch.fileHash, chosen)) {
+                    editBatchCollector = null
+                    onChanged()
+                } else message = "保存历史账单收款人失败，请稍后重试"
+            }
+        )
     }
 
     if (showCalendarDialog) {
@@ -1146,7 +1215,10 @@ private fun CustomerPaymentRecordsContent(
     settings: CustomerAnalysisSettings,
     excludedIds: Set<Long>,
     autoLargeIds: Set<Long>,
-    onStateChange: (Long, String) -> Unit
+    onStateChange: (Long, String) -> Unit,
+    collectorAssignments: Map<String, String>,
+    collectorOptions: List<Pair<String, String>>,
+    onAssignBatch: (PaymentImportBatchRecord) -> Unit
 ) {
     var filter by remember {
         mutableStateOf(
@@ -1221,7 +1293,8 @@ private fun CustomerPaymentRecordsContent(
         }
         AnimatedVisibility(showImportHistory) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-                ImportBatchList(importBatches.take(12))
+                ImportBatchList(importBatches.take(12),
+                    collectorAssignments, collectorOptions, onAssignBatch)
             }
         }
         Row(
@@ -1607,7 +1680,12 @@ private fun ImportOutcomeCard(outcome: PaymentImportOutcome) {
 }
 
 @Composable
-private fun ImportBatchList(batches: List<PaymentImportBatchRecord>) {
+private fun ImportBatchList(
+    batches: List<PaymentImportBatchRecord>,
+    assignments: Map<String, String>,
+    collectorOptions: List<Pair<String, String>>,
+    onAssignBatch: (PaymentImportBatchRecord) -> Unit
+) {
     if (batches.isEmpty()) {
         Text("还没有导入记录", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
         return
@@ -1632,11 +1710,22 @@ private fun ImportBatchList(batches: List<PaymentImportBatchRecord>) {
                         style = MaterialTheme.typography.labelSmall,
                         color = Color(0xFF087D4E)
                     )
-                    Text(
-                        "识别 ${batch.acceptedRows} · 重复 ${batch.duplicateRows} · ${formatTime(batch.importedAt)} · 本机未同步",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.Gray
-                    )
+                    Row(Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "识别 ${batch.acceptedRows} · 重复 ${batch.duplicateRows} · ${formatTime(batch.importedAt)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.Gray, modifier = Modifier.weight(1f)
+                        )
+                        val syncId = assignments["${batch.platform}|${batch.fileHash}"].orEmpty()
+                        val collectorName = collectorOptions.firstOrNull { it.first == syncId }?.second
+                            ?: "未指定"
+                        Text("$collectorName ›",
+                            modifier = Modifier.clickable { onAssignBatch(batch) }
+                                .padding(horizontal = 4.dp, vertical = 5.dp),
+                            color = Color(0xFF087D4E),
+                            style = MaterialTheme.typography.labelSmall)
+                    }
                 }
             }
         }
