@@ -61,17 +61,41 @@ private enum class CustomerDateMode(val label: String) {
 @Composable
 internal fun CustomerCalendarDialog(
     initialDate: LocalDate,
+    initialChoice: CustomerCalendarChoice? = null,
     onDismiss: () -> Unit,
     onConfirm: (CustomerCalendarChoice) -> Unit,
     onQuickRange: (String) -> Unit
 ) {
-    var mode by remember { mutableStateOf(CustomerDateMode.DAY) }
-    var visibleMonth by remember(initialDate) { mutableStateOf(YearMonth.from(initialDate)) }
-    var day by remember(initialDate) { mutableStateOf<LocalDate?>(initialDate) }
-    var firstMonth by remember { mutableStateOf<YearMonth?>(null) }
-    var secondMonth by remember { mutableStateOf<YearMonth?>(null) }
-    var firstDay by remember { mutableStateOf<LocalDate?>(null) }
-    var secondDay by remember { mutableStateOf<LocalDate?>(null) }
+    // Opening the picker reflects the period already shown, rather than
+    // silently defaulting to the first day of an actively selected month.
+    var mode by remember(initialChoice) {
+        mutableStateOf(when (initialChoice?.kind) {
+            CustomerCalendarChoice.Kind.MONTH, CustomerCalendarChoice.Kind.MONTHS -> CustomerDateMode.MONTH
+            CustomerCalendarChoice.Kind.DAYS -> CustomerDateMode.INTERVAL
+            else -> CustomerDateMode.DAY
+        })
+    }
+    var visibleMonth by remember(initialDate, initialChoice) {
+        mutableStateOf(YearMonth.from(initialChoice?.start ?: initialDate))
+    }
+    var day by remember(initialDate, initialChoice) {
+        mutableStateOf<LocalDate?>(initialChoice?.takeIf { it.kind == CustomerCalendarChoice.Kind.DAY }?.start
+            ?: initialDate)
+    }
+    var firstMonth by remember(initialChoice) {
+        mutableStateOf(initialChoice?.takeIf { it.kind == CustomerCalendarChoice.Kind.MONTH ||
+            it.kind == CustomerCalendarChoice.Kind.MONTHS }?.start?.let(YearMonth::from))
+    }
+    var secondMonth by remember(initialChoice) {
+        mutableStateOf(initialChoice?.takeIf { it.kind == CustomerCalendarChoice.Kind.MONTHS }
+            ?.end?.let(YearMonth::from))
+    }
+    var firstDay by remember(initialChoice) {
+        mutableStateOf(initialChoice?.takeIf { it.kind == CustomerCalendarChoice.Kind.DAYS }?.start)
+    }
+    var secondDay by remember(initialChoice) {
+        mutableStateOf(initialChoice?.takeIf { it.kind == CustomerCalendarChoice.Kind.DAYS }?.end)
+    }
 
     val choice = when (mode) {
         CustomerDateMode.DAY -> day?.let(CustomerCalendarSelection::day)
