@@ -1639,6 +1639,47 @@ private fun CustomerPaymentRecordsContent(
             }
         }
     }
+    if (showImportHistory) {
+        var billQuery by remember { mutableStateOf("") }
+        val matchingBatches = remember(importBatches, billQuery, collectorAssignments) {
+            val keyword = billQuery.trim()
+            if (keyword.isBlank()) importBatches else importBatches.filter { batch ->
+                val collectorId = collectorAssignments["${batch.platform}|${batch.fileHash}"].orEmpty()
+                val name = collectorOptions.firstOrNull { it.first == collectorId }?.second
+                    ?: "未指定"
+                listOf(batch.fileName, batch.platform, batch.firstReceiptDate,
+                    batch.lastReceiptDate, name).any { it.contains(keyword, ignoreCase = true) }
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { showImportHistory = false },
+            title = { Text("历史账单 · 指定收款人", style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("点击每份账单右侧的收款人即可修改归属；不会修改原始账单或营业额。",
+                        style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    OutlinedTextField(
+                        value = billQuery, onValueChange = { billQuery = it },
+                        modifier = Modifier.fillMaxWidth(), singleLine = true,
+                        placeholder = { Text("搜索文件、日期或收款人") },
+                        textStyle = MaterialTheme.typography.bodySmall
+                    )
+                    Box(Modifier.fillMaxWidth().heightIn(max = 400.dp)) {
+                        ImportBatchList(
+                            matchingBatches, collectorAssignments, collectorOptions,
+                            onAssignBatch = {
+                                showImportHistory = false
+                                onAssignBatch(it)
+                            }
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showImportHistory = false }) { Text("关闭") }
+            }
+        )
+    }
 }
 
 private fun importPaymentFile(
@@ -1682,47 +1723,7 @@ private fun importPaymentFile(
         fileHash = PaymentBillParser.fileHash(bytes),
         parsed = parsed
     )
-    if (showImportHistory) {
-        var billQuery by remember { mutableStateOf("") }
-        val matchingBatches = remember(importBatches, billQuery, collectorAssignments) {
-            val keyword = billQuery.trim()
-            if (keyword.isBlank()) importBatches else importBatches.filter { batch ->
-                val collectorId = collectorAssignments["${batch.platform}|${batch.fileHash}"].orEmpty()
-                val name = collectorOptions.firstOrNull { it.first == collectorId }?.second
-                    ?: "未指定"
-                listOf(batch.fileName, batch.platform, batch.firstReceiptDate,
-                    batch.lastReceiptDate, name).any { it.contains(keyword, ignoreCase = true) }
-            }
-        }
-        AlertDialog(
-            onDismissRequest = { showImportHistory = false },
-            title = { Text("历史账单 · 指定收款人", style = MaterialTheme.typography.titleMedium) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text("点击每份账单右侧的收款人即可修改归属；不会修改原始账单或营业额。",
-                        style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                    OutlinedTextField(
-                        value = billQuery, onValueChange = { billQuery = it },
-                        modifier = Modifier.fillMaxWidth(), singleLine = true,
-                        placeholder = { Text("搜索文件、日期或收款人") },
-                        textStyle = MaterialTheme.typography.bodySmall
-                    )
-                    Box(Modifier.fillMaxWidth().heightIn(max = 400.dp)) {
-                        ImportBatchList(
-                            matchingBatches, collectorAssignments, collectorOptions,
-                            onAssignBatch = {
-                                showImportHistory = false
-                                onAssignBatch(it)
-                            }
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showImportHistory = false }) { Text("关闭") }
-            }
-        )
-    }
+
 }
 
 @Composable
