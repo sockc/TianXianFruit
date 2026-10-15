@@ -216,7 +216,7 @@ internal fun CustomerAnalysisContent(
         filterResult.included
     val importBatches = remember(dataVersion, showSettings, tab) {
         if (showSettings || tab == CustomerAnalysisTab.RECORDS) {
-            db.getPaymentImportBatches(10)
+            db.getPaymentImportBatches(40)
         } else emptyList()
     }
 
@@ -498,9 +498,15 @@ internal fun CustomerAnalysisContent(
             }
             val imported = results.mapNotNull { it.getOrNull() }
             val failures = results.mapNotNull { it.exceptionOrNull()?.message }
+            val newestRanges = imported.filter { it.firstReceiptDate.isNotBlank() }
+                .take(3).joinToString(" · ") { item ->
+                    val provider = if (item.platform == "WECHAT") "微信" else "支付宝"
+                    "$provider ${item.firstReceiptDate}～${item.lastReceiptDate}（${item.receiptDays}天）"
+                }
             message = "账单 ${imported.size}/${uris.size} 个成功 · 新增 ${imported.sumOf { it.insertedRows }} 笔 · " +
                 "重复 ${imported.sumOf { it.duplicateRows }} 笔 · 忽略 ${imported.sumOf { it.ignoredRows }} 笔 · " +
                 "异常 ${imported.sumOf { it.errorRows }} 笔 · 未匹配位置 ${imported.sumOf { it.unmatchedStoreRows }} 笔" +
+                (if (newestRanges.isNotBlank()) " · 发现收款日期：$newestRanges" else "") +
                 (if (uris.size > 20) " · 单次最多20个文件" else "") +
                 (if (failures.isNotEmpty()) " · ${failures.size} 个失败：${failures.first()}" else "")
             if (imported.isNotEmpty()) onChanged()
@@ -740,6 +746,14 @@ internal fun CustomerAnalysisContent(
                     }
                 }
             }
+            CustomerImportCoverageStrip(
+                records = rawRecords,
+                sessions = trafficSessions,
+                initialMonth = java.time.YearMonth.from(
+                    if (range == CustomerRange.THIS_MONTH) monthAnchor else
+                        if (range == CustomerRange.TODAY) dayAnchor else today
+                )
+            )
             if (importing) {
                 LinearProgressIndicator(
                     Modifier.fillMaxWidth()
@@ -1208,7 +1222,7 @@ private fun CustomerPaymentRecordsContent(
         }
         AnimatedVisibility(showImportHistory) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-                ImportBatchList(importBatches.take(5))
+                ImportBatchList(importBatches.take(12))
             }
         }
         Row(
@@ -1609,7 +1623,15 @@ private fun ImportBatchList(batches: List<PaymentImportBatchRecord>) {
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(
-                        "识别 ${batch.acceptedRows} · 重复 ${batch.duplicateRows} · ${formatTime(batch.importedAt)}",
+                        if (batch.firstReceiptDate.isBlank())
+                            "无已识别经营收款日期 · 可能为非经营交易或退款文件"
+                        else "发现收款日期：${batch.firstReceiptDate} ～ ${batch.lastReceiptDate} · " +
+                            "${batch.receiptDays}个有收款日 · ${batch.receiptCount}笔",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF087D4E)
+                    )
+                    Text(
+                        "识别 ${batch.acceptedRows} · 重复 ${batch.duplicateRows} · ${formatTime(batch.importedAt)} · 本机未同步",
                         style = MaterialTheme.typography.labelSmall,
                         color = Color.Gray
                     )
