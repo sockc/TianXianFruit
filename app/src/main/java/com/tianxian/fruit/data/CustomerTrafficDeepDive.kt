@@ -82,32 +82,57 @@ internal object CustomerTrafficDeepDive {
     private fun tradeTime(record: CustomerPaymentRecord): LocalDateTime? =
         runCatching { LocalDateTime.parse(record.tradeTime.replace(" ", "T")) }.getOrNull()
 
-    /** Only unambiguous matches; preserve original receipt timestamps and transaction IDs. */
+    /**
+     * Only a single recorded selling window can prove a receipt's location.
+     * Require the actual timestamp to fall within the window even if just one
+     * store operated that day. A date or a sole store by itself is not proof.
+     */
+    fun matchSession(
+        tradeTime: String,
+        sessions: List<CustomerTrafficSession>,
+        requiredStoreId: Long = 0L
+    ): CustomerTrafficSession? {
+        val moment = runCatching {
+            LocalDateTime.parse(tradeTime.replace(" ", "T"))
+        }.getOrNull() ?: return null
+        return sessions.filter { session ->
+            session.storeId > 0L &&
+                (requiredStoreId <= 0L || session.storeId == requiredStoreId) &&
+                bounds(session)?.let { (start, end) ->
+                    !moment.isBefore(start) && moment.isBefore(end)
+                } == true
+        }.singleOrNull()
+    }
+
+    /** Read-only attribution; no original bills or synced business records change. */
     fun attributeBusinessDays(
         rows: List<CustomerPaymentRecord>,
         sessions: List<CustomerTrafficSession>
     ): List<CustomerPaymentRecord> {
-        val windows = sessions.mapNotNull { session ->
-            bounds(session)?.let { (start, end) -> Triple(session, start, end) }
-        }
+        // Avoid scanning months/years of shifts for each payment. Only the
+        // transaction day and preceding date can contain its trading window.
+        val shiftsByDate = sessions.groupBy { it.date }
         return rows.map { record ->
+            // A standalone refund never establishes that the buyer visited a store.
+            if (record.amount <= 0.005) return@map record
             val moment = tradeTime(record) ?: return@map record
-            // Only change business-day attribution for receipts after midnight.
-            // A normal daytime receipt keeps its original store, date and sync data.
-            if (moment.toLocalDate().toString() == record.businessDate &&
-                moment.hour >= 6) return@map record
-            val matches = windows.filter { (session, start, end) ->
-                !moment.isBefore(start) && moment.isBefore(end) &&
-                    (record.storeId <= 0L || record.storeId == session.storeId)
+            val tradeDay = moment.toLocalDate()
+            val originalDay = tradeDay.toString()
+            // Do not silently overwrite a store that was explicitly saved before.
+            if (record.storeId > 0L && record.businessDate == originalDay && moment.hour >= 6) {
+                return@map record
             }
-            if (matches.size != 1) return@map record
-            val session = matches.single().first
-            // Do not overwrite a known but conflicting store assignment.
-            if (record.storeId > 0L && record.storeId != session.storeId) return@map record
+            val nearby = shiftsByDate[originalDay].orEmpty() +
+                shiftsByDate[tradeDay.minusDays(1).toString()].orEmpty()
+            val matched = matchSession(
+                record.tradeTime, nearby,
+                requiredStoreId = record.storeId.coerceAtLeast(0L)
+            ) ?: return@map record
+            if (record.storeId > 0L && record.storeId != matched.storeId) return@map record
             record.copy(
-                businessDate = session.date,
-                storeId = session.storeId,
-                storeName = session.storeName
+                businessDate = matched.date,
+                storeId = matched.storeId,
+                storeName = matched.storeName
             )
         }
     }

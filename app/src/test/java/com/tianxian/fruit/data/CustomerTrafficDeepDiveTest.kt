@@ -95,6 +95,65 @@ class CustomerTrafficDeepDiveTest {
         assertEquals("2026-10-15",kept.businessDate)
     }
 
+    @Test fun uniqueDaytimeShiftCanSafelyMatchPreviouslyUnassignedPayment() {
+        val receipt = record(40, "2026-10-14 18:05:00", storeId = 0L)
+        val sessions = listOf(
+            session("2026-10-14", 1, "16:00", "20:00"),
+            session("2026-10-14", 2, "20:00", "24:00")
+        )
+        val assigned = CustomerTrafficDeepDive.attributeBusinessDays(
+            listOf(receipt), sessions
+        ).single()
+        assertEquals(1L, assigned.storeId)
+        assertEquals("2026-10-14", assigned.businessDate)
+        assertEquals(0L, receipt.storeId)
+        assertEquals(1L, CustomerTrafficDeepDive.matchSession(
+            receipt.tradeTime, sessions
+        )?.storeId)
+    }
+
+    @Test fun soleStoreWithoutTimestampEvidenceIsNotGuessed() {
+        val receipt = record(41, "2026-10-14 11:05:00", storeId = 0L)
+        val sessions = listOf(session("2026-10-14", 1, "16:00", "23:00"))
+        assertNull(CustomerTrafficDeepDive.matchSession(receipt.tradeTime, sessions))
+        assertEquals(0L, CustomerTrafficDeepDive.attributeBusinessDays(
+            listOf(receipt), sessions
+        ).single().storeId)
+    }
+
+    @Test fun overlappingWindowsAndInvalidTimesRemainUnmatched() {
+        val receipt = record(42, "2026-10-14 19:05:00", storeId = 0L)
+        val sessions = listOf(
+            session("2026-10-14", 1, "16:00", "23:00"),
+            session("2026-10-14", 2, "18:00", "24:00")
+        )
+        assertNull(CustomerTrafficDeepDive.matchSession(receipt.tradeTime, sessions))
+        assertEquals(0L, CustomerTrafficDeepDive.attributeBusinessDays(
+            listOf(receipt), sessions
+        ).single().storeId)
+        assertNull(CustomerTrafficDeepDive.matchSession("invalid", sessions))
+    }
+
+    @Test fun existingStoreAndRefundKeepTheirOriginalEvidence() {
+        val original = record(43, "2026-10-14 18:01:00", storeId = 2L)
+        val refund = record(44, "2026-10-14 18:02:00", storeId = 0L, amount = -12.0)
+        val records = CustomerTrafficDeepDive.attributeBusinessDays(
+            listOf(original, refund), listOf(session("2026-10-14", 1))
+        )
+        assertEquals(2L, records[0].storeId)
+        assertEquals(0L, records[1].storeId)
+    }
+
+    @Test fun knownStoreAfterMidnightUsesPreviousTradingDateWithoutChangingRawReceipt() {
+        val raw = record(50, "2026-10-15 00:15:00", storeId = 1L)
+        val attributed = CustomerTrafficDeepDive.attributeBusinessDays(
+            listOf(raw), listOf(session("2026-10-14", 1, "16:00", "02:00"))
+        ).single()
+        assertEquals("2026-10-14", attributed.businessDate)
+        assertEquals(1L, attributed.storeId)
+        assertEquals("2026-10-15", raw.businessDate)
+    }
+
     @Test fun positivePaymentsOnlyDetermineAmountBands() {
         val amounts=listOf(9.0,10.0,19.0,20.0,29.0,30.0,49.0,50.0)
         val records=amounts.mapIndexed { index, amt ->

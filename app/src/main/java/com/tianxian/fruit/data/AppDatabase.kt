@@ -15648,127 +15648,65 @@ class AppDatabase(
         }
     }
 
+    /**
+     * A payment is assigned only when a saved, non-deleted business window
+     * uniquely contains its actual timestamp. Looking at both calendar dates
+     * allows a 00:30 sale to belong to yesterday's 16:00–02:00 shift.
+     * A single store on a date is NOT sufficient evidence by itself.
+     */
     private fun resolveCustomerPaymentStore(
         db: SQLiteDatabase,
         tradeTime: String,
         businessDate: String
     ): StoreOption? {
-        val records =
-            db.rawQuery(
-                """
-                SELECT
-                    d.store_id,
-                    d.store_name,
-                    d.actual_start_time,
-                    d.actual_end_time,
-                    s.address,
-                    s.latitude,
-                    s.longitude,
-                    s.sync_id,
-                    s.default_start_time,
-                    s.default_end_time
-                FROM store_daily_record d
-                LEFT JOIN store s ON s.id=d.store_id
-                WHERE d.deleted=0 AND d.date=?
-                ORDER BY d.id
-                """.trimIndent(),
-                arrayOf(businessDate)
-            ).use { c ->
-                buildList {
-                    while (c.moveToNext()) {
-                        add(
-                            Triple(
-                                StoreOption(
-                                    id = c.long("store_id"),
-                                    name = c.str("store_name"),
-                                    address =
-                                        if (c.getColumnIndex("address") >= 0) c.str("address") else "",
-                                    latitude =
-                                        c.getColumnIndex("latitude")
-                                            .takeIf { it >= 0 && !c.isNull(it) }
-                                            ?.let { c.getDouble(it) },
-                                    longitude =
-                                        c.getColumnIndex("longitude")
-                                            .takeIf { it >= 0 && !c.isNull(it) }
-                                            ?.let { c.getDouble(it) },
-                                    syncId =
-                                        if (c.getColumnIndex("sync_id") >= 0) c.str("sync_id") else "",
-                                    defaultStartTime =
-                                        if (c.getColumnIndex("default_start_time") >= 0) {
-                                            c.str("default_start_time").ifBlank { "16:00" }
-                                        } else {
-                                            "16:00"
-                                        },
-                                    defaultEndTime =
-                                        if (c.getColumnIndex("default_end_time") >= 0) {
-                                            c.str("default_end_time").ifBlank { "24:00" }
-                                        } else {
-                                            "24:00"
-                                        }
-                                ),
-                                c.str("actual_start_time"),
-                                c.str("actual_end_time")
-                            )
-                        )
-                    }
+        val moment = runCatching {
+            LocalDateTime.parse(tradeTime, CUSTOMER_PAYMENT_DATE_TIME)
+        }.getOrNull() ?: return null
+        val tradeDay = moment.toLocalDate()
+        val candidates = db.rawQuery(
+            """
+            SELECT d.date,d.store_id,d.store_name,
+                   COALESCE(NULLIF(d.actual_start_time,''),
+                            NULLIF(s.default_start_time,''),'16:00') AS traffic_start,
+                   COALESCE(NULLIF(d.actual_end_time,''),
+                            NULLIF(s.default_end_time,''),'24:00') AS traffic_end,
+                   s.address,s.latitude,s.longitude,s.sync_id,
+                   s.default_start_time,s.default_end_time
+            FROM store_daily_record d
+            LEFT JOIN store s ON s.id=d.store_id
+            WHERE d.deleted=0 AND d.store_id>0 AND d.date IN (?,?)
+            ORDER BY d.date,d.id
+            """.trimIndent(),
+            arrayOf(tradeDay.toString(), tradeDay.minusDays(1).toString())
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    val store = StoreOption(
+                        id = c.long("store_id"),
+                        name = c.str("store_name"),
+                        address = c.str("address"),
+                        latitude = c.getColumnIndex("latitude")
+                            .takeIf { it >= 0 && !c.isNull(it) }?.let { c.getDouble(it) },
+                        longitude = c.getColumnIndex("longitude")
+                            .takeIf { it >= 0 && !c.isNull(it) }?.let { c.getDouble(it) },
+                        syncId = c.str("sync_id"),
+                        defaultStartTime = c.str("default_start_time").ifBlank { "16:00" },
+                        defaultEndTime = c.str("default_end_time").ifBlank { "24:00" }
+                    )
+                    add(store to CustomerTrafficSession(
+                        date = c.str("date"),
+                        storeId = store.id,
+                        storeName = store.name,
+                        startTime = c.str("traffic_start"),
+                        endTime = c.str("traffic_end")
+                    ))
                 }
             }
-
-        if (records.isEmpty()) return null
-        if (records.size == 1) return records.first().first
-
-        val moment =
-            runCatching {
-                LocalDateTime.parse(
-                    tradeTime,
-                    CUSTOMER_PAYMENT_DATE_TIME
-                )
-            }.getOrNull() ?: return null
-
-        val day =
-            runCatching {
-                LocalDate.parse(businessDate)
-            }.getOrNull() ?: return null
-
-        val candidates =
-            records.filter { (_, actualStart, actualEnd) ->
-                val startText =
-                    actualStart.ifBlank { "16:00" }
-                val endText =
-                    actualEnd.ifBlank { "24:00" }
-
-                val start =
-                    runCatching {
-                        day.atTime(
-                            LocalTime.parse(startText)
-                        )
-                    }.getOrElse {
-                        day.atTime(16, 0)
-                    }
-
-                val end =
-                    if (endText == "24:00") {
-                        day.plusDays(1).atStartOfDay()
-                    } else {
-                        runCatching {
-                            day.atTime(
-                                LocalTime.parse(endText)
-                            )
-                        }.getOrElse {
-                            day.plusDays(1).atStartOfDay()
-                        }.let {
-                            if (it.isAfter(start)) it else it.plusDays(1)
-                        }
-                    }
-
-                !moment.isBefore(start) && moment.isBefore(end)
-            }
-
-        return if (candidates.size == 1) {
-            candidates.first().first
-        } else {
-            null
         }
+        val matched = CustomerTrafficDeepDive.matchSession(
+            tradeTime, candidates.map { it.second }
+        ) ?: return null
+        return candidates.firstOrNull { it.second == matched }?.first
     }
 
     /** Read-only saved business sessions for reliable traffic comparison.
