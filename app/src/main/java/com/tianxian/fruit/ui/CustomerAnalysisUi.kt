@@ -1636,8 +1636,11 @@ private fun ImportBatchList(batches: List<PaymentImportBatchRecord>) {
                     Text(
                         if (batch.firstReceiptDate.isBlank())
                             "无已识别经营收款日期 · 可能为非经营交易或退款文件"
-                        else "发现收款日期：${batch.firstReceiptDate} ～ ${batch.lastReceiptDate} · " +
-                            "${batch.receiptDays}个有收款日 · ${batch.receiptCount}笔",
+                        else "${if (batch.coverageSource == "FILE") "文件收款日期" else "历史已保存收款日期"}：" +
+                            "${batch.firstReceiptDate} ～ ${batch.lastReceiptDate} · " +
+                            "${batch.receiptDays}个有收款日 · ${batch.receiptCount}笔" +
+                            if (batch.coverageSource == "INSERTED_ONLY")
+                                "（旧版去重后留存记录，范围可能不全）" else "",
                         style = MaterialTheme.typography.labelSmall,
                         color = Color(0xFF087D4E)
                     )
