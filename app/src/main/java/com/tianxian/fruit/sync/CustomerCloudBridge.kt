@@ -224,7 +224,9 @@ internal object CustomerCloudBridge {
                         val local = OfficialWechatCustomerStatsLocal.get(context, bookId, key)
                         val current = officialPayload(key, local)
                         val previous = knownAck[kind to key]
-                        val locallyDirty = local != null && previous?.hash != digest(current.toString())
+                        val locallyDirty =
+                            OfficialWechatCustomerStatsLocal.hasLocalEntry(context, bookId, key) &&
+                                previous?.hash != digest(current.toString())
                         // An unsynced manually entered value is NOT overwritten.
                         if (locallyDirty) continue
                         val deleted = body.optBoolean("deleted", false)
@@ -329,13 +331,20 @@ internal object CustomerCloudBridge {
         pull()
         val status = context.getSharedPreferences("customer_cloud_sync_status_v1", Context.MODE_PRIVATE)
         status.edit().putLong("last_$bookId", System.currentTimeMillis())
-            .putInt("uploaded_$bookId", uploaded).apply()
+            .putInt("uploaded_$bookId", uploaded)
+            .remove("error_$bookId").apply()
         return Result(uploaded, totalDownload)
     }
 
     fun syncStatus(context: Context, bookId: String): String {
         val ts = context.getSharedPreferences("customer_cloud_sync_status_v1", Context.MODE_PRIVATE)
             .getLong("last_$bookId", 0L)
-        return if (ts > 0L) "已连接客流云同步" else "本机未同步"
+        val error = context.getSharedPreferences("customer_cloud_sync_status_v1", Context.MODE_PRIVATE)
+            .getString("error_$bookId", "").orEmpty()
+        return when {
+            error.isNotBlank() -> "客流同步待处理：$error"
+            ts > 0L -> "已连接客流云同步"
+            else -> "本机未同步"
+        }
     }
 }
