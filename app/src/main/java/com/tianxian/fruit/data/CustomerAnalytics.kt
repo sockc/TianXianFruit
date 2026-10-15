@@ -26,7 +26,9 @@ data class CustomerPaymentRecord(
     val transactionRef: String = "",
     val analysisExcluded: Boolean = false,
     val analysisIncludedOverride: Boolean = false,
-    val exclusionReason: String = ""
+    val exclusionReason: String = "",
+    /** Local source-batch identity, NOT a shared customer or cashier ID. */
+    val sourceBatchId: Long = 0L
 )
 
 data class CustomerAnalysisSettings(

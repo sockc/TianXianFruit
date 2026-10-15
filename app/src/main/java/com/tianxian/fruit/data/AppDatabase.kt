@@ -943,6 +943,7 @@ class AppDatabase(
         createV41CustomerImportCoverageIndex(db)
         createV42CustomerCloudState(db)
         createV43CustomerStoreDayAssignment(db)
+        createV44CustomerCollectorAssignment(db)
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -1121,6 +1122,9 @@ class AppDatabase(
         }
         if (oldVersion < 43) {
             createV43CustomerStoreDayAssignment(db)
+        }
+        if (oldVersion < 44) {
+            createV44CustomerCollectorAssignment(db)
         }
     }
 
@@ -3581,6 +3585,20 @@ class AppDatabase(
      * Isolated customer-data sync state. Existing ledger cloud triggers and
      * official accounting tables are intentionally not changed.
      */
+    private fun createV44CustomerCollectorAssignment(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS customer_bill_collector_assignment (
+                platform TEXT NOT NULL,
+                file_hash TEXT NOT NULL,
+                partner_sync_id TEXT NOT NULL DEFAULT '',
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(platform,file_hash)
+            )
+            """.trimIndent()
+        )
+    }
+
     private fun createV43CustomerStoreDayAssignment(db: SQLiteDatabase) {
         db.execSQL(
             """
@@ -15887,6 +15905,95 @@ class AppDatabase(
         ) != -1L
     }
 
+    /** A bill export belongs to one RECEIVING account, never to the payer.
+     * This explicit per-batch annotation never rewrites deduplicated receipt rows.
+     * Empty partner_sync_id is a synced unassignment tombstone.
+     */
+    fun getCustomerBillCollectorAssignments(): Map<String, String> =
+        readableDatabase.rawQuery(
+            "SELECT platform,file_hash,partner_sync_id FROM customer_bill_collector_assignment",
+            null
+        ).use { c ->
+            buildMap {
+                while (c.moveToNext()) {
+                    put(c.str("platform") + "|" + c.str("file_hash"), c.str("partner_sync_id"))
+                }
+            }
+        }
+
+    fun getCustomerCollectorByBatchId(): Map<Long, String> =
+        readableDatabase.rawQuery(
+            """
+            SELECT b.id, COALESCE(a.partner_sync_id,'') AS partner_sync_id
+            FROM payment_import_batch b
+            LEFT JOIN customer_bill_collector_assignment a
+              ON a.platform=b.platform AND a.file_hash=b.file_hash
+            """.trimIndent(), null
+        ).use { c ->
+            buildMap {
+                while (c.moveToNext()) put(c.long("id"), c.str("partner_sync_id"))
+            }
+        }
+
+    fun getCollectorSyncOptions(): List<Pair<String, String>> =
+        readableDatabase.rawQuery(
+            "SELECT sync_id,name FROM partner WHERE enabled=1 AND deleted=0 ORDER BY id",
+            null
+        ).use { c ->
+            buildList {
+                while (c.moveToNext()) {
+                    val id = c.str("sync_id")
+                    if (id.isNotBlank()) add(id to c.str("name"))
+                }
+            }
+        }
+
+    fun setCustomerBillCollector(platform: String, hash: String, partnerSyncId: String): Boolean {
+        if (platform !in setOf("WECHAT","ALIPAY") || hash.length != 64 ||
+            !hash.all { it in '0'..'9' || it in 'a'..'f' } ||
+            partnerSyncId.length > 100) return false
+        if (partnerSyncId.isNotBlank()) {
+            val valid = readableDatabase.rawQuery(
+                "SELECT 1 FROM partner WHERE sync_id=? AND enabled=1 AND deleted=0 LIMIT 1",
+                arrayOf(partnerSyncId)
+            ).use { it.moveToFirst() }
+            if (!valid) return false
+        }
+        return upsertCustomerBillCollector(platform, hash, partnerSyncId)
+    }
+
+    private fun upsertCustomerBillCollector(
+        platform: String, hash: String, partnerSyncId: String
+    ): Boolean = writableDatabase.insertWithOnConflict(
+        "customer_bill_collector_assignment", null, ContentValues().apply {
+            put("platform", platform)
+            put("file_hash", hash)
+            put("partner_sync_id", partnerSyncId)
+            put("updated_at", System.currentTimeMillis())
+        }, SQLiteDatabase.CONFLICT_REPLACE
+    ) != -1L
+
+    fun setCustomerBillCollectorForBatch(batchId: Long, partnerSyncId: String): Boolean {
+        val identity = readableDatabase.rawQuery(
+            "SELECT platform,file_hash FROM payment_import_batch WHERE id=? LIMIT 1",
+            arrayOf(batchId.toString())
+        ).use { c ->
+            if (c.moveToFirst()) c.str("platform") to c.str("file_hash") else null
+        } ?: return false
+        return setCustomerBillCollector(identity.first, identity.second, partnerSyncId)
+    }
+
+    fun applyCustomerBillCollectorFromCloud(
+        platform: String, hash: String, partnerSyncId: String
+    ): Boolean {
+        if (platform !in setOf("WECHAT","ALIPAY") || hash.length != 64 ||
+            !hash.all { it in '0'..'9' || it in 'a'..'f' } ||
+            partnerSyncId.length > 100) return false
+        // Partners may arrive after the customer incremental sync; retain the
+        // stable id even when the local partner row has not synced yet.
+        return upsertCustomerBillCollector(platform, hash, partnerSyncId)
+    }
+
     fun getCustomerPayments(
         startDate: String? = null,
         endDate: String? = null
@@ -15945,7 +16052,8 @@ class AppDatabase(
                             analysisIncludedOverride =
                                 c.int("analysis_included_override") == 1,
                             exclusionReason =
-                                c.str("exclusion_reason")
+                                c.str("exclusion_reason"),
+                            sourceBatchId = c.long("source_batch_id")
                         )
                     )
                 }
@@ -16672,7 +16780,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 43
+        const val DB_VERSION = 44
 
         private val CUSTOMER_PAYMENT_DATE_TIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")

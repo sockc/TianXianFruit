@@ -91,7 +91,7 @@ class CustomerImportCoverageSqlTest(unittest.TestCase):
         source = APP_DB.read_text(encoding="utf-8")
         self.assertIn("COALESCE(NULLIF(b.observed_first_date,''),t.first_receipt_date,'')", source)
         self.assertIn('put("observed_first_date", receiptStart)', source)
-        self.assertIn("const val DB_VERSION = 43", source)
+        self.assertIn("const val DB_VERSION = 44", source)
 
 
 if __name__ == "__main__":

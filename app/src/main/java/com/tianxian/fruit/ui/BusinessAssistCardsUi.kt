@@ -39,80 +39,70 @@ internal fun AssistBillImportButton(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var importing by remember { mutableStateOf(false) }
-
-    val launcher =
-        rememberLauncherForActivityResult(
-            ActivityResultContracts.OpenDocument()
-        ) { uri ->
-            if (uri == null || importing) {
-                return@rememberLauncherForActivityResult
-            }
+    var chooseCollector by remember { mutableStateOf(false) }
+    var selectedCollector by remember { mutableStateOf("") }
+    val collectorOptions = remember(db) { db.getCollectorSyncOptions() }
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null && !importing) {
             importing = true
             onResult("正在识别账单…")
             scope.launch {
-                val result =
-                    withContext(Dispatchers.IO) {
-                        runCatching {
-                            importAssistBillFile(
-                                db = db,
-                                uri = uri,
-                                resolver = context.contentResolver
-                            )
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        importAssistBillFile(db, uri, context.contentResolver).also { outcome ->
+                            if (!db.setCustomerBillCollectorForBatch(
+                                    outcome.batchId, selectedCollector)) {
+                                throw IllegalStateException(
+                                    "账单已保存，但收款人归属未保存，请在客户分析导入历史中补选"
+                                )
+                            }
                         }
                     }
+                }
                 result.onSuccess { outcome ->
                     onResult(
                         when {
-                            outcome.duplicateFile ->
-                                "账单已处理过，没有新增数据"
-                            outcome.insertedRows > 0 ||
-                                outcome.purchaseCandidateInsertedRows > 0 ->
-                                "导入完成：经营收款 ${outcome.insertedRows} 笔 · 采购候选 ${outcome.purchaseCandidateInsertedRows} 笔"
-                            else ->
-                                "账单已读取，没有发现新的经营收款或采购候选"
+                            outcome.duplicateFile -> "账单已处理过；已更新收款人关联"
+                            outcome.insertedRows > 0 || outcome.purchaseCandidateInsertedRows > 0 ->
+                                "导入完成：经营收款 ${outcome.insertedRows}笔 · 采购候选 ${outcome.purchaseCandidateInsertedRows}笔"
+                            else -> "账单已读取，没有发现新的经营收款或采购候选"
                         }
                     )
                     onChanged()
                 }.onFailure {
-                    onResult(
-                        "导入失败：${it.message ?: "无法读取账单"}"
-                    )
+                    onResult("导入失败或归属待补选：${it.message ?: "无法读取账单"}")
                 }
                 importing = false
             }
         }
-
+    }
     Text(
         if (importing) "导入中" else label,
-        modifier =
-            Modifier
-                .clickable(
-                    enabled = !importing
-                ) {
-                    launcher.launch(
-                        arrayOf(
-                            "text/*",
-                            "text/csv",
-                            "application/csv",
-                            "application/zip",
-                            "application/vnd.ms-excel",
-                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            "application/octet-stream"
-                        )
-                    )
-                }
-                .padding(
-                    horizontal = 5.dp,
-                    vertical = 2.dp
-                ),
+        modifier = Modifier.clickable(enabled = !importing) { chooseCollector = true }
+            .padding(horizontal = 5.dp, vertical = 2.dp),
         style = MaterialTheme.typography.labelMedium,
-        color =
-            if (importing) {
-                Color.Gray
-            } else {
-                AssistGreen
-            }
+        color = if (importing) Color.Gray else AssistGreen
     )
+    if (chooseCollector) {
+        CustomerBillCollectorPicker(
+            options = collectorOptions,
+            current = selectedCollector,
+            title = "导入账单 · 选择收款人",
+            onDismiss = { chooseCollector = false },
+            onConfirm = { chosen ->
+                selectedCollector = chosen
+                chooseCollector = false
+                launcher.launch(arrayOf(
+                    "text/*", "text/csv", "application/csv", "application/zip",
+                    "application/vnd.ms-excel",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "application/octet-stream"
+                ))
+            }
+        )
+    }
 }
 
 @Composable
@@ -400,7 +390,15 @@ private data class BusinessAssistSnapshot(
     val analysis: CustomerAnalysisResult,
     val wechatTotal: Double,
     val alipayTotal: Double,
-    val rawDayCount: Int
+    val rawDayCount: Int,
+    val collectors: List<BillCollectorSummary> = emptyList()
+)
+
+private data class BillCollectorSummary(
+    val name: String,
+    val wechat: Double,
+    val alipay: Double,
+    val paymentCount: Int
 )
 
 internal data class BusinessPaymentSupplement(
@@ -509,8 +507,23 @@ internal fun BusinessPaymentAssistCard(
                             startDate = date,
                             endDate = date
                         )
+                    val assignedCollectorByBatch = db.getCustomerCollectorByBatchId()
+                    val collectorNames = db.getCollectorSyncOptions().toMap()
+                    val collectorSummaries = dayPayments.groupBy { payment ->
+                        assignedCollectorByBatch[payment.sourceBatchId].orEmpty()
+                    }.map { (id, receipts) ->
+                        BillCollectorSummary(
+                            name = collectorNames[id] ?: "未指定收款人",
+                            wechat = receipts.filter { it.platform == "WECHAT" }
+                                .sumOf { it.netAmount },
+                            alipay = receipts.filter { it.platform == "ALIPAY" }
+                                .sumOf { it.netAmount },
+                            paymentCount = receipts.size
+                        )
+                    }.sortedBy { it.name }
                     BusinessAssistSnapshot(
                         analysis = analysis,
+                        collectors = collectorSummaries,
                         wechatTotal =
                             dayPayments
                                 .filter {
@@ -713,6 +726,18 @@ internal fun BusinessPaymentAssistCard(
             }
 
             if (expanded) {
+                current.collectors.forEach { account ->
+                    Text(
+                        "${account.name} · 微信 ${assistMoney(account.wechat)} · " +
+                            "支付宝 ${assistMoney(account.alipay)} · ${account.paymentCount}笔",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AssistGreen
+                    )
+                }
+                Text(
+                    "按整份导入账单指定的收款人统计；混合账号不自动推断。",
+                    color = Color.Gray, style = MaterialTheme.typography.labelSmall
+                )
                 Text(
                     if (hasManualBusiness) {
                         "补入仅更新微信/支付宝收款，现金、手填客户人数及其他营业数据保持不变。"

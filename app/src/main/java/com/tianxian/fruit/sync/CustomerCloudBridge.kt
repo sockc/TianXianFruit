@@ -43,7 +43,7 @@ internal object CustomerCloudBridge {
         fun json(): JSONObject = JSONObject()
             .put("kind", kind).put("key", key).put("payload", payload)
             .apply {
-                if (kind in setOf("OFFICIAL", "ASSIGNMENT") && revision > 0)
+                if (kind in setOf("OFFICIAL", "ASSIGNMENT", "COLLECTOR") && revision > 0)
                     put("expected_revision", revision)
             }
     }
@@ -71,7 +71,14 @@ internal object CustomerCloudBridge {
         JSONObject().put("date", date).put("store_sync_id", storeSyncId)
             .put("deleted", storeSyncId.isBlank())
 
-    private fun pending(context: Context, db: AppDatabase, bookId: String, limit: Int): List<SyncItem> {
+    private fun collectorPayload(platform: String, hash: String, partner: String): JSONObject =
+        JSONObject().put("platform", platform).put("file_hash", hash)
+            .put("partner_sync_id", partner).put("deleted", partner.isBlank())
+
+    private fun pending(
+        context: Context, db: AppDatabase, bookId: String, limit: Int,
+        includeCollector: Boolean = true
+    ): List<SyncItem> {
         val ack = ackMap(db.readableDatabase)
         val results = mutableListOf<SyncItem>()
         fun include(kind: String, key: String, payload: JSONObject): Boolean {
@@ -145,6 +152,15 @@ internal object CustomerCloudBridge {
         if (results.size < limit) {
             for ((date, stableStoreId) in db.getCustomerStoreDayAssignments().toSortedMap()) {
                 if (include("ASSIGNMENT", date, assignmentPayload(date, stableStoreId))) break
+            }
+        }
+        if (results.size < limit && includeCollector) {
+            for ((key, partner) in db.getCustomerBillCollectorAssignments().toSortedMap()) {
+                val divider = key.indexOf('|')
+                if (divider <= 0) continue
+                val platform = key.substring(0, divider)
+                val hash = key.substring(divider + 1)
+                if (include("COLLECTOR", key, collectorPayload(platform, hash, partner))) break
             }
         }
         return results
@@ -274,6 +290,24 @@ internal object CustomerCloudBridge {
                         ack(database, kind, key, digestValue, version)
                         knownAck[kind to key] = Ack(digestValue, version)
                     }
+                    "COLLECTOR" -> {
+                        val platform = body.str("platform")
+                        val hash = body.str("file_hash")
+                        if ("$platform|$hash" != key) continue
+                        val partner = if (body.optBoolean("deleted", false)) ""
+                            else body.str("partner_sync_id")
+                        val current = db.getCustomerBillCollectorAssignments()[key]
+                        val previous = knownAck[kind to key]
+                        val locallyDirty = current != null &&
+                            previous?.hash != digest(collectorPayload(platform, hash, current).toString())
+                        if (locallyDirty) continue
+                        if (!db.applyCustomerBillCollectorFromCloud(platform, hash, partner)) {
+                            throw IllegalStateException("恢复云端账单收款人关联失败")
+                        }
+                        val currentHash = digest(collectorPayload(platform, hash, partner).toString())
+                        ack(database, kind, key, currentHash, version)
+                        knownAck[kind to key] = Ack(currentHash, version)
+                    }
                     else -> throw IllegalStateException("未知客流同步数据类型：$kind")
                 }
             }
@@ -296,6 +330,9 @@ internal object CustomerCloudBridge {
         if (!caps.optBoolean("supported") || caps.optInt("version") != 1) {
             throw IllegalStateException("服务器尚未支持客流同步 V1")
         }
+        val features = caps.optJSONArray("features")
+        val supportsCollector = (0 until (features?.length() ?: 0))
+            .any { features?.optString(it) == "bill_collector" }
         val database = db.writableDatabase
         database.beginTransaction()
         try {
@@ -315,7 +352,8 @@ internal object CustomerCloudBridge {
         fun pull() {
             for (page in 0 until 400) {
                 val before = serverCursor(database)
-                val response = request("GET", "$endpoint/changes?cursor=$before&limit=200&include_assignments=true", null)
+                val response = request("GET", "$endpoint/changes?cursor=$before&limit=200&include_assignments=true" +
+                    (if (supportsCollector) "&include_collectors=true" else ""), null)
                 val changes = response.getJSONArray("changes")
                 val next = response.getLong("next_cursor")
                 if (next < before || (changes.length() > 0 && next == before)) {
@@ -333,7 +371,7 @@ internal object CustomerCloudBridge {
         var uploaded = 0
         if (canWrite) {
             for (page in 0 until 400) {
-                val batch = pending(context, db, bookId, MAX_BATCH)
+                val batch = pending(context, db, bookId, MAX_BATCH, supportsCollector)
                 if (batch.isEmpty()) break
                 val body = JSONObject().put("items", JSONArray().apply {
                     batch.forEach { put(it.json()) }
@@ -360,15 +398,19 @@ internal object CustomerCloudBridge {
                 } finally { database.endTransaction() }
                 if (batch.size < MAX_BATCH) break
             }
-            if (pending(context, db, bookId, 1).isNotEmpty()) {
+            if (pending(context, db, bookId, 1, supportsCollector).isNotEmpty()) {
                 throw IllegalStateException("待同步客流记录较多，已分批上传，仍有未确认记录")
             }
         }
         pull()
         val status = context.getSharedPreferences("customer_cloud_sync_status_v1", Context.MODE_PRIVATE)
+        val unsyncedCollector = !supportsCollector &&
+            db.getCustomerBillCollectorAssignments().isNotEmpty()
         status.edit().putLong("last_$bookId", System.currentTimeMillis())
             .putInt("uploaded_$bookId", uploaded)
-            .remove("error_$bookId").apply()
+            .putString("error_$bookId",
+                if (unsyncedCollector) "服务器未支持账单收款人关联同步，请先升级Server V1.0.21" else "")
+            .apply()
         return Result(uploaded, totalDownload)
     }
 
