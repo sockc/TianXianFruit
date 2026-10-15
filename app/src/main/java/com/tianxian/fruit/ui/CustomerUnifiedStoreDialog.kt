@@ -27,7 +27,14 @@ internal fun CustomerUnifiedStoreDialog(
     onDismiss: () -> Unit,
     onSaved: () -> Unit
 ) {
-    val stores = remember(date) { db.getStores().filter { it.syncId.isNotBlank() } }
+    // Use only stores with a saved, non-deleted business session on this date.
+    // The store configuration list alone is not evidence that a stall opened.
+    val stores = remember(date) {
+        val operatedIds = db.getCustomerTrafficSessions().asSequence()
+            .filter { it.date == date }
+            .map { it.storeId }.toSet()
+        db.getStores().filter { it.id in operatedIds && it.syncId.isNotBlank() }
+    }
     val assignedId = remember(date) { db.getCustomerStoreDayAssignments()[date] }
     var choice by remember(date, assignedId) {
         mutableStateOf(
@@ -48,6 +55,10 @@ internal fun CustomerUnifiedStoreDialog(
                 Text("将这一天微信、支付宝未匹配的收款统一计入所选位置；已有明确位置的交易不改动。",
                     style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(6.dp))
+                if (stores.isEmpty()) {
+                    Text("当天没有已保存的营业位置。请先到营业表保存当天的经营记录，之后才能指定。",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
                 stores.forEach { store: StoreOption ->
                     Row(
                         modifier = Modifier.fillMaxWidth().clickable { choice = store.syncId }
@@ -57,6 +68,10 @@ internal fun CustomerUnifiedStoreDialog(
                         RadioButton(selected = choice == store.syncId, onClick = { choice = store.syncId })
                         Text(store.name, style = MaterialTheme.typography.bodyMedium)
                     }
+                }
+                if (!assignedId.isNullOrBlank() && stores.none { it.syncId == assignedId }) {
+                    Text("原指定位置不在当天营业列表中，可重新选择或撤销。",
+                        style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                 }
                 if (assignedId != null && assignedId.isNotBlank()) {
                     TextButton(onClick = { choice = "" }) { Text("撤销本日统一归属") }
@@ -73,7 +88,8 @@ internal fun CustomerUnifiedStoreDialog(
             TextButton(onClick = {
                 if (db.setCustomerStoreDayAssignment(date, choice)) onSaved()
                 else error = true
-            }, enabled = choice.isNotBlank() || !assignedId.isNullOrBlank()) { Text("保存") }
+            }, enabled = (choice.isNotBlank() && stores.any { it.syncId == choice }) ||
+                (!assignedId.isNullOrBlank() && choice.isBlank())) { Text("保存") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
