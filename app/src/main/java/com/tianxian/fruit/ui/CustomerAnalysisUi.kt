@@ -970,6 +970,14 @@ internal fun CustomerAnalysisContent(
                     }
                 }
                 showCalendarDialog = false
+            },
+            onQuickRange = { kind ->
+                range = when (kind) {
+                    "LAST_7" -> CustomerRange.LAST_7
+                    "LAST_30" -> CustomerRange.LAST_30
+                    else -> CustomerRange.ALL
+                }
+                showCalendarDialog = false
             }
         )
     }
