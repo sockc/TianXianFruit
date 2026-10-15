@@ -961,6 +961,21 @@ internal fun CustomerAnalysisContent(
         CustomerCalendarDialog(
             initialDate = if (range == CustomerRange.TODAY) dayAnchor else
                 if (range == CustomerRange.THIS_MONTH) monthAnchor else customStart,
+            initialChoice = when (range) {
+                CustomerRange.TODAY -> CustomerCalendarSelection.day(dayAnchor)
+                CustomerRange.THIS_MONTH -> CustomerCalendarSelection.month(
+                    java.time.YearMonth.from(monthAnchor)
+                )
+                CustomerRange.CUSTOM ->
+                    if (customStart.dayOfMonth == 1 &&
+                        customEnd.dayOfMonth == customEnd.lengthOfMonth()) {
+                        CustomerCalendarSelection.month(
+                            java.time.YearMonth.from(customStart),
+                            java.time.YearMonth.from(customEnd)
+                        )
+                    } else CustomerCalendarSelection.days(customStart, customEnd)
+                else -> null
+            },
             onDismiss = { showCalendarDialog = false },
             onConfirm = { choice ->
                 when (choice.kind) {
