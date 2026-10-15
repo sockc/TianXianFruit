@@ -119,7 +119,7 @@ internal object CustomerTrafficDeepDive {
             val tradeDay = moment.toLocalDate()
             val originalDay = tradeDay.toString()
             // Do not silently overwrite a store that was explicitly saved before.
-            if (record.storeId > 0L && record.businessDate == originalDay) {
+            if (record.storeId > 0L && record.businessDate == originalDay && moment.hour >= 6) {
                 return@map record
             }
             val nearby = shiftsByDate[originalDay].orEmpty() +
