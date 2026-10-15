@@ -11540,15 +11540,6 @@ private fun SessionScreen(
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Text("当天营业记录", fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.bodyMedium)
-                    if (canViewCustomerAnalysis) {
-                        Text(
-                            "客流分析 ›", color = BrandGreen,
-                            style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier.clickable {
-                                onRequestLeave { onOpenCustomerAnalysis(date, null) }
-                            }.padding(horizontal = 8.dp)
-                        )
-                    }
                     Spacer(Modifier.weight(1f))
                     val positionCount = todayRecords.map { row ->
                         if (row.storeId > 0L) "id:${row.storeId}" else "name:${row.storeName}"
@@ -11630,16 +11621,6 @@ private fun SessionScreen(
                                     FontWeight.Bold,
                                 maxLines = 1
                             )
-                            if (canViewCustomerAnalysis) {
-                                Text(
-                                    "客流 ›",
-                                    color = BrandGreen,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    modifier = Modifier.clickable {
-                                        onRequestLeave { trafficPreviewRecord = record }
-                                    }.padding(horizontal = 8.dp)
-                                )
-                            }
                             Text(
                                 "营业额 ${money(record.revenue)}",
                                 color =
@@ -12068,14 +12049,32 @@ private fun SessionScreen(
                         Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            "${dayDate.takeLast(5)} · " +
-                                runCatching {
-                                    chineseWeekday(LocalDate.parse(dayDate))
-                                }.getOrDefault(""),
+                        Row(
                             modifier = Modifier.weight(1f),
-                            fontWeight = FontWeight.Bold
-                        )
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "${dayDate.takeLast(5)} · " +
+                                    runCatching {
+                                        chineseWeekday(LocalDate.parse(dayDate))
+                                    }.getOrDefault(""),
+                                modifier = Modifier.weight(1f, fill = false),
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1
+                            )
+                            if (canViewCustomerAnalysis) {
+                                Text(
+                                    "客流分析 ›",
+                                    color = BrandGreen,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    modifier = Modifier.clickable {
+                                        onRequestLeave {
+                                            onOpenCustomerAnalysis(dayDate, null)
+                                        }
+                                    }.padding(start = 6.dp, end = 4.dp)
+                                )
+                            }
+                        }
                         Text(
                             "${dayRecords.size}个位置 · ${money(dayRevenue)}",
                             color = BrandGreen,
@@ -12123,15 +12122,33 @@ private fun SessionScreen(
                                 Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    if (record.storeName == "共用货品") {
-                                        "未知位置（旧数据）"
-                                    } else {
-                                        record.storeName
-                                    },
+                                Row(
                                     modifier = Modifier.weight(1f),
-                                    fontWeight = FontWeight.SemiBold
-                                )
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        if (record.storeName == "共用货品") {
+                                            "未知位置（旧数据）"
+                                        } else {
+                                            record.storeName
+                                        },
+                                        modifier = Modifier.weight(1f, fill = false),
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1
+                                    )
+                                    if (canViewCustomerAnalysis) {
+                                        Text(
+                                            "客流 ›",
+                                            color = BrandGreen,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            modifier = Modifier.clickable {
+                                                onRequestLeave {
+                                                    trafficPreviewRecord = record
+                                                }
+                                            }.padding(start = 6.dp, end = 4.dp)
+                                        )
+                                    }
+                                }
                                 Text(
                                     "营业额 ${money(record.revenue)}",
                                     color = BrandGreen,
