@@ -162,7 +162,9 @@ internal fun CustomerAnalysisContent(
             .apply()
     }
     var showStoreMenu by remember { mutableStateOf(false) }
-    var showRangeMenu by remember { mutableStateOf(false) }
+    var showCalendarDialog by remember { mutableStateOf(false) }
+    var showBillStatus by remember { mutableStateOf(false) }
+    var showMessageDetails by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
 
     var locationEditTick by remember { mutableIntStateOf(0) }
@@ -255,19 +257,8 @@ internal fun CustomerAnalysisContent(
                         today.toString()
 
                 CustomerRange.THIS_MONTH -> {
-                    val end =
-                        if (
-                            monthAnchor ==
-                            currentMonth
-                        ) {
-                            today
-                        } else {
-                            monthAnchor.withDayOfMonth(
-                                monthAnchor.lengthOfMonth()
-                            )
-                        }
                     monthAnchor.toString() to
-                        end.toString()
+                        monthAnchor.withDayOfMonth(monthAnchor.lengthOfMonth()).toString()
                 }
 
                 CustomerRange.LAST_30 ->
@@ -578,16 +569,22 @@ internal fun CustomerAnalysisContent(
                 }
                 Text(
                     "客户分析",
-                    fontWeight =
-                        FontWeight.Bold,
-                    color =
-                        Color(
-                            0xFF087D4E
-                        ),
-                    modifier =
-                        Modifier.weight(
-                            1f
-                        )
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF087D4E),
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1
+                )
+                Text(
+                    "$rangeLabel ▾",
+                    modifier = Modifier.weight(1f).clickable {
+                        showCalendarDialog = true
+                    }.padding(horizontal = 6.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                    color = Color(0xFF087D4E),
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                 )
                 TextButton(
                     onClick = {
@@ -633,125 +630,9 @@ internal fun CustomerAnalysisContent(
             }
 
             Row(
-                modifier = Modifier.fillMaxWidth().heightIn(min = 40.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (range == CustomerRange.THIS_MONTH || range == CustomerRange.TODAY) Text(
-                        "‹",
-                        modifier = Modifier.width(30.dp).clickable {
-                            when (range) {
-                                CustomerRange.THIS_MONTH -> monthAnchor = monthAnchor.minusMonths(1)
-                                CustomerRange.TODAY -> dayAnchor =
-                                    if (selectedStoreId > 0L && businessDatesForSelectedStore.isNotEmpty())
-                                        prevBusinessDay ?: dayAnchor else dayAnchor.minusDays(1)
-                                else -> Unit
-                            }
-                        },
-                        color = Color(0xFF087D4E),
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Box {
-                        Text(
-                            "$rangeLabel ▾",
-                            modifier = Modifier.clickable { showRangeMenu = true }.padding(vertical = 9.dp, horizontal = 3.dp),
-                            fontWeight = FontWeight.SemiBold,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1
-                        )
-                        DropdownMenu(
-                            expanded = showRangeMenu,
-                            onDismissRequest = { showRangeMenu = false }
-                        ) {
-                            CustomerRange.entries.forEach { option ->
-                                DropdownMenuItem(
-                                    text = { Text(option.label) },
-                                    onClick = {
-                                        showRangeMenu = false
-                                        when (option) {
-                                            CustomerRange.THIS_MONTH -> {
-                                                monthAnchor = currentMonth
-                                                range = option
-                                            }
-                                            CustomerRange.TODAY -> pickDate(dayAnchor) {
-                                                dayAnchor = it
-                                                range = CustomerRange.TODAY
-                                            }
-                                            CustomerRange.CUSTOM -> pickDate(customStart) { start ->
-                                                pickDate(maxOf(start, customEnd), minDate = start) { finish ->
-                                                    customStart = start
-                                                    customEnd = finish
-                                                    range = CustomerRange.CUSTOM
-                                                }
-                                            }
-                                            else -> range = option
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    if (range == CustomerRange.THIS_MONTH || range == CustomerRange.TODAY) Text(
-                        "›",
-                        modifier = Modifier.width(30.dp).clickable(
-                            enabled = (range == CustomerRange.THIS_MONTH && monthAnchor < currentMonth) ||
-                                (range == CustomerRange.TODAY && dayAnchor < today &&
-                                    (selectedStoreId <= 0L || businessDatesForSelectedStore.isEmpty() || nextBusinessDay != null))
-                        ) {
-                            when (range) {
-                                CustomerRange.THIS_MONTH ->
-                                    if (monthAnchor < currentMonth) monthAnchor = monthAnchor.plusMonths(1)
-                                CustomerRange.TODAY ->
-                                    if (dayAnchor < today) dayAnchor =
-                                        if (selectedStoreId > 0L && businessDatesForSelectedStore.isNotEmpty())
-                                            nextBusinessDay ?: dayAnchor else dayAnchor.plusDays(1)
-                                else -> Unit
-                            }
-                        },
-                        color = if ((range == CustomerRange.TODAY && dayAnchor >= today) ||
-                            (range == CustomerRange.THIS_MONTH && monthAnchor >= currentMonth))
-                            Color.LightGray else Color(0xFF087D4E),
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                }
-                Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-                    val storeName = when (selectedStoreId) {
-                        0L -> "全部位置"
-                        -1L -> "未匹配"
-                        else -> storeOptions.firstOrNull { it.first == selectedStoreId }?.second ?: "已失效位置"
-                    }
-                    Text(
-                        "$storeName ▾",
-                        modifier = Modifier.clickable { showStoreMenu = true }.padding(8.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFF087D4E),
-                        maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                    )
-                    DropdownMenu(expanded = showStoreMenu, onDismissRequest = { showStoreMenu = false }) {
-                        DropdownMenuItem(text = { Text("全部位置") }, onClick = {
-                            selectedStoreId = 0L
-                            showStoreMenu = false
-                        })
-                        storeOptions.forEach { (id, name) ->
-                            DropdownMenuItem(text = { Text(name) }, onClick = {
-                                selectedStoreId = id
-                                showStoreMenu = false
-                            })
-                        }
-                        if (hasUnmatchedStore) DropdownMenuItem(text = { Text("未匹配位置") }, onClick = {
-                            selectedStoreId = -1L
-                            showStoreMenu = false
-                        })
-                    }
-                }
-            }
-
-            Row(
                 Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 CustomerPaymentPlatform.entries.forEach { option ->
                     val selected = selectedPlatform == option
@@ -770,44 +651,58 @@ internal fun CustomerAnalysisContent(
                         )
                     }
                 }
+
+                Box(contentAlignment = Alignment.CenterEnd, modifier = Modifier.weight(1.25f)) {
+                    val storeName = when (selectedStoreId) {
+                        0L -> "全部位置"
+                        -1L -> "未匹配"
+                        else -> storeOptions.firstOrNull { it.first == selectedStoreId }?.second ?: "已失效"
+                    }
+                    Text(
+                        "$storeName ▾",
+                        modifier = Modifier.fillMaxWidth().clickable { showStoreMenu = true }
+                            .padding(horizontal = 3.dp, vertical = 9.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF087D4E),
+                        maxLines = 1,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                    DropdownMenu(expanded = showStoreMenu, onDismissRequest = { showStoreMenu = false }) {
+                        DropdownMenuItem(text = { Text("全部位置") }, onClick = {
+                            selectedStoreId = 0L; showStoreMenu = false
+                        })
+                        storeOptions.forEach { (id, name) ->
+                            DropdownMenuItem(text = { Text(name) }, onClick = {
+                                selectedStoreId = id; showStoreMenu = false
+                            })
+                        }
+                        if (hasUnmatchedStore) DropdownMenuItem(text = { Text("未匹配位置") }, onClick = {
+                            selectedStoreId = -1L; showStoreMenu = false
+                        })
+                    }
+                }
             }
-            CustomerImportCoverageStrip(
-                records = rawRecords,
-                sessions = trafficSessions,
-                initialMonth = java.time.YearMonth.from(
-                    if (range == CustomerRange.THIS_MONTH) monthAnchor else
-                        if (range == CustomerRange.TODAY) dayAnchor else today
-                ),
-                ledgerId = ledgerId,
-                dataVersion = dataVersion.toLong()
-            )
             if (importing) {
                 LinearProgressIndicator(
                     Modifier.fillMaxWidth()
                 )
             }
             if (message.isNotBlank()) {
-                Text(
-                    message,
-                    color =
-                        if (
-                            message.contains(
-                                "失败"
-                            )
-                        ) {
-                            MaterialTheme
-                                .colorScheme
-                                .error
-                        } else {
-                            Color(
-                                0xFF087D4E
-                            )
-                        },
-                    style =
-                        MaterialTheme
-                            .typography
-                            .labelSmall
-                )
+                Row(Modifier.fillMaxWidth().clickable { showMessageDetails = true },
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (message.contains("失败") || message.contains("异常")) "账单处理需要核对"
+                        else "账单处理完成",
+                        modifier = Modifier.weight(1f),
+                        color = if (message.contains("失败")) MaterialTheme.colorScheme.error
+                            else Color(0xFF087D4E),
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1
+                    )
+                    Text("详情 ›", color = Color(0xFF087D4E),
+                        style = MaterialTheme.typography.labelSmall)
+                }
             }
         }
         }
@@ -868,26 +763,40 @@ internal fun CustomerAnalysisContent(
 
                 tab ==
                     CustomerAnalysisTab.RECORDS ->
-                    CustomerPaymentRecordsContent(
-                        records =
-                            periodRawRecords,
-                        importBatches = importBatches,
-                        settings =
-                            settings,
-                        excludedIds =
-                            filterResult.excludedIds,
-                        autoLargeIds =
-                            filterResult.autoLargeIds,
-                        onStateChange = {
-                            id,
-                            state ->
-                            db.setCustomerPaymentAnalysisState(
-                                id,
-                                state
-                            )
-                            onChanged()
+                    Column(Modifier.fillMaxSize()) {
+                        Text(
+                            if (showBillStatus) "账单日期与同步状态 ⌃" else "账单日期与同步状态 ›",
+                            modifier = Modifier.fillMaxWidth().clickable { showBillStatus = !showBillStatus }
+                                .padding(horizontal = 12.dp, vertical = 5.dp),
+                            color = Color(0xFF087D4E),
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                        AnimatedVisibility(showBillStatus) {
+                            CustomerImportCoverageStrip(
+                                            records = rawRecords,
+                                            sessions = trafficSessions,
+                                            initialMonth = java.time.YearMonth.from(
+                                                if (range == CustomerRange.THIS_MONTH) monthAnchor else
+                                                    if (range == CustomerRange.TODAY) dayAnchor else today
+                                            ),
+                                            ledgerId = ledgerId,
+                                            dataVersion = dataVersion.toLong()
+                                        )
                         }
-                    )
+                        Box(Modifier.weight(1f)) {
+                            CustomerPaymentRecordsContent(
+                                records = periodRawRecords,
+                                importBatches = importBatches,
+                                settings = settings,
+                                excludedIds = filterResult.excludedIds,
+                                autoLargeIds = filterResult.autoLargeIds,
+                                onStateChange = { id, state ->
+                                    db.setCustomerPaymentAnalysisState(id, state)
+                                    onChanged()
+                                }
+                            )
+                        }
+                    }
 
                 allRecords.isEmpty() ->
                     SimpleEmpty(
@@ -960,6 +869,42 @@ internal fun CustomerAnalysisContent(
                     }
             }
         }
+    }
+
+    if (showCalendarDialog) {
+        CustomerCalendarDialog(
+            initialDate = if (range == CustomerRange.TODAY) dayAnchor else
+                if (range == CustomerRange.THIS_MONTH) monthAnchor else customStart,
+            onDismiss = { showCalendarDialog = false },
+            onConfirm = { choice ->
+                when (choice.kind) {
+                    CustomerCalendarChoice.Kind.DAY -> {
+                        dayAnchor = choice.start
+                        range = CustomerRange.TODAY
+                    }
+                    CustomerCalendarChoice.Kind.MONTH -> {
+                        monthAnchor = choice.start
+                        range = CustomerRange.THIS_MONTH
+                    }
+                    CustomerCalendarChoice.Kind.MONTHS -> {
+                        customStart = choice.start
+                        customEnd = choice.end
+                        range = CustomerRange.CUSTOM
+                    }
+                }
+                showCalendarDialog = false
+            }
+        )
+    }
+    if (showMessageDetails) {
+        AlertDialog(
+            onDismissRequest = { showMessageDetails = false },
+            title = { Text("账单处理详情") },
+            text = { Text(message) },
+            confirmButton = {
+                TextButton(onClick = { showMessageDetails = false }) { Text("关闭") }
+            }
+        )
     }
 
     if (showUnifiedStoreDialog) {
