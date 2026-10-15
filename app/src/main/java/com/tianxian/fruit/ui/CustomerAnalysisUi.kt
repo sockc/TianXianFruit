@@ -216,7 +216,7 @@ internal fun CustomerAnalysisContent(
         filterResult.included
     val importBatches = remember(dataVersion, showSettings, tab) {
         if (showSettings || tab == CustomerAnalysisTab.RECORDS) {
-            db.getPaymentImportBatches(10)
+            db.getPaymentImportBatches(40)
         } else emptyList()
     }
 
@@ -274,6 +274,16 @@ internal fun CustomerAnalysisContent(
                 (dateRange.first == null || it.businessDate >= dateRange.first!!) &&
                     (dateRange.second == null || it.businessDate <= dateRange.second!!)
             }
+        )
+    }
+
+    val singleDayReconciliations = remember(
+        rawRecords, dataVersion, range, dayAnchor, selectedStoreId
+    ) {
+        if (range != CustomerRange.TODAY || selectedStoreId == -1L) emptyList()
+        else CustomerPaymentReconciliationEngine.inspect(
+            db.getDailyRecordsBetween(dayAnchor.toString(), dayAnchor.toString()),
+            rawRecords, dayAnchor.toString(), selectedStoreId
         )
     }
 
@@ -498,9 +508,15 @@ internal fun CustomerAnalysisContent(
             }
             val imported = results.mapNotNull { it.getOrNull() }
             val failures = results.mapNotNull { it.exceptionOrNull()?.message }
+            val newestRanges = imported.filter { it.firstReceiptDate.isNotBlank() }
+                .take(3).joinToString(" · ") { item ->
+                    val provider = if (item.platform == "WECHAT") "微信" else "支付宝"
+                    "$provider ${item.firstReceiptDate}～${item.lastReceiptDate}（${item.receiptDays}天）"
+                }
             message = "账单 ${imported.size}/${uris.size} 个成功 · 新增 ${imported.sumOf { it.insertedRows }} 笔 · " +
                 "重复 ${imported.sumOf { it.duplicateRows }} 笔 · 忽略 ${imported.sumOf { it.ignoredRows }} 笔 · " +
                 "异常 ${imported.sumOf { it.errorRows }} 笔 · 未匹配位置 ${imported.sumOf { it.unmatchedStoreRows }} 笔" +
+                (if (newestRanges.isNotBlank()) " · 发现收款日期：$newestRanges" else "") +
                 (if (uris.size > 20) " · 单次最多20个文件" else "") +
                 (if (failures.isNotEmpty()) " · ${failures.size} 个失败：${failures.first()}" else "")
             if (imported.isNotEmpty()) onChanged()
@@ -740,6 +756,14 @@ internal fun CustomerAnalysisContent(
                     }
                 }
             }
+            CustomerImportCoverageStrip(
+                records = rawRecords,
+                sessions = trafficSessions,
+                initialMonth = java.time.YearMonth.from(
+                    if (range == CustomerRange.THIS_MONTH) monthAnchor else
+                        if (range == CustomerRange.TODAY) dayAnchor else today
+                )
+            )
             if (importing) {
                 LinearProgressIndicator(
                     Modifier.fillMaxWidth()
@@ -865,6 +889,7 @@ internal fun CustomerAnalysisContent(
                                  singleDayRecords = singleDayRecords,
                                  platformCoverage = periodPlatformCoverage,
                                  receiptAudit = receiptAudit,
+                                 reconciliations = singleDayReconciliations,
                                 dailyTraffic =
                                     dailyTraffic,
                                 sameWeekdayComparisons =
@@ -1208,7 +1233,7 @@ private fun CustomerPaymentRecordsContent(
         }
         AnimatedVisibility(showImportHistory) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-                ImportBatchList(importBatches.take(5))
+                ImportBatchList(importBatches.take(12))
             }
         }
         Row(
@@ -1609,7 +1634,18 @@ private fun ImportBatchList(batches: List<PaymentImportBatchRecord>) {
                         style = MaterialTheme.typography.bodySmall
                     )
                     Text(
-                        "识别 ${batch.acceptedRows} · 重复 ${batch.duplicateRows} · ${formatTime(batch.importedAt)}",
+                        if (batch.firstReceiptDate.isBlank())
+                            "无已识别经营收款日期 · 可能为非经营交易或退款文件"
+                        else "${if (batch.coverageSource == "FILE") "文件收款日期" else "历史已保存收款日期"}：" +
+                            "${batch.firstReceiptDate} ～ ${batch.lastReceiptDate} · " +
+                            "${batch.receiptDays}个有收款日 · ${batch.receiptCount}笔" +
+                            if (batch.coverageSource == "INSERTED_ONLY")
+                                "（旧版去重后留存记录，范围可能不全）" else "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF087D4E)
+                    )
+                    Text(
+                        "识别 ${batch.acceptedRows} · 重复 ${batch.duplicateRows} · ${formatTime(batch.importedAt)} · 本机未同步",
                         style = MaterialTheme.typography.labelSmall,
                         color = Color.Gray
                     )
@@ -1813,6 +1849,7 @@ private fun CustomerOverview(
     singleDayRecords: List<CustomerPaymentRecord>,
     platformCoverage: List<PaymentPlatformCoverage>,
     receiptAudit: PaymentReceiptAudit,
+    reconciliations: List<CustomerPaymentReconciliation>,
     dailyTraffic: List<CustomerDailyTrafficPoint>,
     sameWeekdayComparisons: List<CustomerSameWeekdayComparison>,
     trafficComparisons: List<CustomerTrafficComparison>,
@@ -1828,6 +1865,7 @@ private fun CustomerOverview(
 ) {
     val s = result.summary
     var showQualityDetails by remember { mutableStateOf(false) }
+    var showReconciliation by remember { mutableStateOf(false) }
     var showStores by remember { mutableStateOf(false) }
     val reliablePayments = remember(payments) {
         payments.count { PaymentTrafficAnalytics.isIdentified(it) }
@@ -1923,6 +1961,65 @@ private fun CustomerOverview(
             }
         }
         if (singleDay) {
+            if (reconciliations.isNotEmpty()) {
+                item {
+                    Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                        Column(Modifier.fillMaxWidth().padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(
+                                Modifier.fillMaxWidth().clickable {
+                                    showReconciliation = !showReconciliation
+                                },
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("电子收款核对", modifier = Modifier.weight(1f),
+                                    fontWeight = FontWeight.SemiBold)
+                                Text(if (showReconciliation) "收起⌃" else "详情 ›",
+                                    color = Color(0xFF087D4E),
+                                    style = MaterialTheme.typography.labelSmall)
+                            }
+                            Text(
+                                "仅对照手工营业额与已导入、已归属该位置的电子收款；账单不完整时差额不代表漏收。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.Gray
+                            )
+                            AnimatedVisibility(showReconciliation) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    reconciliations.forEach { item ->
+                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Text(item.storeName, fontWeight = FontWeight.SemiBold,
+                                                style = MaterialTheme.typography.bodySmall)
+                                            Text(
+                                                "微信 营业表 ${money(item.wechatBusiness)} · 已导入 ${money(item.wechatObserved)}（${item.wechatPayments}笔）",
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
+                                            Text(
+                                                "支付宝 营业表 ${money(item.alipayBusiness)} · 已导入 ${money(item.alipayObserved)}（${item.alipayPayments}笔）",
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
+                                            Text(
+                                                if (item.observedPayments == 0)
+                                                    "当日暂无已归属经营收款，不能判定收款为零"
+                                                else "账面与已观察电子收款差异：${money(item.difference)}（待核对）",
+                                                color = Color(0xFF9A6700),
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
+                                            if (item.unmatchedPaymentsForDay > 0) {
+                                                Text(
+                                                    "还有 ${item.unmatchedPaymentsForDay}笔当日收款尚未匹配位置，不能擅自计入本摊。",
+                                                    style = MaterialTheme.typography.labelSmall, color = Color.Gray
+                                                )
+                                            }
+                                        }
+                                    }
+                                    Text("现金不对账。跨日退款、导出范围不完整、位置误匹配均可能影响差异。此处不会修改正式营业记录。",
+                                        style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             item {
                 CustomerTrafficCoverageNote(
                     singleDay = true,
