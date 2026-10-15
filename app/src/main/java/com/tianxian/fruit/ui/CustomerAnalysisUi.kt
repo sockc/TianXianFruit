@@ -277,6 +277,16 @@ internal fun CustomerAnalysisContent(
         )
     }
 
+    val singleDayReconciliations = remember(
+        rawRecords, dataVersion, range, dayAnchor, selectedStoreId
+    ) {
+        if (range != CustomerRange.TODAY || selectedStoreId == -1L) emptyList()
+        else CustomerPaymentReconciliationEngine.inspect(
+            db.getDailyRecordsBetween(dayAnchor.toString(), dayAnchor.toString()),
+            rawRecords, dayAnchor.toString(), selectedStoreId
+        )
+    }
+
     val receiptAudit = remember(rawRecords, trafficSessions, dateRange, selectedStoreId, selectedPlatform) {
         PaymentReceiptAuditor.inspect(
             rows = rawRecords,
@@ -879,6 +889,7 @@ internal fun CustomerAnalysisContent(
                                  singleDayRecords = singleDayRecords,
                                  platformCoverage = periodPlatformCoverage,
                                  receiptAudit = receiptAudit,
+                                 reconciliations = singleDayReconciliations,
                                 dailyTraffic =
                                     dailyTraffic,
                                 sameWeekdayComparisons =
@@ -1835,6 +1846,7 @@ private fun CustomerOverview(
     singleDayRecords: List<CustomerPaymentRecord>,
     platformCoverage: List<PaymentPlatformCoverage>,
     receiptAudit: PaymentReceiptAudit,
+    reconciliations: List<CustomerPaymentReconciliation>,
     dailyTraffic: List<CustomerDailyTrafficPoint>,
     sameWeekdayComparisons: List<CustomerSameWeekdayComparison>,
     trafficComparisons: List<CustomerTrafficComparison>,
@@ -1850,6 +1862,7 @@ private fun CustomerOverview(
 ) {
     val s = result.summary
     var showQualityDetails by remember { mutableStateOf(false) }
+    var showReconciliation by remember { mutableStateOf(false) }
     var showStores by remember { mutableStateOf(false) }
     val reliablePayments = remember(payments) {
         payments.count { PaymentTrafficAnalytics.isIdentified(it) }
@@ -1945,6 +1958,65 @@ private fun CustomerOverview(
             }
         }
         if (singleDay) {
+            if (reconciliations.isNotEmpty()) {
+                item {
+                    Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                        Column(Modifier.fillMaxWidth().padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(
+                                Modifier.fillMaxWidth().clickable {
+                                    showReconciliation = !showReconciliation
+                                },
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("电子收款核对", modifier = Modifier.weight(1f),
+                                    fontWeight = FontWeight.SemiBold)
+                                Text(if (showReconciliation) "收起⌃" else "详情 ›",
+                                    color = Color(0xFF087D4E),
+                                    style = MaterialTheme.typography.labelSmall)
+                            }
+                            Text(
+                                "仅对照手工营业额与已导入、已归属该位置的电子收款；账单不完整时差额不代表漏收。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.Gray
+                            )
+                            AnimatedVisibility(showReconciliation) {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    reconciliations.forEach { item ->
+                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Text(item.storeName, fontWeight = FontWeight.SemiBold,
+                                                style = MaterialTheme.typography.bodySmall)
+                                            Text(
+                                                "微信 营业表 ${money(item.wechatBusiness)} · 已导入 ${money(item.wechatObserved)}（${item.wechatPayments}笔）",
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
+                                            Text(
+                                                "支付宝 营业表 ${money(item.alipayBusiness)} · 已导入 ${money(item.alipayObserved)}（${item.alipayPayments}笔）",
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
+                                            Text(
+                                                if (item.observedPayments == 0)
+                                                    "当日暂无已归属经营收款，不能判定收款为零"
+                                                else "账面与已观察电子收款差异：${money(item.difference)}（待核对）",
+                                                color = Color(0xFF9A6700),
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
+                                            if (item.unmatchedPaymentsForDay > 0) {
+                                                Text(
+                                                    "还有 ${item.unmatchedPaymentsForDay}笔当日收款尚未匹配位置，不能擅自计入本摊。",
+                                                    style = MaterialTheme.typography.labelSmall, color = Color.Gray
+                                                )
+                                            }
+                                        }
+                                    }
+                                    Text("现金不对账。跨日退款、导出范围不完整、位置误匹配均可能影响差异。此处不会修改正式营业记录。",
+                                        style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             item {
                 CustomerTrafficCoverageNote(
                     singleDay = true,
