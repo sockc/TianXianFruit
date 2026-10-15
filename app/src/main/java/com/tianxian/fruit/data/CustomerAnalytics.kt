@@ -51,7 +51,12 @@ data class PaymentImportBatchRecord(
     val ignoredRows: Int,
     val refundRows: Int,
     val errorRows: Int,
-    val importedAt: Long
+    val importedAt: Long,
+    /** Business receipts actually observed in this import file, NOT the export period. */
+    val firstReceiptDate: String = "",
+    val lastReceiptDate: String = "",
+    val receiptDays: Int = 0,
+    val receiptCount: Int = 0
 )
 
 data class PaymentImportOutcome(
@@ -69,7 +74,10 @@ data class PaymentImportOutcome(
     val duplicateFile: Boolean,
     val purchaseCandidateRows: Int = 0,
     val purchaseCandidateInsertedRows: Int = 0,
-    val purchaseCandidateDuplicateRows: Int = 0
+    val purchaseCandidateDuplicateRows: Int = 0,
+    val firstReceiptDate: String = "",
+    val lastReceiptDate: String = "",
+    val receiptDays: Int = 0
 )
 
 data class CustomerAnalysisSummary(
