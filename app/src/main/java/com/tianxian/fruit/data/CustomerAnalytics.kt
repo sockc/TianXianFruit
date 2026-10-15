@@ -56,7 +56,9 @@ data class PaymentImportBatchRecord(
     val firstReceiptDate: String = "",
     val lastReceiptDate: String = "",
     val receiptDays: Int = 0,
-    val receiptCount: Int = 0
+    val receiptCount: Int = 0,
+    /** FILE=parsed original file, INSERTED_ONLY=legacy partial backfill. */
+    val coverageSource: String = "NONE"
 )
 
 data class PaymentImportOutcome(
