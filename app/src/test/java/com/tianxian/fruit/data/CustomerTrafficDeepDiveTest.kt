@@ -144,6 +144,16 @@ class CustomerTrafficDeepDiveTest {
         assertEquals(0L, records[1].storeId)
     }
 
+    @Test fun knownStoreAfterMidnightUsesPreviousTradingDateWithoutChangingRawReceipt() {
+        val raw = record(50, "2026-10-15 00:15:00", storeId = 1L)
+        val attributed = CustomerTrafficDeepDive.attributeBusinessDays(
+            listOf(raw), listOf(session("2026-10-14", 1, "16:00", "02:00"))
+        ).single()
+        assertEquals("2026-10-14", attributed.businessDate)
+        assertEquals(1L, attributed.storeId)
+        assertEquals("2026-10-15", raw.businessDate)
+    }
+
     @Test fun positivePaymentsOnlyDetermineAmountBands() {
         val amounts=listOf(9.0,10.0,19.0,20.0,29.0,30.0,49.0,50.0)
         val records=amounts.mapIndexed { index, amt ->
