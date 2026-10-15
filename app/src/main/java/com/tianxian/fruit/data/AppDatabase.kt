@@ -3570,6 +3570,20 @@ class AppDatabase(
     }
 
     private fun createV41CustomerImportCoverageIndex(db: SQLiteDatabase) {
+        // Parsed bill coverage must survive transaction de-duplication.
+        // An overlapping second file may contain Oct 8-14 even if its only
+        // NEW transactions start on Oct 11. Legacy batches get honest fallback.
+        val columns = listOf(
+            "observed_first_date" to "TEXT NOT NULL DEFAULT ''",
+            "observed_last_date" to "TEXT NOT NULL DEFAULT ''",
+            "observed_receipt_days" to "INTEGER NOT NULL DEFAULT 0",
+            "observed_receipt_rows" to "INTEGER NOT NULL DEFAULT 0"
+        )
+        columns.forEach { (name, type) ->
+            if (!columnExists(db, "payment_import_batch", name)) {
+                db.execSQL("ALTER TABLE payment_import_batch ADD COLUMN $name $type")
+            }
+        }
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS idx_customer_payment_source_batch " +
                 "ON customer_payment_transaction(source_batch_id,trade_time)"
@@ -15364,6 +15378,7 @@ class AppDatabase(
         val db = writableDatabase
         val (receiptStart, receiptEnd, receiptDays) =
             CustomerImportCoverageEngine.importRange(parsed.transactions)
+        val receiptRows = parsed.transactions.count { it.amount > 0.005 }
 
         val existing =
             db.rawQuery(
@@ -15390,6 +15405,21 @@ class AppDatabase(
             }
 
         if (existing != null) {
+            // An old/overlapping file re-import fills unknown parsed coverage,
+            // never rewrites original business rows or duplicates payment data.
+            if (receiptStart.isNotBlank()) {
+                db.update(
+                    "payment_import_batch",
+                    ContentValues().apply {
+                        put("observed_first_date", receiptStart)
+                        put("observed_last_date", receiptEnd)
+                        put("observed_receipt_days", receiptDays)
+                        put("observed_receipt_rows", receiptRows)
+                    },
+                    "id=? AND observed_first_date=''",
+                    arrayOf(existing.id.toString())
+                )
+            }
             val purchaseImport =
                 saveHistoricalPurchaseCandidates(
                     batchId = existing.id,
@@ -15436,6 +15466,10 @@ class AppDatabase(
                         put("refund_rows", parsed.refundRows)
                         put("error_rows", parsed.errorRows)
                         put("imported_at", now)
+                        put("observed_first_date", receiptStart)
+                        put("observed_last_date", receiptEnd)
+                        put("observed_receipt_days", receiptDays)
+                        put("observed_receipt_rows", receiptRows)
                     }
                 )
 
@@ -15918,10 +15952,15 @@ class AppDatabase(
         readableDatabase.rawQuery(
             """
             SELECT b.*,
-                   COALESCE(t.first_receipt_date,'') AS first_receipt_date,
-                   COALESCE(t.last_receipt_date,'') AS last_receipt_date,
-                   COALESCE(t.receipt_days,0) AS receipt_days,
-                   COALESCE(t.receipt_count,0) AS receipt_count
+                   COALESCE(NULLIF(b.observed_first_date,''),t.first_receipt_date,'') AS first_receipt_date,
+                   COALESCE(NULLIF(b.observed_last_date,''),t.last_receipt_date,'') AS last_receipt_date,
+                   CASE WHEN b.observed_first_date<>'' THEN b.observed_receipt_days
+                        ELSE COALESCE(t.receipt_days,0) END AS receipt_days,
+                   CASE WHEN b.observed_first_date<>'' THEN b.observed_receipt_rows
+                        ELSE COALESCE(t.receipt_count,0) END AS receipt_count,
+                   CASE WHEN b.observed_first_date<>'' THEN 'FILE'
+                        WHEN t.first_receipt_date IS NOT NULL THEN 'INSERTED_ONLY'
+                        ELSE 'NONE' END AS coverage_source
             FROM payment_import_batch b
             LEFT JOIN (
                 SELECT source_batch_id,
@@ -15956,7 +15995,8 @@ class AppDatabase(
                             firstReceiptDate = c.str("first_receipt_date"),
                             lastReceiptDate = c.str("last_receipt_date"),
                             receiptDays = c.int("receipt_days"),
-                            receiptCount = c.int("receipt_count")
+                            receiptCount = c.int("receipt_count"),
+                            coverageSource = c.str("coverage_source")
                         )
                     )
                 }
