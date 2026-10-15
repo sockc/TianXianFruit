@@ -805,11 +805,11 @@ internal fun CustomerAnalysisContent(
                         }
                     }
 
-                rawRecords.isEmpty() ->
+                rawRecords.isEmpty() && tab != CustomerAnalysisTab.RECORDS ->
                     EmptyCustomerAnalysis()
 
-                scopedRawRecords.isEmpty() ->
-                    SimpleEmpty("当前支付平台或营业位置没有已导入的收款记录。")
+                scopedRawRecords.isEmpty() && tab != CustomerAnalysisTab.RECORDS ->
+                    SimpleEmpty("当前支付平台、营业位置或收款人没有已导入的收款记录。")
 
                 tab ==
                     CustomerAnalysisTab.RECORDS ->
@@ -1641,7 +1641,7 @@ private fun CustomerPaymentRecordsContent(
     }
     if (showImportHistory) {
         var billQuery by remember { mutableStateOf("") }
-        val matchingBatches = remember(importBatches, billQuery, collectorAssignments) {
+        val matchingBatches = remember(importBatches, billQuery, collectorAssignments, collectorOptions) {
             val keyword = billQuery.trim()
             if (keyword.isBlank()) importBatches else importBatches.filter { batch ->
                 val collectorId = collectorAssignments["${batch.platform}|${batch.fileHash}"].orEmpty()
