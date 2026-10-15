@@ -108,25 +108,33 @@ internal object CustomerTrafficDeepDive {
     fun attributeBusinessDays(
         rows: List<CustomerPaymentRecord>,
         sessions: List<CustomerTrafficSession>
-    ): List<CustomerPaymentRecord> = rows.map { record ->
-        // A standalone refund never establishes that the buyer visited a store.
-        if (record.amount <= 0.005) return@map record
-        val moment = tradeTime(record) ?: return@map record
-        val originalDay = moment.toLocalDate().toString()
-        // Do not silently overwrite a store that was explicitly saved before.
-        if (record.storeId > 0L && record.businessDate == originalDay) {
-            return@map record
+    ): List<CustomerPaymentRecord> {
+        // Avoid scanning months/years of shifts for each payment. Only the
+        // transaction day and preceding date can contain its trading window.
+        val shiftsByDate = sessions.groupBy { it.date }
+        return rows.map { record ->
+            // A standalone refund never establishes that the buyer visited a store.
+            if (record.amount <= 0.005) return@map record
+            val moment = tradeTime(record) ?: return@map record
+            val tradeDay = moment.toLocalDate()
+            val originalDay = tradeDay.toString()
+            // Do not silently overwrite a store that was explicitly saved before.
+            if (record.storeId > 0L && record.businessDate == originalDay) {
+                return@map record
+            }
+            val nearby = shiftsByDate[originalDay].orEmpty() +
+                shiftsByDate[tradeDay.minusDays(1).toString()].orEmpty()
+            val matched = matchSession(
+                record.tradeTime, nearby,
+                requiredStoreId = record.storeId.coerceAtLeast(0L)
+            ) ?: return@map record
+            if (record.storeId > 0L && record.storeId != matched.storeId) return@map record
+            record.copy(
+                businessDate = matched.date,
+                storeId = matched.storeId,
+                storeName = matched.storeName
+            )
         }
-        val matched = matchSession(
-            record.tradeTime, sessions,
-            requiredStoreId = record.storeId.coerceAtLeast(0L)
-        ) ?: return@map record
-        if (record.storeId > 0L && record.storeId != matched.storeId) return@map record
-        record.copy(
-            businessDate = matched.date,
-            storeId = matched.storeId,
-            storeName = matched.storeName
-        )
     }
 
     fun amountBands(rows: List<CustomerPaymentRecord>): List<CustomerPaymentAmountBand> {
