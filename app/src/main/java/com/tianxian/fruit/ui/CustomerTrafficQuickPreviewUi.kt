@@ -25,10 +25,23 @@ internal fun CustomerTrafficQuickPreviewSheet(
     onClose: () -> Unit,
     onFullAnalysis: () -> Unit
 ) {
+    var locationEditTick by remember { mutableIntStateOf(0) }
+    var showUnifiedStoreDialog by remember { mutableStateOf(false) }
     val sessions = remember(dataVersion) { db.getCustomerTrafficSessions() }
-    val source = remember(dataVersion, sessions) {
+    val stores = remember(dataVersion, locationEditTick) { db.getStores() }
+    val assignments = remember(dataVersion, locationEditTick) { db.getCustomerStoreDayAssignments() }
+    val autoRecords = remember(dataVersion, sessions) {
         CustomerTrafficDeepDive.attributeBusinessDays(db.getCustomerPayments(), sessions)
     }
+    val source = remember(autoRecords, assignments, stores) {
+        CustomerUnifiedStoreAttribution.apply(autoRecords, assignments, stores)
+    }
+    val unmatchedBeforeUnified = remember(autoRecords, record.date) {
+        CustomerUnifiedStoreAttribution.unmatchedOnDate(autoRecords, record.date)
+    }
+    val manualAssignmentName = stores.firstOrNull {
+        it.syncId == assignments[record.date] && it.syncId.isNotBlank()
+    }?.name
     val settings = remember(dataVersion) { db.getCustomerAnalysisSettings() }
     val payments = remember(source, settings) {
         CustomerAnalyticsEngine.filterRecords(source, settings).included
@@ -52,17 +65,16 @@ internal fun CustomerTrafficQuickPreviewSheet(
     }.eachCount()
     val peak = hourly.maxByOrNull { it.value }
 
-    ModalBottomSheet(onDismissRequest = onClose) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onClose, sheetState = sheetState) {
         Column(
-            Modifier.fillMaxWidth().fillMaxHeight(0.78f)
+            Modifier.fillMaxWidth().fillMaxHeight(0.95f)
                 .verticalScroll(rememberScrollState())
-                .padding(start=16.dp, end=16.dp, bottom=24.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Text("${record.storeName} · ${record.date}",
                 style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text("营业客流速览", color=Color(0xFF087D4E),
-                style=MaterialTheme.typography.labelMedium)
             Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.SpaceBetween) {
                 Text("付款 ${selected.size}笔")
                 Text("电子 ¥${String.format(Locale.CHINA,"%.0f",amount)}")
@@ -83,9 +95,19 @@ internal fun CustomerTrafficQuickPreviewSheet(
                 Text("这条旧营业记录没有明确营业位置，不能自动分配未匹配账单。",
                     style=MaterialTheme.typography.bodySmall,color=Color(0xFF9A6700))
             }
-            if (unmatched > 0) {
-                Text("当日另有${unmatched}笔未匹配位置的收款，未计入此位置。",
-                    style=MaterialTheme.typography.bodySmall,color=Color(0xFF9A6700))
+            if (manualAssignmentName != null) {
+                Text("本日统一归属：$manualAssignmentName（人为归类，非真实交易位置核实）",
+                    style = MaterialTheme.typography.bodySmall, color = Color(0xFF9A6700))
+            }
+            if (unmatched > 0 || manualAssignmentName != null) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.SpaceBetween,
+                    verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
+                    Text("当日未匹配 ${unmatched} 笔",
+                        style = MaterialTheme.typography.bodySmall, color = Color(0xFF9A6700))
+                    TextButton(onClick = { showUnifiedStoreDialog = true }) {
+                        Text("统一指定位置 ›")
+                    }
+                }
             }
             Text("付款笔数不是独立顾客数；未导入的交易不计入。本页面不修改营业额或原始账单。",
                 style=MaterialTheme.typography.labelSmall,color=Color.Gray)
@@ -96,5 +118,18 @@ internal fun CustomerTrafficQuickPreviewSheet(
                 }
             }
         }
+    }
+    if (showUnifiedStoreDialog) {
+        CustomerUnifiedStoreDialog(
+            db = db,
+            date = record.date,
+            unmatchedPayments = unmatchedBeforeUnified,
+            defaultStoreId = record.storeId,
+            onDismiss = { showUnifiedStoreDialog = false },
+            onSaved = {
+                showUnifiedStoreDialog = false
+                locationEditTick++
+            }
+        )
     }
 }
