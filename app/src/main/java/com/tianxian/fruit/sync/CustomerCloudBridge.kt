@@ -43,7 +43,8 @@ internal object CustomerCloudBridge {
         fun json(): JSONObject = JSONObject()
             .put("kind", kind).put("key", key).put("payload", payload)
             .apply {
-                if (kind == "OFFICIAL" && revision > 0) put("expected_revision", revision)
+                if (kind in setOf("OFFICIAL", "ASSIGNMENT") && revision > 0)
+                    put("expected_revision", revision)
             }
     }
 
@@ -65,6 +66,10 @@ internal object CustomerCloudBridge {
         JSONObject().put("date", date).put("new_customers", stats?.newCustomers ?: 0)
             .put("returning_customers", stats?.returningCustomers ?: 0)
             .put("deleted", stats == null)
+
+    private fun assignmentPayload(date: String, storeSyncId: String): JSONObject =
+        JSONObject().put("date", date).put("store_sync_id", storeSyncId)
+            .put("deleted", storeSyncId.isBlank())
 
     private fun pending(context: Context, db: AppDatabase, bookId: String, limit: Int): List<SyncItem> {
         val ack = ackMap(db.readableDatabase)
@@ -135,6 +140,11 @@ internal object CustomerCloudBridge {
         if (results.size < limit) {
             for ((date, stats) in OfficialWechatCustomerStatsLocal.allForBook(context, bookId)) {
                 if (include("OFFICIAL", date, officialPayload(date, stats))) break
+            }
+        }
+        if (results.size < limit) {
+            for ((date, stableStoreId) in db.getCustomerStoreDayAssignments().toSortedMap()) {
+                if (include("ASSIGNMENT", date, assignmentPayload(date, stableStoreId))) break
             }
         }
         return results
@@ -241,6 +251,22 @@ internal object CustomerCloudBridge {
                             throw IllegalStateException("写入云端官方顾客记录失败")
                         }
                         ack(database, kind, key, digest(officialPayload(key, remote).toString()), version)
+                    }
+                    "ASSIGNMENT" -> {
+                        if (key != body.str("date")) continue
+                        val chosen = if (body.optBoolean("deleted", false)) ""
+                            else body.str("store_sync_id")
+                        val local = db.getCustomerStoreDayAssignments()[key]
+                        val lastAck = knownAck[kind to key]
+                        // Never overwrite an unsynced local choice or undo.
+                        val localDirty = local != null &&
+                            lastAck?.hash != digest(assignmentPayload(key, local).toString())
+                        if (localDirty) continue
+                        if (!db.applyCustomerStoreDayAssignmentFromCloud(key, chosen)) {
+                            throw IllegalStateException("恢复云端统一归属失败：$key")
+                        }
+                        ack(database, kind, key,
+                            digest(assignmentPayload(key, chosen).toString()), version)
                     }
                     else -> throw IllegalStateException("未知客流同步数据类型：$kind")
                 }
