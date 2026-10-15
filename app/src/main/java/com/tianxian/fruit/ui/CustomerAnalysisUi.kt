@@ -136,8 +136,14 @@ internal fun CustomerAnalysisContent(
     var tab by remember { mutableStateOf(CustomerAnalysisTab.OVERVIEW) }
     var customerSection by remember { mutableStateOf(CustomerDetailSection.REPEAT) }
     var showRhythmDetails by remember { mutableStateOf(false) }
-    var customStart by remember { mutableStateOf(today.withDayOfMonth(1)) }
-    var customEnd by remember { mutableStateOf(today) }
+    var customStart by remember(ledgerId, initialDate) {
+        mutableStateOf(runCatching { LocalDate.parse(prefs.getString("custom_start", "") ?: "") }
+            .getOrNull() ?: today.withDayOfMonth(1))
+    }
+    var customEnd by remember(ledgerId, initialDate) {
+        mutableStateOf(runCatching { LocalDate.parse(prefs.getString("custom_end", "") ?: "") }
+            .getOrNull() ?: today)
+    }
     var selectedPlatform by remember(ledgerId, initialDate) {
         mutableStateOf(if (routeDate != null) CustomerPaymentPlatform.ALL else
             CustomerPaymentPlatform.entries.firstOrNull {
@@ -152,11 +158,14 @@ internal fun CustomerAnalysisContent(
             else prefs.getLong("store", 0L)
         )
     }
-    LaunchedEffect(ledgerId, range, monthAnchor, dayAnchor, selectedPlatform, selectedStoreId) {
+    LaunchedEffect(ledgerId, range, monthAnchor, dayAnchor, customStart, customEnd,
+        selectedPlatform, selectedStoreId) {
         prefs.edit()
             .putString("range", range.name)
             .putString("month", monthAnchor.toString())
             .putString("day", dayAnchor.toString())
+            .putString("custom_start", customStart.toString())
+            .putString("custom_end", customEnd.toString())
             .putString("platform", selectedPlatform.name)
             .putLong("store", selectedStoreId)
             .apply()
@@ -250,7 +259,7 @@ internal fun CustomerAnalysisContent(
         filterResult.included
     val importBatches = remember(dataVersion, showSettings, tab) {
         if (showSettings || tab == CustomerAnalysisTab.RECORDS) {
-            db.getPaymentImportBatches(40)
+            db.getPaymentImportBatches(200)
         } else emptyList()
     }
 
@@ -963,19 +972,33 @@ internal fun CustomerAnalysisContent(
                         monthAnchor = choice.start
                         range = CustomerRange.THIS_MONTH
                     }
-                    CustomerCalendarChoice.Kind.MONTHS -> {
-                        customStart = choice.start
-                        customEnd = choice.end
-                        range = CustomerRange.CUSTOM
+                    CustomerCalendarChoice.Kind.MONTHS, CustomerCalendarChoice.Kind.DAYS -> {
+                        if (choice.start == choice.end) {
+                            dayAnchor = choice.start
+                            range = CustomerRange.TODAY
+                        } else {
+                            customStart = choice.start
+                            customEnd = choice.end
+                            range = CustomerRange.CUSTOM
+                        }
                     }
                 }
                 showCalendarDialog = false
             },
             onQuickRange = { kind ->
-                range = when (kind) {
-                    "LAST_7" -> CustomerRange.LAST_7
-                    "LAST_30" -> CustomerRange.LAST_30
-                    else -> CustomerRange.ALL
+                when (kind) {
+                    "TODAY", "YESTERDAY" -> {
+                        dayAnchor = if (kind == "TODAY") today else today.minusDays(1)
+                        range = CustomerRange.TODAY
+                    }
+                    "THIS_MONTH", "LAST_MONTH" -> {
+                        monthAnchor = if (kind == "THIS_MONTH") currentMonth
+                            else currentMonth.minusMonths(1)
+                        range = CustomerRange.THIS_MONTH
+                    }
+                    "LAST_7" -> range = CustomerRange.LAST_7
+                    "LAST_30" -> range = CustomerRange.LAST_30
+                    "ALL" -> range = CustomerRange.ALL
                 }
                 showCalendarDialog = false
             }
@@ -1295,16 +1318,11 @@ private fun CustomerPaymentRecordsContent(
         ) {
             Text("收款记录 · ${visible.size}笔", style = MaterialTheme.typography.bodySmall,
                 color = Color.Gray)
-            TextButton(onClick = { showImportHistory = !showImportHistory }) {
-                Text(if (showImportHistory) "收起导入历史⌃" else "导入历史⌄")
+            TextButton(onClick = { showImportHistory = true }) {
+                Text("账单归属 ›")
             }
         }
-        AnimatedVisibility(showImportHistory) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-                ImportBatchList(importBatches.take(12),
-                    collectorAssignments, collectorOptions, onAssignBatch)
-            }
-        }
+
         Row(
             Modifier
                 .fillMaxWidth()
@@ -1664,6 +1682,47 @@ private fun importPaymentFile(
         fileHash = PaymentBillParser.fileHash(bytes),
         parsed = parsed
     )
+    if (showImportHistory) {
+        var billQuery by remember { mutableStateOf("") }
+        val matchingBatches = remember(importBatches, billQuery, collectorAssignments) {
+            val keyword = billQuery.trim()
+            if (keyword.isBlank()) importBatches else importBatches.filter { batch ->
+                val collectorId = collectorAssignments["${batch.platform}|${batch.fileHash}"].orEmpty()
+                val name = collectorOptions.firstOrNull { it.first == collectorId }?.second
+                    ?: "未指定"
+                listOf(batch.fileName, batch.platform, batch.firstReceiptDate,
+                    batch.lastReceiptDate, name).any { it.contains(keyword, ignoreCase = true) }
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { showImportHistory = false },
+            title = { Text("历史账单 · 指定收款人", style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("点击每份账单右侧的收款人即可修改归属；不会修改原始账单或营业额。",
+                        style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    OutlinedTextField(
+                        value = billQuery, onValueChange = { billQuery = it },
+                        modifier = Modifier.fillMaxWidth(), singleLine = true,
+                        placeholder = { Text("搜索文件、日期或收款人") },
+                        textStyle = MaterialTheme.typography.bodySmall
+                    )
+                    Box(Modifier.fillMaxWidth().heightIn(max = 400.dp)) {
+                        ImportBatchList(
+                            matchingBatches, collectorAssignments, collectorOptions,
+                            onAssignBatch = {
+                                showImportHistory = false
+                                onAssignBatch(it)
+                            }
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showImportHistory = false }) { Text("关闭") }
+            }
+        )
+    }
 }
 
 @Composable
@@ -1698,8 +1757,8 @@ private fun ImportBatchList(
         Text("还没有导入记录", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
         return
     }
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        batches.forEach { batch ->
+    LazyColumn(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        items(batches) { batch ->
             Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFFF8FAF9)) {
                 Column(Modifier.padding(8.dp)) {
                     Text(
