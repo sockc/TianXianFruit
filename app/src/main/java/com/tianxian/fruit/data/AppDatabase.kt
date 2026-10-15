@@ -940,6 +940,7 @@ class AppDatabase(
         createV38CustomerAnalysisExclusion(db)
         createV39StableBusinessIdentity(db)
         createV40FundPerformanceIndexes(db)
+        createV41CustomerImportCoverageIndex(db)
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -1107,6 +1108,11 @@ class AppDatabase(
         if (oldVersion < 40) {
             // Only adds read-performance indexes. No ledger values or synced rows change.
             createV40FundPerformanceIndexes(db)
+        }
+        if (oldVersion < 41) {
+            // Receipt source-batch index enables date-range introspection for old
+            // and new imports without touching any signed business/ledger data.
+            createV41CustomerImportCoverageIndex(db)
         }
     }
 
@@ -3560,6 +3566,17 @@ class AppDatabase(
         db.execSQL(
             "CREATE INDEX IF NOT EXISTS idx_payment_import_time " +
                 "ON payment_import_batch(imported_at)"
+        )
+    }
+
+    private fun createV41CustomerImportCoverageIndex(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_customer_payment_source_batch " +
+                "ON customer_payment_transaction(source_batch_id,trade_time)"
+        )
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_customer_payment_platform_trade " +
+                "ON customer_payment_transaction(platform,trade_time)"
         )
     }
 
@@ -15345,6 +15362,8 @@ class AppDatabase(
         parsed: PaymentBillParseResult
     ): PaymentImportOutcome {
         val db = writableDatabase
+        val (receiptStart, receiptEnd, receiptDays) =
+            CustomerImportCoverageEngine.importRange(parsed.transactions)
 
         val existing =
             db.rawQuery(
@@ -15392,7 +15411,10 @@ class AppDatabase(
                 duplicateFile = true,
                 purchaseCandidateRows = parsed.purchaseCandidates.size,
                 purchaseCandidateInsertedRows = purchaseImport.first,
-                purchaseCandidateDuplicateRows = purchaseImport.second
+                purchaseCandidateDuplicateRows = purchaseImport.second,
+                firstReceiptDate = receiptStart,
+                lastReceiptDate = receiptEnd,
+                receiptDays = receiptDays
             )
         }
 
@@ -15553,7 +15575,10 @@ class AppDatabase(
                 duplicateFile = false,
                 purchaseCandidateRows = parsed.purchaseCandidates.size,
                 purchaseCandidateInsertedRows = purchaseImport.first,
-                purchaseCandidateDuplicateRows = purchaseImport.second
+                purchaseCandidateDuplicateRows = purchaseImport.second,
+                firstReceiptDate = receiptStart,
+                lastReceiptDate = receiptEnd,
+                receiptDays = receiptDays
             )
         } finally {
             db.endTransaction()
@@ -15892,9 +15917,23 @@ class AppDatabase(
     ): List<PaymentImportBatchRecord> =
         readableDatabase.rawQuery(
             """
-            SELECT *
-            FROM payment_import_batch
-            ORDER BY imported_at DESC,id DESC
+            SELECT b.*,
+                   COALESCE(t.first_receipt_date,'') AS first_receipt_date,
+                   COALESCE(t.last_receipt_date,'') AS last_receipt_date,
+                   COALESCE(t.receipt_days,0) AS receipt_days,
+                   COALESCE(t.receipt_count,0) AS receipt_count
+            FROM payment_import_batch b
+            LEFT JOIN (
+                SELECT source_batch_id,
+                       MIN(SUBSTR(trade_time,1,10)) AS first_receipt_date,
+                       MAX(SUBSTR(trade_time,1,10)) AS last_receipt_date,
+                       COUNT(DISTINCT SUBSTR(trade_time,1,10)) AS receipt_days,
+                       COUNT(*) AS receipt_count
+                FROM customer_payment_transaction
+                WHERE amount>0.005
+                GROUP BY source_batch_id
+            ) t ON t.source_batch_id=b.id
+            ORDER BY b.imported_at DESC,b.id DESC
             LIMIT ?
             """.trimIndent(),
             arrayOf(limit.coerceAtLeast(1).toString())
@@ -15913,7 +15952,11 @@ class AppDatabase(
                             ignoredRows = c.int("ignored_rows"),
                             refundRows = c.int("refund_rows"),
                             errorRows = c.int("error_rows"),
-                            importedAt = c.long("imported_at")
+                            importedAt = c.long("imported_at"),
+                            firstReceiptDate = c.str("first_receipt_date"),
+                            lastReceiptDate = c.str("last_receipt_date"),
+                            receiptDays = c.int("receipt_days"),
+                            receiptCount = c.int("receipt_count")
                         )
                     )
                 }
@@ -16499,7 +16542,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 40
+        const val DB_VERSION = 41
 
         private val CUSTOMER_PAYMENT_DATE_TIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
