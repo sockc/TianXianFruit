@@ -362,8 +362,16 @@ internal fun CustomerAnalysisContent(
                 )
 
             CustomerRange.CUSTOM ->
-                customStart.format(DateTimeFormatter.ofPattern("M/d")) + "–" +
-                    customEnd.format(DateTimeFormatter.ofPattern("M/d"))
+                if (customStart.dayOfMonth == 1 &&
+                    customEnd.dayOfMonth == customEnd.lengthOfMonth() &&
+                    customStart != customEnd.withDayOfMonth(1)) {
+                    if (customStart.year == customEnd.year)
+                        "${customStart.year}年${customStart.monthValue}–${customEnd.monthValue}月"
+                    else
+                        "${customStart.year}/${customStart.monthValue}–${customEnd.year}/${customEnd.monthValue}月"
+                } else
+                    customStart.format(DateTimeFormatter.ofPattern("M/d")) + "–" +
+                        customEnd.format(DateTimeFormatter.ofPattern("M/d"))
 
             else ->
                 range.label
