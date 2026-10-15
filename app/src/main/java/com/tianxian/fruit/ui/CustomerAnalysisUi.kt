@@ -277,6 +277,17 @@ internal fun CustomerAnalysisContent(
         )
     }
 
+    val receiptAudit = remember(rawRecords, trafficSessions, dateRange, selectedStoreId, selectedPlatform) {
+        PaymentReceiptAuditor.inspect(
+            rows = rawRecords,
+            sessions = trafficSessions,
+            startDate = dateRange.first,
+            endDate = dateRange.second,
+            storeId = selectedStoreId,
+            platform = selectedPlatform.name
+        )
+    }
+
     val analysis =
         remember(
             allRecords,
@@ -489,7 +500,7 @@ internal fun CustomerAnalysisContent(
             val failures = results.mapNotNull { it.exceptionOrNull()?.message }
             message = "账单 ${imported.size}/${uris.size} 个成功 · 新增 ${imported.sumOf { it.insertedRows }} 笔 · " +
                 "重复 ${imported.sumOf { it.duplicateRows }} 笔 · 忽略 ${imported.sumOf { it.ignoredRows }} 笔 · " +
-                "异常 ${imported.sumOf { it.errorRows }} 笔" +
+                "异常 ${imported.sumOf { it.errorRows }} 笔 · 未匹配位置 ${imported.sumOf { it.unmatchedStoreRows }} 笔" +
                 (if (uris.size > 20) " · 单次最多20个文件" else "") +
                 (if (failures.isNotEmpty()) " · ${failures.size} 个失败：${failures.first()}" else "")
             if (imported.isNotEmpty()) onChanged()
@@ -853,6 +864,7 @@ internal fun CustomerAnalysisContent(
                                  platformHourlyTraffic = platformHourlyTraffic,
                                  singleDayRecords = singleDayRecords,
                                  platformCoverage = periodPlatformCoverage,
+                                 receiptAudit = receiptAudit,
                                 dailyTraffic =
                                     dailyTraffic,
                                 sameWeekdayComparisons =
@@ -1637,6 +1649,10 @@ private fun CustomerDetailsContent(
                 )
             }
             Text(
+                "旧版营业表的新客/老客数据曾可能被匿名账单错误回填，无法区分手工录入与错误导入。请到营业表核对旧记录；本版不会自动清零或覆盖。",
+                style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700)
+            )
+            Text(
                 if (result.summary.customerCount == 0)
                     "账单暂无可靠的付款人标识，新老客和复购情况无法判定"
                 else "账单可识别样本：首次出现 ${result.summary.newCustomerCount} · 历史出现 ${result.summary.oldCustomerCount} · 样本复购率 ${percent(result.summary.repeatRate)}",
@@ -1796,6 +1812,7 @@ private fun CustomerOverview(
     platformHourlyTraffic: List<PaymentPlatformHour>,
     singleDayRecords: List<CustomerPaymentRecord>,
     platformCoverage: List<PaymentPlatformCoverage>,
+    receiptAudit: PaymentReceiptAudit,
     dailyTraffic: List<CustomerDailyTrafficPoint>,
     sameWeekdayComparisons: List<CustomerSameWeekdayComparison>,
     trafficComparisons: List<CustomerTrafficComparison>,
@@ -1873,6 +1890,33 @@ private fun CustomerOverview(
                                     style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
                             }
                             PaymentSourceCoverageCard(platformCoverage)
+                            Text(
+                                "账单核对 · 未匹配位置 ${receiptAudit.unmatchedPayments}笔 · 退款 ${receiptAudit.refundRows}条" +
+                                    " · 流水号重复疑点 ${receiptAudit.repeatedTransactionRefs}组",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.DarkGray
+                            )
+                            if (receiptAudit.assignedOutsideSavedWindow > 0) {
+                                Text(
+                                    "有 ${receiptAudit.assignedOutsideSavedWindow}笔历史收款的位置与已保存营业时段不符；可能是旧版错误匹配，请人工核对，未自动修改原始账单。",
+                                    style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700)
+                                )
+                            }
+                            if (receiptAudit.sessionsWithoutMatchedReceipts.isNotEmpty()) {
+                                Text(
+                                    "以下营业场次暂无已匹配的当前渠道收款，不代表0笔或未营业：",
+                                    style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700)
+                                )
+                                receiptAudit.sessionsWithoutMatchedReceipts.take(4).forEach { day ->
+                                    Text("· $day", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                }
+                                if (receiptAudit.sessionsWithoutMatchedReceipts.size > 4) {
+                                    Text("另有 ${receiptAudit.sessionsWithoutMatchedReceipts.size - 4}个场次待核对",
+                                        style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                                }
+                            }
+                            Text("数据缺失可能是未导入、该渠道无交易或位置未匹配；上述核对仅作提示，不回写历史交易。",
+                                style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                         }
                     }
                 }
