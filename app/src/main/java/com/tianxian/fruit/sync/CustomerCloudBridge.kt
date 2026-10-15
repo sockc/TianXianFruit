@@ -165,7 +165,10 @@ internal object CustomerCloudBridge {
 
     private fun applyRemote(context: Context, db: AppDatabase, bookId: String, changes: JSONArray, next: Long) {
         val database = db.writableDatabase
-        val knownAck = ackMap(database)
+        // Mutable within one downloaded event page: a single key may have
+        // several sequential revisions on the server. Each later event must
+        // see the ACK from the immediately preceding event.
+        val knownAck = ackMap(database).toMutableMap()
         val currentIdentity = database.rawQuery(
             "SELECT server_identity FROM customer_cloud_cursor WHERE id=1", null
         ).use { if (it.moveToFirst()) it.getString(0) ?: "" else "" }
@@ -250,7 +253,9 @@ internal object CustomerCloudBridge {
                         if (!OfficialWechatCustomerStatsLocal.applyFromCloud(context, bookId, key, remote)) {
                             throw IllegalStateException("写入云端官方顾客记录失败")
                         }
-                        ack(database, kind, key, digest(officialPayload(key, remote).toString()), version)
+                        val digestValue = digest(officialPayload(key, remote).toString())
+                        ack(database, kind, key, digestValue, version)
+                        knownAck[kind to key] = Ack(digestValue, version)
                     }
                     "ASSIGNMENT" -> {
                         if (key != body.str("date")) continue
@@ -265,8 +270,9 @@ internal object CustomerCloudBridge {
                         if (!db.applyCustomerStoreDayAssignmentFromCloud(key, chosen)) {
                             throw IllegalStateException("恢复云端统一归属失败：$key")
                         }
-                        ack(database, kind, key,
-                            digest(assignmentPayload(key, chosen).toString()), version)
+                        val digestValue = digest(assignmentPayload(key, chosen).toString())
+                        ack(database, kind, key, digestValue, version)
+                        knownAck[kind to key] = Ack(digestValue, version)
                     }
                     else -> throw IllegalStateException("未知客流同步数据类型：$kind")
                 }
