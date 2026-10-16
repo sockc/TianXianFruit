@@ -244,6 +244,10 @@ internal fun CustomerAnalysisContent(
         collectorByBatch
     ) {
         PaymentTrafficAnalytics.select(rawRecords, selectedPlatform.name, selectedStoreId).filter { record ->
+            // Shared collector groups are known multi-store receipts, not
+            // unknown receipts; do not place them in the "未匹配" filter.
+            (selectedStoreId != -1L ||
+                record.storeName != CustomerCollectorStoreAttribution.SHARED_STORE_NAME) &&
             when (selectedCollectorSyncId) {
                 "*" -> true
                 "?" -> collectorByBatch[record.sourceBatchId].isNullOrBlank()
