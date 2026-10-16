@@ -33,11 +33,20 @@ internal fun CustomerTrafficQuickPreviewSheet(
     val autoRecords = remember(dataVersion, sessions) {
         CustomerTrafficDeepDive.attributeBusinessDays(db.getCustomerPayments(), sessions)
     }
-    val source = remember(autoRecords, assignments, stores) {
-        CustomerUnifiedStoreAttribution.apply(autoRecords, assignments, stores)
+    val collectorByBatch = remember(dataVersion) { db.getCustomerCollectorByBatchId() }
+    val collectorPartners = remember(dataVersion) { db.getCustomerCollectorPartnerIds() }
+    val dailyHistory = remember(dataVersion) { db.getDailyRecordsBetween(null, null) }
+    val collectorAttribution = remember(autoRecords, dailyHistory, collectorByBatch, collectorPartners) {
+        CustomerCollectorStoreAttribution.resolve(autoRecords, dailyHistory,
+            collectorByBatch, collectorPartners)
     }
-    val unmatchedBeforeUnified = remember(autoRecords, record.date) {
-        CustomerUnifiedStoreAttribution.unmatchedOnDate(autoRecords, record.date)
+    val source = remember(collectorAttribution, assignments, stores) {
+        CustomerUnifiedStoreAttribution.apply(collectorAttribution.rows, assignments,
+            stores, collectorAttribution.collectorMatchedIds)
+    }
+    val unmatchedBeforeUnified = remember(collectorAttribution, record.date) {
+        CustomerUnifiedStoreAttribution.unmatchedOnDate(collectorAttribution.rows,
+            record.date, collectorAttribution.collectorMatchedIds)
     }
     val manualAssignmentName = stores.firstOrNull {
         it.syncId == assignments[record.date] && it.syncId.isNotBlank()
@@ -46,10 +55,20 @@ internal fun CustomerTrafficQuickPreviewSheet(
     val payments = remember(source, settings) {
         CustomerAnalyticsEngine.filterRecords(source, settings).included
     }
-    val selected = payments.filter {
+    val exclusive = payments.filter {
         record.storeId > 0L && it.businessDate == record.date &&
             it.storeId == record.storeId && it.netAmount > 0.005
     }
+    val sharedGroups = remember(collectorAttribution, record.date, record.storeId) {
+        collectorAttribution.shared.filter {
+            it.date == record.date && record.storeId in it.storeIds
+        }
+    }
+    val sharedIds = sharedGroups.flatMap { it.receiptIds }.toSet()
+    val sharedPayments = payments.filter { it.id in sharedIds && it.netAmount > 0.005 }
+    // A receipt is shown once in the combined display even when the same
+    // collector appears on several stores in the day's business record.
+    val selected = (exclusive + sharedPayments).distinctBy { it.id }
     val comparisons = remember(payments, sessions, record.date, record.storeId) {
         if (record.storeId <= 0L) emptyList()
         else CustomerTrafficDeepDive.compare(
@@ -57,7 +76,8 @@ internal fun CustomerTrafficQuickPreviewSheet(
         )
     }
     val unmatched = payments.count {
-        it.businessDate == record.date && it.storeId <= 0L && it.netAmount > 0.005
+        it.businessDate == record.date && it.storeId <= 0L &&
+            it.id !in collectorAttribution.collectorMatchedIds && it.netAmount > 0.005
     }
     val amount = selected.sumOf { it.netAmount }
     val hourly = selected.groupingBy {
@@ -75,6 +95,10 @@ internal fun CustomerTrafficQuickPreviewSheet(
         ) {
             Text("${record.storeName} · ${record.date}",
                 style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            if (sharedGroups.isNotEmpty()) {
+                Text("组合客流（本位置独立收款＋多个位置共享收款），不是本位置单独客流。",
+                    style = MaterialTheme.typography.bodySmall, color = Color(0xFF9A6700))
+            }
             Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.SpaceBetween) {
                 Text("付款 ${selected.size}笔")
                 Text("电子 ¥${String.format(Locale.CHINA,"%.0f",amount)}")
@@ -88,9 +112,39 @@ internal fun CustomerTrafficQuickPreviewSheet(
             Text("微信 ${selected.count { it.platform == "WECHAT" }}笔 · " +
                 "支付宝 ${selected.count { it.platform == "ALIPAY" }}笔",
                 style=MaterialTheme.typography.bodySmall)
-            comparisons.firstOrNull()?.let { CustomerHourlyComparisonCard(it) }
-                ?: Text("缺少可比较的营业时间或记录，暂不能计算同位置历史变化。",
-                    style=MaterialTheme.typography.bodySmall,color=Color.Gray)
+            if (sharedGroups.isNotEmpty()) {
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF6E6))) {
+                    Column(Modifier.fillMaxWidth().padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("共享收款涉及${sharedGroups.flatMap { it.stores }.distinctBy { it.first }.size}个位置",
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF9A6700))
+                        sharedGroups.forEach { group ->
+                            val receipts = sharedPayments.filter { it.id in group.receiptIds }
+                            if (receipts.isNotEmpty()) {
+                                val payName = if (group.platform == "WECHAT") "微信" else "支付宝"
+                                Text("${group.partnerName} · $payName · ${receipts.size}笔 / ¥" +
+                                    String.format(Locale.CHINA, "%.2f", receipts.sumOf { it.netAmount }),
+                                    style = MaterialTheme.typography.bodySmall)
+                                Text("关联位置：${group.storeNames}",
+                                    style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                        Text("本位置独立 ${exclusive.size}笔；共享 ${sharedPayments.size}笔。共享金额只计一次，" +
+                            "不得把合并数据写入任意单个位置营业额或单摊历史对比。",
+                            style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
+                    }
+                }
+            }
+            if (exclusive.isNotEmpty()) {
+                comparisons.firstOrNull()?.let { CustomerHourlyComparisonCard(it) }
+                    ?: Text("缺少可比较的营业时间或记录，暂不能计算同位置历史变化。",
+                        style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            } else {
+                Text("没有可独立归属本位置的历史客流，不能把共享数据当作单摊客流进行同期对比。",
+                    style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            }
             if (record.storeId <= 0L) {
                 Text("这条旧营业记录没有明确营业位置，不能自动分配未匹配账单。",
                     style=MaterialTheme.typography.bodySmall,color=Color(0xFF9A6700))
