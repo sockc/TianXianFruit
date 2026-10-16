@@ -6,11 +6,11 @@ import java.time.LocalDateTime
 
 class CustomerSharedHourlyComparisonTest {
     private val stores = listOf(1L to "游乐场", 2L to "里水")
-    private fun group(date: String, ids: Set<Long>, platform: String = "WECHAT") =
+    private fun group(date: String, ids: Set<Long>, platform: String = "WECHAT", twoStores: Boolean = true) =
         SharedCollectorTraffic(
             date = date, platform = platform, partnerId = 7L,
             partnerName = "子琳",
-            stores = if (ids == setOf(1L, 2L)) stores else listOf(1L to "游乐场"),
+            stores = if (twoStores) stores else listOf(1L to "游乐场"),
             receiptIds = ids, payments = ids.size, amount = 15.0 * ids.size
         )
     private fun row(id: Long, date: String) = CustomerPaymentRecord(
@@ -40,7 +40,7 @@ class CustomerSharedHourlyComparisonTest {
     @Test fun referenceUsesSameAccountChannelAndFullStoreSetOnly() {
         val current = group("2026-10-16", setOf(1L, 2L))
         val prior = group("2026-10-09", setOf(3L, 4L))
-        val wrongStore = group("2026-10-02", setOf(5L))
+        val wrongStore = group("2026-10-02", setOf(5L), twoStores = false)
         val wrongChannel = group("2026-09-25", setOf(6L), "ALIPAY")
         val cmp = CustomerSharedHourlyComparison.compare(
             current, listOf(current, prior, wrongStore, wrongChannel),
