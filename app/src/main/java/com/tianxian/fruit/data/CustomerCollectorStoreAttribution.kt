@@ -27,6 +27,7 @@ internal data class CollectorStoreAttributionResult(
 )
 
 internal object CustomerCollectorStoreAttribution {
+    const val SHARED_STORE_NAME = "多位置共享收款"
     private data class Key(val date: String, val platform: String, val partnerId: Long)
     private data class Match(
         val key: Key,
@@ -107,7 +108,7 @@ internal object CustomerCollectorStoreAttribution {
                     .add(Match(key, candidates, receipt))
                 // Do not double-count this payment in several location totals.
                 receipt.copy(businessDate = key.date, storeId = 0L,
-                    storeName = "多位置共享收款")
+                    storeName = SHARED_STORE_NAME)
             }
         }
 
