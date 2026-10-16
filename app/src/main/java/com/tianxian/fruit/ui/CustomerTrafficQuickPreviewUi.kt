@@ -38,7 +38,7 @@ internal fun CustomerTrafficQuickPreviewSheet(
     val dailyHistory = remember(dataVersion) { db.getDailyRecordsBetween(null, null) }
     val collectorAttribution = remember(autoRecords, dailyHistory, collectorByBatch, collectorPartners) {
         CustomerCollectorStoreAttribution.resolve(autoRecords, dailyHistory,
-            collectorByBatch, collectorPartners)
+            collectorByBatch, collectorPartners, sessions)
     }
     val source = remember(collectorAttribution, assignments, stores) {
         CustomerUnifiedStoreAttribution.apply(collectorAttribution.rows, assignments,
