@@ -200,7 +200,7 @@ internal fun CustomerAnalysisContent(
     val dailyHistory = remember(dataVersion) { db.getDailyRecordsBetween(null, null) }
     val collectorAttribution = remember(autoRecords, collectorByBatch, collectorPartnerIds, dailyHistory) {
         CustomerCollectorStoreAttribution.resolve(autoRecords, dailyHistory,
-            collectorByBatch, collectorPartnerIds)
+            collectorByBatch, collectorPartnerIds, trafficSessions)
     }
     val rawRecords = remember(collectorAttribution, enabledStores, locationAssignments) {
         CustomerUnifiedStoreAttribution.apply(collectorAttribution.rows, locationAssignments,
