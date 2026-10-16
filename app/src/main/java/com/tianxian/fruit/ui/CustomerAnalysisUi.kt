@@ -2033,6 +2033,34 @@ private fun BusinessRecordCustomerCard(
 }
 
 @Composable
+private fun CustomerReceiptReconciliationDetails(
+    reconciliations: List<CustomerPaymentReconciliation>
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        reconciliations.forEach { item ->
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(item.storeName, style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold)
+                Text("微信 营业表 ${money(item.wechatBusiness)} · 已导入 ${money(item.wechatObserved)}（${item.wechatPayments}笔）",
+                    style = MaterialTheme.typography.labelSmall)
+                Text("支付宝 营业表 ${money(item.alipayBusiness)} · 已导入 ${money(item.alipayObserved)}（${item.alipayPayments}笔）",
+                    style = MaterialTheme.typography.labelSmall)
+                if (item.hasSharedAccount) {
+                    Text("共享收款：微信${item.sharedWechatPayments}笔、支付宝${item.sharedAlipayPayments}笔；不能按单摊差额判断。",
+                        style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
+                }
+                if (item.unmatchedPaymentsForDay > 0) {
+                    Text("当日还有${item.unmatchedPaymentsForDay}笔未匹配位置。",
+                        style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
+                }
+            }
+        }
+        Text("已导入金额不等于完整账单覆盖。未核实收款人、平台及导出时间范围前不判断漏收；现金不对账。",
+            style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+    }
+}
+
+@Composable
 private fun CustomerOverview(
     result: CustomerAnalysisResult,
     hourlyTraffic: List<CustomerHourlyPoint>,
@@ -2060,7 +2088,6 @@ private fun CustomerOverview(
 ) {
     val s = result.summary
     var showQualityDetails by remember { mutableStateOf(false) }
-    var showReconciliation by remember { mutableStateOf(false) }
     var showStores by remember { mutableStateOf(false) }
     val reliablePayments = remember(payments) {
         payments.count { PaymentTrafficAnalytics.isIdentified(it) }
@@ -2146,9 +2173,9 @@ private fun CustomerOverview(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            "微信${if (platformCoverage.any { it.platform == "WECHAT" && it.paymentCount > 0 }) " ✓" else " —"}" +
-                                "  支付宝${if (platformCoverage.any { it.platform == "ALIPAY" && it.paymentCount > 0 }) " ✓" else " —"}" +
-                                "  · 身份覆盖 ${identityCoverage?.let { "$it%" } ?: "暂无"}",
+                            "账单核对 · 微信${if (platformCoverage.any { it.platform == "WECHAT" && it.paymentCount > 0 }) "有" else "—"}" +
+                                " · 支付宝${if (platformCoverage.any { it.platform == "ALIPAY" && it.paymentCount > 0 }) "有" else "—"}" +
+                                " · 待核验",
                             modifier = Modifier.weight(1f),
                             style = MaterialTheme.typography.labelMedium, maxLines = 2
                         )
@@ -2197,84 +2224,19 @@ private fun CustomerOverview(
                             }
                             Text("数据缺失可能是未导入、该渠道无交易或位置未匹配；上述核对仅作提示，不回写历史交易。",
                                 style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                            if (singleDay && reconciliations.isNotEmpty()) {
+                                HorizontalDivider()
+                                Text("营业表电子收款对照（仅详情显示）",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.SemiBold)
+                                CustomerReceiptReconciliationDetails(reconciliations)
+                            }
                         }
                     }
                 }
             }
         }
         if (singleDay) {
-            if (reconciliations.isNotEmpty()) {
-                item {
-                    Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
-                        Column(Modifier.fillMaxWidth().padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Row(
-                                Modifier.fillMaxWidth().clickable {
-                                    showReconciliation = !showReconciliation
-                                },
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("电子收款核对", modifier = Modifier.weight(1f),
-                                    fontWeight = FontWeight.SemiBold)
-                                Text(if (showReconciliation) "收起⌃" else "详情 ›",
-                                    color = Color(0xFF087D4E),
-                                    style = MaterialTheme.typography.labelSmall)
-                            }
-                            Text(
-                                "仅对照手工营业额与已导入、已归属该位置的电子收款；账单不完整时差额不代表漏收。",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color.Gray
-                            )
-                            AnimatedVisibility(showReconciliation) {
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    reconciliations.forEach { item ->
-                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                            Text(item.storeName, fontWeight = FontWeight.SemiBold,
-                                                style = MaterialTheme.typography.bodySmall)
-                                            Text(
-                                                "微信 营业表 ${money(item.wechatBusiness)} · 已导入 ${money(item.wechatObserved)}（${item.wechatPayments}笔）",
-                                                style = MaterialTheme.typography.labelSmall
-                                            )
-                                            Text(
-                                                "支付宝 营业表 ${money(item.alipayBusiness)} · 已导入 ${money(item.alipayObserved)}（${item.alipayPayments}笔）",
-                                                style = MaterialTheme.typography.labelSmall
-                                            )
-                                            Text(
-                                                if (item.hasSharedAccount)
-                                                    "涉及共享收款：微信${item.sharedWechatPayments}笔、支付宝${item.sharedAlipayPayments}笔。不能以单摊差额判断少收。"
-                                                else if (item.observedPayments == 0)
-                                                    "当日暂无已归属经营收款，不能判定收款为零"
-                                                else "账面与已观察电子收款差异：${money(item.difference)}（待核对）",
-                                                color = Color(0xFF9A6700),
-                                                style = MaterialTheme.typography.labelSmall
-                                            )
-                                            if (item.unmatchedPaymentsForDay > 0) {
-                                                Text(
-                                                    "还有 ${item.unmatchedPaymentsForDay}笔当日收款尚未匹配位置，不能擅自计入本摊。",
-                                                    style = MaterialTheme.typography.labelSmall, color = Color.Gray
-                                                )
-                                            }
-                                        }
-                                    }
-                                    Text("现金不对账。跨日退款、导出范围不完整、位置误匹配均可能影响差异。此处不会修改正式营业记录。",
-                                        style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            item {
-                CustomerTrafficCoverageNote(
-                    singleDay = true,
-                    sessions = savedSessionsForDay,
-                    unmatchedPayments = payments.count { it.storeId <= 0L &&
-                        it.storeName != CustomerCollectorStoreAttribution.SHARED_STORE_NAME },
-                    selectedStoreId = selectedStoreId,
-                    hasWechat = payments.any { it.platform == "WECHAT" },
-                    hasAlipay = payments.any { it.platform == "ALIPAY" }
-                )
-            }
             item {
                 HourlyCustomerTrafficCard(
                     points = hourlyTraffic,
