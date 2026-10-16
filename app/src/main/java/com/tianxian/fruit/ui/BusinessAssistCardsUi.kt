@@ -387,18 +387,12 @@ private fun HistoricalPurchaseCandidateRow(
 }
 
 private data class BusinessAssistSnapshot(
-    val analysis: CustomerAnalysisResult,
     val wechatTotal: Double,
     val alipayTotal: Double,
+    val paymentCount: Int,
     val rawDayCount: Int,
-    val collectors: List<BillCollectorSummary> = emptyList()
-)
-
-private data class BillCollectorSummary(
-    val name: String,
-    val wechat: Double,
-    val alipay: Double,
-    val paymentCount: Int
+    val coverage: BusinessBillCoverage,
+    val canSupplement: Boolean
 )
 
 internal data class BusinessPaymentSupplement(
@@ -407,46 +401,30 @@ internal data class BusinessPaymentSupplement(
 )
 
 private object BusinessAssistMemoryCache {
-    private val values =
-        LinkedHashMap<String, BusinessAssistSnapshot>()
+    private val values = LinkedHashMap<String, BusinessAssistSnapshot>()
+    private fun key(db: AppDatabase, date: String) =
+        System.identityHashCode(db).toString() + "|" + date
 
-    private fun key(
-        db: AppDatabase,
-        date: String
-    ): String =
-        System.identityHashCode(db).toString() +
-            "|" +
-            date
+    fun get(db: AppDatabase, date: String): BusinessAssistSnapshot? =
+        synchronized(values) { values[key(db, date)] }
 
-    fun get(
-        db: AppDatabase,
-        date: String
-    ): BusinessAssistSnapshot? =
+    fun put(db: AppDatabase, date: String, snapshot: BusinessAssistSnapshot) {
         synchronized(values) {
-            values[key(db, date)]
-        }
-
-    fun put(
-        db: AppDatabase,
-        date: String,
-        snapshot: BusinessAssistSnapshot
-    ) {
-        synchronized(values) {
-            val cacheKey = key(db, date)
-            values.remove(cacheKey)
-            values[cacheKey] = snapshot
+            val item = key(db, date)
+            values.remove(item)
+            values[item] = snapshot
             while (values.size > 64) {
-                val first =
-                    values.entries
-                        .firstOrNull()
-                        ?.key
-                        ?: break
-                values.remove(first)
+                values.remove(values.entries.firstOrNull()?.key ?: break)
             }
         }
     }
 }
 
+/**
+ * Compact read-only business bill status. This is not a day-total deficit
+ * calculation. Full explanations are moved into the explicit details sheet.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun BusinessPaymentAssistCard(
     db: AppDatabase,
@@ -456,376 +434,147 @@ internal fun BusinessPaymentAssistCard(
     manualElectronicTotal: Double,
     onSupplementBusiness: (BusinessPaymentSupplement) -> Unit
 ) {
-    var expanded by remember(date) {
-        mutableStateOf(false)
+    var showDetail by remember(date) { mutableStateOf(false) }
+    val cached = remember(db, date) { BusinessAssistMemoryCache.get(db, date) }
+    val snapshot by produceState<BusinessAssistSnapshot?>(cached, db, dataVersion, date) {
+        val fresh = withContext(Dispatchers.IO) {
+            val settings = db.getCustomerAnalysisSettings()
+            val raw = db.getCustomerPayments(endDate = date)
+            val included = CustomerAnalyticsEngine.filterRecords(raw, settings).included
+            val day = included.filter { it.businessDate == date &&
+                it.amount > 0.005 && it.netAmount > 0.005 }
+            val daily = db.getDailyRecordsBetween(date, date)
+            val coverage = BusinessBillCoverageEngine.review(
+                date = date, savedRecords = daily,
+                payments = day, byBatch = db.getCustomerCollectorByBatchId(),
+                partnerBySyncId = db.getCustomerCollectorPartnerIds()
+            )
+            // The existing business form callback replaces BOTH electronic
+            // channels. Allow it only for one recorded store, one account,
+            // no unresolved receipts and no absent expected channel.
+            val singleStore = daily.size == 1 && daily.single().storeId > 0L
+            val knownOne = coverage.rows.isNotEmpty() &&
+                coverage.rows.map { it.partnerId }.distinct().size == 1 &&
+                coverage.rows.none { it.shared } &&
+                coverage.rows.all { it.observed } &&
+                coverage.importedOutsideBusiness == 0 &&
+                coverage.importedUnassigned == 0
+            val wechat = day.filter { it.platform == "WECHAT" }.sumOf { it.netAmount }
+            val alipay = day.filter { it.platform == "ALIPAY" }.sumOf { it.netAmount }
+            BusinessAssistSnapshot(
+                wechatTotal = wechat,
+                alipayTotal = alipay,
+                paymentCount = day.size,
+                rawDayCount = raw.count { it.businessDate == date },
+                coverage = coverage,
+                canSupplement = hasManualBusiness && singleStore && knownOne &&
+                    (wechat > 0.005 || alipay > 0.005)
+            )
+        }
+        BusinessAssistMemoryCache.put(db, date, fresh)
+        value = fresh
     }
-
-    val cachedSnapshot =
-        remember(
-            db,
-            date
-        ) {
-            BusinessAssistMemoryCache.get(
-                db,
-                date
-            )
-        }
-
-    val snapshot by
-        produceState<BusinessAssistSnapshot?>(
-            cachedSnapshot,
-            db,
-            dataVersion,
-            date
-        ) {
-            val fresh =
-                withContext(Dispatchers.IO) {
-                    val settings =
-                        db.getCustomerAnalysisSettings()
-                    // Imported receipts are for payment totals, not actual unique
-                    // customers: anonymous payer names cannot prove new/old counts.
-                    val allRawPayments =
-                        db.getCustomerPayments(
-                            endDate = date
-                        )
-                    val filteredAll =
-                        CustomerAnalyticsEngine
-                            .filterRecords(
-                                allRecords =
-                                    allRawPayments,
-                                settings = settings
-                            )
-                            .included
-                    val dayPayments =
-                        filteredAll.filter {
-                            it.businessDate == date
-                        }
-                    val analysis =
-                        CustomerAnalyticsEngine.analyze(
-                            allRecords =
-                                filteredAll,
-                            startDate = date,
-                            endDate = date
-                        )
-                    val assignedCollectorByBatch = db.getCustomerCollectorByBatchId()
-                    val collectorNames = db.getCollectorSyncOptions().toMap()
-                    val collectorSummaries = dayPayments.groupBy { payment ->
-                        assignedCollectorByBatch[payment.sourceBatchId].orEmpty()
-                    }.map { (id, receipts) ->
-                        BillCollectorSummary(
-                            name = collectorNames[id] ?: "未指定收款人",
-                            wechat = receipts.filter { it.platform == "WECHAT" }
-                                .sumOf { it.netAmount },
-                            alipay = receipts.filter { it.platform == "ALIPAY" }
-                                .sumOf { it.netAmount },
-                            paymentCount = receipts.size
-                        )
-                    }.sortedBy { it.name }
-                    BusinessAssistSnapshot(
-                        analysis = analysis,
-                        collectors = collectorSummaries,
-                        wechatTotal =
-                            dayPayments
-                                .filter {
-                                    it.platform == "WECHAT"
-                                }
-                                .sumOf {
-                                    it.netAmount
-                                }
-                                .coerceAtLeast(0.0),
-                        alipayTotal =
-                            dayPayments
-                                .filter {
-                                    it.platform == "ALIPAY"
-                                }
-                                .sumOf {
-                                    it.netAmount
-                                }
-                                .coerceAtLeast(0.0),
-                        rawDayCount =
-                            allRawPayments.count {
-                                it.businessDate == date
-                            }
-                    )
-                }
-
-            BusinessAssistMemoryCache.put(
-                db = db,
-                date = date,
-                snapshot = fresh
-            )
-            value = fresh
-        }
-
     val current = snapshot
-    if (current == null) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors =
-                CardDefaults.cardColors(
-                    containerColor =
-                        AssistSoftGreen
-                )
-        ) {
-            Row(
-                Modifier.padding(
-                    horizontal = 10.dp,
-                    vertical = 7.dp
-                ),
-                verticalAlignment =
-                    Alignment.CenterVertically
-            ) {
-                Text(
-                    "账单收款",
-                    fontWeight =
-                        FontWeight.SemiBold,
-                    style =
-                        MaterialTheme.typography
-                            .bodySmall
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "读取中…",
-                    style =
-                        MaterialTheme.typography
-                            .labelSmall,
-                    color = Color.Gray
-                )
-            }
-        }
-        return
-    }
-
-    val analysis = current.analysis
-    val wechatTotal = current.wechatTotal
-    val alipayTotal = current.alipayTotal
-    val importedTotal =
-        analysis.summary.netRevenue
-    val difference =
-        importedTotal - manualElectronicTotal
-    val meaningfulDifference =
-        hasManualBusiness &&
-            importedTotal > 0.005 &&
-            manualElectronicTotal > 0.005 &&
-            abs(difference) >=
-                max(
-                    20.0,
-                    manualElectronicTotal * 0.10
-                )
-
+    // Zero-record dates should not occupy a large bill card.
+    if (current == null || current.rawDayCount == 0) return
+    val amount = current.wechatTotal + current.alipayTotal
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors =
-            CardDefaults.cardColors(
-                containerColor =
-                    if (meaningfulDifference) {
-                        AssistSoftOrange
-                    } else {
-                        AssistSoftGreen
-                    }
-            )
+        colors = CardDefaults.cardColors(containerColor = AssistSoftGreen)
     ) {
-        Column(
-            Modifier.padding(
-                horizontal = 10.dp,
-                vertical = 4.dp
-            ),
-            verticalArrangement =
-                Arrangement.spacedBy(3.dp)
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment =
-                    Alignment.CenterVertically
-            ) {
-                Column(
-                    Modifier.weight(1f)
-                ) {
-                    Text(
-                        "账单收款",
-                        fontWeight =
-                            FontWeight.SemiBold,
-                        style =
-                            MaterialTheme.typography
-                                .bodySmall
-                    )
-                    Text(
-                        when {
-                            current.rawDayCount > 0 &&
-                                analysis.summary.paymentCount == 0 ->
-                                "当天账单收款已按分析规则排除"
-                            meaningfulDifference ->
-                                "${assistMoney(importedTotal)} · ${analysis.summary.paymentCount}笔 · 差额 ${signedAssistMoney(difference)}"
-                            else ->
-                                "${assistMoney(importedTotal)} · ${analysis.summary.paymentCount}笔 · 顾客数未知"
-                        },
-                        style =
-                            MaterialTheme.typography
-                                .labelSmall,
-                        color =
-                            if (meaningfulDifference) {
-                                Color(0xFF9A6700)
-                            } else {
-                                Color.Gray
-                            },
-                        maxLines = 1
-                    )
-                }
-
-                if (
-                    analysis.summary.paymentCount >
-                    0
-                ) {
-                    TextButton(
-                        onClick = {
-                            onSupplementBusiness(
-                                BusinessPaymentSupplement(
-                                    wechatTotal = wechatTotal,
-                                    alipayTotal = alipayTotal
-                                )
-                            )
-                        },
-                        contentPadding =
-                            PaddingValues(
-                                horizontal = 4.dp,
-                                vertical = 0.dp
-                            )
-                    ) {
-                        Text(
-                            "补入",
-                            style =
-                                MaterialTheme.typography
-                                    .labelMedium,
-                            color = AssistGreen
-                        )
-                    }
-                }
-
-                TextButton(
-                    onClick = {
-                        expanded = !expanded
-                    },
-                    contentPadding =
-                        PaddingValues(
-                            horizontal = 4.dp,
-                            vertical = 0.dp
-                        )
-                ) {
-                    Text(
-                        if (expanded) {
-                            "收起"
-                        } else {
-                            "详情"
-                        },
-                        style =
-                            MaterialTheme.typography
-                                .labelMedium,
-                        color = AssistGreen
-                    )
-                }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("账单收款", fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.bodySmall)
+                Text("${assistMoney(amount)} · ${current.paymentCount}笔 · " +
+                    "微信${if (current.wechatTotal > 0.005) "有" else "—"} " +
+                    "支付宝${if (current.alipayTotal > 0.005) "有" else "—"}",
+                    style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                Text(current.coverage.status, color = Color(0xFF9A6700),
+                    style = MaterialTheme.typography.labelSmall, maxLines = 1)
             }
-
-            if (expanded) {
-                current.collectors.forEach { account ->
-                    Text(
-                        "${account.name} · 微信 ${assistMoney(account.wechat)} · " +
-                            "支付宝 ${assistMoney(account.alipay)} · ${account.paymentCount}笔",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = AssistGreen
-                    )
-                }
-                Text(
-                    "按整份导入账单指定的收款人统计；混合账号不自动推断。",
-                    color = Color.Gray, style = MaterialTheme.typography.labelSmall
-                )
-                Text(
-                    if (hasManualBusiness) {
-                        "补入仅更新微信/支付宝收款，现金、手填客户人数及其他营业数据保持不变。"
-                    } else {
-                        "账单由采购页统一导入；这里仅显示当天经营收款数据。"
-                    },
-                    style =
-                        MaterialTheme.typography
-                            .labelSmall,
-                    color =
-                        if (
-                            !hasManualBusiness &&
-                            analysis.summary
-                                .paymentCount > 0
-                        ) {
-                            Color(0xFF9A6700)
-                        } else {
-                            Color.DarkGray
+            TextButton(
+                onClick = { showDetail = true },
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+            ) {
+                Text("核对 ›", style = MaterialTheme.typography.labelMedium,
+                    color = AssistGreen)
+            }
+        }
+    }
+    if (showDetail) {
+        val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(onDismissRequest = { showDetail = false }, sheetState = state) {
+            Column(
+                Modifier.fillMaxWidth().fillMaxHeight(0.88f)
+                    .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(9.dp)
+            ) {
+                Text("电子账单收款核对 · $date",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold)
+                Text("已导入 ${assistMoney(amount)} · ${current.paymentCount}笔 · 微信 " +
+                    "${assistMoney(current.wechatTotal)} · 支付宝 ${assistMoney(current.alipayTotal)}",
+                    style = MaterialTheme.typography.bodySmall)
+                Text("按收款人＋渠道核对；已有交易不代表账单覆盖完整，未验证导出期间不计算整日漏收差额。",
+                    style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
+                if (current.coverage.rows.isEmpty()) {
+                    Text("营业表没有可以匹配的收款人和渠道。请核对营业记录的收款人配置。",
+                        style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                } else {
+                    current.coverage.rows.forEach { group ->
+                        val channel = if (group.platform == "WECHAT") "微信" else "支付宝"
+                        HorizontalDivider()
+                        Text("${group.collectorName} · $channel",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold)
+                        Text("营业表 ${assistMoney(group.businessAmount)} · 账单 ${assistMoney(group.importedAmount)} " +
+                            "（${group.importedPayments}笔）",
+                            style = MaterialTheme.typography.bodySmall)
+                        Text(if (!group.observed) "待导入/待确认该账号账单"
+                            else "已有交易，完整性未验证",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF9A6700))
+                        if (group.shared) {
+                            Text("多位置共享：${group.storeNames.joinToString("、")}。不能把账号合计分摊给某一摊。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF9A6700))
                         }
-                )
-
-                if (
-                    analysis.summary.paymentCount >
-                    0
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement =
-                            Arrangement.spacedBy(
-                                7.dp
-                            )
-                    ) {
-                        AssistMetric(
-                            "付款笔数",
-                            analysis.summary.paymentCount.toString(),
-                            Modifier.weight(1f)
-                        )
-                        AssistMetric(
-                            "电子收款",
-                            assistMoney(importedTotal),
-                            Modifier.weight(1f)
-                        )
-                        AssistMetric(
-                            "笔均收款",
-                            assistMoney(analysis.summary.averageTicket),
-                            Modifier.weight(1f)
-                        )
-                        AssistMetric(
-                            "独立顾客",
-                            "未知",
-                            Modifier.weight(1f)
-                        )
-                    }
-
-                    if (hasManualBusiness) {
-                        Text(
-                            "手工微信+支付宝 ${assistMoney(manualElectronicTotal)} · 账单 ${assistMoney(importedTotal)}" +
-                                if (
-                                    meaningfulDifference
-                                ) {
-                                    " · ⚠ ${signedAssistMoney(difference)}"
-                                } else {
-                                    ""
-                                },
-                            style =
-                                MaterialTheme.typography
-                                    .labelSmall,
-                            color =
-                                if (
-                                    meaningfulDifference
-                                ) {
-                                    Color(
-                                        0xFF9A6700
-                                    )
-                                } else {
-                                    Color.Gray
-                                }
-                        )
                     }
                 }
-
-                Text(
-                    "付款笔数不等于顾客人数。匿名账单无法确定新客、老客或独立顾客总数；补入仅核对电子收款。",
-                    style =
-                        MaterialTheme.typography
-                            .labelSmall,
-                    color = Color.Gray
-                )
+                if (current.coverage.importedUnassigned > 0) {
+                    Text("另有${current.coverage.importedUnassigned}笔未指定收款人 " +
+                        "${assistMoney(current.coverage.importedUnassignedAmount)}，不参与单人核对。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF9A6700))
+                }
+                if (current.coverage.importedOutsideBusiness > 0) {
+                    Text("另有${current.coverage.importedOutsideBusiness}笔指定了收款人，" +
+                        "但当天营业表没有对应渠道；请核对记录。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF9A6700))
+                }
+                Text("付款笔数不等于独立顾客人数。现金、新老客、库存和利润不会被账单核对修改。",
+                    style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                if (current.canSupplement) {
+                    TextButton(onClick = {
+                        showDetail = false
+                        onSupplementBusiness(
+                            BusinessPaymentSupplement(current.wechatTotal, current.alipayTotal))
+                    }) {
+                        Text("补入营业表（需再次确认）")
+                    }
+                } else {
+                    Text("补入：如涉及多个位置/多个收款人或账单缺失，" +
+                        "请先进入具体营业记录核对修改，禁止用整日账单覆盖任何一摊。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.Gray)
+                }
+                TextButton(onClick = { showDetail = false }) { Text("关闭") }
             }
         }
     }
