@@ -29,7 +29,8 @@ internal object PaymentReceiptAuditor {
             (startDate == null || record.businessDate >= startDate) &&
                 (endDate == null || record.businessDate <= endDate) &&
                 (platform == "ALL" || record.platform == platform) &&
-                (storeId == 0L || (storeId == -1L && record.storeId <= 0L) ||
+                (storeId == 0L || (storeId == -1L && record.storeId <= 0L &&
+                    record.storeName != CustomerCollectorStoreAttribution.SHARED_STORE_NAME) ||
                     (storeId > 0L && record.storeId == storeId))
         }
         val payments = scoped.filter { it.amount > 0.005 && it.netAmount > 0.005 }
@@ -45,7 +46,8 @@ internal object PaymentReceiptAuditor {
                 (startDate == null || session.date >= startDate) &&
                 (endDate == null || session.date <= endDate)
         }.distinctBy { it.date to it.storeId }
-        val unmatched = payments.count { it.storeId <= 0L }
+        val unmatched = payments.count { it.storeId <= 0L &&
+            it.storeName != CustomerCollectorStoreAttribution.SHARED_STORE_NAME }
         val outOfWindow = payments.count { row ->
             if (row.storeId <= 0L) return@count false
             val day = row.tradeTime.take(10)
