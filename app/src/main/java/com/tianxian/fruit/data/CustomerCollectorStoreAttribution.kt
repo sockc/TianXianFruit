@@ -1,7 +1,5 @@
 package com.tianxian.fruit.data
 
-import java.time.LocalDateTime
-
 /**
  * A cashier/account can receive payments for multiple stores.
  * A shared receipt belongs to one collector/day group, NEVER to each store separately.
@@ -40,7 +38,8 @@ internal object CustomerCollectorStoreAttribution {
         receipts: List<CustomerPaymentRecord>,
         daily: List<StoreDailyRecord>,
         collectorByBatchId: Map<Long, String>,
-        partnerIdBySyncId: Map<String, Long>
+        partnerIdBySyncId: Map<String, Long>,
+        sessions: List<CustomerTrafficSession> = emptyList()
     ): CollectorStoreAttributionResult {
         if (receipts.isEmpty() || daily.isEmpty() || collectorByBatchId.isEmpty()) {
             return CollectorStoreAttributionResult(receipts, emptyList(), emptySet())
@@ -85,11 +84,13 @@ internal object CustomerCollectorStoreAttribution {
             val previousKey = previousDay?.let { Key(it, receipt.platform, partnerId) }
             val previous = previousKey?.let(storesByKey::get).orEmpty()
             val inPreviousShift = previous.any { saved ->
+                val businessWindow = sessions.firstOrNull {
+                    it.date == saved.date && it.storeId == saved.storeId
+                } ?: CustomerTrafficSession(saved.date, saved.storeId, saved.storeName,
+                    saved.actualStartTime.ifBlank { "16:00" },
+                    saved.actualEndTime.ifBlank { "24:00" })
                 CustomerTrafficDeepDive.matchSession(
-                    receipt.tradeTime,
-                    listOf(CustomerTrafficSession(saved.date, saved.storeId,
-                        saved.storeName, saved.actualStartTime.ifBlank { "16:00" },
-                        saved.actualEndTime.ifBlank { "24:00" }))
+                    receipt.tradeTime, listOf(businessWindow)
                 ) != null
             }
             val key = if (inPreviousShift && previousKey != null) previousKey else originalKey
