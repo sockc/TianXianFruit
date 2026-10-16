@@ -75,6 +75,16 @@ internal fun CustomerTrafficQuickPreviewSheet(
             payments, sessions, record.date, selectedStoreId = record.storeId
         )
     }
+    val sharedComparisons = remember(sharedGroups, collectorAttribution, payments, sessions) {
+        sharedGroups.mapNotNull { group ->
+            CustomerSharedHourlyComparison.compare(
+                selected = group,
+                groups = collectorAttribution.shared,
+                included = payments,
+                sessions = sessions
+            )
+        }
+    }
     val unmatched = payments.count {
         it.businessDate == record.date && it.storeId <= 0L &&
             it.id !in collectorAttribution.collectorMatchedIds && it.netAmount > 0.005
@@ -137,12 +147,29 @@ internal fun CustomerTrafficQuickPreviewSheet(
                     }
                 }
             }
-            if (exclusive.isNotEmpty()) {
-                comparisons.firstOrNull()?.let { CustomerHourlyComparisonCard(it) }
-                    ?: Text("缺少可比较的营业时间或记录，暂不能计算同位置历史变化。",
+            // Shared payments have their OWN hourly and historic comparison.
+            // Never reuse the single-store baseline for a combined payment stream.
+            if (sharedGroups.isNotEmpty()) {
+                Text("共享收款逐小时与历史对比",
+                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.bodyMedium)
+                if (sharedComparisons.isEmpty()) {
+                    Text("共享收款缺少已保存的完整营业小时，暂不能比较；上方仍保留合并付款及高峰数据。",
                         style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-            } else {
-                Text("没有可独立归属本位置的历史客流，不能把共享数据当作单摊客流进行同期对比。",
+                } else sharedComparisons.forEach { result ->
+                    CustomerHourlyComparisonCard(result, sharedScope = true)
+                }
+            }
+            if (exclusive.isNotEmpty()) {
+                comparisons.firstOrNull()?.let {
+                    Text("本位置独立收款历史对比",
+                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.bodyMedium)
+                    CustomerHourlyComparisonCard(it)
+                } ?: Text("本位置独立收款暂无完整营业时段可比。",
+                    style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            } else if (sharedGroups.isEmpty()) {
+                Text("没有可独立归属本位置的历史客流。",
                     style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             }
             if (record.storeId <= 0L) {
