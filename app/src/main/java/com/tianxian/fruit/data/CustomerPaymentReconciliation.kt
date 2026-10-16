@@ -37,7 +37,8 @@ internal object CustomerPaymentReconciliationEngine {
         val positive = receipts.filter {
             it.businessDate == date && it.amount > 0.005 && it.netAmount > 0.005
         }
-        val unmatched = positive.count { it.storeId <= 0L }
+        val unmatched = positive.count { it.storeId <= 0L &&
+            it.storeName != CustomerCollectorStoreAttribution.SHARED_STORE_NAME }
         return records.filter { it.date == date && it.storeId > 0L &&
             (selectedStoreId == 0L || it.storeId == selectedStoreId) }
             .map { saved ->
