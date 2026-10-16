@@ -15948,6 +15948,17 @@ class AppDatabase(
             }
         }
 
+    /** Stable bill-account identity -> local partner ID; names are not suitable keys. */
+    fun getCustomerCollectorPartnerIds(): Map<String, Long> =
+        readableDatabase.rawQuery(
+            "SELECT sync_id,id FROM partner WHERE deleted=0 AND enabled=1 AND sync_id<>''",
+            null
+        ).use { c ->
+            buildMap {
+                while (c.moveToNext()) put(c.str("sync_id"), c.long("id"))
+            }
+        }
+
     fun setCustomerBillCollector(platform: String, hash: String, partnerSyncId: String): Boolean {
         if (platform !in setOf("WECHAT","ALIPAY") || hash.length != 64 ||
             !hash.all { it in '0'..'9' || it in 'a'..'f' } ||
