@@ -195,11 +195,20 @@ internal fun CustomerAnalysisContent(
             db.getCustomerPayments(), trafficSessions
         )
     }
-    val rawRecords = remember(autoRecords, enabledStores, locationAssignments) {
-        CustomerUnifiedStoreAttribution.apply(autoRecords, locationAssignments, enabledStores)
+    val collectorByBatch = remember(dataVersion) { db.getCustomerCollectorByBatchId() }
+    val collectorPartnerIds = remember(dataVersion) { db.getCustomerCollectorPartnerIds() }
+    val dailyHistory = remember(dataVersion) { db.getDailyRecordsBetween(null, null) }
+    val collectorAttribution = remember(autoRecords, collectorByBatch, collectorPartnerIds, dailyHistory) {
+        CustomerCollectorStoreAttribution.resolve(autoRecords, dailyHistory,
+            collectorByBatch, collectorPartnerIds)
     }
-    val unmatchedBeforeUnified = remember(autoRecords, dayAnchor) {
-        CustomerUnifiedStoreAttribution.unmatchedOnDate(autoRecords, dayAnchor.toString())
+    val rawRecords = remember(collectorAttribution, enabledStores, locationAssignments) {
+        CustomerUnifiedStoreAttribution.apply(collectorAttribution.rows, locationAssignments,
+            enabledStores, collectorAttribution.collectorMatchedIds)
+    }
+    val unmatchedBeforeUnified = remember(collectorAttribution, dayAnchor) {
+        CustomerUnifiedStoreAttribution.unmatchedOnDate(collectorAttribution.rows,
+            dayAnchor.toString(), collectorAttribution.collectorMatchedIds)
     }
     val assignedStoreName = enabledStores.firstOrNull {
         it.syncId.isNotBlank() && it.syncId == locationAssignments[dayAnchor.toString()]
@@ -225,10 +234,11 @@ internal fun CustomerAnalysisContent(
     }
     val prevBusinessDay = businessDatesForSelectedStore.lastOrNull { it < dayAnchor }
     val nextBusinessDay = businessDatesForSelectedStore.firstOrNull { it > dayAnchor }
-    val hasUnmatchedStore = remember(rawRecords) { rawRecords.any { it.storeId <= 0L } }
+    val hasUnmatchedStore = remember(rawRecords, collectorAttribution) {
+        rawRecords.any { it.storeId <= 0L && it.id !in collectorAttribution.collectorMatchedIds }
+    }
     val collectorOptions = remember(dataVersion) { db.getCollectorSyncOptions() }
     val collectorAssignments = remember(dataVersion) { db.getCustomerBillCollectorAssignments() }
-    val collectorByBatch = remember(dataVersion) { db.getCustomerCollectorByBatchId() }
     val scopedRawRecords = remember(
         rawRecords, selectedPlatform, selectedStoreId, selectedCollectorSyncId,
         collectorByBatch
@@ -299,6 +309,33 @@ internal fun CustomerAnalysisContent(
                     customStart.toString() to customEnd.toString()
             }
         }
+
+    // The shared collector's payment remains in the overall totals ONCE, but
+    // appears as a labelled group in each participating store's analysis.
+    val sharedForFilters = remember(collectorAttribution, rawRecords, settings, dateRange,
+        selectedPlatform, selectedStoreId, selectedCollectorSyncId, collectorPartnerIds) {
+        val admitted = CustomerAnalyticsEngine.filterRecords(rawRecords, settings).included
+            .filter { it.netAmount > 0.005 }.associateBy { it.id }
+        collectorAttribution.shared.mapNotNull { group ->
+            if ((dateRange.first != null && group.date < dateRange.first!!) ||
+                (dateRange.second != null && group.date > dateRange.second!!) ||
+                (selectedPlatform != CustomerPaymentPlatform.ALL &&
+                    group.platform != selectedPlatform.name) ||
+                (selectedStoreId > 0L && selectedStoreId !in group.storeIds) ||
+                (selectedStoreId == -1L) ||
+                (selectedCollectorSyncId != "*" &&
+                    (selectedCollectorSyncId == "?" ||
+                        collectorPartnerIds[selectedCollectorSyncId] != group.partnerId))) {
+                return@mapNotNull null
+            }
+            val rows = group.receiptIds.mapNotNull(admitted::get)
+            if (rows.isEmpty()) null else group.copy(
+                receiptIds = rows.map { it.id }.toSet(),
+                payments = rows.size,
+                amount = rows.sumOf { it.netAmount }
+            )
+        }
+    }
 
     val periodPlatformCoverage = remember(rawRecords, selectedStoreId, dateRange) {
         PaymentTrafficAnalytics.coverage(
@@ -808,7 +845,8 @@ internal fun CustomerAnalysisContent(
                 rawRecords.isEmpty() && tab != CustomerAnalysisTab.RECORDS ->
                     EmptyCustomerAnalysis()
 
-                scopedRawRecords.isEmpty() && tab != CustomerAnalysisTab.RECORDS ->
+                scopedRawRecords.isEmpty() && sharedForFilters.isEmpty() &&
+                    tab != CustomerAnalysisTab.RECORDS ->
                     SimpleEmpty("当前支付平台、营业位置或收款人没有已导入的收款记录。")
 
                 tab ==
@@ -851,7 +889,7 @@ internal fun CustomerAnalysisContent(
                         }
                     }
 
-                allRecords.isEmpty() ->
+                allRecords.isEmpty() && sharedForFilters.isEmpty() ->
                     SimpleEmpty(
                         "当前经营收款都被分析规则排除了，可到“设置”或“收款记录”中调整。"
                     )
@@ -869,6 +907,7 @@ internal fun CustomerAnalysisContent(
                                  platformCoverage = periodPlatformCoverage,
                                  receiptAudit = receiptAudit,
                                  reconciliations = singleDayReconciliations,
+                                 sharedCollectorGroups = sharedForFilters,
                                 dailyTraffic =
                                     dailyTraffic,
                                 sameWeekdayComparisons =
@@ -2010,6 +2049,7 @@ private fun CustomerOverview(
     platformCoverage: List<PaymentPlatformCoverage>,
     receiptAudit: PaymentReceiptAudit,
     reconciliations: List<CustomerPaymentReconciliation>,
+    sharedCollectorGroups: List<SharedCollectorTraffic>,
     dailyTraffic: List<CustomerDailyTrafficPoint>,
     sameWeekdayComparisons: List<CustomerSameWeekdayComparison>,
     trafficComparisons: List<CustomerTrafficComparison>,
@@ -2045,6 +2085,32 @@ private fun CustomerOverview(
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        if (sharedCollectorGroups.isNotEmpty()) {
+            item {
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF6E6))) {
+                    Column(Modifier.fillMaxWidth().padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("多位置共享客流 · 不可作为单摊独立客流",
+                            fontWeight = FontWeight.SemiBold, color = Color(0xFF9A6700),
+                            style = MaterialTheme.typography.bodySmall)
+                        sharedCollectorGroups.take(8).forEach { group ->
+                            val platformName = if (group.platform == "WECHAT") "微信" else "支付宝"
+                            Text("${group.date} · ${group.partnerName} · $platformName " +
+                                "${group.payments}笔 / ${money(group.amount)}",
+                                style = MaterialTheme.typography.bodySmall)
+                            Text("涉及${group.stores.size}个位置：${group.storeNames}",
+                                style = MaterialTheme.typography.labelSmall, color = Color.DarkGray)
+                        }
+                        if (sharedCollectorGroups.size > 8) {
+                            Text("另有${sharedCollectorGroups.size - 8}组共享数据",
+                                style = MaterialTheme.typography.labelSmall)
+                        }
+                        Text("合并数据只计一次；单位置的统计和历史对比不分摊这部分账单。",
+                            style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
+                    }
+                }
+            }
+        }
         if (singleDay && (unmatchedBeforeUnified > 0 || assignedStoreName != null)) {
             item {
                 Row(
