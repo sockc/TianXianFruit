@@ -115,4 +115,29 @@ class CustomerCollectorStoreAttributionTest {
         assertEquals(0, CustomerUnifiedStoreAttribution.unmatchedOnDate(
             result.rows, "2026-10-16", result.collectorMatchedIds))
     }
+    @Test fun differentDatesFollowTheRecordedHistoricalCollectorsWithoutReimport() {
+        val result = CustomerCollectorStoreAttribution.resolve(
+            listOf(payment(1, date = "2026-10-16"),
+                payment(2, date = "2026-10-17")),
+            listOf(store(10, "九龙公园", date = "2026-10-16"),
+                store(20, "凰岗村", date = "2026-10-17")), batch, people
+        )
+        assertEquals(listOf(10L, 20L), result.rows.map { it.storeId })
+        assertTrue(result.shared.isEmpty())
+    }
+
+    @Test fun nextMorningPaymentUsesPreviousDayWhenTheStoreStayedOpen() {
+        val late = payment(1, date = "2026-10-17")
+            .copy(tradeTime = "2026-10-17 00:25:00")
+        val result = CustomerCollectorStoreAttribution.resolve(
+            listOf(late),
+            listOf(store(10, "九龙公园", date = "2026-10-16")),
+            batch, people,
+            listOf(CustomerTrafficSession("2026-10-16", 10L, "九龙公园",
+                "16:00", "02:00"))
+        )
+        assertEquals("2026-10-16", result.rows.single().businessDate)
+        assertEquals(10L, result.rows.single().storeId)
+    }
+
 }
