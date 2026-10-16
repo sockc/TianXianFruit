@@ -884,7 +884,14 @@ internal fun CustomerAnalysisContent(
                                 },
                                 collectorAssignments = collectorAssignments,
                                 collectorOptions = collectorOptions,
-                                onAssignBatch = { editBatchCollector = it }
+                                onAssignBatch = { editBatchCollector = it },
+                                onAssignBatches = { batches, collector ->
+                                    val ok = batches.all { batch ->
+                                        db.setCustomerBillCollector(batch.platform, batch.fileHash, collector)
+                                    }
+                                    if (ok) onChanged()
+                                    ok
+                                }
                             )
                         }
                     }
@@ -1303,7 +1310,8 @@ private fun CustomerPaymentRecordsContent(
     onStateChange: (Long, String) -> Unit,
     collectorAssignments: Map<String, String>,
     collectorOptions: List<Pair<String, String>>,
-    onAssignBatch: (PaymentImportBatchRecord) -> Unit
+    onAssignBatch: (PaymentImportBatchRecord) -> Unit,
+    onAssignBatches: (List<PaymentImportBatchRecord>, String) -> Boolean
 ) {
     var filter by remember {
         mutableStateOf(
@@ -1312,6 +1320,9 @@ private fun CustomerPaymentRecordsContent(
     }
 
     var showImportHistory by remember { mutableStateOf(false) }
+    var showBatchCollectorPicker by remember { mutableStateOf(false) }
+    var selectedBatchKeys by remember { mutableStateOf(emptySet<String>()) }
+    var batchSaveError by remember { mutableStateOf(false) }
 
     val payments =
         remember(
@@ -1718,12 +1729,29 @@ private fun CustomerPaymentRecordsContent(
                         placeholder = { Text("搜索文件、日期或收款人") },
                         textStyle = MaterialTheme.typography.bodySmall
                     )
-                    Box(Modifier.fillMaxWidth().heightIn(max = 400.dp)) {
+                    Row(Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("已选 ${selectedBatchKeys.size}份",
+                            style = MaterialTheme.typography.labelSmall)
+                        TextButton(onClick = {
+                            showImportHistory = false
+                            showBatchCollectorPicker = true
+                        }, enabled = selectedBatchKeys.isNotEmpty()) {
+                            Text("批量指定收款人 ›")
+                        }
+                    }
+                    Box(Modifier.fillMaxWidth().heightIn(max = 360.dp)) {
                         ImportBatchList(
                             matchingBatches, collectorAssignments, collectorOptions,
                             onAssignBatch = {
                                 showImportHistory = false
                                 onAssignBatch(it)
+                            },
+                            selectedBatchKeys = selectedBatchKeys,
+                            onToggle = { key ->
+                                selectedBatchKeys = if (key in selectedBatchKeys)
+                                    selectedBatchKeys - key else selectedBatchKeys + key
                             }
                         )
                     }
@@ -1731,6 +1759,34 @@ private fun CustomerPaymentRecordsContent(
             },
             confirmButton = {
                 TextButton(onClick = { showImportHistory = false }) { Text("关闭") }
+            }
+        )
+    }
+    if (showBatchCollectorPicker) {
+        CustomerBillCollectorPicker(
+            options = collectorOptions,
+            current = "",
+            title = "批量账单 · 指定收款人",
+            onDismiss = { showBatchCollectorPicker = false; showImportHistory = true },
+            onConfirm = { selectedCollector ->
+                val chosen = importBatches.filter {
+                    "${it.platform}|${it.fileHash}" in selectedBatchKeys
+                }
+                batchSaveError = !onAssignBatches(chosen, selectedCollector)
+                if (!batchSaveError) {
+                    selectedBatchKeys = emptySet()
+                    showBatchCollectorPicker = false
+                }
+            }
+        )
+    }
+    if (batchSaveError) {
+        AlertDialog(
+            onDismissRequest = { batchSaveError = false },
+            title = { Text("批量保存未完成") },
+            text = { Text("部分账单可能已更改归属，请重新同步并核对后继续。") },
+            confirmButton = {
+                TextButton(onClick = { batchSaveError = false }) { Text("知道了") }
             }
         )
     }
@@ -1806,7 +1862,9 @@ private fun ImportBatchList(
     batches: List<PaymentImportBatchRecord>,
     assignments: Map<String, String>,
     collectorOptions: List<Pair<String, String>>,
-    onAssignBatch: (PaymentImportBatchRecord) -> Unit
+    onAssignBatch: (PaymentImportBatchRecord) -> Unit,
+    selectedBatchKeys: Set<String> = emptySet(),
+    onToggle: ((String) -> Unit)? = null
 ) {
     if (batches.isEmpty()) {
         Text("还没有导入记录", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
@@ -1816,6 +1874,15 @@ private fun ImportBatchList(
         items(batches) { batch ->
             Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFFF8FAF9)) {
                 Column(Modifier.padding(8.dp)) {
+                    if (onToggle != null) {
+                        val key = "${batch.platform}|${batch.fileHash}"
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = key in selectedBatchKeys,
+                                onCheckedChange = { onToggle(key) })
+                            Text("加入批量指定", style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.clickable { onToggle(key) })
+                        }
+                    }
                     Text(
                         (if (batch.platform == "WECHAT") "微信" else "支付宝") + " · " + batch.fileName,
                         fontWeight = FontWeight.SemiBold,
