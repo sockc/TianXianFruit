@@ -9,12 +9,13 @@ internal object CustomerUnifiedStoreAttribution {
     fun apply(
         rows: List<CustomerPaymentRecord>,
         assignments: Map<String, String>,
-        stores: List<StoreOption>
+        stores: List<StoreOption>,
+        protectedReceiptIds: Set<Long> = emptySet()
     ): List<CustomerPaymentRecord> {
         if (assignments.isEmpty()) return rows
         val bySyncId = stores.filter { it.syncId.isNotBlank() }.associateBy { it.syncId }
         return rows.map { row ->
-            if (row.storeId > 0L || row.amount <= 0.005) row
+            if (row.id in protectedReceiptIds || row.storeId > 0L || row.amount <= 0.005) row
             else {
                 val store = assignments[row.businessDate]?.let(bySyncId::get)
                 if (store == null) row else row.copy(storeId = store.id, storeName = store.name)
@@ -22,6 +23,11 @@ internal object CustomerUnifiedStoreAttribution {
         }
     }
 
-    fun unmatchedOnDate(rows: List<CustomerPaymentRecord>, date: String): Int =
-        rows.count { it.storeId <= 0L && it.businessDate == date && it.amount > 0.005 }
+    fun unmatchedOnDate(
+        rows: List<CustomerPaymentRecord>, date: String,
+        protectedReceiptIds: Set<Long> = emptySet()
+    ): Int = rows.count {
+        it.id !in protectedReceiptIds && it.storeId <= 0L &&
+            it.businessDate == date && it.amount > 0.005
+    }
 }
