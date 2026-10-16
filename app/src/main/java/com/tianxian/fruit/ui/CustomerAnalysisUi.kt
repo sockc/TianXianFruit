@@ -2145,7 +2145,8 @@ private fun CustomerOverview(
     } else null
     val missingPlatform = platformCoverage.filter { it.paymentCount == 0 }
     val anonymousPayments = payments.size - reliablePayments
-    val unresolved = payments.count { it.storeId <= 0L }
+    val unresolved = payments.count { it.storeId <= 0L &&
+        it.storeName != CustomerCollectorStoreAttribution.SHARED_STORE_NAME }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -2201,8 +2202,8 @@ private fun CustomerOverview(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Metric("电子收款", money(s.netRevenue), Modifier.weight(1f))
-                    Metric("付款笔数", s.paymentCount.toString(), Modifier.weight(1f))
+                    Metric(if (selectedStoreId > 0L) "独立电子收款" else "电子收款", money(s.netRevenue), Modifier.weight(1f))
+                    Metric(if (selectedStoreId > 0L) "独立付款笔数" else "付款笔数", s.paymentCount.toString(), Modifier.weight(1f))
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Metric("可靠识别付款方", if (s.customerCount > 0) s.customerCount.toString() else "暂无", Modifier.weight(1f))
@@ -2340,7 +2341,8 @@ private fun CustomerOverview(
                 CustomerTrafficCoverageNote(
                     singleDay = true,
                     sessions = savedSessionsForDay,
-                    unmatchedPayments = payments.count { it.storeId <= 0L },
+                    unmatchedPayments = payments.count { it.storeId <= 0L &&
+                        it.storeName != CustomerCollectorStoreAttribution.SHARED_STORE_NAME },
                     selectedStoreId = selectedStoreId,
                     hasWechat = payments.any { it.platform == "WECHAT" },
                     hasAlipay = payments.any { it.platform == "ALIPAY" }
