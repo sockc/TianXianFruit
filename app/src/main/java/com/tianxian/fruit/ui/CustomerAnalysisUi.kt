@@ -356,7 +356,8 @@ internal fun CustomerAnalysisContent(
         if (range != CustomerRange.TODAY || selectedStoreId == -1L) emptyList()
         else CustomerPaymentReconciliationEngine.inspect(
             db.getDailyRecordsBetween(dayAnchor.toString(), dayAnchor.toString()),
-            rawRecords, dayAnchor.toString(), selectedStoreId
+            rawRecords, dayAnchor.toString(), selectedStoreId,
+            sharedCollectors = collectorAttribution.shared
         )
     }
 
@@ -2319,7 +2320,9 @@ private fun CustomerOverview(
                                                 style = MaterialTheme.typography.labelSmall
                                             )
                                             Text(
-                                                if (item.observedPayments == 0)
+                                                if (item.hasSharedAccount)
+                                                    "涉及共享收款：微信${item.sharedWechatPayments}笔、支付宝${item.sharedAlipayPayments}笔。不能以单摊差额判断少收。"
+                                                else if (item.observedPayments == 0)
                                                     "当日暂无已归属经营收款，不能判定收款为零"
                                                 else "账面与已观察电子收款差异：${money(item.difference)}（待核对）",
                                                 color = Color(0xFF9A6700),
