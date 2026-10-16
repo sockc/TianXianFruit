@@ -26,7 +26,8 @@ private fun deepPercent(ratio: Double): String =
 
 @Composable
 internal fun CustomerHourlyComparisonCard(
-    result: CustomerTrafficComparison
+    result: CustomerTrafficComparison,
+    sharedScope: Boolean = false
 ) {
     var selectedHour by remember(result.date, result.storeId) {
         mutableIntStateOf(result.peakHour ?: result.hourRows.firstOrNull()?.hour ?: 18)
@@ -39,8 +40,12 @@ internal fun CustomerHourlyComparisonCard(
         Column(Modifier.fillMaxWidth().padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Text("逐小时付款对比 · ${result.storeName}", fontWeight = FontWeight.Bold)
-            Text("绿色本次 · 灰色最近4个同位置、同星期可比营业日均值；仅比较已结束的小时。",
-                style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+            Text(
+                if (sharedScope)
+                    "多位置合并 · 绿色本次 · 灰色最近4个同收款人、同渠道、相同位置组合的同星期均值；只比较已结束小时。"
+                else "绿色本次 · 灰色最近4个同位置、同星期可比营业日均值；仅比较已结束的小时。",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (sharedScope) Color(0xFF9A6700) else Color.Gray)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.Bottom) {
