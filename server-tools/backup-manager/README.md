@@ -119,6 +119,35 @@ scripts/install-txb-cron.sh
 
 当前既有策略可以继续保持 daily / weekly / pre-upgrade，并由 `--r2-if-configured` 在 R2 已配置时上传。
 
+
+## EQ 局域网 IP 变化 / Web 无法解析 backend 修复（Manager 1.0.8）
+
+典型错误：
+
+- `cannot assign requested address`：Docker Compose 仍绑定旧的 `192.168.x.x`，不是端口被占用。
+- `getaddrinfo ENOTFOUND backend`：Web 虽然与 Backend 加入同一共享网络，但缺少可靠的服务别名。
+- 管理器配置端口（如 `18080/3800`）与临时运行的 Docker 端口（如 `18081/3801`）不一致。
+
+新版本安装包同时包含 `tianxian-manager` 与 `tianxian_repair.py`，安装后运行：
+
+```bash
+sudo tianxian repair                 # 只预览，不修改或重建
+sudo tianxian repair --apply         # 显示变更，输入 REPAIR 才执行
+```
+
+默认沿用 **Compose 文件定义的端口**（例如原本的 `18080/3800`），不会把临时容器端口当永久端口。失效 IP 只在同网段可唯一识别新 IPv4 时自动替换；否则拒绝修改并提示显式选择：
+
+```bash
+sudo tianxian repair --backend-bind 127.0.0.1,192.168.6.203 --web-bind 127.0.0.1,192.168.6.203
+sudo tianxian repair --apply --backend-port 18081 --web-port 3801
+```
+
+修复前在 `/opt/TianXian-Server/backups/network-repair/` 生成原始 Compose/Manager 配置备份。检查 Compose 有效性之后，只重建 `backend` 与 `tianxian-web`（`--no-deps`），**不会执行 `down -v`、不会恢复或覆盖 PostgreSQL**。完成后同时验证本地 Backend `/health` 与 Web 容器的 `backend:8000/health`，最后才更新 Manager 配置的端口/IP。若失败，保留备份并提示人工检查；为避免按已经失效的旧 IP 再次重建，服务启动失败时不会盲目回滚到旧配置。
+
+若 Lucky/Nginx 在其他机器上，须选择包含 EQ 当前局域网 IP 的监听地址；如果反向代理在 EQ 本机，可只监听 `127.0.0.1`。不建议无防火墙保护直接选 `0.0.0.0`。如需固定局域网 IP，还应在 OpenWrt 设置 DHCP 静态租约。
+
+TXB 恢复器也会在共享 Docker 网络上为 Server 显式持久化 `backend` 别名，避免下次恢复后重现同样的 DNS 故障。
+
 ## 后续阶段
 
 真正“裸 VPS 一条命令灾难恢复”建议作为下一阶段：安装 Docker → 获取恢复工具 → 首次录入 R2 → 下载 `.txb.enc` → 解密 → 恢复 `/opt/TianXian-Server` → 健康检查。它必须绑定一个稳定的 Server Release 下载源，避免灾难时下载到与 TXB 不兼容的恢复工具。
