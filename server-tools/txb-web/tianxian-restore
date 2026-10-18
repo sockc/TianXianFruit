@@ -149,9 +149,9 @@ if service == "backend":
                                 "          - backend"])
             else:
                 entries.append(f"      {name}: {{}}")
-        return match.group(1) + "\\n".join(entries) + "\\n"
+        return match.group(1) + "\n".join(entries) + "\n"
     block, changed = re.subn(
-        r"(?m)^(    networks:\\n)((?:      - [A-Za-z0-9_-]+\\n)+)",
+        r"(?m)^(    networks:\n)((?:      - [A-Za-z0-9_-]+\n)+)",
         render_networks, block, count=1
     )
     if not changed:
