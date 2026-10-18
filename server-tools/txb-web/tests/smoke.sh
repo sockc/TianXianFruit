@@ -189,6 +189,8 @@ grep -q '127.0.0.1:3900:3000' "$TMP/restored-web/docker-compose.yml"
 grep -q '127.0.0.3:3900:3000' "$TMP/restored-web/docker-compose.yml"
 grep -q 'TIANXIAN_API_BASE_URL=http://backend:8000' "$TMP/restored-web/.env"
 grep -q 'txb_web_api' "$TMP/restored-server/docker-compose.yml"
+grep -A 3 '^      txb_web_api:' "$TMP/restored-server/docker-compose.yml" | grep -q 'aliases:'
+grep -A 3 '^      txb_web_api:' "$TMP/restored-server/docker-compose.yml" | grep -q -- '- backend'
 grep -q 'txb_web_api' "$TMP/restored-web/docker-compose.yml"
 grep -q 'tianxian-recovery-' "$TMP/restored-server/docker-compose.yml"
 grep -q 'web snapshot smoke test' "$TMP/restored-web/index.txt"
