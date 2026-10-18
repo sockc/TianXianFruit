@@ -135,6 +135,27 @@ if networks:
         block = block[:offset] + "\n      - txb_web_api" + block[offset:]
 else:
     block = block.rstrip("\n") + "\n    networks:\n      - txb_web_api\n"
+# The service name is not a reliable Docker DNS alias after all restore/recreate
+# paths. Persist an explicit alias on the shared external network for backend.
+if service == "backend":
+    def render_networks(match):
+        names = [line.strip().removeprefix("- ").strip()
+                 for line in match.group(2).splitlines()]
+        entries = []
+        for name in names:
+            if name == "txb_web_api":
+                entries.extend(["      txb_web_api:",
+                                "        aliases:",
+                                "          - backend"])
+            else:
+                entries.append(f"      {name}: {{}}")
+        return match.group(1) + "\n".join(entries) + "\n"
+    block, changed = re.subn(
+        r"(?m)^(    networks:\n)((?:      - [A-Za-z0-9_-]+\n)+)",
+        render_networks, block, count=1
+    )
+    if not changed:
+        raise SystemExit("Cannot safely add backend alias; unsupported networks syntax")
 text = text[:head.start()] + block + text[end:]
 root = re.search(r"^networks:[ \t]*$", text, re.M)
 declaration = f"  txb_web_api:\n    external: true\n    name: {network}\n"
