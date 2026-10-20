@@ -7650,6 +7650,7 @@ private fun PurchaseScreen(
         (String, String, () -> Unit) -> Unit,
     onOpenHistory: () -> Unit
 ) {
+    val dbContext = LocalContext.current
     val focusManager = LocalFocusManager.current
     val date = workDate
     val fruits = remember(dataVersion) { db.getFruits() }
@@ -7666,9 +7667,20 @@ private fun PurchaseScreen(
     var addFruitDialog by remember { mutableStateOf(false) }
     var pendingFruitRowId by remember { mutableStateOf<Long?>(null) }
     var nextRowId by remember { mutableLongStateOf(System.currentTimeMillis()) }
-
-    fun defaultBuyerId(): Long? = partners.firstOrNull()?.id
-    fun defaultBuyerName(): String = partners.firstOrNull()?.name.orEmpty()
+    // This selection is the entry default, not a forced buyer for every product.
+    // Keep it through additions and page/date switches; each row still owns its buyer.
+    val purchaseBuyerPrefs = remember(db.ledgerId) {
+        dbContext.getSharedPreferences(
+            "tianxian_purchase_buyer_${db.ledgerId.hashCode()}", Context.MODE_PRIVATE
+        )
+    }
+    var lastNewBuyerId by remember(db.ledgerId) {
+        mutableStateOf(purchaseBuyerPrefs.getLong("last_buyer_id", 0L).takeIf { it > 0L })
+    }
+    fun preferredBuyer(): PartnerOption? =
+        partners.firstOrNull { it.id == lastNewBuyerId } ?: partners.firstOrNull()
+    fun defaultBuyerId(): Long? = preferredBuyer()?.id
+    fun defaultBuyerName(): String = preferredBuyer()?.name.orEmpty()
     fun defaultProduct(): FruitOption? =
         fruits.firstOrNull { it.name == "总价" } ?: fruits.firstOrNull()
 
@@ -7850,7 +7862,15 @@ private fun PurchaseScreen(
 
     fun updateRow(rowId: Long, updated: PurchaseDraftRow) {
         val index = rows.indexOfFirst { it.rowId == rowId }
-        if (index >= 0) rows[index] = updated
+        if (index >= 0) {
+            val old = rows[index]
+            if (editingOrderId == null && old.buyerId != updated.buyerId &&
+                updated.buyerId != null && partners.any { it.id == updated.buyerId }) {
+                lastNewBuyerId = updated.buyerId
+                purchaseBuyerPrefs.edit().putLong("last_buyer_id", updated.buyerId).apply()
+            }
+            rows[index] = updated
+        }
     }
 
     fun isDefaultEmptyRow(row: PurchaseDraftRow): Boolean =

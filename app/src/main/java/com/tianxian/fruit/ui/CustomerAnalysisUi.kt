@@ -583,6 +583,15 @@ internal fun CustomerAnalysisContent(
             platform = selectedPlatform.name
         )
     }
+    val storePerformances = remember(rawRecords, settings, trafficSessions,
+        selectedPlatform, dateRange) {
+        val included = CustomerAnalyticsEngine.filterRecords(rawRecords, settings).included
+        val scoped = PaymentTrafficAnalytics.select(included,
+            selectedPlatform.name, 0L)
+        CustomerOverviewPolicies.performance(
+            scoped, trafficSessions, dateRange.first, dateRange.second
+        )
+    }
     val paymentAmountBands = remember(periodPayments) {
         CustomerTrafficDeepDive.amountBands(periodPayments)
     }
@@ -986,6 +995,12 @@ internal fun CustomerAnalysisContent(
                                         (selectedStoreId == 0L || it.storeId == selectedStoreId)
                                 },
                                 selectedStoreId = selectedStoreId,
+                                storePerformances = storePerformances,
+                                comparisonRecords = allRecords,
+                                selectedPlatform = selectedPlatform,
+                                onPlatformChange = { selectedPlatform = it },
+                                dailySessions = trafficSessions,
+                                dailyBusiness = dailyHistory,
                                 singleDay =
                                     range == CustomerRange.TODAY,
                                 unmatchedBeforeUnified = unmatchedBeforeUnified,
@@ -2002,6 +2017,8 @@ private fun CustomerDetailsContent(
     businessCustomerSummary: BusinessCustomerRecordSummary,
     selectedPeriod: String
 ) {
+    var sampleExpanded by remember { mutableStateOf(false) }
+    val sampleSufficient = result.summary.customerCount >= 3
     Column(Modifier.fillMaxSize()) {
         Column(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
@@ -2020,6 +2037,12 @@ private fun CustomerDetailsContent(
                 color = if (result.summary.customerCount == 0) Color(0xFF9A6700) else Color(0xFF087D4E),
                 fontWeight = FontWeight.Medium
             )
+            Text("可靠识别付款方 ${result.summary.customerCount} · 可识别样本分析 " +
+                (if (sampleExpanded) "收起 ⌃" else "详情 ›"),
+                modifier = Modifier.fillMaxWidth().clickable { sampleExpanded = !sampleExpanded }
+                    .padding(vertical = 4.dp),
+                style = MaterialTheme.typography.bodySmall, color = Color(0xFF087D4E))
+            if (sampleSufficient || sampleExpanded) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 CustomerDetailSection.entries.forEach { item ->
                     val selected = section == item
@@ -2035,7 +2058,9 @@ private fun CustomerDetailsContent(
                     }
                 }
             }
+            }
         }
+        if (sampleSufficient || sampleExpanded) {
         Box(Modifier.weight(1f)) {
             when (section) {
                 CustomerDetailSection.REPEAT -> CustomerRepeatAnalysis(result.profiles)
@@ -2043,6 +2068,11 @@ private fun CustomerDetailsContent(
                 CustomerDetailSection.LIFECYCLE ->
                     CustomerLifecycleAnalysis(result.lifecycles, result.profiles)
             }
+        }
+        } else {
+            Text("可识别样本少于3位，复购、排行和生命周期默认收起；营业表新老客仍照常显示。",
+                modifier = Modifier.padding(12.dp),
+                style = MaterialTheme.typography.bodySmall, color = Color.Gray)
         }
     }
 }
@@ -2133,6 +2163,12 @@ private fun CustomerOverview(
     storePatterns: List<CustomerStoreTrafficPattern>,
     savedSessionsForDay: Int,
     selectedStoreId: Long,
+    storePerformances: List<CustomerStoreDailyPerformance>,
+    comparisonRecords: List<CustomerPaymentRecord>,
+    selectedPlatform: CustomerPaymentPlatform,
+    onPlatformChange: (CustomerPaymentPlatform) -> Unit,
+    dailySessions: List<CustomerTrafficSession>,
+    dailyBusiness: List<StoreDailyRecord>,
     singleDay: Boolean,
     unmatchedBeforeUnified: Int,
     assignedStoreName: String?,
@@ -2144,6 +2180,7 @@ private fun CustomerOverview(
     val s = result.summary
     var showQualityDetails by remember { mutableStateOf(false) }
     var showStores by remember { mutableStateOf(false) }
+    var showShared by remember { mutableStateOf(false) }
     val reliablePayments = remember(payments) {
         payments.count { PaymentTrafficAnalytics.isIdentified(it) }
     }
@@ -2162,26 +2199,41 @@ private fun CustomerOverview(
     ) {
         if (sharedCollectorGroups.isNotEmpty()) {
             item {
+                val storeNames = sharedCollectorGroups.flatMap { it.stores }
+                    .distinctBy { it.first }
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF6E6))) {
-                    Column(Modifier.fillMaxWidth().padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Text("多位置共享客流 · 不可作为单摊独立客流",
-                            fontWeight = FontWeight.SemiBold, color = Color(0xFF9A6700),
-                            style = MaterialTheme.typography.bodySmall)
-                        sharedCollectorGroups.take(8).forEach { group ->
-                            val platformName = if (group.platform == "WECHAT") "微信" else "支付宝"
-                            Text("${group.date} · ${group.partnerName} · $platformName " +
-                                "${group.payments}笔 / ${money(group.amount)}",
-                                style = MaterialTheme.typography.bodySmall)
-                            Text("涉及${group.stores.size}个位置：${group.storeNames}",
-                                style = MaterialTheme.typography.labelSmall, color = Color.DarkGray)
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
+                        Row(Modifier.fillMaxWidth().clickable { showShared = !showShared }
+                                .padding(vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Text("涉及${storeNames.size}个位置的共享收款",
+                                modifier = Modifier.weight(1f),
+                                fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF9A6700))
+                            Text(if (showShared) "收起 ⌃" else "详情 ›",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF087D4E))
                         }
-                        if (sharedCollectorGroups.size > 8) {
-                            Text("另有${sharedCollectorGroups.size - 8}组共享数据",
-                                style = MaterialTheme.typography.labelSmall)
+                        AnimatedVisibility(showShared) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(if (selectedStoreId > 0L)
+                                    "本位置独立收款与涉及本位置的共享收款分开显示，共享金额不计入该摊位独立营业额。"
+                                    else "共享账号只在合计中计一次，不能拆给各个位置。",
+                                    style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
+                                sharedCollectorGroups.take(8).forEach { group ->
+                                    Text("${group.date} · ${group.partnerName} · " +
+                                        (if (group.platform == "WECHAT") "微信" else "支付宝") +
+                                        " · ${group.payments}笔 / ${money(group.amount)}",
+                                        style = MaterialTheme.typography.bodySmall)
+                                    Text("涉及：${group.storeNames}",
+                                        style = MaterialTheme.typography.labelSmall, color = Color.DarkGray)
+                                }
+                                if (sharedCollectorGroups.size > 8)
+                                    Text("另有${sharedCollectorGroups.size - 8}组",
+                                        style = MaterialTheme.typography.labelSmall)
+                            }
                         }
-                        Text("合并数据只计一次；单位置的统计和历史对比不分摊这部分账单。",
-                            style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
                     }
                 }
             }
@@ -2208,14 +2260,17 @@ private fun CustomerOverview(
         }
         item {
             Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Metric(if (selectedStoreId > 0L) "独立电子收款" else "电子收款", money(s.netRevenue), Modifier.weight(1f))
-                    Metric(if (selectedStoreId > 0L) "独立付款笔数" else "付款笔数", s.paymentCount.toString(), Modifier.weight(1f))
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Metric("可靠识别付款方", if (s.customerCount > 0) s.customerCount.toString() else "暂无", Modifier.weight(1f))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Metric(if (selectedStoreId > 0L) "独立电子收款" else "电子收款",
+                        money(s.netRevenue), Modifier.weight(1f))
+                    Metric("付款笔数", s.paymentCount.toString(), Modifier.weight(1f))
                     Metric("笔均收款", money(s.averageTicket), Modifier.weight(1f))
                 }
+                Text(CustomerOverviewPolicies.headline(
+                    trafficComparisons, selectedStoreId, comparisonRecords, selectedPlatform.name),
+                    color = Color(0xFF087D4E),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 2.dp))
             }
         }
         item {
@@ -2297,13 +2352,14 @@ private fun CustomerOverview(
                     points = hourlyTraffic,
                     platformHours = platformHourlyTraffic,
                     dayRecords = singleDayRecords,
-                    businessHours = trafficComparisons.firstOrNull()?.hourRows?.map { it.hour }
+                    comparison = trafficComparisons.singleOrNull()
+                        ?.takeIf { selectedStoreId > 0L && it.storeId == selectedStoreId },
+                    historicRecords = comparisonRecords,
+                    selectedPlatform = selectedPlatform,
+                    onPlatformChange = onPlatformChange
                 )
             }
             if (trafficComparisons.isNotEmpty()) {
-                items(trafficComparisons, key = { "traffic_${it.storeId}" }) {
-                    CustomerHourlyComparisonCard(it)
-                }
                 items(weatherResults, key = { "weather_${it.storeId}" }) {
                     CustomerWeatherTrafficCard(it)
                 }
@@ -2317,30 +2373,18 @@ private fun CustomerOverview(
             item {
                 DailyCustomerTrafficCard(
                     points = dailyTraffic,
-                    onSelectDay = onSelectDay
+                    onSelectDay = onSelectDay,
+                    sessions = dailySessions,
+                    dailyBusiness = dailyBusiness,
+                    sourceRows = comparisonRecords,
+                    selectedStoreId = selectedStoreId,
+                    platform = selectedPlatform.name
                 )
             }
         }
         item { CustomerPaymentAmountBandCard(amountBands) }
         if (storePatterns.isNotEmpty()) {
             item { CustomerStoreTrafficPatternCard(storePatterns) }
-        }
-        item {
-            Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
-                Column(Modifier.fillMaxWidth().padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("可靠身份客户样本", fontWeight = FontWeight.SemiBold)
-                    Text(
-                        if (s.customerCount == 0)
-                            "身份不足：暂不能判断真实的新客、老客及复购率"
-                        else "记录首次出现 ${s.newCustomerCount} · 历史出现 ${s.oldCustomerCount} · 样本复购率 ${percent(s.repeatRate)}",
-                        color = if (s.customerCount == 0) Color(0xFF9A6700) else Color(0xFF087D4E),
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Text("只统计有稳定标识的付款方；脱敏昵称不参与，首次出现不等于首次到店。微信官方新老客请到“客户”页单独录入；跨平台不合并。",
-                        style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                }
-            }
         }
         if (result.stores.size > 1) {
             item {
@@ -2360,17 +2404,21 @@ private fun CustomerOverview(
                         AnimatedVisibility(showStores) {
                             Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                result.stores.forEach { store ->
+                                storePerformances.forEach { store ->
                                     HorizontalDivider()
-                                    Row(Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween) {
-                                        Text(store.storeName, style = MaterialTheme.typography.bodySmall,
-                                            modifier = Modifier.weight(1f), maxLines = 1)
-                                        Text("${store.paymentCount}笔 · ${money(store.netRevenue)}",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = Color(0xFF087D4E))
-                                    }
+                                    Text(store.storeName, fontWeight = FontWeight.SemiBold,
+                                        style = MaterialTheme.typography.bodySmall)
+                                    Text("有账单营业日 ${store.observedBusinessDays}/${store.operatingDays} · " +
+                                        "日均${String.format(Locale.CHINA,"%.1f",store.dailyPayments)}笔 · " +
+                                        "日均${money(store.dailyRevenue)}",
+                                        color = Color(0xFF087D4E), style = MaterialTheme.typography.bodySmall)
+                                    Text("笔均${money(store.averagePayment)}" +
+                                        (store.hourlyPayments?.let { " · 每小时${String.format(Locale.CHINA,"%.1f",it)}笔" }
+                                            ?: " · 营业时长未齐，暂不算每小时"),
+                                        style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                                 }
+                                Text("只计已导入的独立收款；共享金额不分摊。日均按有账单营业日计算，缺失日不作0。",
+                                    style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                             }
                         }
                     }
@@ -2436,133 +2484,141 @@ private fun HourlyCustomerTrafficCard(
     points: List<CustomerHourlyPoint>,
     platformHours: List<PaymentPlatformHour>,
     dayRecords: List<CustomerPaymentRecord>,
-    businessHours: List<Int>? = null
+    comparison: CustomerTrafficComparison?,
+    historicRecords: List<CustomerPaymentRecord>,
+    selectedPlatform: CustomerPaymentPlatform,
+    onPlatformChange: (CustomerPaymentPlatform) -> Unit
 ) {
     var metric by remember { mutableStateOf(CustomerTrafficMetric.PAYMENTS) }
-    val byHour = remember(platformHours) { platformHours.associateBy { it.hour } }
-    val active = points.filter { it.paymentCount > 0 || kotlin.math.abs(it.amount) > 0.005 }
-    // Display zero-traffic hours too: do not make short periods look like the full shift.
-    // Clock hours across midnight remain in selling-session order.
-    val visible = if (!businessHours.isNullOrEmpty()) {
-        businessHours.mapNotNull { hour -> points.firstOrNull { it.hour == hour } }
-    } else {
-        (16..23).mapNotNull { h -> points.firstOrNull { it.hour == h } } +
-            (0..5).mapNotNull { h -> points.firstOrNull { it.hour == h } }
-    }
-    var selectedHour by remember(points) {
-        mutableIntStateOf(active.maxByOrNull { it.paymentCount }?.hour ?: 18)
+    val byHour = remember(points) { points.associateBy { it.hour } }
+    val hours = if (comparison != null) comparison.hourRows.map { it.hour } else
+        (16..23).toList() + (0..5).toList()
+    val comparisonHours = comparison?.hourRows?.associateBy { it.hour }.orEmpty()
+    val active = points.filter { it.paymentCount > 0 }
+    var selectedHour by remember(comparison?.date, comparison?.storeId, selectedPlatform) {
+        mutableIntStateOf(comparison?.peakHour ?: active.maxByOrNull { it.paymentCount }?.hour ?: 18)
     }
     var detailsExpanded by remember { mutableStateOf(false) }
-    fun platformValue(hour: Int, platform: String): Double {
-        val row = byHour[hour] ?: return 0.0
+    fun current(hour: Int): Double = when (metric) {
+        CustomerTrafficMetric.AMOUNT -> byHour[hour]?.amount?.coerceAtLeast(0.0) ?: 0.0
+        else -> byHour[hour]?.paymentCount?.toDouble() ?: 0.0
+    }
+    fun baseline(hour: Int): Double? {
+        if (comparison?.sampleSufficient != true) return null
         return when (metric) {
-            CustomerTrafficMetric.PAYMENTS ->
-                (if (platform == "WECHAT") row.wechatPayments else row.alipayPayments).toDouble()
-            CustomerTrafficMetric.CUSTOMERS ->
-                (if (platform == "WECHAT") row.wechatCustomers else row.alipayCustomers).toDouble()
             CustomerTrafficMetric.AMOUNT ->
-                (if (platform == "WECHAT") row.wechatAmount else row.alipayAmount).coerceAtLeast(0.0)
+                CustomerOverviewPolicies.historicHourAmount(comparison, historicRecords, hour)
+            else -> comparisonHours[hour]?.historicAverage
         }
     }
-    val maxValue = visible.maxOfOrNull {
-        platformValue(it.hour, "WECHAT") + platformValue(it.hour, "ALIPAY")
+    val maxValue = hours.maxOfOrNull { hour ->
+        maxOf(current(hour), baseline(hour) ?: 0.0)
     }?.coerceAtLeast(1.0) ?: 1.0
-    val selected = visible.firstOrNull { it.hour == selectedHour }
-    val part = byHour[selectedHour]
+    val selectedCount = byHour[selectedHour]
+    val baselineValue = baseline(selectedHour)
+    val selectedValue = current(selectedHour)
     val detailRows = remember(dayRecords, selectedHour) {
-        dayRecords.filter {
-            it.tradeTime.drop(11).take(2).toIntOrNull() == selectedHour
-        }.sortedWith(compareByDescending<CustomerPaymentRecord> { it.tradeTime }.thenByDescending { it.id })
+        dayRecords.filter { it.tradeTime.drop(11).take(2).toIntOrNull() == selectedHour }
+            .sortedWith(compareByDescending<CustomerPaymentRecord> { it.tradeTime }
+                .thenByDescending { it.id })
     }
-
     Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
-        Column(Modifier.fillMaxWidth().padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(9.dp)) {
-            Text("逐小时电子支付客流", fontWeight = FontWeight.Bold)
-            Text("绿色微信 · 蓝色支付宝；按付款笔数、可识别客户或净收款切换",
-                style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+        Column(Modifier.fillMaxWidth().padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("逐小时付款 · 本次与历史同期", fontWeight = FontWeight.Bold)
             Row(Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                CustomerTrafficMetric.entries.forEach { item ->
-                    FilterChip(selected = metric == item, onClick = { metric = item },
-                        label = { Text(item.label) })
+                horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                CustomerPaymentPlatform.entries.forEach { option ->
+                    FilterChip(selected = selectedPlatform == option,
+                        onClick = { onPlatformChange(option) },
+                        label = { Text(option.label) })
                 }
+                listOf(CustomerTrafficMetric.PAYMENTS, CustomerTrafficMetric.AMOUNT).forEach { option ->
+                    FilterChip(selected = metric == option, onClick = { metric = option },
+                        label = { Text(option.label) })
+                }
+            }
+            Text("绿色本次 · 灰色同位置、同星期历史均值；仅对比相同已结束营业小时",
+                style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+            if (comparison == null) {
+                Text("请选择有正式营业时段的单个位置，才可显示历史同期；当前只展示已观察到的付款。",
+                    style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
+            } else if (!comparison.sampleSufficient) {
+                Text("仅有${comparison.historicDates.size}个可比营业日（至少3个），历史均值暂不展示；账单覆盖需核验。",
+                    style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
             }
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.Bottom) {
-                visible.forEach { point ->
-                    val w = platformValue(point.hour, "WECHAT")
-                    val a = platformValue(point.hour, "ALIPAY")
-                    val total = w + a
-                    val label = if (metric == CustomerTrafficMetric.AMOUNT)
-                        total.toInt().toString() else total.toInt().toString()
-                    Column(
-                        Modifier.width(44.dp).clickable { selectedHour = point.hour; detailsExpanded = true },
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(3.dp)
-                    ) {
-                        Text(label, maxLines = 1, style = MaterialTheme.typography.labelSmall,
-                            color = if (selectedHour == point.hour) Color(0xFF087D4E) else Color.Gray)
-                        Box(Modifier.height(92.dp).width(26.dp),
-                            contentAlignment = Alignment.BottomCenter) {
-                            Column(verticalArrangement = Arrangement.Bottom,
-                                horizontalAlignment = Alignment.CenterHorizontally) {
-                                if (a > 0.0) {
-                                    Box(Modifier.width(22.dp)
-                                        .height((2f + 74f * (a / maxValue).toFloat()).dp)
-                                        .background(Color(0xFF4D9AE8), RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)))
-                                }
-                                if (w > 0.0) {
-                                    Box(Modifier.width(22.dp)
-                                        .height((2f + 74f * (w / maxValue).toFloat()).dp)
-                                        .background(Color(0xFF22AA70), RoundedCornerShape(topStart = 3.dp, topEnd = 3.dp)))
-                                }
-                            }
+                hours.forEach { hour ->
+                    val actual = current(hour)
+                    val past = baseline(hour)
+                    Column(Modifier.width(53.dp).clickable {
+                        selectedHour = hour; detailsExpanded = true
+                    }, horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(if (metric == CustomerTrafficMetric.AMOUNT)
+                            String.format(Locale.CHINA, "%.0f", actual)
+                            else actual.toInt().toString(),
+                            maxLines = 1,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (selectedHour == hour) Color(0xFF087D4E) else Color.Gray)
+                        Row(Modifier.height(84.dp), verticalAlignment = Alignment.Bottom,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Box(Modifier.width(17.dp)
+                                .height(if (actual <= 0) 2.dp else
+                                    (4f + (actual / maxValue * 72f).toFloat()).dp)
+                                .background(Color(0xFF22AA70),
+                                    RoundedCornerShape(topStart=3.dp,topEnd=3.dp)))
+                            Box(Modifier.width(17.dp)
+                                .height(if (past == null || past <= 0) 2.dp else
+                                    (4f + (past / maxValue * 72f).toFloat()).dp)
+                                .background(Color(0xFFB7C1CB),
+                                    RoundedCornerShape(topStart=3.dp,topEnd=3.dp)))
                         }
-                        Text("${point.hour}时", style = MaterialTheme.typography.labelSmall,
-                            fontWeight = if (selectedHour == point.hour) FontWeight.Bold else FontWeight.Normal)
+                        Text("${hour}时", style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (selectedHour == hour) FontWeight.Bold else FontWeight.Normal)
                     }
                 }
             }
-            if (selected != null && part != null) {
-                HorizontalDivider()
-                Text("${selectedHour}:00–${selectedHour}:59 · ${selected.paymentCount}笔 · ${money(selected.amount)} · 可识别客户 ${selected.customerCount}",
-                    style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
-                Text("微信 ${part.wechatPayments}笔 / ${money(part.wechatAmount)}；支付宝 ${part.alipayPayments}笔 / ${money(part.alipayAmount)}",
-                    style = MaterialTheme.typography.bodySmall)
-                Text("新客 ${selected.newCustomerCount} · 老客 ${selected.oldCustomerCount}（仅计算有可靠标识的付款方）",
+            HorizontalDivider()
+            val suffix = if (metric == CustomerTrafficMetric.AMOUNT) "元" else "笔"
+            val pastText = baselineValue?.let {
+                String.format(Locale.CHINA,"%.1f",it)+suffix } ?: "样本不足"
+            val diff = baselineValue?.let {
+                String.format(Locale.CHINA,"%+.1f",selectedValue-it)+suffix
+            } ?: "—"
+            Text("${selectedHour}:00–${selectedHour}:59 · 本次" +
+                String.format(Locale.CHINA,"%.1f",selectedValue) + suffix +
+                " · 历史${pastText} · 差额${diff}",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.SemiBold)
+            if (selectedCount != null)
+                Text("该小时：${selectedCount.paymentCount}笔 / ${money(selectedCount.amount)}",
                     style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                TextButton(onClick = { detailsExpanded = !detailsExpanded },
-                    contentPadding = PaddingValues(horizontal = 0.dp)) {
-                    Text(if (detailsExpanded) "收起此小时明细 ▲" else "查看此小时交易明细 ▼")
-                }
-                AnimatedVisibility(visible = detailsExpanded) {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        detailRows.take(12).forEach { record ->
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                val who = if (PaymentTrafficAnalytics.isIdentified(record))
-                                    record.customerName.ifBlank { "可识别付款方" } else "匿名交易"
-                                Text("${record.tradeTime.takeLast(8)} · ${if (record.platform == "WECHAT") "微信" else "支付宝"} · $who",
-                                    modifier = Modifier.weight(1f),
-                                    maxLines = 1, style = MaterialTheme.typography.labelSmall)
-                                Text(money(record.netAmount), style = MaterialTheme.typography.labelSmall)
-                            }
-                        }
-                        if (detailRows.size > 12) {
-                            Text("另外 ${detailRows.size - 12} 条请到“收款记录”查看。",
-                                style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+            TextButton(onClick = { detailsExpanded = !detailsExpanded },
+                contentPadding = PaddingValues(horizontal = 0.dp)) {
+                Text(if (detailsExpanded) "收起交易明细 ⌃" else "此小时交易明细 ›")
+            }
+            AnimatedVisibility(detailsExpanded) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    detailRows.take(15).forEach { receipt ->
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("${receipt.tradeTime.takeLast(8)} · " +
+                                (if (receipt.platform=="WECHAT") "微信" else "支付宝") +
+                                " · " + (if (PaymentTrafficAnalytics.isIdentified(receipt))
+                                    receipt.customerName.ifBlank { "已识别" } else "匿名"),
+                                modifier = Modifier.weight(1f), maxLines = 1,
+                                style = MaterialTheme.typography.labelSmall)
+                            Text(money(receipt.netAmount), style = MaterialTheme.typography.labelSmall)
                         }
                     }
+                    if (detailRows.size > 15)
+                        Text("另有${detailRows.size-15}笔，请前往收款记录核对",
+                            style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                 }
             }
-            active.maxByOrNull { it.paymentCount }?.let { peak ->
-                Text("付款高峰：${peak.hour}:00–${peak.hour}:59 · ${peak.paymentCount}笔",
-                    color = Color(0xFF087D4E),
-                    fontWeight = FontWeight.SemiBold,
-                    style = MaterialTheme.typography.bodySmall)
-            }
-            Text("付款笔数不等于实际客流，同一顾客可能多次付款或跨平台付款。",
+            Text("小时数据仅代表已导入交易，不代表账单覆盖完整；共享收款不计入单位置。",
                 style = MaterialTheme.typography.labelSmall, color = Color.Gray)
         }
     }
@@ -2571,71 +2627,116 @@ private fun HourlyCustomerTrafficCard(
 @Composable
 private fun DailyCustomerTrafficCard(
     points: List<CustomerDailyTrafficPoint>,
-    onSelectDay: (String) -> Unit
+    onSelectDay: (String) -> Unit,
+    sessions: List<CustomerTrafficSession>,
+    dailyBusiness: List<StoreDailyRecord>,
+    sourceRows: List<CustomerPaymentRecord>,
+    selectedStoreId: Long,
+    platform: String
 ) {
     var metric by remember { mutableStateOf(CustomerDailyMetric.PAYMENTS) }
-    fun value(p: CustomerDailyTrafficPoint): Double = when (metric) {
-        CustomerDailyMetric.PAYMENTS -> p.paymentCount.toDouble()
-        CustomerDailyMetric.AMOUNT -> p.amount
+    var reviewDate by remember { mutableStateOf<String?>(null) }
+    fun dayRows(date: String): List<CustomerPaymentRecord> =
+        sourceRows.filter { it.businessDate == date && it.netAmount > 0.005 }
+    fun status(date: String): PaymentDayCoverage {
+        val hasBusiness = sessions.any { it.date == date &&
+            (selectedStoreId <= 0L || it.storeId == selectedStoreId) }
+        return CustomerOverviewPolicies.coverage(hasBusiness, dayRows(date), platform)
+    }
+    fun value(day: CustomerDailyTrafficPoint): Double = when (metric) {
+        CustomerDailyMetric.PAYMENTS -> day.paymentCount.toDouble()
+        CustomerDailyMetric.AMOUNT -> day.amount
         CustomerDailyMetric.AVERAGE ->
-            if (p.paymentCount > 0) p.amount / p.paymentCount else 0.0
+            if (day.paymentCount > 0) day.amount / day.paymentCount else 0.0
     }
     val maxValue = (points.maxOfOrNull { value(it) } ?: 0.0).coerceAtLeast(1.0)
-
     Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
-        Column(Modifier.fillMaxWidth().padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("每日付款趋势", fontWeight = FontWeight.Bold)
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        Column(Modifier.fillMaxWidth().padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("每日付款趋势 · 账单覆盖提示", fontWeight = FontWeight.Bold)
+            Row(Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 CustomerDailyMetric.entries.forEach { option ->
                     FilterChip(selected = metric == option, onClick = { metric = option },
                         label = { Text(option.label) })
                 }
             }
-            Text("包含当前筛选范围内的微信与支付宝有效交易；点某天查看逐小时数据。",
-                style = MaterialTheme.typography.labelSmall, color = Color.Gray)
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.Bottom) {
-                points.forEach { point ->
-                    val count = value(point)
-                    val ratio = (count.coerceAtLeast(0.0) / maxValue).toFloat().coerceIn(0f, 1f)
-                    Column(
-                        Modifier.width(43.dp).clickable { onSelectDay(point.date) },
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(3.dp)
-                    ) {
-                        Text(
-                            if (count == 0.0) "0"
+                points.forEach { day ->
+                    val coverage = status(day.date)
+                    val result = value(day)
+                    val hasData = coverage == PaymentDayCoverage.OBSERVED ||
+                        coverage == PaymentDayCoverage.PARTIAL
+                    val ratio = (result.coerceAtLeast(0.0) / maxValue).toFloat().coerceIn(0f,1f)
+                    Column(Modifier.width(59.dp).clickable {
+                        if (coverage == PaymentDayCoverage.NEED_IMPORT ||
+                            coverage == PaymentDayCoverage.PARTIAL)
+                            reviewDate = day.date else onSelectDay(day.date)
+                    }, horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(if (!hasData) CustomerOverviewPolicies.coverageLabel(coverage)
                             else if (metric == CustomerDailyMetric.AVERAGE)
-                                String.format(Locale.CHINA, "%.1f", count)
-                            else String.format(Locale.CHINA, "%.0f", count),
-                            style = MaterialTheme.typography.labelSmall,
-                            maxLines = 1,
-                            color = Color(0xFF087D4E)
-                        )
-                        Box(Modifier.height(82.dp).width(26.dp),
+                                String.format(Locale.CHINA,"%.1f",result)
+                            else String.format(Locale.CHINA,"%.0f",result),
+                            style = MaterialTheme.typography.labelSmall, maxLines = 1,
+                            color = if (hasData) Color(0xFF087D4E) else Color.Gray)
+                        Box(Modifier.height(73.dp).width(26.dp),
                             contentAlignment = Alignment.BottomCenter) {
-                            Box(
-                                Modifier.fillMaxWidth()
-                                    .height(if (count > 0.0) (5f + 70f * ratio).dp else 2.dp)
-                                    .background(Color(0xFF5CB98D),
-                                        RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
-                            )
+                            Box(Modifier.fillMaxWidth()
+                                .height(if (hasData && result > 0)
+                                    (4f + 60f * ratio).dp else 2.dp)
+                                .background(if (hasData) Color(0xFF5CB98D)
+                                    else Color(0xFFC6CBD1),
+                                    RoundedCornerShape(topStart=4.dp,topEnd=4.dp)))
                         }
                         Text(
-                            runCatching { LocalDate.parse(point.date)
-                                .format(DateTimeFormatter.ofPattern("M/d")) }
-                                .getOrDefault(point.date.takeLast(5)),
-                            style = MaterialTheme.typography.labelSmall, color = Color.Gray
-                        )
+                            runCatching { LocalDate.parse(day.date).format(
+                                DateTimeFormatter.ofPattern("M/d")) }.getOrDefault(day.date.takeLast(5)),
+                            style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        Text(if (hasData) CustomerOverviewPolicies.coverageLabel(coverage)
+                            else "核对 ›", style = MaterialTheme.typography.labelSmall,
+                            color = if (coverage == PaymentDayCoverage.PARTIAL)
+                                Color(0xFF9A6700) else Color.Gray)
                     }
                 }
             }
-            Text("付款笔数 ≠ 独立顾客人数；0笔也可能是尚未导入该日账单。",
+            Text("灰色表示未营业或尚无法证实账单，绝不将缺失日期画成0。已看到流水也不等于完整覆盖；点待补/部分查看账号、日期和渠道。",
                 style = MaterialTheme.typography.labelSmall, color = Color.Gray)
         }
+    }
+    reviewDate?.let { date ->
+        val business = dailyBusiness.filter { it.date == date &&
+            (selectedStoreId <= 0L || it.storeId == selectedStoreId) }
+        val included = dayRows(date)
+        AlertDialog(
+            onDismissRequest = { reviewDate = null },
+            title = { Text("$date · 账单待核对") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("以下金额和账号来自营业表；当前筛选已观察到${included.size}笔。已观察不等于完整导入。",
+                        style = MaterialTheme.typography.bodySmall)
+                    business.forEach { day ->
+                        Text("${day.storeName} · 微信：${day.wechatCollectorName.ifBlank { "未指定" }}" +
+                            " · ${money(day.wechatIncome)}",
+                            style = MaterialTheme.typography.bodySmall)
+                        Text("${day.storeName} · 支付宝：${day.alipayCollectorName.ifBlank { "未指定" }}" +
+                            " · ${money(day.alipayIncome)}",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (business.isEmpty())
+                        Text("没有相应的正式营业记录，无法核对收款账号。",
+                            style = MaterialTheme.typography.bodySmall, color = Color(0xFF9A6700))
+                    Text("请核对微信、支付宝全部使用过的收款人及导出账单日期，再判断缺少的渠道。共享账号不可直接分摊给单个位置。",
+                        style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                }
+            },
+            confirmButton = { TextButton(onClick = {
+                reviewDate = null; onSelectDay(date)
+            }) { Text("查看该日 ›") } },
+            dismissButton = { TextButton(onClick = { reviewDate = null }) { Text("关闭") } }
+        )
     }
 }
 
