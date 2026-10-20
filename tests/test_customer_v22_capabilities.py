@@ -22,10 +22,10 @@ class CustomerV22CapabilityContractTest(unittest.TestCase):
     def test_bump_version_without_resetting_db(self):
         build = BUILD.read_text(encoding="utf-8")
         import re
-        match = re.search(r"versionCode\\s+(\\d+)", build)
+        match = re.search(r"versionCode\s+(\d+)", build)
         self.assertIsNotNone(match)
         self.assertGreaterEqual(int(match.group(1)), 147)
-        self.assertRegex(build, r'versionName "1\\.4\\.7\\.\\d+"')
+        self.assertRegex(build, r'versionName "1\.4\.7\.\d+"')
 
 if __name__=="__main__":
     unittest.main()
