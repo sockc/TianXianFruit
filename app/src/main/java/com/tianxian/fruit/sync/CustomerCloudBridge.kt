@@ -501,7 +501,10 @@ internal object CustomerCloudBridge {
             for (page in 0 until 400) {
                 val before = serverCursor(database)
                 val response = request("GET", "$endpoint/changes?cursor=$before&limit=200&include_assignments=true" +
-                    (if (supportsCollector) "&include_collectors=true" else ""), null)
+                    (if (supportsCollector) "&include_collectors=true" else "") +
+                    (if (supportsAnalysis) "&include_analysis=true" else "") +
+                    (if (supportsSettings) "&include_settings=true" else "") +
+                    (if (supportsSourceLinks) "&include_source_links=true" else ""), null)
                 val changes = response.getJSONArray("changes")
                 val next = response.getLong("next_cursor")
                 if (next < before || (changes.length() > 0 && next == before)) {
