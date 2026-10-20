@@ -17,7 +17,7 @@ class CustomerV22CapabilityContractTest(unittest.TestCase):
         for feature, (flag, param) in expected.items():
             self.assertIn(f'"{feature}" in supported', source)
             self.assertIn(f'if ({flag}) "&{param}=true" else ""', source)
-        self.assertIn('else throw IllegalStateException("未知客流同步数据类型：$kind")', source)
+        self.assertIn('else -> throw IllegalStateException("未知客流同步数据类型：$kind")', source)
 
     def test_bump_version_without_resetting_db(self):
         build = BUILD.read_text(encoding="utf-8")
