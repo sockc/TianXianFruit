@@ -96,6 +96,7 @@ private data class CustomerAnalysisSnapshot(
     val receipts: List<CustomerPaymentRecord>,
     val dailyHistory: List<StoreDailyRecord>,
     val collectorByReceipt: Map<Long, String>,
+    val collectorPartnerIds: Map<String, Long>,
     val attribution: CollectorStoreAttributionResult
 )
 
@@ -218,7 +219,7 @@ internal fun CustomerAnalysisContent(
                 CustomerUnifiedStoreAttribution.apply(
                     attribution.rows, storeAssignments, stores, attribution.collectorMatchedIds
                 ),
-                dailyHistory, collectorByReceipt, attribution
+                dailyHistory, collectorByReceipt, partnerIds, attribution
             )
         }
     }
@@ -234,6 +235,7 @@ internal fun CustomerAnalysisContent(
     val locationAssignments = loaded.storeAssignments
     val dailyHistory = loaded.dailyHistory
     val collectorByReceipt = loaded.collectorByReceipt
+    val collectorPartnerIds = loaded.collectorPartnerIds
     val collectorAttribution = loaded.attribution
     val rawRecords = loaded.receipts
     val conflictingCollectorCount = remember(collectorByReceipt) {
