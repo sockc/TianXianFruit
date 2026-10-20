@@ -85,6 +85,20 @@ private enum class CustomerRankingMode(val label: String) {
     STABILITY("稳定度")
 }
 
+/**
+ * A single async snapshot prevents all-history SQLite queries and collector joins
+ * from blocking Compose's main thread on each customer-analysis navigation.
+ */
+private data class CustomerAnalysisSnapshot(
+    val sessions: List<CustomerTrafficSession>,
+    val stores: List<StoreOption>,
+    val storeAssignments: Map<String, String>,
+    val receipts: List<CustomerPaymentRecord>,
+    val dailyHistory: List<StoreDailyRecord>,
+    val collectorByReceipt: Map<Long, String>,
+    val attribution: CollectorStoreAttributionResult
+)
+
 @Composable
 internal fun CustomerAnalysisContent(
     db: AppDatabase,
@@ -183,28 +197,47 @@ internal fun CustomerAnalysisContent(
 
     var locationEditTick by remember { mutableIntStateOf(0) }
     var showUnifiedStoreDialog by remember { mutableStateOf(false) }
-    val trafficSessions = remember(dataVersion) {
-        db.getCustomerTrafficSessions()
+    val snapshot by produceState<CustomerAnalysisSnapshot?>(
+        initialValue = null, db, ledgerId, dataVersion, locationEditTick
+    ) {
+        value = withContext(Dispatchers.IO) {
+            val sessions = db.getCustomerTrafficSessions()
+            val stores = db.getStores()
+            val storeAssignments = db.getCustomerStoreDayAssignments()
+            val dailyHistory = db.getDailyRecordsBetween(null, null)
+            val collectorByReceipt = db.getCustomerCollectorByReceiptId()
+            val partnerIds = db.getCustomerCollectorPartnerIds()
+            val receipts = CustomerTrafficDeepDive.attributeBusinessDays(
+                db.getCustomerPayments(), sessions
+            )
+            val attribution = CustomerCollectorStoreAttribution.resolve(
+                receipts, dailyHistory, collectorByReceipt, partnerIds, sessions
+            )
+            CustomerAnalysisSnapshot(
+                sessions, stores, storeAssignments,
+                CustomerUnifiedStoreAttribution.apply(
+                    attribution.rows, storeAssignments, stores, attribution.collectorMatchedIds
+                ),
+                dailyHistory, collectorByReceipt, attribution
+            )
+        }
     }
-    val enabledStores = remember(dataVersion, locationEditTick) { db.getStores() }
-    val locationAssignments = remember(dataVersion, locationEditTick) {
-        db.getCustomerStoreDayAssignments()
+    if (snapshot == null) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+        return
     }
-    val autoRecords = remember(dataVersion, trafficSessions) {
-        CustomerTrafficDeepDive.attributeBusinessDays(
-            db.getCustomerPayments(), trafficSessions
-        )
-    }
-    val collectorByBatch = remember(dataVersion) { db.getCustomerCollectorByBatchId() }
-    val collectorPartnerIds = remember(dataVersion) { db.getCustomerCollectorPartnerIds() }
-    val dailyHistory = remember(dataVersion) { db.getDailyRecordsBetween(null, null) }
-    val collectorAttribution = remember(autoRecords, collectorByBatch, collectorPartnerIds, dailyHistory) {
-        CustomerCollectorStoreAttribution.resolve(autoRecords, dailyHistory,
-            collectorByBatch, collectorPartnerIds, trafficSessions)
-    }
-    val rawRecords = remember(collectorAttribution, enabledStores, locationAssignments) {
-        CustomerUnifiedStoreAttribution.apply(collectorAttribution.rows, locationAssignments,
-            enabledStores, collectorAttribution.collectorMatchedIds)
+    val loaded = snapshot!!
+    val trafficSessions = loaded.sessions
+    val enabledStores = loaded.stores
+    val locationAssignments = loaded.storeAssignments
+    val dailyHistory = loaded.dailyHistory
+    val collectorByReceipt = loaded.collectorByReceipt
+    val collectorAttribution = loaded.attribution
+    val rawRecords = loaded.receipts
+    val conflictingCollectorCount = remember(collectorByReceipt) {
+        collectorByReceipt.values.count { it == ReceiptCollectorPolicy.CONFLICT }
     }
     val unmatchedBeforeUnified = remember(collectorAttribution, dayAnchor) {
         CustomerUnifiedStoreAttribution.unmatchedOnDate(collectorAttribution.rows,
@@ -215,7 +248,7 @@ internal fun CustomerAnalysisContent(
     }?.name
     val storeOptions = remember(rawRecords, trafficSessions, dataVersion) {
         val options = linkedMapOf<Long, String>()
-        db.getStores().forEach { options[it.id] = it.name }
+        enabledStores.forEach { options[it.id] = it.name }
         trafficSessions.forEach {
             if (it.storeId > 0L && it.storeName.isNotBlank())
                 options.putIfAbsent(it.storeId, it.storeName)
@@ -241,7 +274,7 @@ internal fun CustomerAnalysisContent(
     val collectorAssignments = remember(dataVersion) { db.getCustomerBillCollectorAssignments() }
     val scopedRawRecords = remember(
         rawRecords, selectedPlatform, selectedStoreId, selectedCollectorSyncId,
-        collectorByBatch
+        collectorByReceipt
     ) {
         PaymentTrafficAnalytics.select(rawRecords, selectedPlatform.name, selectedStoreId).filter { record ->
             // Shared collector groups are known multi-store receipts, not
@@ -250,8 +283,8 @@ internal fun CustomerAnalysisContent(
                 record.storeName != CustomerCollectorStoreAttribution.SHARED_STORE_NAME) &&
             when (selectedCollectorSyncId) {
                 "*" -> true
-                "?" -> collectorByBatch[record.sourceBatchId].isNullOrBlank()
-                else -> collectorByBatch[record.sourceBatchId] == selectedCollectorSyncId
+                "?" -> collectorByReceipt[record.id].isNullOrBlank()
+                else -> collectorByReceipt[record.id] == selectedCollectorSyncId
             }
         }
     }
@@ -696,6 +729,15 @@ internal fun CustomerAnalysisContent(
                 ) {
                     Text("⚙", style = MaterialTheme.typography.titleLarge)
                 }
+            }
+
+            if (conflictingCollectorCount > 0) {
+                Text(
+                    "有 ${conflictingCollectorCount} 笔收款关联不同收款人，请在账单归属中核对；暂不自动分配位置。",
+                    color = Color(0xFFB26A00),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.dp)
+                )
             }
 
             Row(
@@ -1386,6 +1428,7 @@ private fun CustomerPaymentRecordsContent(
             }
         }
 
+    var pageSize by remember(records, filter) { mutableIntStateOf(200) }
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
@@ -1470,7 +1513,7 @@ private fun CustomerPaymentRecordsContent(
                     )
             ) {
                 items(
-                    visible,
+                    visible.take(pageSize),
                     key = {
                         it.id
                     }
@@ -1709,6 +1752,16 @@ private fun CustomerPaymentRecordsContent(
                                         }
                                 }
                             }
+                        }
+                    }
+                }
+                if (visible.size > pageSize) {
+                    item {
+                        TextButton(
+                            onClick = { pageSize += 200 },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("加载更多（已显示 ${pageSize.coerceAtMost(visible.size)} / ${visible.size} 笔）")
                         }
                     }
                 }

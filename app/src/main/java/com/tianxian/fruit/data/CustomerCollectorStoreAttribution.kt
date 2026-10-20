@@ -5,6 +5,19 @@ package com.tianxian.fruit.data
  * A shared receipt belongs to one collector/day group, NEVER to each store separately.
  * All changes here are analytical projections; imported bills and official sales stay intact.
  */
+/** Never use an arbitrary file's collector when overlapping exports disagree. */
+internal object ReceiptCollectorPolicy {
+    const val CONFLICT = "#CONFLICT#"
+    fun resolve(collectors: Collection<String>): String {
+        val distinct = collectors.filter { it.isNotBlank() }.distinct()
+        return when (distinct.size) {
+            0 -> ""
+            1 -> distinct.single()
+            else -> CONFLICT
+        }
+    }
+}
+
 internal data class SharedCollectorTraffic(
     val date: String,
     val platform: String,
@@ -38,11 +51,11 @@ internal object CustomerCollectorStoreAttribution {
     fun resolve(
         receipts: List<CustomerPaymentRecord>,
         daily: List<StoreDailyRecord>,
-        collectorByBatchId: Map<Long, String>,
+        collectorByReceiptId: Map<Long, String>,
         partnerIdBySyncId: Map<String, Long>,
         sessions: List<CustomerTrafficSession> = emptyList()
     ): CollectorStoreAttributionResult {
-        if (receipts.isEmpty() || daily.isEmpty() || collectorByBatchId.isEmpty()) {
+        if (receipts.isEmpty() || daily.isEmpty() || collectorByReceiptId.isEmpty()) {
             return CollectorStoreAttributionResult(receipts, emptyList(), emptySet())
         }
 
@@ -70,7 +83,7 @@ internal object CustomerCollectorStoreAttribution {
             if (receipt.netAmount <= 0.005 || receipt.amount <= 0.005) {
                 return@map receipt
             }
-            val collectorSyncId = collectorByBatchId[receipt.sourceBatchId].orEmpty()
+            val collectorSyncId = collectorByReceiptId[receipt.id].orEmpty()
             val partnerId = partnerIdBySyncId[collectorSyncId] ?: return@map receipt
             if (partnerId <= 0L) return@map receipt
 

@@ -6805,15 +6805,26 @@ private fun InventoryScreen(
         it.openingQuantity > 0.000001 && it.purchasedQuantity <= 0.000001
     }
     val savedCount = inventoryItems.count { it.saved }
+    // Use the exact same weighted inventory cost basis as the operating analysis.
+    // This can query years of purchases, so never execute it during composition.
+    val costAnalysis by produceState<OperatingAnalysisRecord?>(
+        initialValue = null, db, dataVersion, date
+    ) {
+        value = withContext(Dispatchers.IO) { db.getOperatingAnalysis(date) }
+    }
+    val weightedCosts = remember(costAnalysis) {
+        costAnalysis?.items?.associateBy { it.fruitId to it.unit }.orEmpty()
+    }
     val remainingEstimatedValue = inventoryItems.sumOf { item ->
         val key = itemKey(item)
         val remaining = remainingInputs[key]?.toDoubleOrNull() ?: item.remainingQuantity
-        remaining.coerceAtLeast(0.0) * (item.effectiveUnitCost ?: 0.0)
+        val weighted = weightedCosts[item.fruitId to item.unit]
+        remaining.coerceAtLeast(0.0) * (weighted?.averageUnitCost ?: 0.0)
     }
-    val remainingMissingCostCount = inventoryItems.count { item ->
+    val remainingMissingCostCount = if (costAnalysis == null) 0 else inventoryItems.count { item ->
         val key = itemKey(item)
         val remaining = remainingInputs[key]?.toDoubleOrNull() ?: item.remainingQuantity
-        remaining > 0.000001 && item.effectiveUnitCost == null
+        remaining > 0.000001 && weightedCosts[item.fruitId to item.unit]?.averageUnitCost == null
     }
 
     fun inventoryDirty(): Boolean =
@@ -6975,7 +6986,7 @@ private fun InventoryScreen(
                 )
                 MiniSummaryCard(
                     "剩余价值",
-                    wholeMoney(
+                    if (costAnalysis == null) "核算中" else wholeMoney(
                         remainingEstimatedValue
                     ),
                     Modifier.weight(1f),

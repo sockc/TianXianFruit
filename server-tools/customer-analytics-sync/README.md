@@ -1,3 +1,15 @@
+## V1.4.7.108 新增可选协议事件（服务端待实现）
+
+APK 仅在 `capabilities.features` 明确包含对应能力后上传；未支持时不会上传新事件，旧收款交易仍可同步，但新更正状态保持本机并在客户分析提示。
+
+- `receipt_analysis_state`：`ANALYSIS`，实体键 `platform|dedupe_key`；payload 包含 `platform`、`dedupe_key`、`state`（`DEFAULT`/`EXCLUDED`/`INCLUDED`）。必须用独立修订序号与 CAS 实现多设备编辑冲突，不得覆盖原始交易。
+- `analysis_settings`：`SETTINGS`，键 `global`，字段 `exclude_large_payments`（bool）、`large_payment_threshold`（元，正数）。数据与当前账本隔离，变更需 CAS。恢复默认设置也是一笔可同步变更。
+- `bill_source_links`：`SOURCE_LINK`，键 `platform|dedupe_key|file_hash`，字段 `platform`、`dedupe_key`、`file_hash`。同一交易可链接多个来源文件；服务端唯一约束为 `(book_id,platform,dedupe_key,file_hash)`，不得重复计客流。服务端应确保引用的批次和交易存在，并按事件 cursor 可增量恢复。
+
+服务端应以认证账本 ID 作为所有实体作用域，使用原有 `/customer-analytics/push` 与 `/changes` 的事务性确认格式；不接受客户端自报权限。必须覆盖先下载后上传、本地并发编辑、409 冲突、游标回放与跨设备恢复测试。未获得运行中服务器源码前不要把本协议说明当作已经部署的接口。
+
+---
+
 # 天鲜账本 · 客流/账单云同步的服务器对接规范（待接入现有服务）
 
 > **不是可直接部署到生产服务器的插件。** 当前连接的 GitHub 仓库

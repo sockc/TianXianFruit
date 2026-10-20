@@ -944,6 +944,7 @@ class AppDatabase(
         createV42CustomerCloudState(db)
         createV43CustomerStoreDayAssignment(db)
         createV44CustomerCollectorAssignment(db)
+        createV45CustomerPaymentSourceLinks(db)
         createV9CloudSync(db)
         createV10SyncTriggerFix(db)
         createV11ConflictSupport(db)
@@ -1125,6 +1126,9 @@ class AppDatabase(
         }
         if (oldVersion < 44) {
             createV44CustomerCollectorAssignment(db)
+        }
+        if (oldVersion < 45) {
+            createV45CustomerPaymentSourceLinks(db)
         }
     }
 
@@ -3585,6 +3589,33 @@ class AppDatabase(
      * Isolated customer-data sync state. Existing ledger cloud triggers and
      * official accounting tables are intentionally not changed.
      */
+    /**
+     * A deduplicated receipt may appear in several partially overlapping bill exports.
+     * Keep every file link separately; never rewrite the first import's receipt.
+     */
+    private fun createV45CustomerPaymentSourceLinks(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS customer_payment_source_link(
+                platform TEXT NOT NULL,
+                dedupe_key TEXT NOT NULL,
+                file_hash TEXT NOT NULL,
+                PRIMARY KEY(platform,dedupe_key,file_hash)
+            )
+        """.trimIndent())
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_customer_source_file " +
+                "ON customer_payment_source_link(platform,file_hash)"
+        )
+        // Backfill first-import lineage without inventing missing historical file links.
+        db.execSQL("""
+            INSERT OR IGNORE INTO customer_payment_source_link(platform,dedupe_key,file_hash)
+            SELECT t.platform,t.dedupe_key,b.file_hash
+            FROM customer_payment_transaction t
+            JOIN payment_import_batch b ON b.id=t.source_batch_id
+            WHERE b.file_hash<>''
+        """.trimIndent())
+    }
+
     private fun createV44CustomerCollectorAssignment(db: SQLiteDatabase) {
         db.execSQL(
             """
@@ -15620,6 +15651,16 @@ class AppDatabase(
                             SQLiteDatabase.CONFLICT_IGNORE
                         )
 
+                    // Record every export containing this trade, including deduplicated rows.
+                    // This is analytics-only lineage, never an extra customer payment.
+                    db.insertWithOnConflict(
+                        "customer_payment_source_link", null, ContentValues().apply {
+                            put("platform", receipt.platform.name)
+                            put("dedupe_key", receipt.dedupeKey)
+                            put("file_hash", fileHash)
+                        }, SQLiteDatabase.CONFLICT_IGNORE
+                    )
+
                     if (rowId > 0L) {
                         inserted += 1
                         if (store == null) {
@@ -15920,6 +15961,32 @@ class AppDatabase(
                 }
             }
         }
+
+    /**
+     * Resolve collectors per deduplicated receipt rather than per first-import batch.
+     * Conflicting non-empty collectors are explicit, never silently reassigned.
+     */
+    fun getCustomerCollectorByReceiptId(): Map<Long, String> {
+        val candidates = linkedMapOf<Long, MutableSet<String>>()
+        readableDatabase.rawQuery("""
+            SELECT p.id AS receipt_id, COALESCE(a.partner_sync_id,'') AS partner_sync_id
+            FROM customer_payment_transaction p
+            LEFT JOIN customer_payment_source_link l
+              ON l.platform=p.platform AND l.dedupe_key=p.dedupe_key
+            LEFT JOIN payment_import_batch b ON b.id=p.source_batch_id
+            LEFT JOIN customer_bill_collector_assignment a
+              ON a.platform=p.platform
+             AND a.file_hash=COALESCE(l.file_hash,b.file_hash)
+        """.trimIndent(), null).use { c ->
+            while (c.moveToNext()) {
+                val set = candidates.getOrPut(c.long("receipt_id")) { linkedSetOf() }
+                c.str("partner_sync_id").takeIf { it.isNotBlank() }?.let(set::add)
+            }
+        }
+        return candidates.mapValues { (_, ids) ->
+            ReceiptCollectorPolicy.resolve(ids)
+        }
+    }
 
     fun getCustomerCollectorByBatchId(): Map<Long, String> =
         readableDatabase.rawQuery(
@@ -16791,7 +16858,7 @@ class AppDatabase(
 
     companion object {
         const val DB_NAME = "tianxian_fruit.db"
-        const val DB_VERSION = 44
+        const val DB_VERSION = 45
 
         private val CUSTOMER_PAYMENT_DATE_TIME =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")

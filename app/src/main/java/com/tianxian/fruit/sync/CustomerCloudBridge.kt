@@ -43,7 +43,7 @@ internal object CustomerCloudBridge {
         fun json(): JSONObject = JSONObject()
             .put("kind", kind).put("key", key).put("payload", payload)
             .apply {
-                if (kind in setOf("OFFICIAL", "ASSIGNMENT", "COLLECTOR") && revision > 0)
+                if (kind in setOf("OFFICIAL", "ASSIGNMENT", "COLLECTOR", "ANALYSIS", "SETTINGS", "SOURCE_LINK") && revision > 0)
                     put("expected_revision", revision)
             }
     }
@@ -75,9 +75,30 @@ internal object CustomerCloudBridge {
         JSONObject().put("platform", platform).put("file_hash", hash)
             .put("partner_sync_id", partner).put("deleted", partner.isBlank())
 
+    private fun analysisPayload(platform: String, receiptKey: String, state: String): JSONObject =
+        JSONObject().put("platform", platform).put("dedupe_key", receiptKey)
+            .put("state", state)
+
+    private fun settingsPayload(excludeLarge: Boolean, threshold: Double): JSONObject =
+        JSONObject().put("exclude_large_payments", excludeLarge)
+            .put("large_payment_threshold", threshold)
+
+    private fun sourceLinkPayload(platform: String, receiptKey: String, fileHash: String): JSONObject =
+        JSONObject().put("platform", platform).put("dedupe_key", receiptKey)
+            .put("file_hash", fileHash)
+
+    private fun analysisState(excluded: Boolean, included: Boolean): String = when {
+        included -> "INCLUDED"
+        excluded -> "EXCLUDED"
+        else -> "DEFAULT"
+    }
+
     private fun pending(
         context: Context, db: AppDatabase, bookId: String, limit: Int,
-        includeCollector: Boolean = true
+        includeCollector: Boolean = true,
+        includeAnalysis: Boolean = false,
+        includeSettings: Boolean = false,
+        includeSourceLinks: Boolean = false
     ): List<SyncItem> {
         val ack = ackMap(db.readableDatabase)
         val results = mutableListOf<SyncItem>()
@@ -161,6 +182,55 @@ internal object CustomerCloudBridge {
                 val platform = key.substring(0, divider)
                 val hash = key.substring(divider + 1)
                 if (include("COLLECTOR", key, collectorPayload(platform, hash, partner))) break
+            }
+        }
+        // These kinds are opt-in server protocol extensions: never send an
+        // unrecognized kind to an older server that would silently drop it.
+        if (results.size < limit && includeAnalysis) {
+            db.readableDatabase.rawQuery("""
+                SELECT p.platform,p.dedupe_key,p.analysis_excluded,p.analysis_included_override
+                FROM customer_payment_transaction p
+                WHERE p.analysis_excluded=1 OR p.analysis_included_override=1 OR EXISTS(
+                    SELECT 1 FROM customer_cloud_ack a
+                    WHERE a.kind='ANALYSIS'
+                      AND a.entity_key=p.platform||'|'||p.dedupe_key
+                )
+                ORDER BY p.id
+            """.trimIndent(), null).use { c ->
+                while (c.moveToNext() && results.size < limit) {
+                    val platform = c.string("platform")
+                    val receiptKey = c.string("dedupe_key")
+                    val state = analysisState(
+                        c.integer("analysis_excluded") == 1,
+                        c.integer("analysis_included_override") == 1
+                    )
+                    include("ANALYSIS", "$platform|$receiptKey",
+                        analysisPayload(platform, receiptKey, state))
+                }
+            }
+        }
+        if (results.size < limit && includeSettings) {
+            val setting = db.getCustomerAnalysisSettings()
+            val customized = !setting.excludeLargePayments ||
+                kotlin.math.abs(setting.largePaymentThreshold - 2000.0) > 0.001
+            if (customized || ack.containsKey("SETTINGS" to "global")) {
+                include("SETTINGS", "global",
+                    settingsPayload(setting.excludeLargePayments, setting.largePaymentThreshold))
+            }
+        }
+        if (results.size < limit && includeSourceLinks) {
+            db.readableDatabase.rawQuery("""
+                SELECT platform,dedupe_key,file_hash
+                FROM customer_payment_source_link
+                ORDER BY platform,dedupe_key,file_hash
+            """.trimIndent(), null).use { c ->
+                while (c.moveToNext() && results.size < limit) {
+                    val platform = c.string("platform")
+                    val receiptKey = c.string("dedupe_key")
+                    val fileHash = c.string("file_hash")
+                    include("SOURCE_LINK", "$platform|$receiptKey|$fileHash",
+                        sourceLinkPayload(platform, receiptKey, fileHash))
+                }
             }
         }
         return results
@@ -253,6 +323,80 @@ internal object CustomerCloudBridge {
                         )
                         if (inserted > 0L) ack(database, kind, key, "REMOTE", version)
                     }
+                    "SOURCE_LINK" -> {
+                        val platform = body.str("platform")
+                        val receiptKey = body.str("dedupe_key")
+                        val fileHash = body.str("file_hash")
+                        if ("$platform|$receiptKey|$fileHash" != key ||
+                            platform !in setOf("WECHAT", "ALIPAY") ||
+                            fileHash.length != 64) continue
+                        database.insertWithOnConflict(
+                            "customer_payment_source_link", null, ContentValues().apply {
+                                put("platform", platform)
+                                put("dedupe_key", receiptKey)
+                                put("file_hash", fileHash)
+                            }, SQLiteDatabase.CONFLICT_IGNORE
+                        )
+                        ack(database, kind, key, digest(body.toString()), version)
+                        knownAck[kind to key] = Ack(digest(body.toString()), version)
+                    }
+                    "ANALYSIS" -> {
+                        val platform = body.str("platform")
+                        val receiptKey = body.str("dedupe_key")
+                        val state = body.str("state")
+                        if ("$platform|$receiptKey" != key ||
+                            platform !in setOf("WECHAT", "ALIPAY") ||
+                            state !in setOf("DEFAULT", "EXCLUDED", "INCLUDED")) continue
+                        val local = database.rawQuery("""
+                            SELECT analysis_excluded,analysis_included_override
+                            FROM customer_payment_transaction
+                            WHERE platform=? AND dedupe_key=? LIMIT 1
+                        """.trimIndent(), arrayOf(platform, receiptKey)).use { c ->
+                            if (!c.moveToFirst()) null else analysisState(
+                                c.integer("analysis_excluded") == 1,
+                                c.integer("analysis_included_override") == 1
+                            )
+                        } ?: throw IllegalStateException("云端账单处理状态的原交易尚未恢复：$key")
+                        val previous = knownAck[kind to key]
+                        val currentHash = digest(analysisPayload(platform, receiptKey, local).toString())
+                        if ((previous != null && previous.hash != currentHash) ||
+                            (previous == null && local != "DEFAULT")) continue
+                        database.update(
+                            "customer_payment_transaction", ContentValues().apply {
+                                put("analysis_excluded", if (state == "EXCLUDED") 1 else 0)
+                                put("analysis_included_override", if (state == "INCLUDED") 1 else 0)
+                                put("exclusion_reason", when (state) {
+                                    "EXCLUDED" -> "手动排除"
+                                    "INCLUDED" -> "手动计入"
+                                    else -> ""
+                                })
+                            }, "platform=? AND dedupe_key=?", arrayOf(platform, receiptKey)
+                        )
+                        val hash = digest(analysisPayload(platform, receiptKey, state).toString())
+                        ack(database, kind, key, hash, version)
+                        knownAck[kind to key] = Ack(hash, version)
+                    }
+                    "SETTINGS" -> {
+                        if (key != "global") continue
+                        val exclude = body.optBoolean("exclude_large_payments", true)
+                        val threshold = body.optDouble("large_payment_threshold", 2000.0)
+                        if (!threshold.isFinite() || threshold < 1.0) continue
+                        val current = db.getCustomerAnalysisSettings()
+                        val previous = knownAck[kind to key]
+                        val localHash = digest(settingsPayload(
+                            current.excludeLargePayments, current.largePaymentThreshold).toString())
+                        val customized = !current.excludeLargePayments ||
+                            kotlin.math.abs(current.largePaymentThreshold - 2000.0) > 0.001
+                        if ((previous != null && previous.hash != localHash) ||
+                            (previous == null && customized)) continue
+                        if (!db.saveCustomerAnalysisSettings(
+                                com.tianxian.fruit.data.CustomerAnalysisSettings(exclude, threshold))) {
+                            throw IllegalStateException("云端大额过滤设置恢复失败")
+                        }
+                        val hash = digest(settingsPayload(exclude, threshold).toString())
+                        ack(database, kind, key, hash, version)
+                        knownAck[kind to key] = Ack(hash, version)
+                    }
                     "OFFICIAL" -> {
                         val local = OfficialWechatCustomerStatsLocal.get(context, bookId, key)
                         val current = officialPayload(key, local)
@@ -331,8 +475,12 @@ internal object CustomerCloudBridge {
             throw IllegalStateException("服务器尚未支持客流同步 V1")
         }
         val features = caps.optJSONArray("features")
-        val supportsCollector = (0 until (features?.length() ?: 0))
-            .any { features?.optString(it) == "bill_collector" }
+        val supported = (0 until (features?.length() ?: 0))
+            .map { features?.optString(it).orEmpty() }.toSet()
+        val supportsCollector = "bill_collector" in supported
+        val supportsAnalysis = "receipt_analysis_state" in supported
+        val supportsSettings = "analysis_settings" in supported
+        val supportsSourceLinks = "bill_source_links" in supported
         val database = db.writableDatabase
         database.beginTransaction()
         try {
@@ -371,7 +519,8 @@ internal object CustomerCloudBridge {
         var uploaded = 0
         if (canWrite) {
             for (page in 0 until 400) {
-                val batch = pending(context, db, bookId, MAX_BATCH, supportsCollector)
+                val batch = pending(context, db, bookId, MAX_BATCH, supportsCollector,
+                    supportsAnalysis, supportsSettings, supportsSourceLinks)
                 if (batch.isEmpty()) break
                 val body = JSONObject().put("items", JSONArray().apply {
                     batch.forEach { put(it.json()) }
@@ -398,7 +547,8 @@ internal object CustomerCloudBridge {
                 } finally { database.endTransaction() }
                 if (batch.size < MAX_BATCH) break
             }
-            if (pending(context, db, bookId, 1, supportsCollector).isNotEmpty()) {
+            if (pending(context, db, bookId, 1, supportsCollector,
+                supportsAnalysis, supportsSettings, supportsSourceLinks).isNotEmpty()) {
                 throw IllegalStateException("待同步客流记录较多，已分批上传，仍有未确认记录")
             }
         }
@@ -406,10 +556,26 @@ internal object CustomerCloudBridge {
         val status = context.getSharedPreferences("customer_cloud_sync_status_v1", Context.MODE_PRIVATE)
         val unsyncedCollector = !supportsCollector &&
             db.getCustomerBillCollectorAssignments().isNotEmpty()
+        val issues = mutableListOf<String>()
+        if (unsyncedCollector) issues += "服务器不支持账单收款人关联同步"
+        val unsyncedAnalysis = !supportsAnalysis && database.rawQuery(
+            "SELECT 1 FROM customer_payment_transaction " +
+                "WHERE analysis_excluded=1 OR analysis_included_override=1 LIMIT 1", null
+        ).use { it.moveToFirst() }
+        if (unsyncedAnalysis) issues += "人工排除/计入未同步"
+        val currentSettings = db.getCustomerAnalysisSettings()
+        if (!supportsSettings && (!currentSettings.excludeLargePayments ||
+                kotlin.math.abs(currentSettings.largePaymentThreshold - 2000.0) > 0.001)) {
+            issues += "大额收款过滤设置未同步"
+        }
+        val overlap = !supportsSourceLinks && database.rawQuery("""
+            SELECT 1 FROM customer_payment_source_link
+            GROUP BY platform,dedupe_key HAVING COUNT(*)>1 LIMIT 1
+        """.trimIndent(), null).use { it.moveToFirst() }
+        if (overlap) issues += "重叠账单来源关联尚未同步"
         status.edit().putLong("last_$bookId", System.currentTimeMillis())
             .putInt("uploaded_$bookId", uploaded)
-            .putString("error_$bookId",
-                if (unsyncedCollector) "服务器未支持账单收款人关联同步，请先升级Server V1.0.21" else "")
+            .putString("error_$bookId", issues.joinToString("；"))
             .apply()
         return Result(uploaded, totalDownload)
     }

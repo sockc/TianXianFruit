@@ -38,12 +38,25 @@ class CustomerCollectorStoreAttributionTest {
         storeId = 0L, storeName = "", sourceBatchId = batch
     )
 
-    private val batch = mapOf(1L to "partner-zhang", 2L to "partner-li")
+    private val receiptCollectors = mapOf(1L to "partner-zhang", 2L to "partner-zhang", 3L to "partner-li")
     private val people = mapOf("partner-zhang" to 7L, "partner-li" to 8L)
+
+    @Test fun overlappingExportsWithDifferentCollectorsStayUnassigned() {
+        assertEquals(ReceiptCollectorPolicy.CONFLICT,
+            ReceiptCollectorPolicy.resolve(listOf("partner-zhang", "partner-li")))
+        assertEquals("partner-zhang",
+            ReceiptCollectorPolicy.resolve(listOf("partner-zhang", "partner-zhang", "")))
+        val resolved = CustomerCollectorStoreAttribution.resolve(
+            listOf(payment(1)), listOf(store(10, "九龙公园")),
+            mapOf(1L to ReceiptCollectorPolicy.CONFLICT), people
+        )
+        assertEquals(0L, resolved.rows.single().storeId)
+        assertTrue(resolved.collectorMatchedIds.isEmpty())
+    }
 
     @Test fun oneCollectorAtOneStoreAutomaticallyJoinsHistoricalStore() {
         val result = CustomerCollectorStoreAttribution.resolve(
-            listOf(payment(1)), listOf(store(10, "九龙公园")), batch, people
+            listOf(payment(1)), listOf(store(10, "九龙公园")), receiptCollectors, people
         )
         assertEquals(10L, result.rows.single().storeId)
         assertTrue(result.shared.isEmpty())
@@ -54,7 +67,7 @@ class CustomerCollectorStoreAttributionTest {
         val result = CustomerCollectorStoreAttribution.resolve(
             listOf(payment(1), payment(2)), listOf(
                 store(10, "九龙公园"), store(20, "凰岗村")
-            ), batch, people
+            ), receiptCollectors, people
         )
         assertTrue(result.rows.all { it.storeId == 0L })
         assertEquals(1, result.shared.size)
@@ -70,7 +83,7 @@ class CustomerCollectorStoreAttributionTest {
                 payment(3, batch = 2)), listOf(
                 store(10, "九龙公园", platform = "WECHAT"),
                 store(20, "凰岗村", platform = "ALIPAY")
-            ), batch, people
+            ), receiptCollectors, people
         )
         assertEquals(10L, result.rows[0].storeId)
         assertEquals(20L, result.rows[1].storeId)
@@ -80,8 +93,8 @@ class CustomerCollectorStoreAttributionTest {
 
     @Test fun aDifferentDayAndMissingAccountStayUnmatched() {
         val result = CustomerCollectorStoreAttribution.resolve(
-            listOf(payment(1, date = "2026-10-17"), payment(2, batch = 99)),
-            listOf(store(10, "九龙公园")), batch, people
+            listOf(payment(1, date = "2026-10-17"), payment(99, batch = 99)),
+            listOf(store(10, "九龙公园")), receiptCollectors, people
         )
         assertTrue(result.rows.all { it.storeId == 0L })
         assertTrue(result.shared.isEmpty())
@@ -90,10 +103,10 @@ class CustomerCollectorStoreAttributionTest {
     @Test fun recomputingAfterHistoryChangesSwitchesFromSingleToSharedWithoutBillReimport() {
         val receipts = listOf(payment(1))
         val single = CustomerCollectorStoreAttribution.resolve(
-            receipts, listOf(store(10, "九龙公园")), batch, people
+            receipts, listOf(store(10, "九龙公园")), receiptCollectors, people
         )
         val expanded = CustomerCollectorStoreAttribution.resolve(
-            receipts, listOf(store(10, "九龙公园"), store(20, "凰岗村")), batch, people
+            receipts, listOf(store(10, "九龙公园"), store(20, "凰岗村")), receiptCollectors, people
         )
         assertEquals(10L, single.rows.single().storeId)
         assertEquals(0L, expanded.rows.single().storeId)
@@ -104,7 +117,7 @@ class CustomerCollectorStoreAttributionTest {
         val result = CustomerCollectorStoreAttribution.resolve(
             listOf(payment(1), payment(2)), listOf(
                 store(10, "九龙公园"), store(20, "凰岗村")
-            ), batch, people
+            ), receiptCollectors, people
         )
         val overlaid = CustomerUnifiedStoreAttribution.apply(
             result.rows, mapOf("2026-10-16" to "store-10"),
@@ -120,7 +133,7 @@ class CustomerCollectorStoreAttributionTest {
             listOf(payment(1, date = "2026-10-16"),
                 payment(2, date = "2026-10-17")),
             listOf(store(10, "九龙公园", date = "2026-10-16"),
-                store(20, "凰岗村", date = "2026-10-17")), batch, people
+                store(20, "凰岗村", date = "2026-10-17")), receiptCollectors, people
         )
         assertEquals(listOf(10L, 20L), result.rows.map { it.storeId })
         assertTrue(result.shared.isEmpty())
@@ -132,7 +145,7 @@ class CustomerCollectorStoreAttributionTest {
         val result = CustomerCollectorStoreAttribution.resolve(
             listOf(late),
             listOf(store(10, "九龙公园", date = "2026-10-16")),
-            batch, people,
+            receiptCollectors, people,
             listOf(CustomerTrafficSession("2026-10-16", 10L, "九龙公园",
                 "16:00", "02:00"))
         )
