@@ -63,7 +63,7 @@ private enum class CustomerRecordFilter(val label: String) {
     EXCLUDED("已排除")
 }
 
-private enum class CustomerPaymentPlatform(val label: String) {
+internal enum class CustomerPaymentPlatform(val label: String) {
     ALL("合并"), WECHAT("微信"), ALIPAY("支付宝")
 }
 
@@ -73,7 +73,7 @@ private enum class CustomerTrafficMetric(val label: String) {
     PAYMENTS("笔数")
 }
 
-private enum class CustomerDailyMetric(val label: String) {
+internal enum class CustomerDailyMetric(val label: String) {
     PAYMENTS("付款笔数"),
     AMOUNT("收款金额"),
     AVERAGE("笔均收款")
