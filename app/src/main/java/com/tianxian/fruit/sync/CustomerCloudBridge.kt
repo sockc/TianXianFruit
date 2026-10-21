@@ -50,7 +50,13 @@ internal object CustomerCloudBridge {
 
     private data class Ack(val hash: String, val revision: Long)
     private fun ackMap(db: SQLiteDatabase): Map<Pair<String, String>, Ack> =
-        db.rawQuery("SELECT kind,entity_key,payload_hash,remote_revision FROM customer_cloud_ack", null).use { c ->
+        // Immutable RECEIPT and SOURCE_LINK ACKs can become very large.
+        // Never rebuild that entire historical map on every 180-row upload page
+        // or every 200-event download page.
+        db.rawQuery(
+            "SELECT kind,entity_key,payload_hash,remote_revision FROM customer_cloud_ack " +
+                "WHERE kind NOT IN ('RECEIPT','SOURCE_LINK')", null
+        ).use { c ->
             buildMap {
                 while (c.moveToNext()) {
                     put(c.string("kind") to c.string("entity_key"),
@@ -137,6 +143,11 @@ internal object CustomerCloudBridge {
             FROM customer_payment_transaction p
             LEFT JOIN store s ON s.id=p.store_id
             LEFT JOIN payment_import_batch b ON b.id=p.source_batch_id
+            WHERE NOT EXISTS (
+                SELECT 1 FROM customer_cloud_ack a
+                WHERE a.kind='RECEIPT'
+                  AND a.entity_key=p.platform||'|'||p.dedupe_key
+            )
             ORDER BY p.id
             """.trimIndent(), null
         ).use { c ->
@@ -221,8 +232,13 @@ internal object CustomerCloudBridge {
         if (results.size < limit && includeSourceLinks) {
             db.readableDatabase.rawQuery("""
                 SELECT platform,dedupe_key,file_hash
-                FROM customer_payment_source_link
-                ORDER BY platform,dedupe_key,file_hash
+                FROM customer_payment_source_link l
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM customer_cloud_ack a
+                    WHERE a.kind='SOURCE_LINK'
+                      AND a.entity_key=l.platform||'|'||l.dedupe_key||'|'||l.file_hash
+                )
+                ORDER BY l.platform,l.dedupe_key,l.file_hash
             """.trimIndent(), null).use { c ->
                 while (c.moveToNext() && results.size < limit) {
                     val platform = c.string("platform")
@@ -462,12 +478,21 @@ internal object CustomerCloudBridge {
         } finally { database.endTransaction() }
     }
 
-    data class Result(val uploaded: Int, val downloaded: Int)
+    data class Result(
+        val uploaded: Int,
+        val downloaded: Int,
+        val elapsedMs: Long,
+        val pushBatches: Int,
+        val pullPages: Int
+    )
     fun sync(
         context: Context, db: AppDatabase, bookId: String, identity: String,
         canWrite: Boolean,
         request: (String, String, JSONObject?) -> JSONObject
     ): Result {
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        var pullPages = 0
+        var pushBatches = 0
         val endpoint = "/api/v1/books/$bookId/customer-analytics"
         // Return no false success on an older server: capabilities is mandatory.
         val caps = request("GET", "$endpoint/capabilities", null)
@@ -505,6 +530,7 @@ internal object CustomerCloudBridge {
                     (if (supportsAnalysis) "&include_analysis=true" else "") +
                     (if (supportsSettings) "&include_settings=true" else "") +
                     (if (supportsSourceLinks) "&include_source_links=true" else ""), null)
+                pullPages++
                 val changes = response.getJSONArray("changes")
                 val next = response.getLong("next_cursor")
                 if (next < before || (changes.length() > 0 && next == before)) {
@@ -529,6 +555,7 @@ internal object CustomerCloudBridge {
                     batch.forEach { put(it.json()) }
                 })
                 val response = request("POST", "$endpoint/push", body)
+                pushBatches++
                 val confirmed = response.getJSONArray("items")
                 if (confirmed.length() != batch.size) throw IllegalStateException("服务器账单确认笔数异常")
                 database.beginTransaction()
@@ -580,7 +607,11 @@ internal object CustomerCloudBridge {
             .putInt("uploaded_$bookId", uploaded)
             .putString("error_$bookId", issues.joinToString("；"))
             .apply()
-        return Result(uploaded, totalDownload)
+        return Result(
+            uploaded, totalDownload,
+            android.os.SystemClock.elapsedRealtime() - startedAt,
+            pushBatches, pullPages
+        )
     }
 
     fun syncStatus(context: Context, bookId: String): String {

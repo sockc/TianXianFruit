@@ -1928,6 +1928,7 @@ class CloudSyncManager(
         db: AppDatabase,
         book: LedgerBook
     ): CloudSyncResult {
+        val syncStartedMs = android.os.SystemClock.elapsedRealtime()
         val current =
             requireSession()
 
@@ -2296,6 +2297,7 @@ class CloudSyncManager(
                     "同步完成：上传 $uploadedCount 条，下载 $downloadedCount 条"
             }
 
+        val ledgerElapsedMs = android.os.SystemClock.elapsedRealtime() - syncStartedMs
         // Customer receipts use an isolated, server-versioned API. Errors do
         // not masquerade as full success and never roll back ledger accounting.
         var customerSyncNote = ""
@@ -2323,7 +2325,10 @@ class CloudSyncManager(
             }
             if (customer.isSuccess) {
                 val count = customer.getOrThrow()
-                customerSyncNote = "客流：上传 ${count.uploaded} 条，下载 ${count.downloaded} 条"
+                customerSyncNote = "客流：上传 ${count.uploaded} 条，下载 ${count.downloaded} 条，耗时${count.elapsedMs / 1000}秒"
+                android.util.Log.i("TianXianSync",
+                    "ledgerMs=$ledgerElapsedMs customerMs=${count.elapsedMs} " +
+                        "customerPushBatches=${count.pushBatches} customerPullPages=${count.pullPages}")
             } else {
                 val problem = customer.exceptionOrNull()?.message.orEmpty()
                 val status = if (problem.contains("404") ||
@@ -2335,6 +2340,11 @@ class CloudSyncManager(
                     Context.MODE_PRIVATE
                 ).edit().putString("error_${book.id}", status).apply()
                 customerSyncNote = "客流未同步：$status（本机数据仍保留）"
+                // Generic business tables may have synced, but the whole
+                // operation must not be labelled fully successful.
+                db.setLastCloudSync(db.getLastCloudSyncAt(), customerSyncNote)
+                android.util.Log.w("TianXianSync",
+                    "Customer sync failed; ledgerMs=$ledgerElapsedMs", customer.exceptionOrNull())
             }
         }
         return CloudSyncResult(
