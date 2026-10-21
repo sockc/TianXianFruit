@@ -85,6 +85,31 @@ class PaymentBillParserTest {
     }
 
     @Test
+    fun alipayOfficialIncomeRecognizesMerchantCodeAndExistingPaymentCode() {
+        // Synthetic GB18030 export, matching the actual official column names.
+        // Do not broaden every income/transfer into an operating customer.
+        val csv = """
+            支付宝交易明细
+            交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注
+            2026-10-14 19:12:00,收入,匿名A,***01,经营码交易,收入,87.40,账户余额,交易成功,ali-merchant-1,store-1,
+            2026-10-14 19:14:00,收入,匿名B,***02,收钱码收款,收入,233.60,账户余额,交易成功,ali-qr-1,store-2,
+            2026-10-14 19:15:00,收入,匿名C,***03,朋友转账,收入,500.00,账户余额,交易成功,ali-transfer-1,,
+            2026-10-14 19:16:00,收入,匿名D,***04,经营码交易,支出,18.00,账户余额,交易成功,ali-expense-1,,
+        """.trimIndent()
+        val result = PaymentBillParser.parse(
+            "支付宝交易明细.csv", csv.toByteArray(Charset.forName("GB18030")))
+        assertEquals(PaymentBillPlatform.ALIPAY, result.platform)
+        assertEquals(4, result.totalRows)
+        assertEquals(2, result.acceptedRows)
+        assertEquals(2, result.ignoredRows)
+        assertEquals(321.00, result.transactions.sumOf { it.netAmount }, 0.001)
+        assertEquals(
+            setOf("ali-merchant-1", "ali-qr-1"),
+            result.transactions.map { it.transactionRef }.toSet()
+        )
+    }
+
+    @Test
     fun alipayGb18030BusinessReceiptUsesStableBuyerIdentity() {
         val text =
             """

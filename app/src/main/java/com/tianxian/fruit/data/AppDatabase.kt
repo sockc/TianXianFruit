@@ -15497,47 +15497,169 @@ class AppDatabase(
             }
 
         if (existing != null) {
-            // An old/overlapping file re-import fills unknown parsed coverage,
-            // never rewrites original business rows or duplicates payment data.
-            if (receiptStart.isNotBlank()) {
-                db.update(
-                    "payment_import_batch",
-                    ContentValues().apply {
-                        put("observed_first_date", receiptStart)
-                        put("observed_last_date", receiptEnd)
-                        put("observed_receipt_days", receiptDays)
-                        put("observed_receipt_rows", receiptRows)
-                    },
-                    "id=? AND observed_first_date=''",
-                    arrayOf(existing.id.toString())
-                )
+            // Same file hash is not proof that an older parser recognized every
+            // legitimate receipt. Reparse without deleting any original records:
+            // only previously missed receipts and source links are inserted.
+            if (existing.platform != parsed.platform.name) {
+                throw IllegalArgumentException("同一账单文件的平台识别不一致，请检查文件")
             }
-            val purchaseImport =
-                saveHistoricalPurchaseCandidates(
-                    batchId = existing.id,
+            db.beginTransaction()
+            try {
+                val batchId = existing.id
+                val now = System.currentTimeMillis()
+                var inserted = 0
+                var duplicates = 0
+                var unmatched = 0
+                var orphanRefunds = 0
+            // Insert payment rows before pure refund rows so a refund in the same
+            // exported file can resolve its original QR/business receipt.
+            parsed.transactions
+                .sortedBy { receipt ->
+                    if (receipt.amount > 0.005) 0 else 1
+                }
+                .forEach { receipt ->
+                    val original =
+                        if (
+                            receipt.amount <= 0.005 &&
+                            receipt.refundAmount > 0.005
+                        ) {
+                            findOriginalCustomerPayment(
+                                db = db,
+                                platform = receipt.platform.name,
+                                transactionRef = receipt.transactionRef
+                            )
+                        } else {
+                            null
+                        }
+
+                    // A standalone refund is customer data only when the original
+                    // QR/business receipt is already known. Never infer an
+                    // operating customer from an orphan refund.
+                    if (
+                        receipt.amount <= 0.005 &&
+                        receipt.refundAmount > 0.005 &&
+                        original == null
+                    ) {
+                        orphanRefunds += 1
+                        return@forEach
+                    }
+
+                    val store =
+                        if (original != null) {
+                            original.store
+                        } else {
+                            resolveCustomerPaymentStore(
+                                db = db,
+                                tradeTime = receipt.tradeTime,
+                                businessDate = receipt.businessDate
+                            )
+                        }
+
+                    val customerKey =
+                        original?.customerKey
+                            ?: receipt.customerKey
+                    val customerName =
+                        original?.customerName
+                            ?: receipt.customerName
+                    val identityConfidence =
+                        original?.identityConfidence
+                            ?: receipt.identityConfidence
+
+                    val rowId =
+                        db.insertWithOnConflict(
+                            "customer_payment_transaction",
+                            null,
+                            ContentValues().apply {
+                                put("platform", receipt.platform.name)
+                                put("dedupe_key", receipt.dedupeKey)
+                                put("transaction_ref", receipt.transactionRef)
+                                put("trade_time", receipt.tradeTime)
+                                put("business_date", receipt.businessDate)
+                                put("amount", receipt.amount)
+                                put("refund_amount", receipt.refundAmount)
+                                put("net_amount", receipt.netAmount)
+                                put("customer_key", customerKey)
+                                put("customer_name", customerName)
+                                put("identity_confidence", identityConfidence)
+                                put("transaction_type", receipt.transactionType)
+                                put("trade_status", receipt.tradeStatus)
+                                put("store_id", store?.id ?: 0L)
+                                put("store_name", store?.name.orEmpty())
+                                put("source_batch_id", batchId)
+                                put("source_file", fileName)
+                                put("created_at", now)
+                            },
+                            SQLiteDatabase.CONFLICT_IGNORE
+                        )
+
+                    // Record every export containing this trade, including deduplicated rows.
+                    // This is analytics-only lineage, never an extra customer payment.
+                    db.insertWithOnConflict(
+                        "customer_payment_source_link", null, ContentValues().apply {
+                            put("platform", receipt.platform.name)
+                            put("dedupe_key", receipt.dedupeKey)
+                            put("file_hash", fileHash)
+                        }, SQLiteDatabase.CONFLICT_IGNORE
+                    )
+
+                    if (rowId > 0L) {
+                        inserted += 1
+                        if (store == null) {
+                            unmatched += 1
+                        }
+                    } else {
+                        duplicates += 1
+                    }
+                }
+
+
+                val purchaseImport = saveHistoricalPurchaseCandidates(
+                    batchId = batchId,
                     fileName = existing.fileName,
                     candidates = parsed.purchaseCandidates
                 )
-            return PaymentImportOutcome(
-                batchId = existing.id,
-                platform = existing.platform,
-                fileName = existing.fileName,
-                totalRows = existing.totalRows,
-                acceptedRows = existing.acceptedRows,
-                insertedRows = 0,
-                duplicateRows = existing.acceptedRows,
-                ignoredRows = existing.ignoredRows,
-                refundRows = existing.refundRows,
-                errorRows = existing.errorRows,
-                unmatchedStoreRows = 0,
-                duplicateFile = true,
-                purchaseCandidateRows = parsed.purchaseCandidates.size,
-                purchaseCandidateInsertedRows = purchaseImport.first,
-                purchaseCandidateDuplicateRows = purchaseImport.second,
-                firstReceiptDate = receiptStart,
-                lastReceiptDate = receiptEnd,
-                receiptDays = receiptDays
-            )
+                db.update(
+                    "payment_import_batch",
+                    ContentValues().apply {
+                        // Refresh parser-dependent counts and observed dates.
+                        // Initial import identity/time remain unchanged.
+                        put("accepted_rows", maxOf(existing.acceptedRows, parsed.acceptedRows))
+                        put("ignored_rows", parsed.ignoredRows + orphanRefunds)
+                        put("refund_rows", parsed.refundRows)
+                        put("error_rows", parsed.errorRows)
+                        if (receiptStart.isNotBlank()) {
+                            put("observed_first_date", receiptStart)
+                            put("observed_last_date", receiptEnd)
+                            put("observed_receipt_days", receiptDays)
+                            put("observed_receipt_rows", receiptRows)
+                        }
+                    },
+                    "id=?", arrayOf(batchId.toString())
+                )
+                db.setTransactionSuccessful()
+                return PaymentImportOutcome(
+                    batchId = batchId,
+                    platform = existing.platform,
+                    fileName = existing.fileName,
+                    totalRows = parsed.totalRows,
+                    acceptedRows = parsed.acceptedRows,
+                    insertedRows = inserted,
+                    duplicateRows = duplicates,
+                    ignoredRows = parsed.ignoredRows + orphanRefunds,
+                    refundRows = parsed.refundRows,
+                    errorRows = parsed.errorRows,
+                    unmatchedStoreRows = unmatched,
+                    duplicateFile = true,
+                    purchaseCandidateRows = parsed.purchaseCandidates.size,
+                    purchaseCandidateInsertedRows = purchaseImport.first,
+                    purchaseCandidateDuplicateRows = purchaseImport.second,
+                    firstReceiptDate = receiptStart,
+                    lastReceiptDate = receiptEnd,
+                    receiptDays = receiptDays
+                )
+            } finally {
+                db.endTransaction()
+            }
         }
 
         db.beginTransaction()

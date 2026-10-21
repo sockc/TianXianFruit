@@ -354,6 +354,12 @@ internal object PaymentBillParser {
                         )
                     )
                 } ||
+                // Official Alipay income export represents merchant-code
+                // payments as 商品说明=经营码交易, 交易分类=收入.
+                // Do not broadly classify ordinary income/transfers as sales.
+                (platform == PaymentBillPlatform.ALIPAY &&
+                    product.trim() == "经营码交易" &&
+                    direction.trim() == "收入") ||
                 type
                     .trim()
                     .equals(
