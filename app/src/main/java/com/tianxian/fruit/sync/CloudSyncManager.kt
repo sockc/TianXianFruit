@@ -2325,10 +2325,14 @@ class CloudSyncManager(
             }
             if (customer.isSuccess) {
                 val count = customer.getOrThrow()
-                customerSyncNote = "客流：上传 ${count.uploaded} 条，下载 ${count.downloaded} 条，耗时${count.elapsedMs / 1000}秒"
+                customerSyncNote = "客流：上传 ${count.uploaded} 条，下载 ${count.downloaded} 条，耗时${count.elapsedMs / 1000}秒" +
+                    (if (count.existingBatchMetadata > 0)
+                        "；${count.existingBatchMetadata}份历史账单的批次统计沿用云端旧版本，新增交易照常同步"
+                    else "")
                 android.util.Log.i("TianXianSync",
                     "ledgerMs=$ledgerElapsedMs customerMs=${count.elapsedMs} " +
-                        "customerPushBatches=${count.pushBatches} customerPullPages=${count.pullPages}")
+                        "customerPushBatches=${count.pushBatches} customerPullPages=${count.pullPages} " +
+                        "existingBatchMetadata=${count.existingBatchMetadata}")
             } else {
                 val problem = customer.exceptionOrNull()?.message.orEmpty()
                 val status = if (problem.contains("404") ||

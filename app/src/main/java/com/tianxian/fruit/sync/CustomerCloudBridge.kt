@@ -483,7 +483,8 @@ internal object CustomerCloudBridge {
         val downloaded: Int,
         val elapsedMs: Long,
         val pushBatches: Int,
-        val pullPages: Int
+        val pullPages: Int,
+        val existingBatchMetadata: Int = 0
     )
     fun sync(
         context: Context, db: AppDatabase, bookId: String, identity: String,
@@ -546,6 +547,7 @@ internal object CustomerCloudBridge {
         // Download before upload so an offline device sees server additions.
         pull()
         var uploaded = 0
+        var existingBatchMetadata = 0
         if (canWrite) {
             for (page in 0 until 400) {
                 val batch = pending(context, db, bookId, MAX_BATCH, supportsCollector,
@@ -567,11 +569,39 @@ internal object CustomerCloudBridge {
                             throw IllegalStateException("账单云端响应交易键不一致")
                         }
                         val state = res.optString("status")
-                        if (state !in listOf("accepted", "unchanged", "updated")) {
-                            throw IllegalStateException("账单同步存在未经确认的记录：${item.key}")
+                        val revision = res.optLong("revision", 0L)
+                        when {
+                            state in setOf("accepted", "unchanged", "updated") -> {
+                                if (revision <= 0L) {
+                                    throw IllegalStateException("客流同步服务端版本号无效：${item.kind}")
+                                }
+                                ack(database, item.kind, item.key, item.hash, revision)
+                                uploaded++
+                            }
+                            // The SHA-256 of the SAME source file remains stable, but
+                            // re-importing after parser fixes changes per-file counters
+                            // (accepted_rows / ignored_rows / coverage). Server V1.0.22
+                            // keeps BATCH metadata immutable and responds "conflict".
+                            // Acknowledge only the identity-confirmed BATCH as REMOTE:
+                            // we never claim differing counters match or overwrite
+                            // the original cloud version. Actual RECEIPT conflicts stay
+                            // hard errors, so money/time mismatches cannot be ignored.
+                            CustomerBatchConflictPolicy.existingFileMetadata(
+                                kind = item.kind,
+                                key = item.key,
+                                platform = item.payload.optString("platform"),
+                                fileHash = item.payload.optString("file_hash"),
+                                status = state,
+                                revision = revision
+                            ) -> {
+                                ack(database, item.kind, item.key, "REMOTE", revision)
+                                existingBatchMetadata++
+                            }
+                            else -> throw IllegalStateException(
+                                "客流同步未获确认：${item.kind}|${item.key}；" +
+                                    "服务器状态=${state.ifBlank { "未知" }}（本机数据保留）"
+                            )
                         }
-                        ack(database, item.kind, item.key, item.hash, res.optLong("revision", 1L))
-                        uploaded++
                     }
                     database.setTransactionSuccessful()
                 } finally { database.endTransaction() }
@@ -610,7 +640,7 @@ internal object CustomerCloudBridge {
         return Result(
             uploaded, totalDownload,
             android.os.SystemClock.elapsedRealtime() - startedAt,
-            pushBatches, pullPages
+            pushBatches, pullPages, existingBatchMetadata
         )
     }
 
