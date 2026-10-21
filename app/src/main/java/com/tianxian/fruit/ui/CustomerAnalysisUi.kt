@@ -45,6 +45,7 @@ private enum class CustomerRange(val label: String) {
 
 private enum class CustomerAnalysisTab(val label: String) {
     OVERVIEW("概览"),
+    LOCATION("位置"),
     CUSTOMERS("客户"),
     RECORDS("账单")
 }
@@ -150,6 +151,7 @@ internal fun CustomerAnalysisContent(
     val chromeVisible = true
     var tab by remember { mutableStateOf(CustomerAnalysisTab.OVERVIEW) }
     var customerSection by remember { mutableStateOf(CustomerDetailSection.REPEAT) }
+    var locationMetric by remember { mutableStateOf(CustomerDailyMetric.PAYMENTS) }
     var showRhythmDetails by remember { mutableStateOf(false) }
     var customStart by remember(ledgerId, initialDate) {
         mutableStateOf(runCatching { LocalDate.parse(prefs.getString("custom_start", "") ?: "") }
@@ -907,12 +909,12 @@ internal fun CustomerAnalysisContent(
                     }
 
                 rawRecords.isEmpty() && tab != CustomerAnalysisTab.RECORDS &&
-                    tab != CustomerAnalysisTab.CUSTOMERS ->
+                    tab != CustomerAnalysisTab.CUSTOMERS && tab != CustomerAnalysisTab.LOCATION ->
                     EmptyCustomerAnalysis()
 
                 scopedRawRecords.isEmpty() && sharedForFilters.isEmpty() &&
                     tab != CustomerAnalysisTab.RECORDS &&
-                    tab != CustomerAnalysisTab.CUSTOMERS ->
+                    tab != CustomerAnalysisTab.CUSTOMERS && tab != CustomerAnalysisTab.LOCATION ->
                     SimpleEmpty("当前支付平台、营业位置或收款人没有已导入的收款记录。")
 
                 tab ==
@@ -963,7 +965,7 @@ internal fun CustomerAnalysisContent(
                     }
 
                 allRecords.isEmpty() && sharedForFilters.isEmpty() &&
-                    tab != CustomerAnalysisTab.CUSTOMERS ->
+                    tab != CustomerAnalysisTab.CUSTOMERS && tab != CustomerAnalysisTab.LOCATION ->
                     SimpleEmpty(
                         "当前经营收款都被分析规则排除了，可到“设置”或“收款记录”中调整。"
                     )
@@ -1023,6 +1025,21 @@ internal fun CustomerAnalysisContent(
                                                 CustomerRange.TODAY
                                         }
                                 }
+                            )
+
+                        CustomerAnalysisTab.LOCATION ->
+                            CustomerLocationHistoryContent(
+                                records = allRecords,
+                                sessions = trafficSessions,
+                                stores = storeOptions,
+                                selectedStoreId = selectedStoreId,
+                                onStoreChange = { selectedStoreId = it },
+                                selectedPlatform = selectedPlatform,
+                                onPlatformChange = { selectedPlatform = it },
+                                anchorDate = dayAnchor.toString(),
+                                onDateChange = { dayAnchor = LocalDate.parse(it); range = CustomerRange.TODAY },
+                                metric = locationMetric,
+                                onMetricChange = { locationMetric = it }
                             )
 
                         CustomerAnalysisTab.CUSTOMERS ->
