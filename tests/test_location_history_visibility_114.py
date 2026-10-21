@@ -17,7 +17,7 @@ class LocationHistoryVisibilityTest(unittest.TestCase):
         self.assertIn('LOCATION("位置")', BASE)
         self.assertIn('CustomerLocationHistoryContent(', BASE)
         self.assertIn('逐小时收款 · 双柱对照', LOCATION)
-        self.assertIn('历史均值', LOCATION)
+        self.assertIn('历史同小时均值', LOCATION)
 
 if __name__ == "__main__":
     unittest.main()
