@@ -96,6 +96,11 @@ internal object LocationHistoryComparisonEngine {
     private fun stamp(row: CustomerPaymentRecord): LocalDateTime? =
         runCatching { LocalDateTime.parse(row.tradeTime.replace(" ", "T")) }.getOrNull()
 
+    /**
+     * Compatibility facade. The position page and historical consumers MUST
+     * share the one canonical same-hour/channel baseline calculator. Previously
+     * there were two implementations that could disagree on historical amounts.
+     */
     fun inspect(
         payments: List<CustomerPaymentRecord>,
         sessions: List<CustomerTrafficSession>,
@@ -104,97 +109,65 @@ internal object LocationHistoryComparisonEngine {
         platform: String = "ALL",
         now: LocalDateTime = LocalDateTime.now()
     ): LocationHistoryResult? {
-        if (storeId <= 0) return null
-        val dateValue = runCatching { LocalDate.parse(date) }.getOrNull() ?: return null
-        val shifts = sessions.asSequence().filter { it.storeId == storeId }
-            .distinctBy { it.date }.sortedByDescending { it.date }.toList()
-        val active = shifts.firstOrNull { it.date == date } ?: return null
-        val targetSlots = completeSlots(active, now)
-        val targetHours = targetSlots.map { it.hour }
-        val targetSlotsSet = targetSlots.toSet()
-        val rows = payments.asSequence().filter {
-            it.storeId == storeId && it.netAmount > 0.005 &&
-                (platform == "ALL" || it.platform == platform)
-        }.toList()
-        val byDay = rows.groupBy { it.businessDate }
-        val stampCache = rows.associate { it.id to stamp(it) }
-        fun scoped(day: String, slots: List<LocalDateTime>): List<CustomerPaymentRecord> {
-            val set = slots.toHashSet()
-            return byDay[day].orEmpty().filter { r ->
-                stampCache[r.id]?.truncatedTo(ChronoUnit.HOURS) in set
-            }
+        val report = CustomerLocationHistoryAnalyzer.analyze(
+            payments, sessions, date, storeId, platform, now
+        ) ?: return null
+        val eligible = payments.filter { row ->
+            row.storeId == storeId && row.netAmount > 0.005 &&
+                (platform == "ALL" || row.platform == platform)
         }
-        val current = scoped(date, targetSlots)
-        val sources = current.map { it.platform }.toSet()
-
-        // Comparable shifts must contain every target hour, share its weekday
-        // and have receipts in the same observed payment channels.
-        data class Historical(val date: String, val rows: List<CustomerPaymentRecord>)
-        val comparable = if (targetHours.isEmpty() || current.isEmpty()) emptyList() else shifts
-            .asSequence().filter { s ->
-                s.date <= date &&
-                    runCatching { LocalDate.parse(s.date).dayOfWeek == dateValue.dayOfWeek }
-                        .getOrDefault(false) &&
-                    completeSlots(s, now).map { it.hour }.containsAll(targetHours)
-            }.mapNotNull { s ->
-                val daySlots = completeSlots(s, now).filter { it.hour in targetHours }
-                val observed = scoped(s.date, daySlots)
-                if (observed.isEmpty() || observed.map { it.platform }.toSet() != sources) null
-                else Historical(s.date, observed)
-            }.take(9).toList()
-        val history = comparable.filter { it.date < date }.take(4)
-        val sufficient = history.size >= 3
-        val hourRows = targetSlots.map { slot ->
-            val perHour = current.filter {
-                stampCache[it.id]?.truncatedTo(ChronoUnit.HOURS) == slot
-            }
-            val fromHistory = history.map { h ->
-                h.rows.filter { stampCache[it.id]?.hour == slot.hour }
-            }
-            LocationHourComparison(
-                hour = slot.hour,
-                payments = perHour.size,
-                amount = perHour.sumOf { it.netAmount },
-                historicalPayments = if (sufficient) fromHistory.map { it.size.toDouble() }.average() else null,
-                historicalAmount = if (sufficient) fromHistory.map { h -> h.sumOf { it.netAmount } }.average() else null
-            )
+        val current = eligible.filter { row ->
+            row.businessDate == date && stamp(row)?.hour in report.comparableHours
         }
-        val recent = comparable.take(4)
-        val earlier = comparable.drop(4).take(4)
-        val trend = if (recent.size == 4 && earlier.size == 4) {
-            LocationRecentTrend(
-                recentDates = recent.map { it.date },
-                earlierDates = earlier.map { it.date },
-                recentPayments = recent.map { it.rows.size.toDouble() }.average(),
-                earlierPayments = earlier.map { it.rows.size.toDouble() }.average(),
-                recentAmount = recent.map { d -> d.rows.sumOf { it.netAmount } }.average(),
-                earlierAmount = earlier.map { d -> d.rows.sumOf { it.netAmount } }.average()
-            )
-        } else null
-
-        val operatingDays = shifts.filter { it.date <= date }.take(8).map { s ->
-            val dayRows = scoped(s.date, completeSlots(s, now))
-            LocationComparableDay(s.date, dayRows.size, dayRows.sumOf { it.netAmount })
-        }
+        val fromDay = eligible.groupBy { it.businessDate }
+        val daily = sessions.filter { it.storeId == storeId && it.date <= date }
+            .distinctBy { it.date }.sortedByDescending { it.date }.take(8)
+            .map { shift ->
+                val completed = completeSlots(shift, now)
+                    .toSet()
+                val dayPayments = fromDay[shift.date].orEmpty().filter { row ->
+                    stamp(row)?.truncatedTo(ChronoUnit.HOURS) in completed
+                }
+                LocationComparableDay(
+                    shift.date, dayPayments.size, dayPayments.sumOf { it.netAmount }
+                )
+            }
+        val period = report.period
+        val trend = if (period.sufficient) LocationRecentTrend(
+            recentDates = period.recent.map { it.date },
+            earlierDates = period.earlier.map { it.date },
+            recentPayments = period.recentDailyCount!!,
+            earlierPayments = period.earlierDailyCount!!,
+            recentAmount = period.recentDailyAmount!!,
+            earlierAmount = period.earlierDailyAmount!!
+        ) else null
+        val sources = report.current.sources
         val coverage = when {
-            current.isEmpty() -> "本日无已归属收款，无法判断是零客流还是账单未导入"
+            !report.current.observed ->
+                "本日无已归属收款，无法判断是零客流还是账单未导入"
             platform == "ALL" && sources.size == 1 ->
                 "仅观察到${if ("WECHAT" in sources) "微信" else "支付宝"}；另一渠道是否完整未知"
             else -> "已观察到收款记录，导出账单的完整性尚未核验"
         }
         return LocationHistoryResult(
             date = date,
-            hourRows = hourRows,
-            currentPayments = current.size,
-            currentAmount = current.sumOf { it.netAmount },
+            hourRows = report.hours.map { hour ->
+                LocationHourComparison(
+                    hour.hour, hour.count, hour.amount,
+                    hour.historicCount, hour.historicAmount
+                )
+            },
+            currentPayments = report.current.count,
+            currentAmount = report.current.amount,
             currentRecords = current,
-            historicDates = history.map { it.date },
-            baselinePayments = if (sufficient) history.map { it.rows.size.toDouble() }.average() else null,
-            baselineAmount = if (sufficient) history.map { it.rows.sumOf { r -> r.netAmount } }.average() else null,
+            historicDates = report.historicDays.map { it.date },
+            baselinePayments = report.historicCount,
+            baselineAmount = report.historicAmount,
             recentTrend = trend,
-            operatingDays = operatingDays,
+            operatingDays = daily,
             observedSources = sources,
             coverageNote = coverage
         )
     }
+
 }

@@ -4,6 +4,7 @@ from pathlib import Path
 R=Path(__file__).resolve().parents[1]
 MODEL=(R/"app/src/main/java/com/tianxian/fruit/data/CustomerLocationHistoryAnalysis.kt").read_text()
 DEEP=(R/"app/src/main/java/com/tianxian/fruit/data/CustomerTrafficDeepDive.kt").read_text()
+LEGACY=(R/"app/src/main/java/com/tianxian/fruit/data/LocationHistoryComparison.kt").read_text()
 UI=(R/"app/src/main/java/com/tianxian/fruit/ui/CustomerLocationHistoryUi.kt").read_text()
 PARENT=(R/"app/src/main/java/com/tianxian/fruit/ui/CustomerAnalysisUi.kt").read_text()
 NOTES=(R/"RELEASE_NOTES.md").read_text()
@@ -15,6 +16,7 @@ class LocationHistory115Test(unittest.TestCase):
         self.assertIn("it.storeId == storeId",MODEL)
         self.assertIn("internal fun finishedHours(",DEEP)
         self.assertIn("maxHistoricDays.coerceIn(1, 30)",DEEP)
+        self.assertIn("CustomerLocationHistoryAnalyzer.analyze(", LEGACY)
     def test_groups_and_completeness(self):
         self.assertIn("recent.size == 4 && earlier.size == 4",MODEL)
         self.assertIn("recentDailyAmount",MODEL)
