@@ -39,7 +39,7 @@ class LocationHistory115Test(unittest.TestCase):
 
     def test_release_notes_no_history(self):
         build=(R/"app/build.gradle").read_text()
-        version=re.search(r'versionName\\s+"([^"]+)"',build).group(1)
+        version=re.search(r'versionName\s+"([^"]+)"',build).group(1)
         self.assertIn("V"+version,NOTES)
         self.assertTrue(NOTES.startswith("# 天鲜账本 V"+version))
         self.assertNotIn("V1.4.7.116",NOTES)
