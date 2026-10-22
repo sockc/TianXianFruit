@@ -320,37 +320,52 @@ internal fun CustomerLocationHistoryContent(
         }
         item {
             val current = report?.current
-            val amountBaseline = report?.historicAmount
-            val countBaseline = report?.historicCount
-            val avgBaseline = report?.historicAveragePayment
+            val manual = customReport
+            val amountNow = manual?.currentAmount ?: current?.takeIf { it.observed }?.amount
+            val countNow = manual?.currentCount ?: current?.takeIf { it.observed }?.count?.toDouble()
+            val avgNow = manual?.currentAverage ?: current?.takeIf { it.observed }?.average
+            val amountBaseline = if (manual != null) manual.referenceAmount else report?.historicAmount
+            val countBaseline = if (manual != null) manual.referenceCount else report?.historicCount
+            val avgBaseline = if (manual != null) manual.referenceAverage else report?.historicAveragePayment
+            val hasConfidence = manual?.comparable ?: (report?.baselineSufficient == true)
             Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                    Text("本次 vs 历史同期", fontWeight = FontWeight.Bold)
+                    Text(if (manual == null) "本次 vs 历史同期" else "本期 vs 自定义对比期",
+                        fontWeight = FontWeight.Bold)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        LocationComparisonMetric("电子收款",
-                            current?.takeIf { it.observed }?.let { locationMoney(it.amount) } ?: "待补账单",
+                        LocationComparisonMetric(
+                            if (manual?.isPerDay == true) "日均收款" else "电子收款",
+                            amountNow?.let(::locationMoney) ?: "待补账单",
                             baselineText(amountBaseline, true),
-                            current?.takeIf { it.observed }?.let { locationPercent(it.amount, amountBaseline) } ?: "—")
-                        LocationComparisonMetric("付款笔数",
-                            current?.takeIf { it.observed }?.let { "${it.count}笔" } ?: "—",
+                            if (hasConfidence && amountNow != null)
+                                locationPercent(amountNow, amountBaseline) else "—")
+                        LocationComparisonMetric(
+                            if (manual?.isPerDay == true) "日均笔数" else "付款笔数",
+                            countNow?.let { locationNum(it) + "笔" } ?: "—",
                             baselineText(countBaseline, false),
-                            current?.takeIf { it.observed }?.let {
-                                locationPercent(it.count.toDouble(), countBaseline)
-                            } ?: "—")
+                            if (hasConfidence && countNow != null)
+                                locationPercent(countNow, countBaseline) else "—")
                         LocationComparisonMetric("笔均收款",
-                            current?.takeIf { it.observed }?.let { locationMoney(it.average) } ?: "—",
+                            avgNow?.let(::locationMoney) ?: "—",
                             baselineText(avgBaseline, true),
-                            current?.takeIf { it.observed }?.let {
-                                locationPercent(it.average, avgBaseline)
-                            } ?: "—")
+                            if (hasConfidence && avgNow != null)
+                                locationPercent(avgNow, avgBaseline) else "—")
                     }
-                    Text("同口径：本次与历史均仅计${report?.comparableHours?.size ?: 0}个相同的完整小时；" +
-                        "可比历史${report?.historicDays?.size ?: 0}天。",
-                        style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    if (manual != null) {
+                        Text("同口径：共同完整营业小时${manual.comparableHours.size}个；" +
+                            "本期有流水${manual.currentObserved}/${manual.currentDates.size}个营业日，" +
+                            "对比期${manual.referenceObserved}/${manual.referenceDates.size}个营业日。" +
+                            "不完整或渠道不同则不计算变化百分比。",
+                            style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    } else {
+                        Text("同口径：本次与历史均仅计${report?.comparableHours?.size ?: 0}个相同的完整小时；" +
+                            "可比历史${report?.historicDays?.size ?: 0}天。",
+                            style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    }
                 }
             }
         }
-        item {
+        if (customReport == null) item {
             val period = report?.period
             Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -391,7 +406,8 @@ internal fun CustomerLocationHistoryContent(
                         FilterChip(selected = hourlyAmount, onClick = { hourlyAmount = true },
                             label = { Text("收款金额") })
                     }
-                    Text("绿色：本次 · 灰色：历史同小时均值 · 可点击小时看明细",
+                    Text(if (customReport == null) "绿色：本次 · 灰色：历史同小时均值 · 可点击小时看明细"
+                        else "绿色：本期日均 · 灰色：对比期日均 · 点击小时查看交易",
                         style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                     if (chartHours.isEmpty())
                         Text("该营业日暂无已完成小时数据，不能画成零客流。",
@@ -399,14 +415,16 @@ internal fun CustomerLocationHistoryContent(
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                         verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         chartHours.forEach { h ->
-                            val actual = if (hourlyAmount) h.amount else h.count.toDouble()
+                            val actual = if (hourlyAmount) h.amount else h.count
                             val previous = if (hourlyAmount) h.historicAmount else h.historicCount
                             Column(Modifier.width(54.dp).clickable {
                                 selectedHour = h.hour
                                 expandedHour = true
                             }, horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(if (hourlyAmount) String.format(Locale.CHINA, "%.0f", actual)
-                                     else h.count.toString(),
+                                     else if (customReport == null)
+                                          String.format(Locale.CHINA, "%.0f", h.count)
+                                      else locationNum(h.count),
                                     color = if (highlightedHour?.hour == h.hour) locationGreen else Color.DarkGray,
                                     style = MaterialTheme.typography.labelSmall)
                                 Row(Modifier.height(96.dp), verticalAlignment = Alignment.Bottom,
@@ -427,7 +445,7 @@ internal fun CustomerLocationHistoryContent(
                         }
                     }
                     highlightedHour?.let { h ->
-                        val actual = if (hourlyAmount) h.amount else h.count.toDouble()
+                        val actual = if (hourlyAmount) h.amount else h.count
                         val previous = if (hourlyAmount) h.historicAmount else h.historicCount
                         HorizontalDivider()
                         Text("${h.hour}:00–${h.hour}:59 · 本次${metricText(actual, hourlyAmount)} · " +
@@ -454,13 +472,24 @@ internal fun CustomerLocationHistoryContent(
             }
         }
         item {
-            val declining = report?.biggestChanges(hourlyAmount, true).orEmpty()
-            val growing = report?.biggestChanges(hourlyAmount, false).orEmpty()
+            val ranked = if (customReport == null) {
+                if (report?.baselineSufficient == true) chartHours else emptyList()
+            } else if (customReport.comparable) chartHours else emptyList()
+            val candidateHours = ranked.filter { hour ->
+                (if (hourlyAmount) hour.historicAmount else hour.historicCount)
+                    ?.let { it >= (if (hourlyAmount) 50.0 else 5.0) } == true
+            }
+            val declining = candidateHours.filter { (it.delta(hourlyAmount) ?: 0.0) < -0.005 }
+                .sortedBy { it.delta(hourlyAmount) }.take(3)
+            val growing = candidateHours.filter { (it.delta(hourlyAmount) ?: 0.0) > 0.005 }
+                .sortedByDescending { it.delta(hourlyAmount) }.take(3)
             Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("小时变化排行", fontWeight = FontWeight.Bold)
-                    if (report?.baselineSufficient != true)
-                        Text("历史可比样本至少3天后，才统计小时升降排行。",
+                    if (ranked.isEmpty())
+                        Text(if (customReport == null)
+                            "历史可比样本至少3天后，才统计小时升降排行。"
+                            else "两期数据完整且渠道一致后，才统计小时升降排行。",
                             color = locationOrange, style = MaterialTheme.typography.labelSmall)
                     else if (declining.isEmpty() && growing.isEmpty())
                         Text("无达到分析门槛的明显小时变化。",
@@ -472,7 +501,7 @@ internal fun CustomerLocationHistoryContent(
                                     fontWeight = FontWeight.SemiBold,
                                     color = if (label == "下降最多") locationRed else locationGreen)
                                 rows.forEach { row ->
-                                    val actual = if (hourlyAmount) row.amount else row.count.toDouble()
+                                    val actual = if (hourlyAmount) row.amount else row.count
                                     val historic = if (hourlyAmount) row.historicAmount else row.historicCount
                                     Row(Modifier.fillMaxWidth().clickable {
                                         selectedHour = row.hour
