@@ -37,7 +37,7 @@ class LocationHistory115Test(unittest.TestCase):
         self.assertNotIn("CustomerAnalysisTab.LOCATION ->\\n                            CustomerLocationHistoryContent(\\n                                records = allRecords",PARENT)
 
     def test_release_notes_no_history(self):
-        self.assertIn("V1.4.7.115",NOTES)
+        self.assertIn("V1.4.7.116",NOTES)
         self.assertNotIn("V1.4.7.114",NOTES)
         self.assertLess(len(NOTES),3000)
 if __name__=="__main__":
