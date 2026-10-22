@@ -573,4 +573,36 @@ internal fun CustomerLocationHistoryContent(
             }
         }
     }
+    editingCompareDate?.let { target ->
+        val initial = when (target) {
+            "reference" -> referenceDate
+            "currentStart" -> currentStart
+            "currentEnd" -> currentEnd
+            "referenceStart" -> referenceStart
+            else -> referenceEnd
+        }
+        val initialDay = runCatching { LocalDate.parse(initial) }.getOrDefault(LocalDate.now())
+        val markedDates = storeSessions.mapNotNull {
+            runCatching { LocalDate.parse(it.date) }.getOrNull()
+        }.toSet()
+        CustomerCalendarDialog(
+            initialDate = initialDay,
+            initialChoice = CustomerCalendarSelection.day(initialDay),
+            onDismiss = { editingCompareDate = null },
+            onConfirm = { choice ->
+                when (target) {
+                    "reference" -> referenceDate = choice.start.toString()
+                    "currentStart" -> currentStart = choice.start.toString()
+                    "currentEnd" -> currentEnd = choice.start.toString()
+                    "referenceStart" -> referenceStart = choice.start.toString()
+                    "referenceEnd" -> referenceEnd = choice.start.toString()
+                }
+                editingCompareDate = null
+            },
+            onQuickRange = {},
+            businessDates = markedDates,
+            singleDayOnly = true,
+            onlyBusinessDays = target == "reference" && businessDayOnly
+        )
+    }
 }
