@@ -16,6 +16,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.tianxian.fruit.data.*
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.util.Locale
 
@@ -28,6 +29,15 @@ private fun locationPercent(now: Double, past: Double?): String =
     if (past == null || past <= 0.001) "—"
     else String.format(Locale.CHINA, "%+.1f%%", (now / past - 1) * 100)
 private fun locationNum(v: Double): String = String.format(Locale.CHINA, "%.1f", v)
+
+private data class LocationShownHour(
+    val hour: Int, val count: Double, val amount: Double,
+    val historicCount: Double?, val historicAmount: Double?
+) {
+    fun delta(amountMetric: Boolean): Double? =
+        if (amountMetric) historicAmount?.let { amount - it }
+        else historicCount?.let { count - it }
+}
 
 @Composable
 private fun RowScope.LocationComparisonMetric(
@@ -62,11 +72,12 @@ internal fun CustomerLocationHistoryContent(
     onPlatformChange: (CustomerPaymentPlatform) -> Unit,
     anchorDate: String,
     onDateChange: (String) -> Unit,
+    businessDayOnly: Boolean,
+    onBusinessDayOnlyChange: (Boolean) -> Unit,
     metric: CustomerDailyMetric,
     onMetricChange: (CustomerDailyMetric) -> Unit
 ) {
-    var chosen by remember { mutableLongStateOf(0L) }
-    val storeId = selectedStoreId.takeIf { it > 0 } ?: chosen.takeIf { it > 0 }
+    val storeId = selectedStoreId.takeIf { it > 0 }
         ?: stores.firstOrNull { it.first > 0 }?.first ?: 0L
     val storeName = stores.firstOrNull { it.first == storeId }?.second ?: "暂无位置"
     val ownRows = remember(records, storeId, selectedPlatform) {
@@ -79,9 +90,29 @@ internal fun CustomerLocationHistoryContent(
             .sortedByDescending { it.date }
     }
     val byDay = remember(ownRows) { ownRows.groupBy { it.businessDate } }
-    val selectedDate = if (storeSessions.any { it.date == anchorDate }) anchorDate
-        else storeSessions.firstOrNull()?.date ?: anchorDate
-    val selectedIndex = storeSessions.indexOfFirst { it.date == selectedDate }
+    // A selected non-operating date must stay selected; do not silently jump.
+    val selectedDate = anchorDate
+    val previousSession = storeSessions.firstOrNull { it.date < selectedDate }
+    val nextSession = storeSessions.lastOrNull { it.date > selectedDate }
+    var compareMode by remember(storeId) { mutableStateOf(LocationCompareMode.SMART) }
+    var referenceDate by remember(storeId) {
+        mutableStateOf(storeSessions.firstOrNull { it.date < selectedDate }?.date ?: selectedDate)
+    }
+    var currentStart by remember(storeId) {
+        mutableStateOf(runCatching { LocalDate.parse(selectedDate).minusDays(7).toString() }
+            .getOrDefault(selectedDate))
+    }
+    var currentEnd by remember(storeId) { mutableStateOf(selectedDate) }
+    var referenceStart by remember(storeId) {
+        mutableStateOf(runCatching { LocalDate.parse(selectedDate).minusDays(14).toString() }
+            .getOrDefault(selectedDate))
+    }
+    var referenceEnd by remember(storeId) {
+        mutableStateOf(runCatching { LocalDate.parse(selectedDate).minusDays(8).toString() }
+            .getOrDefault(selectedDate))
+    }
+    var comparisonCount by remember(storeId) { mutableIntStateOf(4) }
+    var editingCompareDate by remember { mutableStateOf<String?>(null) }
     val sharedToday = remember(sharedGroups, selectedDate, storeId, selectedPlatform) {
         sharedGroups.filter { group ->
             group.date == selectedDate && storeId in group.storeIds &&
@@ -94,6 +125,16 @@ internal fun CustomerLocationHistoryContent(
             ownRows, sessions, selectedDate, storeId, selectedPlatform.name
         )
     }
+    val customReport = remember(ownRows, sessions, storeId, selectedDate,
+        selectedPlatform, compareMode, referenceDate, currentStart, currentEnd,
+        referenceStart, referenceEnd, comparisonCount) {
+        if (compareMode == LocationCompareMode.SMART) null
+        else CustomerLocationManualAnalyzer.analyze(ownRows, sessions, storeId,
+            selectedPlatform.name, LocationManualRequest(compareMode, selectedDate,
+                referenceDate, minOf(currentStart, currentEnd), maxOf(currentStart, currentEnd),
+                minOf(referenceStart, referenceEnd), maxOf(referenceStart, referenceEnd),
+                comparisonCount))
+    }
     var hourlyAmount by remember { mutableStateOf(false) }
     var selectedHour by remember(storeId, selectedDate) { mutableIntStateOf(19) }
     var expandedHour by remember(storeId, selectedDate) { mutableStateOf(false) }
@@ -101,7 +142,7 @@ internal fun CustomerLocationHistoryContent(
     // Trend bars use only the actually completed selling hours for each day.
     // Different opening hours are visible as observed figures but do NOT enter
     // the historical comparison without matching the reference hour window.
-    val recentDays = storeSessions.take(8).reversed()
+    val recentDays = storeSessions.filter { it.date <= selectedDate }.take(8).reversed()
     val recentObservations = remember(ownRows, recentDays) {
         recentDays.associate { day ->
             val hours = CustomerTrafficDeepDive.finishedHours(day, LocalDateTime.now()).toSet()
@@ -122,17 +163,27 @@ internal fun CustomerLocationHistoryContent(
     fun baselineText(value: Double?, isAmount: Boolean): String =
         value?.let { "历史" + metricText(it, isAmount) } ?: "历史不足"
 
-    val chartHours = report?.hours.orEmpty()
+    val chartHours: List<LocationShownHour> = if (customReport != null)
+        customReport.hours.map { hour ->
+            LocationShownHour(hour.hour, hour.currentCount, hour.currentAmount,
+                hour.referenceCount.takeIf { customReport.comparable },
+                hour.referenceAmount.takeIf { customReport.comparable })
+        }
+    else report?.hours.orEmpty().map { hour ->
+        LocationShownHour(hour.hour, hour.count.toDouble(), hour.amount,
+            hour.historicCount, hour.historicAmount)
+    }
     val chartMax = chartHours.maxOfOrNull { item ->
         maxOf(if (hourlyAmount) item.amount else item.count.toDouble(),
             if (hourlyAmount) item.historicAmount ?: 0.0 else item.historicCount ?: 0.0)
     }?.coerceAtLeast(1.0) ?: 1.0
     val highlightedHour = chartHours.firstOrNull { it.hour == selectedHour }
         ?: chartHours.maxByOrNull { it.count }
-    val detailRows = remember(ownRows, selectedDate, highlightedHour?.hour, report) {
-        if (report == null || highlightedHour == null) emptyList()
+    val detailDates = customReport?.currentDates?.toSet() ?: setOf(selectedDate)
+    val detailRows = remember(ownRows, detailDates, highlightedHour?.hour, report, customReport) {
+        if ((report == null && customReport == null) || highlightedHour == null) emptyList()
         else ownRows.filter {
-            it.businessDate == selectedDate &&
+            it.businessDate in detailDates &&
                 it.tradeTime.drop(11).take(2).toIntOrNull() == highlightedHour.hour
         }.sortedByDescending { it.tradeTime }
     }
@@ -142,33 +193,100 @@ internal fun CustomerLocationHistoryContent(
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("位置历史对比", fontWeight = FontWeight.Bold)
-                    Row(Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        stores.filter { it.first > 0 }.forEach { (id, name) ->
-                            FilterChip(selected = id == storeId, onClick = {
-                                chosen = id
-                                onStoreChange(id)
-                            }, label = { Text(name, maxLines = 1) })
+                    Row(Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("位置历史对比", fontWeight = FontWeight.Bold)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("仅看营业日", style = MaterialTheme.typography.labelSmall)
+                            Switch(checked = businessDayOnly, onCheckedChange = onBusinessDayOnlyChange,
+                                modifier = Modifier.height(28.dp))
                         }
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        CustomerPaymentPlatform.entries.forEach { choice ->
-                            FilterChip(selected = selectedPlatform == choice,
-                                onClick = { onPlatformChange(choice) },
-                                label = { Text(choice.label) })
-                        }
-                    }
-                    Text("$storeName · $selectedDate · 同星期、相同已结束营业小时",
+                    Text("$storeName · $selectedDate",
                         color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(selected = compareMode == LocationCompareMode.SMART,
+                            onClick = { compareMode = LocationCompareMode.SMART },
+                            label = { Text("智能对比") })
+                        FilterChip(selected = compareMode != LocationCompareMode.SMART,
+                            onClick = { if (compareMode == LocationCompareMode.SMART)
+                                compareMode = LocationCompareMode.DAY },
+                            label = { Text("自定义对比") })
+                    }
+                    if (compareMode != LocationCompareMode.SMART) {
+                        Row(Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                            listOf(LocationCompareMode.DAY, LocationCompareMode.RANGE,
+                                LocationCompareMode.SESSIONS).forEach { mode ->
+                                FilterChip(selected = compareMode == mode,
+                                    onClick = { compareMode = mode },
+                                    label = { Text(mode.label) })
+                            }
+                        }
+                        when (compareMode) {
+                            LocationCompareMode.DAY -> {
+                                Text("本期：$selectedDate（顶部日期可左右滑动）",
+                                    style = MaterialTheme.typography.labelSmall)
+                                TextButton(onClick = { editingCompareDate = "reference" }) {
+                                    Text("对比日：$referenceDate ▾")
+                                }
+                            }
+                            LocationCompareMode.RANGE -> {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement =
+                                    Arrangement.spacedBy(2.dp)) {
+                                    TextButton(onClick = { editingCompareDate = "currentStart" },
+                                        modifier = Modifier.weight(1f),
+                                        contentPadding = PaddingValues(1.dp)) {
+                                        Text("本期始 " + currentStart.drop(5),
+                                            style = MaterialTheme.typography.labelSmall)
+                                    }
+                                    TextButton(onClick = { editingCompareDate = "currentEnd" },
+                                        modifier = Modifier.weight(1f),
+                                        contentPadding = PaddingValues(1.dp)) {
+                                        Text("止 " + currentEnd.drop(5),
+                                            style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement =
+                                    Arrangement.spacedBy(2.dp)) {
+                                    TextButton(onClick = { editingCompareDate = "referenceStart" },
+                                        modifier = Modifier.weight(1f),
+                                        contentPadding = PaddingValues(1.dp)) {
+                                        Text("对比始 " + referenceStart.drop(5),
+                                            style = MaterialTheme.typography.labelSmall)
+                                    }
+                                    TextButton(onClick = { editingCompareDate = "referenceEnd" },
+                                        modifier = Modifier.weight(1f),
+                                        contentPadding = PaddingValues(1.dp)) {
+                                        Text("止 " + referenceEnd.drop(5),
+                                            style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
+                            LocationCompareMode.SESSIONS -> {
+                                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                    listOf(4, 7, 10).forEach { count ->
+                                        FilterChip(selected = comparisonCount == count,
+                                            onClick = { comparisonCount = count },
+                                            label = { Text("前后各${count}次") })
+                                    }
+                                }
+                                Text("截至$selectedDate，最近营业次数与此前相同次数对比",
+                                    style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                            }
+                            else -> Unit
+                        }
+                        Text("两期仅比较相同完整营业小时；有缺失账单不推断为零。",
+                            style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        TextButton(enabled = selectedIndex >= 0 &&
-                            selectedIndex < storeSessions.lastIndex,
-                            onClick = { onDateChange(storeSessions[selectedIndex + 1].date) }) {
+                        TextButton(enabled = previousSession != null,
+                            onClick = { previousSession?.let { onDateChange(it.date) } }) {
                             Text("‹ 上次营业")
                         }
-                        TextButton(enabled = selectedIndex > 0,
-                            onClick = { onDateChange(storeSessions[selectedIndex - 1].date) }) {
+                        TextButton(enabled = nextSession != null,
+                            onClick = { nextSession?.let { onDateChange(it.date) } }) {
                             Text("下次营业 ›")
                         }
                     }
@@ -180,8 +298,15 @@ internal fun CustomerLocationHistoryContent(
                             "；已单独列示，不计入该位置的历史比较。",
                             color = locationOrange, style = MaterialTheme.typography.labelSmall)
                     }
-                    if (report == null) {
-                        Text("没有完整的正式营业小时；暂无可靠的历史同期对比。",
+                    if (customReport != null) {
+                        customReport.warnings.forEach { note ->
+                            Text(note, color = locationOrange,
+                                style = MaterialTheme.typography.labelSmall)
+                        }
+                    } else if (report == null) {
+                        Text(if (storeSessions.none { it.date == selectedDate })
+                            "该位置当天没有营业记录，可在月历选有圆点的日期。"
+                            else "没有完整的正式营业小时；暂无可靠的历史同期对比。",
                             color = locationOrange, style = MaterialTheme.typography.labelSmall)
                     } else {
                         report.warnings.filterNot { it.startsWith("近期/过去") }.forEach { note ->
