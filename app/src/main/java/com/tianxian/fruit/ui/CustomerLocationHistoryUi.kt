@@ -29,6 +29,7 @@ private fun percent(now: Double, past: Double): String =
 internal fun CustomerLocationHistoryContent(
     records: List<CustomerPaymentRecord>,
     sessions: List<CustomerTrafficSession>,
+    sharedGroups: List<SharedCollectorTraffic>,
     stores: List<Pair<Long, String>>,
     selectedStoreId: Long,
     onStoreChange: (Long) -> Unit,
@@ -59,32 +60,41 @@ internal fun CustomerLocationHistoryContent(
     }
     val selectedIndex = days.indexOfFirst { it.date == selectedDate }
     val compare = remember(eligible, sessions, selectedDate, storeId, selectedPlatform) {
-        CustomerTrafficDeepDive.compare(eligible, sessions, selectedDate,
-            selectedPlatform.name, storeId).firstOrNull()
+        LocationHistoryComparisonEngine.inspect(
+            eligible, sessions, storeId, selectedDate, selectedPlatform.name
+        )
+    }
+    val sharedThisDate = remember(sharedGroups, storeId, selectedDate, selectedPlatform) {
+        sharedGroups.filter { group ->
+            group.date == selectedDate && storeId in group.storeIds &&
+                (selectedPlatform == CustomerPaymentPlatform.ALL ||
+                    group.platform == selectedPlatform.name)
+        }
     }
     val historicDays = compare?.historicDates.orEmpty()
-    val currentRows = datesWithPayments[selectedDate].orEmpty()
-    val historicRows = historicDays.flatMap { datesWithPayments[it].orEmpty() }
-    val enough = compare?.sampleSufficient == true
-    val todayCount = currentRows.size.toDouble()
-    val todayAmount = currentRows.sumOf { it.netAmount }
-    val historicalCount = if (enough) historicDays.map { datesWithPayments[it].orEmpty().size.toDouble() }.average() else null
-    val historicalAmount = if (enough) historicDays.map { date ->
-        datesWithPayments[date].orEmpty().sumOf { it.netAmount }
-    }.average() else null
+    val currentRows = compare?.currentRecords.orEmpty()
+    val enough = compare?.sufficient == true
+    val todayCount = compare?.currentPayments?.toDouble() ?: 0.0
+    val todayAmount = compare?.currentAmount ?: 0.0
+    val historicalCount = compare?.baselinePayments
+    val historicalAmount = compare?.baselineAmount
+    val trend = compare?.recentTrend
     var hourlyAmount by remember { mutableStateOf(false) }
-    var selectedHour by remember(storeId, selectedDate) { mutableIntStateOf(19) }
-    var showDetails by remember { mutableStateOf(false) }
-    val hours = compare?.hourRows?.map { it.hour }.orEmpty()
-    val rowsByHour = currentRows.groupBy { it.tradeTime.drop(11).take(2).toIntOrNull() }
-    val historicalByDayHour = historicDays.associateWith { date ->
-        datesWithPayments[date].orEmpty().groupBy { it.tradeTime.drop(11).take(2).toIntOrNull() }
+    var selectedHour by remember(storeId, selectedDate) {
+        mutableIntStateOf(compare?.hourRows?.maxByOrNull { it.payments }?.hour ?: 19)
     }
-    fun now(hour: Int): Double = rowsByHour[hour].orEmpty().let { if (hourlyAmount) it.sumOf { r -> r.netAmount } else it.size.toDouble() }
-    fun before(hour: Int): Double? = if (!enough) null else historicDays.map { date ->
-        historicalByDayHour[date]?.get(hour).orEmpty().let { if (hourlyAmount) it.sumOf { r -> r.netAmount } else it.size.toDouble() }
-    }.average()
-    val max = hours.maxOfOrNull { maxOf(now(it), before(it) ?: 0.0) }?.coerceAtLeast(1.0) ?: 1.0
+    var showDetails by remember(storeId, selectedDate) { mutableStateOf(false) }
+    val hours = compare?.hourRows?.map { it.hour }.orEmpty()
+    val hourRows = compare?.hourRows?.associateBy { it.hour }.orEmpty()
+    val rowsByHour = currentRows.groupBy { it.tradeTime.drop(11).take(2).toIntOrNull() }
+    fun now(hour: Int): Double = hourRows[hour]?.let {
+        if (hourlyAmount) it.amount else it.payments.toDouble()
+    } ?: 0.0
+    fun before(hour: Int): Double? = hourRows[hour]?.let {
+        if (hourlyAmount) it.historicalAmount else it.historicalPayments
+    }
+    val max = hours.maxOfOrNull { maxOf(now(it), before(it) ?: 0.0) }
+        ?.coerceAtLeast(1.0) ?: 1.0
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -115,15 +125,19 @@ internal fun CustomerLocationHistoryContent(
                     }
                     if (!enough) Text("可比历史仅${historicDays.size}天（至少3天）；不显示未经验证的升降百分比。",
                         color = Color(0xFF986200), style = MaterialTheme.typography.labelSmall)
-                    if (currentRows.isEmpty()) Text("本日未找到可归属账单；不代表实际零收款。",
+                    Text(compare?.coverageNote ?: "该日期暂无有效营业时段，不能按零客流处理。",
                         color = Color(0xFF986200), style = MaterialTheme.typography.labelSmall)
+                    if (sharedThisDate.isNotEmpty()) {
+                        Text("另有${sharedThisDate.size}组跨位置共享收款，未分摊给该摊位；上方金额仅为独立归属记录。",
+                            color = Color(0xFF986200), style = MaterialTheme.typography.labelSmall)
+                    }
                 }
             }
         }
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("本次 vs 历史同期", fontWeight = FontWeight.Bold)
+                    Text("本次 vs 历史同期 · 相同已完成小时", fontWeight = FontWeight.Bold)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                         @Composable fun RowScope.Summary(label: String, value: String, baseline: String, change: String) {
                             Column(Modifier.weight(1f)) {
@@ -146,8 +160,41 @@ internal fun CustomerLocationHistoryContent(
                             pastAvg?.let { "历史${amount(it)}" } ?: "历史不足",
                             pastAvg?.let { percent(avg,it) } ?: "—")
                     }
-                    Text("仅计独立归属到本位置的电子收款；共享账号交易不分摊。付款笔数不等于独立顾客人数。",
+                    Text("总额和小时图均按同一组已完成营业小时统计；共享账号不分摊，付款笔数不等于顾客人数。",
                         style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                }
+            }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                Column(Modifier.fillMaxWidth().padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Text("近期4次 vs 此前4次 · 同星期同小时", fontWeight = FontWeight.Bold)
+                    if (trend == null) {
+                        Text("尚不足8个有可比账单的营业日，暂不计算近期升降；不把缺失日当作0。",
+                            color = Color(0xFF986200), style = MaterialTheme.typography.labelSmall)
+                    } else {
+                        Text("近期：\${trend.recentDates.last()}～\${trend.recentDates.first()} · 此前：\${trend.earlierDates.last()}～\${trend.earlierDates.first()}",
+                            style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        @Composable fun TrendLine(label: String, latest: Double, earlier: Double, moneyFormat: Boolean) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(label, style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(74.dp))
+                                Text((if (moneyFormat) amount(latest) else String.format(Locale.CHINA, "%.1f笔",latest)) +
+                                    " / " + (if (moneyFormat) amount(earlier) else String.format(Locale.CHINA,"%.1f笔",earlier)),
+                                    style = MaterialTheme.typography.bodySmall)
+                                Text(percent(latest, earlier), style = MaterialTheme.typography.labelSmall,
+                                    color = if(latest < earlier) Color(0xFFB74E45) else currentGreen)
+                            }
+                        }
+                        TrendLine("日均电子收款",trend.recentAmount,trend.earlierAmount,true)
+                        TrendLine("日均付款笔数",trend.recentPayments,trend.earlierPayments,false)
+                        val recentAvg = if (trend.recentPayments > 0.0) trend.recentAmount/trend.recentPayments else 0.0
+                        val earlierAvg = if (trend.earlierPayments > 0.0) trend.earlierAmount/trend.earlierPayments else 0.0
+                        TrendLine("笔均收款",recentAvg,earlierAvg,true)
+                        Text("只比较位置、星期、已完成小时及观察到的支付渠道一致的营业日；账单完整性仍需核验。",
+                            style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    }
                 }
             }
         }
@@ -159,7 +206,7 @@ internal fun CustomerLocationHistoryContent(
                         FilterChip(selected = !hourlyAmount, onClick = { hourlyAmount = false }, label = { Text("笔数") })
                         FilterChip(selected = hourlyAmount, onClick = { hourlyAmount = true }, label = { Text("金额") })
                     }
-                    Text("绿色本次 · 灰色历史同小时均值；每小时并排双柱，不使用山形面积图。",
+                    Text("绿色本次 · 灰色历史同小时均值；按同一营业时段并排双柱。",
                         style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                     if (hours.isEmpty()) Text("没有可用的正式营业时段，暂不生成小时对比。")
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -190,6 +237,20 @@ internal fun CustomerLocationHistoryContent(
                         " · 历史${past?.let { if(hourlyAmount) amount(it) else String.format(Locale.CHINA,"%.1f笔",it) } ?: "样本不足"}" +
                         " · ${past?.let { percent(value,it) } ?: "—"}",
                         style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                    val declines = compare?.decliningHours.orEmpty()
+                    val growth = compare?.growingHours.orEmpty()
+                    if (declines.isNotEmpty() || growth.isNotEmpty()) {
+                        Text("小时变化较明显", fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.bodySmall)
+                        declines.forEach { h ->
+                            Text("${h.hour}:00 付款下降 · 本次${h.payments}笔 / 历史${String.format(Locale.CHINA,"%.1f",h.historicalPayments ?: 0.0)}笔",
+                                style = MaterialTheme.typography.labelSmall, color = Color(0xFFB74E45))
+                        }
+                        growth.forEach { h ->
+                            Text("${h.hour}:00 付款增长 · 本次${h.payments}笔 / 历史${String.format(Locale.CHINA,"%.1f",h.historicalPayments ?: 0.0)}笔",
+                                style = MaterialTheme.typography.labelSmall, color = currentGreen)
+                        }
+                    }
                     TextButton(onClick = { showDetails = !showDetails }) {
                         Text(if(showDetails) "收起该小时交易" else "查看该小时交易 ›")
                     }
@@ -212,21 +273,43 @@ internal fun CustomerLocationHistoryContent(
                     }
                     Text("按实际营业日排列；点击某日切换上方小时对比。",
                         style = MaterialTheme.typography.labelSmall, color = Color.Gray)
-                    days.take(8).reversed().forEach { day ->
-                        val payments = datesWithPayments[day.date].orEmpty()
-                        val value = when(metric) {
-                            CustomerDailyMetric.PAYMENTS -> "${payments.size}笔"
-                            CustomerDailyMetric.AMOUNT -> amount(payments.sumOf { it.netAmount })
-                            CustomerDailyMetric.AVERAGE -> amount(if(payments.isEmpty()) 0.0 else payments.sumOf { it.netAmount }/payments.size)
+                    val display = compare?.operatingDays.orEmpty().reversed()
+                    val barMax = display.maxOfOrNull { day ->
+                        when (metric) {
+                            CustomerDailyMetric.PAYMENTS -> day.payments.toDouble()
+                            CustomerDailyMetric.AMOUNT -> day.amount
+                            CustomerDailyMetric.AVERAGE -> if(day.payments>0) day.amount/day.payments else 0.0
+                        }
+                    }?.coerceAtLeast(1.0) ?: 1.0
+                    display.forEach { day ->
+                        val value = when (metric) {
+                            CustomerDailyMetric.PAYMENTS -> day.payments.toDouble()
+                            CustomerDailyMetric.AMOUNT -> day.amount
+                            CustomerDailyMetric.AVERAGE -> if (day.payments>0) day.amount/day.payments else 0.0
+                        }
+                        val label = when (metric) {
+                            CustomerDailyMetric.PAYMENTS -> "\${day.payments}笔"
+                            else -> amount(value)
                         }
                         Row(Modifier.fillMaxWidth().clickable { onDateChange(day.date) }
-                            .padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(day.date, style = MaterialTheme.typography.bodySmall)
-                            Text(if(payments.isEmpty()) "待补账单" else value,
-                                color = if(day.date==selectedDate) currentGreen else Color.DarkGray,
-                                fontWeight = if(day.date==selectedDate) FontWeight.Bold else FontWeight.Normal)
+                            .padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(day.date.takeLast(5), style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.width(43.dp))
+                            Box(Modifier.weight(1f).height(9.dp).background(Color(0xFFEDF1F2),
+                                RoundedCornerShape(3.dp))) {
+                                if (day.payments > 0) {
+                                    Box(Modifier.fillMaxWidth((value/barMax).toFloat().coerceIn(0f,1f))
+                                        .fillMaxHeight()
+                                        .background(if(day.date==selectedDate) currentGreen else Color(0xFF7EBFA5),
+                                            RoundedCornerShape(3.dp)))
+                                }
+                            }
+                            Text(if(day.payments == 0) "待核验" else label,
+                                modifier = Modifier.width(77.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if(day.date==selectedDate) currentGreen else Color.DarkGray)
                         }
-                        HorizontalDivider(color = Color(0xFFEEEEEE))
                     }
                 }
             }

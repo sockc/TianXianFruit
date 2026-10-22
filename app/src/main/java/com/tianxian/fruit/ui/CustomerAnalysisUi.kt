@@ -1031,6 +1031,7 @@ internal fun CustomerAnalysisContent(
                             CustomerLocationHistoryContent(
                                 records = allRecords,
                                 sessions = trafficSessions,
+                                sharedGroups = collectorAttribution.shared,
                                 stores = storeOptions,
                                 selectedStoreId = selectedStoreId,
                                 onStoreChange = { selectedStoreId = it },
