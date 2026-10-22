@@ -1,5 +1,6 @@
 """Location history V1.4.7.115 contracts: same-hour evidence, safe period and compact bar UI."""
 import unittest
+import re
 from pathlib import Path
 R=Path(__file__).resolve().parents[1]
 MODEL=(R/"app/src/main/java/com/tianxian/fruit/data/CustomerLocationHistoryAnalysis.kt").read_text()
@@ -37,7 +38,12 @@ class LocationHistory115Test(unittest.TestCase):
         self.assertNotIn("CustomerAnalysisTab.LOCATION ->\\n                            CustomerLocationHistoryContent(\\n                                records = allRecords",PARENT)
 
     def test_release_notes_no_history(self):
-        self.assertIn("V1.4.7.116",NOTES)
+        build=(R/"app/build.gradle").read_text()
+        version=re.search(r'versionName\\s+"([^"]+)"',build).group(1)
+        self.assertIn("V"+version,NOTES)
+        self.assertTrue(NOTES.startswith("# 天鲜账本 V"+version))
+        self.assertNotIn("V1.4.7.116",NOTES)
+        self.assertNotIn("V1.4.7.115",NOTES)
         self.assertNotIn("V1.4.7.114",NOTES)
         self.assertLess(len(NOTES),3000)
 if __name__=="__main__":
