@@ -16,7 +16,7 @@ class LocationHistoryVisibilityTest(unittest.TestCase):
     def test_location_tab_uses_side_by_side_columns(self):
         self.assertIn('LOCATION("位置")', BASE)
         self.assertIn('CustomerLocationHistoryContent(', BASE)
-        self.assertIn('逐小时收款 · 双柱对照', LOCATION)
+        self.assertIn('逐小时付款 · 并排双柱图', LOCATION)
         self.assertIn('历史同小时均值', LOCATION)
 
 if __name__ == "__main__":

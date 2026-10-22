@@ -156,7 +156,7 @@ internal object CustomerTrafficDeepDive {
     }
 
     /** Finished clock-hour windows only: today's unfinished hour is never compared. */
-    private fun finishedHours(
+    internal fun finishedHours(
         session: CustomerTrafficSession,
         now: LocalDateTime
     ): List<Int> {
@@ -178,7 +178,8 @@ internal object CustomerTrafficDeepDive {
         targetDate: String,
         platform: String = "ALL",
         selectedStoreId: Long = 0L,
-        now: LocalDateTime = LocalDateTime.now()
+        now: LocalDateTime = LocalDateTime.now(),
+        maxHistoricDays: Int = 4
     ): List<CustomerTrafficComparison> {
         val target = runCatching { LocalDate.parse(targetDate) }.getOrNull()
             ?: return emptyList()
@@ -206,7 +207,7 @@ internal object CustomerTrafficDeepDive {
                 // Do not compare WeChat-only with WeChat+Alipay when combined.
                 if (dayRows.isEmpty() || sources != currentSources) null
                 else session.date to dayRows
-            }.sortedByDescending { it.first }.take(4).toList()
+            }.sortedByDescending { it.first }.take(maxHistoricDays.coerceIn(1, 30)).toList()
 
             val historicDates = previous.map { it.first }
             val byHour = previous.map { (_, dayRows) ->
