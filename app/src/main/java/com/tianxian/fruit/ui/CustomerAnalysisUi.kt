@@ -308,6 +308,12 @@ internal fun CustomerAnalysisContent(
         }
     val allRecords =
         filterResult.included
+    // Never inherit the overview's store/collector filter when switching
+    // locations. Filter exclusions globally, then scope by the chosen store
+    // inside the location analyzer.
+    val locationRecords = remember(rawRecords, settings) {
+        CustomerAnalyticsEngine.filterRecords(rawRecords, settings).included
+    }
     val importBatches = remember(dataVersion, showSettings, tab) {
         if (showSettings || tab == CustomerAnalysisTab.RECORDS) {
             db.getPaymentImportBatches(200)
@@ -1029,7 +1035,7 @@ internal fun CustomerAnalysisContent(
 
                         CustomerAnalysisTab.LOCATION ->
                             CustomerLocationHistoryContent(
-                                records = allRecords,
+                                records = locationRecords,
                                 sessions = trafficSessions,
                                 sharedGroups = collectorAttribution.shared,
                                 stores = storeOptions,
