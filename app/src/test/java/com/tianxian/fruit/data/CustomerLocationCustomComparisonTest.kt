@@ -77,10 +77,10 @@ class CustomerLocationCustomComparisonTest {
     }
 
     @Test fun periodsAreDailyAveragesNotRawTotals() {
-        val sessions = listOf(session("2026-10-14"), session("2026-10-15"),
+        val sessions = listOf(session("2026-10-10"), session("2026-10-14"),
             session("2026-10-19"), session("2026-10-21"))
-        val rows = listOf(payment(1, "2026-10-14", amount = 10.0),
-            payment(2, "2026-10-15", amount = 30.0),
+        val rows = listOf(payment(1, "2026-10-10", amount = 10.0),
+            payment(2, "2026-10-14", amount = 30.0),
             payment(3, "2026-10-19", amount = 20.0),
             payment(4, "2026-10-21", amount = 40.0))
         val r = CustomerLocationManualAnalyzer.analyze(rows, sessions, 5, "ALL",
