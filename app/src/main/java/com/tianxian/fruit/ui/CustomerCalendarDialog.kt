@@ -63,7 +63,12 @@ internal fun CustomerCalendarDialog(
     initialChoice: CustomerCalendarChoice? = null,
     onDismiss: () -> Unit,
     onConfirm: (CustomerCalendarChoice) -> Unit,
-    onQuickRange: (String) -> Unit
+    onQuickRange: (String) -> Unit,
+    businessDates: Set<LocalDate> = emptySet(),
+    incompleteBillDates: Set<LocalDate> = emptySet(),
+    singleDayOnly: Boolean = false,
+    onlyBusinessDays: Boolean = false,
+    onOnlyBusinessDaysChange: (Boolean) -> Unit = {}
 ) {
     val initial = initialChoice ?: CustomerCalendarSelection.day(initialDate)
     var visibleMonth by remember(initialDate, initialChoice) {
@@ -94,6 +99,13 @@ internal fun CustomerCalendarDialog(
     }
 
     fun chooseDay(day: LocalDate) {
+        if (singleDayOnly) {
+            draftStart = day
+            draftEnd = day
+            resultKind = CustomerCalendarChoice.Kind.DAY
+            anchor = null
+            return
+        }
         if (mode != CustomerCalendarChoice.Kind.DAY || anchor == null) {
             mode = CustomerCalendarChoice.Kind.DAY
             anchor = day
@@ -132,15 +144,21 @@ internal fun CustomerCalendarDialog(
                     modifier = Modifier.size(38.dp),
                     onClick = { visibleMonth = visibleMonth.minusMonths(1) }
                 ) { Text("‹", fontSize = 28.sp, color = accent) }
-                FilterChip(
-                    selected = visibleMonthSelected,
-                    onClick = { chooseMonth(visibleMonth) },
-                    modifier = Modifier.weight(1f),
-                    label = {
-                        Text("${visibleMonth.year}年${visibleMonth.monthValue}月",
-                            fontWeight = FontWeight.Bold)
-                    }
-                )
+                if (singleDayOnly) {
+                    Text("${visibleMonth.year}年${visibleMonth.monthValue}月",
+                        modifier = Modifier.weight(1f), textAlign = TextAlign.Center,
+                        fontWeight = FontWeight.Bold, color = accent)
+                } else {
+                    FilterChip(
+                        selected = visibleMonthSelected,
+                        onClick = { chooseMonth(visibleMonth) },
+                        modifier = Modifier.weight(1f),
+                        label = {
+                            Text("${visibleMonth.year}年${visibleMonth.monthValue}月",
+                                fontWeight = FontWeight.Bold)
+                        }
+                    )
+                }
                 IconButton(
                     modifier = Modifier.size(38.dp),
                     onClick = { visibleMonth = visibleMonth.plusMonths(1) }
@@ -154,7 +172,8 @@ internal fun CustomerCalendarDialog(
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 Text(
-                    "点月份选择整月；连续点两个不同月份选择多月。点日期一次选单日，连续点两个日期选择日期范围。",
+                    if (singleDayOnly) "点日期选营业日；用左右箭头切换月份。" else
+                        "点月份选择整月；连续点两个不同月份选择多月。点日期一次选单日，连续点两个日期选择日期范围。",
                     style = MaterialTheme.typography.labelSmall, color = Color.Gray
                 )
                 Row(Modifier.fillMaxWidth()) {
@@ -182,18 +201,43 @@ internal fun CustomerCalendarDialog(
                                         selected -> Modifier.background(Color(0xFFE9F8F0))
                                         else -> Modifier
                                     })
-                                    .clickable(enabled = cellDate != null) {
+                                    .clickable(enabled = cellDate != null &&
+                                        (!singleDayOnly || !onlyBusinessDays ||
+                                            cellDate in businessDates)) {
                                         cellDate?.let(::chooseDay)
                                     },
                                 contentAlignment = Alignment.Center
                             ) {
                                 if (cellDate != null) {
-                                    Text(cellDate.dayOfMonth.toString(),
-                                        color = if (selected) accent else Color.DarkGray,
-                                        fontWeight = if (endpoint) FontWeight.Bold
-                                            else FontWeight.Normal)
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(cellDate.dayOfMonth.toString(),
+                                            color = if (singleDayOnly && onlyBusinessDays &&
+                                                cellDate !in businessDates) Color.LightGray
+                                                else if (selected) accent else Color.DarkGray,
+                                            fontWeight = if (endpoint) FontWeight.Bold
+                                                else FontWeight.Normal)
+                                        if (cellDate in businessDates) {
+                                            Box(Modifier.size(5.dp).clip(RoundedCornerShape(50))
+                                                .background(if (cellDate in incompleteBillDates)
+                                                    Color(0xFFCC861F) else accent))
+                                        }
+                                    }
                                 }
                             }
+                        }
+                    }
+                }
+                if (singleDayOnly) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("● 有营业  ● 待补账单",
+                            style = MaterialTheme.typography.labelSmall, color = accent)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("仅看营业日", style = MaterialTheme.typography.labelSmall)
+                            Switch(checked = onlyBusinessDays,
+                                onCheckedChange = onOnlyBusinessDaysChange,
+                                enabled = businessDates.isNotEmpty(),
+                                modifier = Modifier.height(30.dp))
                         }
                     }
                 }
@@ -203,11 +247,13 @@ internal fun CustomerCalendarDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(chosen) }) { Text("确定") }
+            TextButton(onClick = { onConfirm(chosen) },
+                enabled = !singleDayOnly || !onlyBusinessDays || chosen.start in businessDates
+            ) { Text("确定") }
         },
         dismissButton = {
             Row {
-                TextButton(onClick = { onQuickRange("ALL") }) { Text("全部日期") }
+                if (!singleDayOnly) TextButton(onClick = { onQuickRange("ALL") }) { Text("全部日期") }
                 TextButton(onClick = onDismiss) { Text("取消") }
             }
         }

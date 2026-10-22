@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -30,6 +32,7 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -189,6 +192,12 @@ internal fun CustomerAnalysisContent(
     }
     var showStoreMenu by remember { mutableStateOf(false) }
     var showCalendarDialog by remember { mutableStateOf(false) }
+    var onlyBusinessDays by remember(ledgerId) {
+        mutableStateOf(prefs.getBoolean("location_business_days_only", true))
+    }
+    LaunchedEffect(ledgerId, onlyBusinessDays) {
+        prefs.edit().putBoolean("location_business_days_only", onlyBusinessDays).apply()
+    }
     var showBillStatus by remember { mutableStateOf(false) }
     var showImportCollectorPicker by remember { mutableStateOf(false) }
     var importingCollectorSyncId by remember { mutableStateOf("") }
@@ -269,6 +278,23 @@ internal fun CustomerAnalysisContent(
             .mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }
             .distinct().sorted().toList()
     }
+    val calendarBusinessDates = remember(trafficSessions, selectedStoreId) {
+        trafficSessions.asSequence().filter {
+            selectedStoreId <= 0L || it.storeId == selectedStoreId
+        }.mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }.toSet()
+    }
+    LaunchedEffect(tab, selectedStoreId, onlyBusinessDays, trafficSessions) {
+        if (tab == CustomerAnalysisTab.LOCATION) {
+            if (selectedStoreId <= 0L) {
+                storeOptions.firstOrNull { it.first > 0L }?.let { selectedStoreId = it.first }
+            } else if (onlyBusinessDays && businessDatesForSelectedStore.isNotEmpty() &&
+                dayAnchor !in businessDatesForSelectedStore) {
+                dayAnchor = businessDatesForSelectedStore.lastOrNull { it <= dayAnchor }
+                    ?: businessDatesForSelectedStore.last()
+                range = CustomerRange.TODAY
+            }
+        }
+    }
     val prevBusinessDay = businessDatesForSelectedStore.lastOrNull { it < dayAnchor }
     val nextBusinessDay = businessDatesForSelectedStore.firstOrNull { it > dayAnchor }
     val hasUnmatchedStore = remember(rawRecords, collectorAttribution) {
@@ -313,6 +339,20 @@ internal fun CustomerAnalysisContent(
     // inside the location analyzer.
     val locationRecords = remember(rawRecords, settings) {
         CustomerAnalyticsEngine.filterRecords(rawRecords, settings).included
+    }
+    val incompleteCalendarDates = remember(locationRecords, calendarBusinessDates,
+        selectedStoreId, selectedPlatform) {
+        val covered = locationRecords.asSequence().filter {
+            (selectedStoreId <= 0L || it.storeId == selectedStoreId) &&
+                it.netAmount > 0.005 &&
+                (selectedPlatform == CustomerPaymentPlatform.ALL ||
+                    it.platform == selectedPlatform.name)
+        }.groupBy { it.businessDate }
+        calendarBusinessDates.filter { day ->
+            val sources = covered[day.toString()].orEmpty().map { it.platform }.toSet()
+            sources.isEmpty() || (selectedPlatform == CustomerPaymentPlatform.ALL &&
+                sources.size < 2)
+        }.toSet()
     }
     val importBatches = remember(dataVersion, showSettings, tab) {
         if (showSettings || tab == CustomerAnalysisTab.RECORDS) {
@@ -717,10 +757,34 @@ internal fun CustomerAnalysisContent(
                     maxLines = 1
                 )
                 Text(
-                    "$rangeLabel ▾",
-                    modifier = Modifier.weight(1f).clickable {
-                        showCalendarDialog = true
-                    }.padding(horizontal = 6.dp, vertical = 8.dp),
+                    (if (tab == CustomerAnalysisTab.LOCATION || range == CustomerRange.TODAY)
+                        "‹ " + dayAnchor.format(DateTimeFormatter.ofPattern("yyyy年M月d日")) + " ›"
+                     else "$rangeLabel ▾"),
+                    modifier = Modifier.weight(1f)
+                        .pointerInput(tab, selectedStoreId, onlyBusinessDays,
+                            businessDatesForSelectedStore) {
+                            var movedX = 0f
+                            detectHorizontalDragGestures(
+                                onDragStart = { movedX = 0f },
+                                onDragEnd = {
+                                    if ((tab == CustomerAnalysisTab.LOCATION || range == CustomerRange.TODAY)
+                                        && abs(movedX) > 45f) {
+                                        dayAnchor = CustomerBusinessDayNavigation.shift(
+                                            dayAnchor, if (movedX > 0) -1 else 1,
+                                            businessDatesForSelectedStore.toSet(),
+                                            tab == CustomerAnalysisTab.LOCATION && onlyBusinessDays
+                                        )
+                                        range = CustomerRange.TODAY
+                                    }
+                                },
+                                onHorizontalDrag = { change, drag ->
+                                    change.consume()
+                                    movedX += drag
+                                }
+                            )
+                        }
+                        .clickable { showCalendarDialog = true }
+                        .padding(horizontal = 6.dp, vertical = 8.dp),
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.SemiBold,
                     textAlign = androidx.compose.ui.text.style.TextAlign.End,
@@ -799,15 +863,17 @@ internal fun CustomerAnalysisContent(
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                     )
                     DropdownMenu(expanded = showStoreMenu, onDismissRequest = { showStoreMenu = false }) {
-                        DropdownMenuItem(text = { Text("全部位置") }, onClick = {
-                            selectedStoreId = 0L; showStoreMenu = false
-                        })
+                        if (tab != CustomerAnalysisTab.LOCATION)
+                            DropdownMenuItem(text = { Text("全部位置") }, onClick = {
+                                selectedStoreId = 0L; showStoreMenu = false
+                            })
                         storeOptions.forEach { (id, name) ->
                             DropdownMenuItem(text = { Text(name) }, onClick = {
                                 selectedStoreId = id; showStoreMenu = false
                             })
                         }
-                        if (hasUnmatchedStore) DropdownMenuItem(text = { Text("未匹配位置") }, onClick = {
+                        if (hasUnmatchedStore && tab != CustomerAnalysisTab.LOCATION)
+                            DropdownMenuItem(text = { Text("未匹配位置") }, onClick = {
                             selectedStoreId = -1L; showStoreMenu = false
                         })
                     }
@@ -1045,6 +1111,8 @@ internal fun CustomerAnalysisContent(
                                 onPlatformChange = { selectedPlatform = it },
                                 anchorDate = dayAnchor.toString(),
                                 onDateChange = { dayAnchor = LocalDate.parse(it); range = CustomerRange.TODAY },
+                                businessDayOnly = onlyBusinessDays,
+                                onBusinessDayOnlyChange = { onlyBusinessDays = it },
                                 metric = locationMetric,
                                 onMetricChange = { locationMetric = it }
                             )
@@ -1099,9 +1167,11 @@ internal fun CustomerAnalysisContent(
 
     if (showCalendarDialog) {
         CustomerCalendarDialog(
-            initialDate = if (range == CustomerRange.TODAY) dayAnchor else
+            initialDate = if (tab == CustomerAnalysisTab.LOCATION ||
+                range == CustomerRange.TODAY) dayAnchor else
                 if (range == CustomerRange.THIS_MONTH) monthAnchor else customStart,
-            initialChoice = when (range) {
+            initialChoice = if (tab == CustomerAnalysisTab.LOCATION)
+                CustomerCalendarSelection.day(dayAnchor) else when (range) {
                 CustomerRange.TODAY -> CustomerCalendarSelection.day(dayAnchor)
                 CustomerRange.THIS_MONTH -> CustomerCalendarSelection.month(
                     java.time.YearMonth.from(monthAnchor)
@@ -1118,7 +1188,10 @@ internal fun CustomerAnalysisContent(
             },
             onDismiss = { showCalendarDialog = false },
             onConfirm = { choice ->
-                when (choice.kind) {
+                if (tab == CustomerAnalysisTab.LOCATION) {
+                    dayAnchor = choice.start
+                    range = CustomerRange.TODAY
+                } else when (choice.kind) {
                     CustomerCalendarChoice.Kind.DAY -> {
                         dayAnchor = choice.start
                         range = CustomerRange.TODAY
@@ -1140,6 +1213,13 @@ internal fun CustomerAnalysisContent(
                 }
                 showCalendarDialog = false
             },
+            businessDates = if (tab == CustomerAnalysisTab.LOCATION)
+                calendarBusinessDates else emptySet(),
+            incompleteBillDates = if (tab == CustomerAnalysisTab.LOCATION)
+                incompleteCalendarDates else emptySet(),
+            singleDayOnly = tab == CustomerAnalysisTab.LOCATION,
+            onlyBusinessDays = onlyBusinessDays,
+            onOnlyBusinessDaysChange = { onlyBusinessDays = it },
             onQuickRange = { kind ->
                 when (kind) {
                     "TODAY", "YESTERDAY" -> {
