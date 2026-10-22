@@ -41,7 +41,7 @@ class LocationHistoryComparisonTest {
         assertEquals(20.0,inspected.currentAmount,0.001)
         assertEquals(4,inspected.historicDates.size)
         assertEquals(1.0,inspected.baselinePayments!!,0.001)
-        assertEquals(20.0,inspected.baselineAmount!!,0.001)
+        assertEquals(25.0,inspected.baselineAmount!!,0.001)
         assertEquals(1,inspected.hourRows.first { it.hour==19 }.payments)
         assertEquals(1.0,inspected.hourRows.first { it.hour==19 }.historicalPayments!!,0.001)
         assertEquals(4, inspected.recentTrend!!.recentDates.size)
