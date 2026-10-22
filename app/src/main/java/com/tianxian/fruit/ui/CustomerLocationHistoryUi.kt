@@ -321,9 +321,9 @@ internal fun CustomerLocationHistoryContent(
         item {
             val current = report?.current
             val manual = customReport
-            val amountNow = manual?.currentAmount ?: current?.takeIf { it.observed }?.amount
-            val countNow = manual?.currentCount ?: current?.takeIf { it.observed }?.count?.toDouble()
-            val avgNow = manual?.currentAverage ?: current?.takeIf { it.observed }?.average
+            val amountNow = if (manual != null) manual.currentAmount else current?.takeIf { it.observed }?.amount
+            val countNow = if (manual != null) manual.currentCount else current?.takeIf { it.observed }?.count?.toDouble()
+            val avgNow = if (manual != null) manual.currentAverage else current?.takeIf { it.observed }?.average
             val amountBaseline = if (manual != null) manual.referenceAmount else report?.historicAmount
             val countBaseline = if (manual != null) manual.referenceCount else report?.historicCount
             val avgBaseline = if (manual != null) manual.referenceAverage else report?.historicAveragePayment
