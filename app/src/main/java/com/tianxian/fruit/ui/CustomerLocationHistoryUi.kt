@@ -54,6 +54,7 @@ private fun RowScope.LocationComparisonMetric(
 internal fun CustomerLocationHistoryContent(
     records: List<CustomerPaymentRecord>,
     sessions: List<CustomerTrafficSession>,
+    sharedGroups: List<SharedCollectorTraffic>,
     stores: List<Pair<Long, String>>,
     selectedStoreId: Long,
     onStoreChange: (Long) -> Unit,
@@ -81,6 +82,13 @@ internal fun CustomerLocationHistoryContent(
     val selectedDate = if (storeSessions.any { it.date == anchorDate }) anchorDate
         else storeSessions.firstOrNull()?.date ?: anchorDate
     val selectedIndex = storeSessions.indexOfFirst { it.date == selectedDate }
+    val sharedToday = remember(sharedGroups, selectedDate, storeId, selectedPlatform) {
+        sharedGroups.filter { group ->
+            group.date == selectedDate && storeId in group.storeIds &&
+                (selectedPlatform == CustomerPaymentPlatform.ALL ||
+                    selectedPlatform.name == group.platform)
+        }
+    }
     val report = remember(ownRows, sessions, selectedDate, storeId, selectedPlatform) {
         CustomerLocationHistoryAnalyzer.analyze(
             ownRows, sessions, selectedDate, storeId, selectedPlatform.name
@@ -163,6 +171,14 @@ internal fun CustomerLocationHistoryContent(
                             onClick = { onDateChange(storeSessions[selectedIndex - 1].date) }) {
                             Text("下次营业 ›")
                         }
+                    }
+                    if (sharedToday.isNotEmpty()) {
+                        val totalPayments = sharedToday.sumOf { it.payments }
+                        val totalAmount = sharedToday.sumOf { it.amount }
+                        Text("本日存在多位置共享收款：${totalPayments}笔 / " +
+                            locationMoney(totalAmount) +
+                            "；已单独列示，不计入该位置的历史比较。",
+                            color = locationOrange, style = MaterialTheme.typography.labelSmall)
                     }
                     if (report == null) {
                         Text("没有完整的正式营业小时；暂无可靠的历史同期对比。",
