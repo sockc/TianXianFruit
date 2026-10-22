@@ -5,6 +5,7 @@ R=Path(__file__).resolve().parents[1]
 MODEL=(R/"app/src/main/java/com/tianxian/fruit/data/CustomerLocationHistoryAnalysis.kt").read_text()
 DEEP=(R/"app/src/main/java/com/tianxian/fruit/data/CustomerTrafficDeepDive.kt").read_text()
 UI=(R/"app/src/main/java/com/tianxian/fruit/ui/CustomerLocationHistoryUi.kt").read_text()
+PARENT=(R/"app/src/main/java/com/tianxian/fruit/ui/CustomerAnalysisUi.kt").read_text()
 NOTES=(R/"RELEASE_NOTES.md").read_text()
 class LocationHistory115Test(unittest.TestCase):
     def test_common_finished_hour_window(self):
@@ -27,6 +28,12 @@ class LocationHistory115Test(unittest.TestCase):
         self.assertIn("最近8个营业日 · 横向短柱",UI)
         self.assertIn("逐小时付款 · 并排双柱图",UI)
         self.assertIn("CustomerLocationHistoryAnalyzer.analyze(",UI)
+    def test_store_switch_does_not_reuse_overview_subset(self):
+        self.assertIn("val locationRecords = remember(rawRecords, settings)",PARENT)
+        self.assertIn("CustomerAnalyticsEngine.filterRecords(rawRecords, settings).included",PARENT)
+        self.assertIn("records = locationRecords",PARENT)
+        self.assertNotIn("CustomerAnalysisTab.LOCATION ->\\n                            CustomerLocationHistoryContent(\\n                                records = allRecords",PARENT)
+
     def test_release_notes_no_history(self):
         self.assertIn("V1.4.7.115",NOTES)
         self.assertNotIn("V1.4.7.114",NOTES)
