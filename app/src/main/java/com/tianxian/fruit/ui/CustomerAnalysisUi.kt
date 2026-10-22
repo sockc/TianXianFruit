@@ -757,7 +757,7 @@ internal fun CustomerAnalysisContent(
                     maxLines = 1
                 )
                 Text(
-                    (if (tab == CustomerAnalysisTab.LOCATION)
+                    (if (tab == CustomerAnalysisTab.LOCATION || range == CustomerRange.TODAY)
                         "‹ " + dayAnchor.format(DateTimeFormatter.ofPattern("yyyy年M月d日")) + " ›"
                      else "$rangeLabel ▾"),
                     modifier = Modifier.weight(1f)
@@ -767,10 +767,12 @@ internal fun CustomerAnalysisContent(
                             detectHorizontalDragGestures(
                                 onDragStart = { movedX = 0f },
                                 onDragEnd = {
-                                    if (tab == CustomerAnalysisTab.LOCATION && abs(movedX) > 45f) {
+                                    if ((tab == CustomerAnalysisTab.LOCATION || range == CustomerRange.TODAY)
+                                        && abs(movedX) > 45f) {
                                         dayAnchor = CustomerBusinessDayNavigation.shift(
                                             dayAnchor, if (movedX > 0) -1 else 1,
-                                            businessDatesForSelectedStore.toSet(), onlyBusinessDays
+                                            businessDatesForSelectedStore.toSet(),
+                                            tab == CustomerAnalysisTab.LOCATION && onlyBusinessDays
                                         )
                                         range = CustomerRange.TODAY
                                     }
