@@ -152,7 +152,7 @@ internal fun OvernightInlineNumber(
         if (morning!=null && partnerId!=null)
             store.findSnapshot(morning.toString(),partnerId) else null
     }
-    val amount=if(snapshot?.storeId==storeId) snapshot.amount(channel) else null
+    val amount=if(snapshot?.storeId==storeId) snapshot?.amount(channel) else null
     var open by remember(date,storeId,partnerId,channel) { mutableStateOf(false) }
     var input by remember(date,storeId,partnerId,channel) { mutableStateOf("") }
     var error by remember(date,storeId,partnerId,channel) { mutableStateOf("") }
