@@ -391,6 +391,7 @@ class WeatherNotificationWorker(
             buildWindowNotice(
                 kind =
                     "procurement",
+                storeId = store.id,
                 title =
                     "早上采购天气提醒 · ${store.name}",
                 label =
@@ -441,6 +442,7 @@ class WeatherNotificationWorker(
             buildWindowNotice(
                 kind =
                     "business",
+                storeId = store.id,
                 title =
                     "营业天气提醒 · ${store.name}",
                 label =
@@ -571,6 +573,7 @@ class WeatherNotificationWorker(
 
     private fun buildWindowNotice(
         kind: String,
+        storeId: Long,
         title: String,
         label: String,
         metrics: WindowMetrics,
@@ -860,7 +863,7 @@ class WeatherNotificationWorker(
 
         return Notice(
             key =
-                "${kind}_${date}_${store.id}_$riskSignature",
+                "${kind}_${date}_${storeId}_$riskSignature",
             title =
                 title,
             body =
