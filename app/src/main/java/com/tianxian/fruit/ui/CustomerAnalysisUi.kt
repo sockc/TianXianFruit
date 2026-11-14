@@ -278,10 +278,23 @@ internal fun CustomerAnalysisContent(
             .mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }
             .distinct().sorted().toList()
     }
-    val calendarBusinessDates = remember(trafficSessions, selectedStoreId) {
+    // Overview and customers use ALL saved operating positions, not the
+    // last store selected on the location tab.
+    val calendarBusinessDates = remember(trafficSessions, selectedStoreId, tab) {
         trafficSessions.asSequence().filter {
-            selectedStoreId <= 0L || it.storeId == selectedStoreId
+            tab != CustomerAnalysisTab.LOCATION || selectedStoreId <= 0L ||
+                it.storeId == selectedStoreId
         }.mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }.toSet()
+    }
+    val calendarStoreCounts = remember(trafficSessions, selectedStoreId, tab) {
+        trafficSessions.filter {
+            tab != CustomerAnalysisTab.LOCATION || selectedStoreId <= 0L ||
+                it.storeId == selectedStoreId
+        }.groupBy { it.date }.mapNotNull { (date, values) ->
+            runCatching { LocalDate.parse(date) }.getOrNull()?.let {
+                it to values.map { row -> row.storeId }.filter { id -> id > 0L }.distinct().size
+            }
+        }.toMap()
     }
     LaunchedEffect(tab, selectedStoreId, onlyBusinessDays, trafficSessions) {
         if (tab == CustomerAnalysisTab.LOCATION) {
@@ -340,19 +353,28 @@ internal fun CustomerAnalysisContent(
     val locationRecords = remember(rawRecords, settings) {
         CustomerAnalyticsEngine.filterRecords(rawRecords, settings).included
     }
-    val incompleteCalendarDates = remember(locationRecords, calendarBusinessDates,
-        selectedStoreId, selectedPlatform) {
-        val covered = locationRecords.asSequence().filter {
-            (selectedStoreId <= 0L || it.storeId == selectedStoreId) &&
-                it.netAmount > 0.005 &&
-                (selectedPlatform == CustomerPaymentPlatform.ALL ||
-                    it.platform == selectedPlatform.name)
-        }.groupBy { it.businessDate }
-        calendarBusinessDates.filter { day ->
-            val sources = covered[day.toString()].orEmpty().map { it.platform }.toSet()
-            sources.isEmpty() || (selectedPlatform == CustomerPaymentPlatform.ALL &&
-                sources.size < 2)
-        }.toSet()
+    val incompleteCalendarDates = remember(locationRecords, dailyHistory,
+        calendarBusinessDates, selectedStoreId, selectedPlatform, tab) {
+        val available = locationRecords.asSequence().filter { it.netAmount > 0.005 }
+            .groupBy { it.businessDate to it.storeId }
+            .mapValues { (_, payments) -> payments.map { it.platform }.toSet() }
+        dailyHistory.asSequence().filter { record ->
+            record.storeId > 0L &&
+                (tab != CustomerAnalysisTab.LOCATION || selectedStoreId <= 0L ||
+                    record.storeId == selectedStoreId)
+        }.filter { record ->
+            // Missing a channel that was never used is NOT a missing bill.
+            val channels = buildSet {
+                if (record.wechatIncome > 0.005) add("WECHAT")
+                if (record.alipayIncome > 0.005) add("ALIPAY")
+            }.filter { selectedPlatform == CustomerPaymentPlatform.ALL ||
+                it == selectedPlatform.name }
+            channels.any { channel ->
+                channel !in available[record.date to record.storeId].orEmpty()
+            }
+        }.mapNotNull {
+            runCatching { LocalDate.parse(it.date) }.getOrNull()
+        }.filter { it in calendarBusinessDates }.toSet()
     }
     val importBatches = remember(dataVersion, showSettings, tab) {
         if (showSettings || tab == CustomerAnalysisTab.RECORDS) {
@@ -1218,10 +1240,9 @@ internal fun CustomerAnalysisContent(
                 }
                 showCalendarDialog = false
             },
-            businessDates = if (tab == CustomerAnalysisTab.LOCATION)
-                calendarBusinessDates else emptySet(),
-            incompleteBillDates = if (tab == CustomerAnalysisTab.LOCATION)
-                incompleteCalendarDates else emptySet(),
+            businessDates = calendarBusinessDates,
+            incompleteBillDates = incompleteCalendarDates,
+            businessStoreCounts = calendarStoreCounts,
             singleDayOnly = tab == CustomerAnalysisTab.LOCATION,
             onlyBusinessDays = onlyBusinessDays,
             onOnlyBusinessDaysChange = { onlyBusinessDays = it },
