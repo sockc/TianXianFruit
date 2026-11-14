@@ -116,6 +116,7 @@ internal fun BusinessOvernightReceiptAction(
     businessDate: String,
     storeId: Long?,
     collectors: List<OvernightCollectorOption>,
+    conflictingPartnerIds: Set<Long> = emptySet(),
     canApply: Boolean,
     onApply: (Long, Double, Double) -> Unit
 ) {
@@ -160,6 +161,8 @@ internal fun BusinessOvernightReceiptAction(
     var partner by remember(open, businessDate, store) {
         mutableLongStateOf(validCollectors.first().partnerId!!)
     }
+    val accountSharedAcrossStores = partner in conflictingPartnerIds
+    val mayApply = canApply && !accountSharedAcrossStores
     var showPartnerMenu by remember { mutableStateOf(false) }
     var mode by remember(open) { mutableStateOf("NATURAL") }
     var snapshotDate by remember(open, businessDate) {
@@ -287,6 +290,9 @@ internal fun BusinessOvernightReceiptAction(
                     if (!adjustment.followingConfirmed)
                         Text("次日凌晨尚未登记：目前是临时结果；确认后可再次填入差额。",
                             style = MaterialTheme.typography.labelSmall, color = overnightWarning)
+                    if (accountSharedAcrossStores)
+                        Text("该收款人当天在其他位置也有电子收款；商家后台全天总额不能全部归给本位置，请先按交易明细拆分。",
+                            style = MaterialTheme.typography.labelSmall, color = overnightWarning)
                     if (!canApply)
                         Text("已有正式营业记录时，请先点击该位置营业记录进入编辑，再填入调整金额；系统不会自动覆盖已保存收入。",
                             style = MaterialTheme.typography.labelSmall, color = overnightWarning)
@@ -320,7 +326,7 @@ internal fun BusinessOvernightReceiptAction(
                     } else if (draft != null && adjustment != null) {
                         if (!storage.saveNatural(draft))
                             error = "无法保存：这个收款人的自然日总额已归属其他位置，不能重复计算。"
-                        else if (canApply) {
+                        else if (mayApply) {
                             val selectedRow = collectors.firstOrNull { it.partnerId == partner }
                             if (selectedRow == null)
                                 error = "当前收款人已经不在营业表中，请重新选择。"
@@ -337,7 +343,7 @@ internal fun BusinessOvernightReceiptAction(
                     }
                 }
             ) { Text(if (mode == "MORNING") "保存凌晨金额"
-                else if (canApply) "计算并填入营业表" else "保存计算草稿") }
+                else if (mayApply) "计算并填入营业表" else "保存计算草稿") }
         },
         dismissButton = {
             TextButton(onClick = { open = false }) { Text("取消") }

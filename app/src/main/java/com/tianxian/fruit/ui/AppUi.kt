@@ -12052,6 +12052,20 @@ private fun SessionScreen(
                         }
                     )
                 },
+                conflictingPartnerIds = todayRecords.filter { record ->
+                    record.storeId != storeId
+                }.flatMap { record ->
+                    if (record.receiptSplits.isNotEmpty()) {
+                        record.receiptSplits.filter {
+                            it.wechatIncome > 0.005 || it.alipayIncome > 0.005
+                        }.map { it.partnerId }
+                    } else {
+                        listOfNotNull(
+                            record.wechatCollectorId.takeIf { record.wechatIncome > 0.005 },
+                            record.alipayCollectorId.takeIf { record.alipayIncome > 0.005 }
+                        )
+                    }
+                }.filter { it > 0L }.toSet(),
                 canApply = editingRecordId != null ||
                     todayRecords.none { it.storeId == storeId },
                 onApply = { rowId, wechatAmount, alipayAmount ->
