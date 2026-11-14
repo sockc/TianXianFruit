@@ -62,6 +62,8 @@ private fun RowScope.LocationComparisonMetric(
 
 @Composable
 internal fun CustomerLocationHistoryContent(
+    db: AppDatabase,
+    dataVersion: Int,
     records: List<CustomerPaymentRecord>,
     sessions: List<CustomerTrafficSession>,
     sharedGroups: List<SharedCollectorTraffic>,
@@ -317,6 +319,19 @@ internal fun CustomerLocationHistoryContent(
                     }
                 }
             }
+        }
+        item {
+            CustomerWeatherImpactSection(
+                db = db,
+                dataVersion = dataVersion,
+                storeId = storeId,
+                storeName = storeName,
+                anchorDate = selectedDate,
+                records = records,
+                sessions = sessions,
+                sharedGroups = sharedGroups,
+                selectedPlatform = selectedPlatform
+            )
         }
         item {
             val current = report?.current
