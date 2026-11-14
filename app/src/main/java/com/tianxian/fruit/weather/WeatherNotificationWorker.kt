@@ -28,6 +28,7 @@ import com.tianxian.fruit.sync.WeatherAlert
 import com.tianxian.fruit.sync.WeatherClient
 import com.tianxian.fruit.sync.WeatherHour
 import com.tianxian.fruit.sync.WeatherOverview
+import com.tianxian.fruit.weather.WeatherRainRisk
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -189,18 +190,31 @@ class WeatherNotificationWorker(
         return try {
             val today = LocalDate.now(ZoneId.of("Asia/Shanghai"))
             val now = LocalDateTime.now(ZoneId.of("Asia/Shanghai"))
-            val stores = resolveStores(db, settings, today)
-            for (store in stores) {
-                val overview = loadOverview(
-                    db = db,
-                    cloudSyncManager = cloudSyncManager,
-                    bookId = book.cloudBookId.ifBlank {
-                        book.id.takeIf { it.contains("-") }.orEmpty()
-                    },
-                    store = store,
-                    date = today
-                ) ?: continue
-                val notices = buildNotices(overview, store, settings, today, now)
+            val previousDate = today.minusDays(1)
+            val todayStores = resolveStores(db, settings, today)
+            val overnightStores = resolveStores(db, settings, previousDate).filter { store ->
+                WeatherBusinessWindowPolicy.activePreviousDate(
+                    now, store.defaultStartTime, store.defaultEndTime
+                ) == previousDate
+            }
+            val sessions = buildList {
+                todayStores.forEach { add(it to today) }
+                overnightStores.forEach { add(it to previousDate) }
+            }
+            // Use live forecasts even for a session that started yesterday.
+            val forecastByStore = mutableMapOf<Long, WeatherOverview?>()
+            for ((store, businessDate) in sessions) {
+                if (!forecastByStore.containsKey(store.id)) {
+                    forecastByStore[store.id] = loadOverview(
+                        db = db, cloudSyncManager = cloudSyncManager,
+                        bookId = book.cloudBookId.ifBlank {
+                            book.id.takeIf { it.contains("-") }.orEmpty()
+                        },
+                        store = store, date = today
+                    )
+                }
+                val overview = forecastByStore[store.id] ?: continue
+                val notices = buildNotices(overview, store, settings, businessDate, now)
                 notices.forEach { notice ->
                     if (settingsManager.shouldNotify(book.id, notice.key, notice.severity)) {
                         postNotification(context, notice)
@@ -350,9 +364,10 @@ class WeatherNotificationWorker(
     ): List<Notice> {
         val result =
             mutableListOf<Notice>()
+        val previousBusinessDate = date.isBefore(now.toLocalDate())
 
         if (
-            settings.alertEnabled
+            settings.alertEnabled && !previousBusinessDate
         ) {
             buildAlertNotice(
                 overview.alerts,
@@ -365,6 +380,7 @@ class WeatherNotificationWorker(
 
         if (
             settings.procurementEnabled &&
+            !previousBusinessDate &&
             inLeadWindow(
                 now = now,
                 date = date,
@@ -433,7 +449,9 @@ class WeatherNotificationWorker(
                     date,
                     store.defaultStartTime,
                     store.defaultEndTime
-                )
+                ).filter { row ->
+                    hourTime(row)?.let { it >= now.minusMinutes(15) } ?: false
+                }
             val metrics =
                 summarize(
                     rows,
@@ -463,7 +481,7 @@ class WeatherNotificationWorker(
         }
 
         if (
-            settings.rapidCoolingEnabled
+            settings.rapidCoolingEnabled && !previousBusinessDate
         ) {
             buildRapidCoolingNotice(
                 overview =
@@ -483,7 +501,7 @@ class WeatherNotificationWorker(
 
         // The hourly worker runs opportunistically; a single risk summary
         // is deduplicated each day and escalates only when severity increases.
-        if (settings.businessEnabled && now.hour in 13..17) {
+        if (settings.businessEnabled && !previousBusinessDate && now.hour in 13..17) {
             buildSevenDayNotice(overview, store, settings, date)?.let(result::add)
         }
         if (settings.businessEnabled && settings.rainEnabled) {
@@ -537,8 +555,7 @@ class WeatherNotificationWorker(
         ).mapNotNull { row -> hourTime(row)?.let { it to row } }
             .sortedBy { it.first }
         fun wet(hour: WeatherHour): Boolean =
-            (hour.precipitationProbability ?: 0.0) >= settings.rainProbabilityThreshold ||
-                (forecastRain(hour) ?: 0.0) > 0.1
+            WeatherRainRisk.hourHasRain(hour, settings.rainProbabilityThreshold)
         val upcoming = rows.firstOrNull { (time, row) ->
             time >= now.minusMinutes(15) && time <= now.plusHours(1) && wet(row)
         } ?: return null
@@ -743,7 +760,8 @@ class WeatherNotificationWorker(
                 metrics.maxPop >=
                     settings.rainProbabilityThreshold ||
                     metrics.totalRain >
-                    0.05
+                    0.05 ||
+                    metrics.wetHours.isNotEmpty()
                 )
         ) {
             riskTags +=
@@ -1088,11 +1106,9 @@ class WeatherNotificationWorker(
                         row
                     )
                         ?: 0.0
-                if (
-                    pop >=
-                        settings.rainProbabilityThreshold ||
-                    rain >
-                        0.05
+                if (WeatherRainRisk.hourHasRain(
+                        row, settings.rainProbabilityThreshold
+                    )
                 ) {
                     hourTime(
                         row

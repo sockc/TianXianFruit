@@ -298,7 +298,7 @@ fun WeatherNotificationSettingsContent(
                     )
 
                     Text(
-                        "每小时后台检查一次；高温或未来时段降雨也会提醒。同类风险当天只提醒一次；新增风险类型或风险升级时可再次提醒。",
+                        "后台约每小时检查一次（可能受系统省电策略延迟）。开摊前提示7天风险，营业期间重点提醒临近降雨；同类风险去重，升级时可再次提醒。",
                         style =
                             MaterialTheme.typography
                                 .bodySmall,
@@ -331,7 +331,7 @@ fun WeatherNotificationSettingsContent(
                     "天气通知位置"
             ) {
                 Text(
-                    "只选一个位置，避免多个摊位重复通知。选“自动”时按当天营业记录、星期固定位置和历史安排自动判断。",
+                    "自动模式优先提醒当天实际营业位置；若一天有多个位置，则分别提醒。无记录时参考固定位置与历史安排，也可指定单一位置。",
                     style =
                         MaterialTheme.typography
                             .bodySmall,
@@ -379,7 +379,7 @@ fun WeatherNotificationSettingsContent(
                         DropdownMenuItem(
                             text = {
                                 Text(
-                                    "自动选择（按当天安排）"
+                                    "自动选择（含多个营业位置）"
                                 )
                             },
                             onClick = {

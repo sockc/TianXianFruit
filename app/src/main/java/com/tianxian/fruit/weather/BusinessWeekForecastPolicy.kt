@@ -1,6 +1,7 @@
 package com.tianxian.fruit.weather
 
 import com.tianxian.fruit.sync.WeatherDay
+import com.tianxian.fruit.weather.WeatherRainRisk
 import java.time.LocalDate
 
 /** Daily forecast risks, never a claim about specific hours of rainfall. */
@@ -18,7 +19,7 @@ internal object BusinessWeekForecastPolicy {
     fun nextSevenDays(
         daily: List<WeatherDay>,
         today: LocalDate,
-        rainThreshold: Double = 60.0,
+        rainThreshold: Double = WeatherRainRisk.DEFAULT_PROBABILITY_THRESHOLD,
         heatThresholdC: Double = 35.0,
         coolingThresholdC: Double = 5.0
     ): List<BusinessForecastRisk> {
@@ -27,12 +28,7 @@ internal object BusinessWeekForecastPolicy {
             val date = today.plusDays(offset)
             val day = days[date.toString()] ?: return@mapNotNull null
             val previous = days[date.minusDays(1).toString()]
-            val condition = day.textDay + " " + day.textNight
-            val rain = (day.precipitation ?: 0.0) > 0.05 ||
-                (day.precipitationProbability ?: 0.0) >= rainThreshold ||
-                condition.contains("雨") || condition.contains("雷暴") ||
-                (day.codeDay.toIntOrNull() ?: -1) in 300..399 ||
-                (day.codeNight.toIntOrNull() ?: -1) in 300..399
+            val rain = WeatherRainRisk.dayHasRain(day, rainThreshold)
             val heat = (day.tempMax ?: Double.NEGATIVE_INFINITY) >= heatThresholdC
             // Daily maxima compare trends only; no implied business-hour temperature.
             val cooling = previous?.tempMax != null && day.tempMax != null &&

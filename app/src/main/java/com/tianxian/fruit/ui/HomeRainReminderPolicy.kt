@@ -2,6 +2,7 @@ package com.tianxian.fruit.ui
 
 import com.tianxian.fruit.sync.WeatherDay
 import com.tianxian.fruit.sync.WeatherHour
+import com.tianxian.fruit.weather.WeatherRainRisk
 import java.time.LocalDate
 import java.time.LocalDateTime
 
@@ -23,7 +24,8 @@ internal object HomeRainReminderPolicy {
         dayHours: List<WeatherHour>,
         preOpenHours: List<WeatherHour>,
         businessHours: List<WeatherHour>,
-        day: WeatherDay?
+        day: WeatherDay?,
+        rainProbabilityThreshold: Double = WeatherRainRisk.DEFAULT_PROBABILITY_THRESHOLD
     ): HomeRainReminder? {
         if (date.isBefore(now.toLocalDate())) return null
 
@@ -31,17 +33,11 @@ internal object HomeRainReminderPolicy {
             val parsed = runCatching {
                 LocalDateTime.parse(hour.time.replace(' ', 'T').take(16))
             }.getOrNull()
-            return parsed == null || parsed.isAfter(now.minusHours(1))
+            return parsed != null && parsed.isAfter(now.minusHours(1))
         }
 
-        fun wet(hour: WeatherHour): Boolean {
-            val label = hour.text + " " + hour.forecastText
-            return (hour.precipitation ?: 0.0) > 0.05 ||
-                (hour.precipitationProbability ?: 0.0) >= 40.0 ||
-                label.contains("雨") ||
-                label.contains("雷暴") ||
-                (hour.code.toIntOrNull() ?: -1) in 300..399
-        }
+        fun wet(hour: WeatherHour): Boolean =
+            WeatherRainRisk.hourHasRain(hour, rainProbabilityThreshold)
 
         val business = businessHours.filter(::future).filter(::wet)
         val preOpen = preOpenHours.filter(::future).filter(::wet)
@@ -80,13 +76,8 @@ internal object HomeRainReminderPolicy {
 
         // 每日预报兜底：只有在还有可用的预报时才提示，不能根据日级数据编造降雨时间。
         val dailyText = day?.textDay.orEmpty() + " " + day?.textNight.orEmpty()
-        val dailyRain = day != null && (
-            (day.precipitation ?: 0.0) > 0.05 ||
-                (day.precipitationProbability ?: 0.0) >= 40.0 ||
-                dailyText.contains("雨") ||
-                (day.codeDay.toIntOrNull() ?: -1) in 300..399 ||
-                (day.codeNight.toIntOrNull() ?: -1) in 300..399
-        )
+        val dailyRain = day != null &&
+            WeatherRainRisk.dayHasRain(day, rainProbabilityThreshold)
         if (!dailyRain) return null
         if (date == now.toLocalDate() && now.hour >= 23) return null
         val pop = day.precipitationProbability?.let {
