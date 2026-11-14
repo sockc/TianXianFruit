@@ -612,7 +612,10 @@ internal fun CustomerAnalysisContent(
             )
         } else emptyList()
     }
-    val observedWeather = remember(dataVersion, trafficComparisons) {
+    val observedWeather = remember(dataVersion, trafficComparisons, tab) {
+        // Location weather archives load on demand inside WeatherImpactSection.
+        // Do not parse archives when navigating between non-overview tabs.
+        if (tab != CustomerAnalysisTab.OVERVIEW) emptyList() else
         trafficComparisons.flatMap { compare ->
             (listOf(compare.date) + compare.historicDates).distinct().mapNotNull { day ->
                 db.getBusinessWeatherHistory(day, compare.storeId)?.let { history ->
@@ -1101,6 +1104,8 @@ internal fun CustomerAnalysisContent(
 
                         CustomerAnalysisTab.LOCATION ->
                             CustomerLocationHistoryContent(
+                                db = db,
+                                dataVersion = dataVersion,
                                 records = locationRecords,
                                 sessions = trafficSessions,
                                 sharedGroups = collectorAttribution.shared,
