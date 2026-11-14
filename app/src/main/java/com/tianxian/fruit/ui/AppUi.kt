@@ -1,5 +1,7 @@
 package com.tianxian.fruit.ui
 
+import com.tianxian.fruit.weather.BusinessWeekForecastPolicy
+
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.graphics.Paint as AndroidPaint
@@ -3003,6 +3005,83 @@ private fun HomeWeatherCard(
                             modifier = Modifier.weight(1f)
                         )
                         Text("24小时详情 ›", style = MaterialTheme.typography.labelSmall, color = BrandGreen)
+                    }
+                    // Lightweight seven-day forecast: future dates are daily trends,
+                    // not invented hour-by-hour rainfall estimates.
+                    val forecastDays = BusinessWeekForecastPolicy.nextSevenDays(
+                        overview.daily,
+                        LocalDate.now(ZoneId.of("Asia/Shanghai"))
+                    )
+                    if (forecastDays.isNotEmpty()) {
+                        Text(
+                            "未来7天营业天气",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF276C9E)
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            forecastDays.forEach { forecast ->
+                                Surface(
+                                    modifier = Modifier.width(76.dp).clickable {
+                                        selectedDate = forecast.date
+                                    },
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = when {
+                                        forecast.date == selectedDate -> Color(0xFFDDEEFF)
+                                        forecast.severity >= 2 -> Color(0xFFFFF0E6)
+                                        forecast.severity > 0 -> Color(0xFFFFF8E6)
+                                        else -> Color.White
+                                    },
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (forecast.date == selectedDate) Color(0xFF3A86C8)
+                                        else Color(0xFFE3EAF0)
+                                    )
+                                ) {
+                                    Column(
+                                        Modifier.padding(horizontal = 5.dp, vertical = 7.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        Text(
+                                            when (forecast.date) {
+                                                LocalDate.now(ZoneId.of("Asia/Shanghai")) -> "今天"
+                                                LocalDate.now(ZoneId.of("Asia/Shanghai")).plusDays(1) -> "明天"
+                                                else -> "${forecast.date.monthValue}/${forecast.date.dayOfMonth}"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            weatherEmoji(forecast.day.codeDay, forecast.day.textDay),
+                                            fontSize = 19.sp
+                                        )
+                                        Text(
+                                            "${forecast.day.tempMin?.toInt() ?: "--"}–${forecast.day.tempMax?.toInt() ?: "--"}℃",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            maxLines = 1
+                                        )
+                                        Text(
+                                            forecast.label,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = if (forecast.severity > 0) Color(0xFF9B5127) else Color.Gray,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        BusinessWeekForecastPolicy.headline(forecastDays)?.let { summary ->
+                            Text(
+                                "$summary · 中远期仅为日级趋势，精确降雨时间以逐小时预报为准",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF865323)
+                            )
+                        }
                     }
                     if (actualStores.size > 1) {
                         Text(
@@ -6217,18 +6296,6 @@ private fun HomeScreen(
                 onOpenDetail = onOpenWeather,
                 onStoreResolved = { adviceStoreId = it },
                 onDateResolved = { adviceDate = it }
-            )
-        }
-
-        item {
-            HomeBusinessAdviceCard(
-                db = db,
-                dataVersion = dataVersion,
-                currentBook = currentBook,
-                cloudSyncManager = cloudSyncManager,
-                date = adviceDate,
-                storeId = adviceStoreId,
-                onOpenDetail = onOpenBusinessAdvice
             )
         }
 
