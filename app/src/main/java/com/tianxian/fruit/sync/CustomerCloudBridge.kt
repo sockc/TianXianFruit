@@ -4,6 +4,9 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import com.tianxian.fruit.data.AppDatabase
+import com.tianxian.fruit.data.OvernightReceiptSnapshot
+import com.tianxian.fruit.data.NaturalDayReceiptDraft
+import com.tianxian.fruit.ui.OvernightReceiptDraftStore
 import com.tianxian.fruit.ui.OfficialWechatCustomerStatsLocal
 import com.tianxian.fruit.ui.OfficialWechatDailyCount
 import org.json.JSONArray
@@ -43,7 +46,7 @@ internal object CustomerCloudBridge {
         fun json(): JSONObject = JSONObject()
             .put("kind", kind).put("key", key).put("payload", payload)
             .apply {
-                if (kind in setOf("OFFICIAL", "ASSIGNMENT", "COLLECTOR", "ANALYSIS", "SETTINGS", "SOURCE_LINK") && revision > 0)
+                if (kind in setOf("OFFICIAL", "ASSIGNMENT", "COLLECTOR", "ANALYSIS", "SETTINGS", "SOURCE_LINK", "OVERNIGHT", "NATURAL") && revision > 0)
                     put("expected_revision", revision)
             }
     }
@@ -93,6 +96,41 @@ internal object CustomerCloudBridge {
         JSONObject().put("platform", platform).put("dedupe_key", receiptKey)
             .put("file_hash", fileHash)
 
+    // All client-local numeric row IDs are translated into stable sync UUIDs.
+    private fun stableRowId(database: SQLiteDatabase, table: String, localId: Long): String {
+        if (table !in setOf("store", "partner") || localId<=0L) return ""
+        return database.rawQuery(
+            "SELECT sync_id FROM $table WHERE id=? LIMIT 1",
+            arrayOf(localId.toString())
+        ).use { if(it.moveToFirst()) it.getString(0).orEmpty() else "" }
+    }
+
+    private fun localRowId(database: SQLiteDatabase, table: String, stableId: String): Long {
+        if (table !in setOf("store","partner") || stableId.isBlank()) return 0L
+        return database.rawQuery(
+            "SELECT id FROM $table WHERE sync_id=? LIMIT 1", arrayOf(stableId)
+        ).use { if(it.moveToFirst()) it.getLong(0) else 0L }
+    }
+
+    private fun overnightPayload(
+        s: OvernightReceiptSnapshot, storeSyncId:String, partnerSyncId:String
+    ): JSONObject = JSONObject().put("date",s.calendarDate)
+        .put("store_sync_id",storeSyncId).put("partner_sync_id",partnerSyncId)
+        .put("wechat",s.wechat).put("alipay",s.alipay).put("cash",s.cash)
+        .put("wechat_recorded",s.wechatRecorded)
+        .put("alipay_recorded",s.alipayRecorded)
+        .put("cash_recorded",s.cashRecorded)
+
+    private fun naturalPayload(
+        s: NaturalDayReceiptDraft, storeSyncId:String, partnerSyncId:String
+    ): JSONObject = JSONObject().put("date",s.businessDate)
+        .put("store_sync_id",storeSyncId).put("partner_sync_id",partnerSyncId)
+        .put("wechat",s.wechat).put("alipay",s.alipay).put("cash",s.cash)
+        .put("deduct_wechat",s.deductWechat).put("deduct_alipay",s.deductAlipay)
+        .put("saved_wechat",s.savedWechat ?: JSONObject.NULL)
+        .put("saved_alipay",s.savedAlipay ?: JSONObject.NULL)
+        .put("saved_cash",s.savedCash ?: JSONObject.NULL)
+
     private fun analysisState(excluded: Boolean, included: Boolean): String = when {
         included -> "INCLUDED"
         excluded -> "EXCLUDED"
@@ -104,7 +142,8 @@ internal object CustomerCloudBridge {
         includeCollector: Boolean = true,
         includeAnalysis: Boolean = false,
         includeSettings: Boolean = false,
-        includeSourceLinks: Boolean = false
+        includeSourceLinks: Boolean = false,
+        includeOvernight: Boolean = false
     ): List<SyncItem> {
         val ack = ackMap(db.readableDatabase)
         val results = mutableListOf<SyncItem>()
@@ -246,6 +285,26 @@ internal object CustomerCloudBridge {
                     val fileHash = c.string("file_hash")
                     include("SOURCE_LINK", "$platform|$receiptKey|$fileHash",
                         sourceLinkPayload(platform, receiptKey, fileHash))
+                }
+            }
+        }
+        if (results.size < limit && includeOvernight) {
+            val local=OvernightReceiptDraftStore(context,bookId)
+            val sql=db.readableDatabase
+            for (snap in local.snapshots()) {
+                val storeSyncId=stableRowId(sql,"store",snap.storeId)
+                val partnerSyncId=stableRowId(sql,"partner",snap.partnerId)
+                if(storeSyncId.isBlank() || partnerSyncId.isBlank()) continue
+                if(include("OVERNIGHT","${snap.calendarDate}|$partnerSyncId",
+                        overnightPayload(snap,storeSyncId,partnerSyncId))) break
+            }
+            if (results.size<limit) {
+                for (draft in local.naturalDrafts()) {
+                    val storeSyncId=stableRowId(sql,"store",draft.storeId)
+                    val partnerSyncId=stableRowId(sql,"partner",draft.partnerId)
+                    if(storeSyncId.isBlank() || partnerSyncId.isBlank()) continue
+                    if(include("NATURAL","${draft.businessDate}|$partnerSyncId",
+                            naturalPayload(draft,storeSyncId,partnerSyncId))) break
                 }
             }
         }
@@ -392,6 +451,60 @@ internal object CustomerCloudBridge {
                         ack(database, kind, key, hash, version)
                         knownAck[kind to key] = Ack(hash, version)
                     }
+                    "OVERNIGHT", "NATURAL" -> {
+                        val stableStore=body.str("store_sync_id")
+                        val stablePartner=body.str("partner_sync_id")
+                        val date=body.str("date")
+                        if(key!="$date|$stablePartner") continue
+                        val resolvedStore=localRowId(database,"store",stableStore)
+                        val resolvedPartner=localRowId(database,"partner",stablePartner)
+                        if(resolvedStore<=0L || resolvedPartner<=0L)
+                            throw IllegalStateException(
+                                "跨日数据收款人或位置尚未同步，稍后重试：$date")
+                        val storage=OvernightReceiptDraftStore(context,bookId)
+                        val previous=knownAck[kind to key]
+                        if(kind=="OVERNIGHT") {
+                            val incoming=OvernightReceiptSnapshot(
+                                date,resolvedStore,resolvedPartner,
+                                body.optDouble("wechat"),body.optDouble("alipay"),
+                                body.optDouble("cash"),body.optBoolean("wechat_recorded"),
+                                body.optBoolean("alipay_recorded"),
+                                body.optBoolean("cash_recorded"))
+                            val local=storage.findSnapshot(date,resolvedPartner)
+                            val localHash=local?.let {
+                                digest(overnightPayload(it,stableStore,stablePartner).toString())
+                            }
+                            // Keep unsent changes; report CAS conflict rather than
+                            // silently overwriting another device's midnight entry.
+                            if(local!=null && local!=incoming &&
+                                (previous==null || previous.hash!=localHash)) continue
+                            if(!storage.saveSnapshot(incoming))
+                                throw IllegalStateException("恢复跨日收款失败：$date")
+                            val hash=digest(overnightPayload(incoming,stableStore,stablePartner).toString())
+                            ack(database,kind,key,hash,version)
+                            knownAck[kind to key]=Ack(hash,version)
+                        } else {
+                            val incoming=NaturalDayReceiptDraft(
+                                date,resolvedStore,resolvedPartner,
+                                body.optDouble("wechat"),body.optDouble("alipay"),
+                                body.optDouble("cash"),body.optBoolean("deduct_wechat",true),
+                                body.optBoolean("deduct_alipay",true),
+                                body.optDouble("saved_wechat",Double.NaN).takeIf { it.isFinite() },
+                                body.optDouble("saved_alipay",Double.NaN).takeIf { it.isFinite() },
+                                body.optDouble("saved_cash",Double.NaN).takeIf { it.isFinite() })
+                            val local=storage.findNatural(date,resolvedStore,resolvedPartner)
+                            val localHash=local?.let {
+                                digest(naturalPayload(it,stableStore,stablePartner).toString())
+                            }
+                            if(local!=null && local!=incoming &&
+                                (previous==null || previous.hash!=localHash)) continue
+                            if(!storage.saveNatural(incoming))
+                                throw IllegalStateException("恢复自然日收款原值失败：$date")
+                            val hash=digest(naturalPayload(incoming,stableStore,stablePartner).toString())
+                            ack(database,kind,key,hash,version)
+                            knownAck[kind to key]=Ack(hash,version)
+                        }
+                    }
                     "SETTINGS" -> {
                         if (key != "global") continue
                         val exclude = body.optBoolean("exclude_large_payments", true)
@@ -507,6 +620,7 @@ internal object CustomerCloudBridge {
         val supportsAnalysis = "receipt_analysis_state" in supported
         val supportsSettings = "analysis_settings" in supported
         val supportsSourceLinks = "bill_source_links" in supported
+        val supportsOvernight = "overnight_rollover" in supported
         val database = db.writableDatabase
         database.beginTransaction()
         try {
@@ -530,7 +644,8 @@ internal object CustomerCloudBridge {
                     (if (supportsCollector) "&include_collectors=true" else "") +
                     (if (supportsAnalysis) "&include_analysis=true" else "") +
                     (if (supportsSettings) "&include_settings=true" else "") +
-                    (if (supportsSourceLinks) "&include_source_links=true" else ""), null)
+                    (if (supportsSourceLinks) "&include_source_links=true" else "") +
+                    (if (supportsOvernight) "&include_overnight=true" else ""), null)
                 pullPages++
                 val changes = response.getJSONArray("changes")
                 val next = response.getLong("next_cursor")
@@ -551,7 +666,8 @@ internal object CustomerCloudBridge {
         if (canWrite) {
             for (page in 0 until 400) {
                 val batch = pending(context, db, bookId, MAX_BATCH, supportsCollector,
-                    supportsAnalysis, supportsSettings, supportsSourceLinks)
+                    supportsAnalysis, supportsSettings, supportsSourceLinks,
+                    supportsOvernight)
                 if (batch.isEmpty()) break
                 val body = JSONObject().put("items", JSONArray().apply {
                     batch.forEach { put(it.json()) }
@@ -608,7 +724,8 @@ internal object CustomerCloudBridge {
                 if (batch.size < MAX_BATCH) break
             }
             if (pending(context, db, bookId, 1, supportsCollector,
-                supportsAnalysis, supportsSettings, supportsSourceLinks).isNotEmpty()) {
+                supportsAnalysis, supportsSettings, supportsSourceLinks,
+                supportsOvernight).isNotEmpty()) {
                 throw IllegalStateException("待同步客流记录较多，已分批上传，仍有未确认记录")
             }
         }
@@ -633,6 +750,11 @@ internal object CustomerCloudBridge {
             GROUP BY platform,dedupe_key HAVING COUNT(*)>1 LIMIT 1
         """.trimIndent(), null).use { it.moveToFirst() }
         if (overlap) issues += "重叠账单来源关联尚未同步"
+        if (!supportsOvernight) {
+            val local=OvernightReceiptDraftStore(context,bookId)
+            if(local.snapshots().isNotEmpty() || local.naturalDrafts().isNotEmpty())
+                issues += "服务器尚未升级跨日收款同步 V1.0.23，凌晨记录仍仅保存在本机"
+        }
         status.edit().putLong("last_$bookId", System.currentTimeMillis())
             .putInt("uploaded_$bookId", uploaded)
             .putString("error_$bookId", issues.joinToString("；"))

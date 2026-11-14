@@ -4,57 +4,71 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class OvernightReceiptPolicyTest {
-    private fun item(date: String, store: Long = 1L, partner: Long = 5L,
-                     wx: Double = 0.0, ali: Double = 0.0) =
-        OvernightReceiptSnapshot(date, store, partner, wx, ali)
-    private fun draft(date: String = "2026-11-15", store: Long = 1L,
-                      wx: Double = 2800.0, ali: Double = 1400.0) =
-        NaturalDayReceiptDraft(date, store, 5L, wx, ali)
+    private fun morning(date: String, store: Long = 1, partner: Long = 5,
+        wx: Double = 0.0, ali: Double = 0.0, cash: Double = 0.0) =
+        OvernightReceiptSnapshot(date, store, partner, wx, ali, cash, cashRecorded = true)
+    private fun day(date: String = "2026-11-15", store: Long = 1,
+        wx: Double = 2800.0, ali: Double = 1400.0, cash: Double = 200.0,
+        deductWechat: Boolean = true, deductAlipay: Boolean = true) =
+        NaturalDayReceiptDraft(date, store, 5L, wx, ali, cash, deductWechat, deductAlipay)
 
-    @Test fun calendarTotalSubtractsYesterdayShiftAndAddsNextMorning() {
-        val result=OvernightReceiptPolicy.adjustment(draft(),
-            listOf(item("2026-11-15",store=2,wx=180.0,ali=85.0),
-                item("2026-11-16",store=1,wx=120.0,ali=65.0)))!!
+    @Test fun crossMidnightAddsNextMorningAndSubtractsPriorOneOnce() {
+        val m=listOf(morning("2026-11-15", 2, wx=180.0,ali=85.0,cash=0.0),
+            morning("2026-11-16", 1, wx=120.0,ali=65.0,cash=20.0))
+        val result=OvernightReceiptPolicy.adjustment(day(),m)!!
         assertEquals(2740.0,result.adjustedWechat,0.001)
         assertEquals(1380.0,result.adjustedAlipay,0.001)
+        assertEquals(220.0,result.adjustedCash,0.001)
         assertTrue(result.fullyConfirmed)
     }
-
-    @Test fun snapshotForOtherStoreDoesNotCreditThisStore() {
-        val result=OvernightReceiptPolicy.adjustment(draft(),
-            listOf(item("2026-11-15",store=2,wx=180.0),
-                item("2026-11-16",store=3,wx=120.0)))!!
+    @Test fun disableWechatDeductionDoesNotDisableAlipay() {
+        val m=listOf(morning("2026-11-15", 2,wx=180.0,ali=85.0),
+            morning("2026-11-16", 1,wx=120.0,ali=0.0))
+        val result=OvernightReceiptPolicy.adjustment(day(deductWechat=false),m)!!
+        assertEquals(2920.0,result.adjustedWechat,0.001)
+        assertEquals(1315.0,result.adjustedAlipay,0.001)
+    }
+    @Test fun doesNotCreditOtherStoreFromFollowingMorning() {
+        val result=OvernightReceiptPolicy.adjustment(day(),
+            listOf(morning("2026-11-15",2,wx=180.0),
+                morning("2026-11-16",3,wx=120.0)))!!
         assertEquals(2620.0,result.adjustedWechat,0.001)
         assertFalse(result.followingConfirmed)
     }
-
-    @Test fun sameAccountCannotBeAssignedToTwoStoresOnOneMorning() {
-        val first=item("2026-11-16",store=1,wx=150.0)
-        assertNull(OvernightReceiptPolicy.replace(item("2026-11-16",store=2,wx=150.0),listOf(first)))
-        val replaced=OvernightReceiptPolicy.replace(item("2026-11-16",store=1,wx=175.0),
-            listOf(first))!!
-        assertEquals(1,replaced.size)
-        assertEquals(175.0,replaced.single().wechat,0.001)
+    @Test fun sameCollectorMorningCannotBelongToTwoStores() {
+        val first=morning("2026-11-16",1,wx=150.0)
+        assertNull(OvernightReceiptPolicy.replace(morning("2026-11-16",2,wx=150.0),listOf(first)))
+        val changed=OvernightReceiptPolicy.replace(morning("2026-11-16",1,wx=175.0),listOf(first))!!
+        assertEquals(1,changed.size)
+        assertEquals(175.0,changed.single().wechat,0.001)
     }
-
-    @Test fun zeroConfirmationIsDifferentFromMissingSnapshot() {
-        val result=OvernightReceiptPolicy.adjustment(draft(),
-            listOf(item("2026-11-15"),item("2026-11-16")))!!
-        assertTrue(result.fullyConfirmed)
-        assertEquals(2800.0,result.adjustedWechat,0.001)
+    @Test fun blankAndConfirmedZeroAreDistinguished() {
+        val empty=OvernightReceiptSnapshot("2026-11-16",1,5,wechatRecorded=false,
+            alipayRecorded=false,cashRecorded=false)
+        assertNull(empty.amount("WECHAT"))
+        val confirmed=empty.withAmount("WECHAT",0.0)
+        assertEquals(0.0,confirmed.amount("WECHAT")!!,0.0001)
+        assertNull(confirmed.amount("CASH"))
     }
-
-    @Test fun negativeResultIsRejectedRatherThanSavedAsSales() {
-        assertNull(OvernightReceiptPolicy.adjustment(draft(wx=10.0),
-            listOf(item("2026-11-15",wx=20.0))))
+    @Test fun editingOneChannelDoesNotChangeOtherChannels() {
+        val first=morning("2026-11-16",wx=100.0,ali=30.0,cash=5.0)
+        val change=first.withAmount("WECHAT",200.0)
+        assertEquals(30.0,change.alipay,0.001)
+        assertEquals(5.0,change.cash,0.001)
+        assertEquals(200.0,change.wechat,0.001)
     }
-
-    @Test fun editsPreserveOriginalNaturalTotalsAndCalculationIsIdempotent() {
-        val snapshots=listOf(item("2026-11-15",wx=100.0),
-            item("2026-11-16",wx=50.0))
-        val first=OvernightReceiptPolicy.adjustment(draft(),snapshots)!!
-        val again=OvernightReceiptPolicy.adjustment(draft(),snapshots)!!
-        assertEquals(first,again)
-        assertEquals(2750.0,first.adjustedWechat,0.001)
+    @Test fun negativeAdjustmentIsRejected() {
+        assertNull(OvernightReceiptPolicy.adjustment(day(wx=10.0),
+            listOf(morning("2026-11-15",2,wx=20.0))))
+    }
+    @Test fun sourceCalendarTotalsNeverMutateOrDoubleAdjust() {
+        val source=day()
+        val m=listOf(morning("2026-11-15",2,wx=100.0),
+            morning("2026-11-16",1,wx=50.0))
+        val a=OvernightReceiptPolicy.adjustment(source,m)!!
+        val b=OvernightReceiptPolicy.adjustment(source,m)!!
+        assertEquals(a,b)
+        assertEquals(2750.0,a.adjustedWechat,0.001)
+        assertEquals(2800.0,source.wechat,0.001)
     }
 }
