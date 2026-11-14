@@ -11038,6 +11038,67 @@ private fun SessionScreen(
 
     val sharedPurchase = remember(dataVersion, date) { db.getPurchaseTotal(date) }
 
+    val receiptContext = androidx.compose.ui.platform.LocalContext.current
+    val overnightStore = remember(receiptContext, currentBook.id) {
+        OvernightReceiptDraftStore(receiptContext, currentBook.id)
+    }
+    var overnightTick by remember(currentBook.id) { mutableIntStateOf(0) }
+    val overnightSnapshots = remember(dataVersion, overnightTick, date, currentBook.id) {
+        overnightStore.snapshots()
+    }
+    // Already saved historic records may contain FINAL/NET values. Do not
+    // run midnight formulas on them unless their raw source is known.
+    val legacyNetRowIds = remember { mutableStateListOf<Long>() }
+    val deductionChoices = remember { mutableStateMapOf<String, Pair<Boolean, Boolean>>() }
+    fun deductionKey(partnerId: Long) = "$date|${storeId ?: 0L}|$partnerId"
+    fun chosenDeduction(partnerId: Long): Pair<Boolean,Boolean> =
+        deductionChoices[deductionKey(partnerId)]
+            ?: (storeId?.let { overnightStore.findNatural(date,it,partnerId) }
+                ?.let { it.deductWechat to it.deductAlipay })
+            ?: (true to true)
+
+    fun effectiveReceiptRows(): Pair<List<ReceiptDraftRow>, String?> {
+        val currentStore = storeId ?: return receiptRows.toList() to null
+        val seen = mutableSetOf<Long>()
+        val activeOtherStores = todayRecords.filter { it.storeId != currentStore }
+            .flatMap { saved ->
+                if (saved.receiptSplits.isNotEmpty()) saved.receiptSplits.filter {
+                    it.wechatIncome > 0.005 || it.alipayIncome > 0.005
+                }.map { it.partnerId } else listOf(
+                    saved.wechatCollectorId.takeIf { saved.wechatIncome > 0.005 } ?: 0L,
+                    saved.alipayCollectorId.takeIf { saved.alipayIncome > 0.005 } ?: 0L
+                )
+            }.filter { it>0L }.toSet()
+        return receiptRows.map { row ->
+            val partner = row.partnerId ?: return@map row
+            if (row.rowId in legacyNetRowIds) return@map row
+            // One merchant-day amount may NOT be attributed to two stalls.
+            if (partner in activeOtherStores &&
+                (row.wechat.toDoubleOrNull() ?: 0.0)>0.005) {
+                return emptyList<ReceiptDraftRow>() to
+                    "同一微信收款人当天涉及多个位置，请先拆分各位置自然日收款金额"
+            }
+            if (partner in activeOtherStores &&
+                (row.alipay.toDoubleOrNull() ?: 0.0)>0.005) {
+                return emptyList<ReceiptDraftRow>() to
+                    "同一支付宝收款人当天涉及多个位置，请先拆分各位置自然日收款金额"
+            }
+            if (!seen.add(partner)) return@map row
+            val (deductWx,deductAlipay)=chosenDeduction(partner)
+            val input=NaturalDayReceiptDraft(date,currentStore,partner,
+                row.wechat.toDoubleOrNull() ?: 0.0,
+                row.alipay.toDoubleOrNull() ?: 0.0,
+                row.cash.toDoubleOrNull() ?: 0.0,
+                deductWx,deductAlipay)
+            val adjustment=OvernightReceiptPolicy.adjustment(input,overnightSnapshots)
+                ?: return emptyList<ReceiptDraftRow>() to
+                    "凌晨扣减超过今日收款金额，请核对本日微信/支付宝总额与凌晨金额"
+            row.copy(wechat=cleanNumber(adjustment.adjustedWechat),
+                alipay=cleanNumber(adjustment.adjustedAlipay),
+                cash=cleanNumber(adjustment.adjustedCash))
+        } to null
+    }
+
     fun currentBusinessFingerprint(): String = buildString {
         append(editingRecordId ?: 0L).append('|')
         append(editingRecordDate.orEmpty()).append('|')
@@ -11063,6 +11124,7 @@ private fun SessionScreen(
         newCustomer = ""
         oldCustomer = ""
         receiptRows.clear()
+        legacyNetRowIds.clear()
         receiptRows.add(
             ReceiptDraftRow(
                 rowId = nextReceiptRowId++,
@@ -11195,6 +11257,32 @@ private fun SessionScreen(
         val recordStore = stores.firstOrNull { it.id == r.storeId }
         actualStartTime = r.actualStartTime.ifBlank { recordStore?.defaultStartTime ?: "16:00" }
         actualEndTime = r.actualEndTime.ifBlank { recordStore?.defaultEndTime ?: "24:00" }
+        legacyNetRowIds.clear()
+        receiptRows.indices.forEach { index ->
+            val saved = receiptRows[index]
+            val partner = saved.partnerId
+            val source = partner?.let { overnightStore.findNatural(r.date,r.storeId,it) }
+            val projected = source?.let {
+                OvernightReceiptPolicy.adjustment(it,overnightStore.snapshots())
+            }
+            val referenceWechat=source?.savedWechat ?: projected?.adjustedWechat
+            val referenceAlipay=source?.savedAlipay ?: projected?.adjustedAlipay
+            val referenceCash=source?.savedCash ?: projected?.adjustedCash
+            val matches = referenceWechat!=null && referenceAlipay!=null &&
+                referenceCash!=null &&
+                kotlin.math.abs((saved.wechat.toDoubleOrNull() ?: 0.0) -
+                    referenceWechat)<0.02 &&
+                kotlin.math.abs((saved.alipay.toDoubleOrNull() ?: 0.0) -
+                    referenceAlipay)<0.02 &&
+                kotlin.math.abs((saved.cash.toDoubleOrNull() ?: 0.0) -
+                    referenceCash)<0.02
+            if (matches && source != null) {
+                receiptRows[index] = saved.copy(
+                    wechat=cleanNumber(source.wechat),
+                    alipay=cleanNumber(source.alipay),
+                    cash=cleanNumber(source.cash))
+            } else legacyNetRowIds.add(saved.rowId)
+        }
         val missingMultiReceipt =
             savedSplits.any { it.partnerName == "多人收款明细未同步" }
         message =
@@ -11345,9 +11433,15 @@ private fun SessionScreen(
             return false
         }
 
-        val wNow = receiptRows.sumOf { it.wechat.toDoubleOrNull() ?: 0.0 }
-        val aNow = receiptRows.sumOf { it.alipay.toDoubleOrNull() ?: 0.0 }
-        val cNow = receiptRows.sumOf { it.cash.toDoubleOrNull() ?: 0.0 }
+        val (effectiveRows, overnightError) = effectiveReceiptRows()
+        if (overnightError != null) {
+            message = overnightError
+            isError = true
+            return false
+        }
+        val wNow = effectiveRows.sumOf { it.wechat.toDoubleOrNull() ?: 0.0 }
+        val aNow = effectiveRows.sumOf { it.alipay.toDoubleOrNull() ?: 0.0 }
+        val cNow = effectiveRows.sumOf { it.cash.toDoubleOrNull() ?: 0.0 }
         val eNow = expense.toDoubleOrNull() ?: 0.0
         val openNow = openingStock.toDoubleOrNull() ?: 0.0
         val closeNow = closingStock.toDoubleOrNull() ?: 0.0
@@ -11370,7 +11464,7 @@ private fun SessionScreen(
             return false
         }
 
-        val normalizedReceiptRows = receiptRows.filter { it.hasIncome }
+        val normalizedReceiptRows = effectiveRows.filter { it.hasIncome }
         if (revenueNow > 0.005 && normalizedReceiptRows.isEmpty()) {
             message = "保存失败：请填写至少一位收款人的微信、支付宝或现金"
             isError = true
@@ -11455,6 +11549,29 @@ private fun SessionScreen(
         isError = !result.success
         if (!result.success) return false
 
+        // Persist ORIGINAL natural-day values and opted-out deduction switches
+        // only after the official save succeeded. The ledger stays authoritative.
+        val rawGroups = receiptRows.filter {
+            it.partnerId != null && it.rowId !in legacyNetRowIds
+        }.groupBy { it.partnerId!! }
+        rawGroups.forEach { (partnerId, rows) ->
+            val (deductWx, deductAli) = chosenDeduction(partnerId)
+            val official=effectiveRows.filter { it.partnerId==partnerId }
+            val persisted = overnightStore.saveNatural(NaturalDayReceiptDraft(
+                date, requestedStore.id, partnerId,
+                wechat=rows.sumOf { it.wechat.toDoubleOrNull() ?: 0.0 },
+                alipay=rows.sumOf { it.alipay.toDoubleOrNull() ?: 0.0 },
+                cash=rows.sumOf { it.cash.toDoubleOrNull() ?: 0.0 },
+                deductWechat=deductWx,deductAlipay=deductAli,
+                savedWechat=official.sumOf { it.wechat.toDoubleOrNull() ?: 0.0 },
+                savedAlipay=official.sumOf { it.alipay.toDoubleOrNull() ?: 0.0 },
+                savedCash=official.sumOf { it.cash.toDoubleOrNull() ?: 0.0 }))
+            if(!persisted) {
+                message="营业额已保存，但原始自然日总额草稿保存失败；请勿重复加减凌晨收款"
+                isError=true
+            }
+        }
+
         clearForm()
         newBusinessFormExpanded = false
         onChanged()
@@ -11508,9 +11625,10 @@ private fun SessionScreen(
         onDispose { onEditGuardChange(false, "营业录入", null, null) }
     }
 
-    val w = receiptRows.sumOf { it.wechat.toDoubleOrNull() ?: 0.0 }
-    val a = receiptRows.sumOf { it.alipay.toDoubleOrNull() ?: 0.0 }
-    val c = receiptRows.sumOf { it.cash.toDoubleOrNull() ?: 0.0 }
+    val (computedRows, computedError) = effectiveReceiptRows()
+    val w = computedRows.sumOf { it.wechat.toDoubleOrNull() ?: 0.0 }
+    val a = computedRows.sumOf { it.alipay.toDoubleOrNull() ?: 0.0 }
+    val c = computedRows.sumOf { it.cash.toDoubleOrNull() ?: 0.0 }
     val e = expense.toDoubleOrNull() ?: 0.0
     val open = openingStock.toDoubleOrNull() ?: 0.0
     val close = closingStock.toDoubleOrNull() ?: 0.0
@@ -11941,6 +12059,53 @@ private fun SessionScreen(
                     historical = editingRecordId != null,
                     showSubtotal = receiptRows.size > 1,
                     canDelete = index > 0,
+                    bookId = currentBook.id,
+                    businessDate = date,
+                    overnightStoreId = storeId,
+                    overnightTick = overnightTick + dataVersion,
+                    legacyNet = row.rowId in legacyNetRowIds,
+                    overnightState = row.partnerId?.let { partnerId ->
+                        val currentStoreId=storeId ?: 0L
+                        val previous=overnightSnapshots.firstOrNull {
+                            it.calendarDate==date && it.partnerId==partnerId
+                        }
+                        val following=runCatching {
+                            LocalDate.parse(date).plusDays(1).toString()
+                        }.getOrNull()?.let { nextDate ->
+                            overnightSnapshots.firstOrNull {
+                                it.calendarDate==nextDate && it.partnerId==partnerId &&
+                                    it.storeId==currentStoreId
+                            }
+                        }
+                        val other=todayRecords.any { rec ->
+                            rec.storeId!=currentStoreId &&
+                                rec.receiptSplits.any {
+                                    it.partnerId==partnerId &&
+                                        (it.wechatIncome>0.005 || it.alipayIncome>0.005)
+                                }
+                        }
+                        val choices=chosenDeduction(partnerId)
+                        OvernightInlineState(previous,following,choices.first,choices.second,other)
+                    },
+                    onOvernightChanged = {
+                        overnightTick++
+                        onChanged()
+                    },
+                    onWechatToggle = {
+                        row.partnerId?.let { pid ->
+                            val previous=chosenDeduction(pid)
+                            deductionChoices[deductionKey(pid)]=!previous.first to previous.second
+                        }
+                    },
+                    onAlipayToggle = {
+                        row.partnerId?.let { pid ->
+                            val previous=chosenDeduction(pid)
+                            deductionChoices[deductionKey(pid)]=previous.first to !previous.second
+                        }
+                    },
+                    onUseNaturalInput = {
+                        legacyNetRowIds.remove(row.rowId)
+                    },
                     onChange = { updated ->
                         val target = receiptRows.indexOfFirst { it.rowId == updated.rowId }
                         if (target >= 0) receiptRows[target] = updated
@@ -12034,53 +12199,11 @@ private fun SessionScreen(
             }
         }
 
-        // Auxiliary local-only cross-midnight receipt calculator. It only fills
-        // the existing pending input rows after confirmation; NEVER writes the
-        // daily revenue or settlement automatically.
-        item {
-            BusinessOvernightReceiptAction(
-                bookId = currentBook.id,
-                businessDate = date,
-                storeId = storeId,
-                collectors = receiptRows.map { row ->
-                    OvernightCollectorOption(
-                        rowId = row.rowId,
-                        partnerId = row.partnerId,
-                        partnerName = row.partnerNameSnapshot.ifBlank {
-                            partners.firstOrNull { it.id == row.partnerId }?.name
-                                ?: "未指定"
-                        }
-                    )
-                },
-                conflictingPartnerIds = todayRecords.filter { record ->
-                    record.storeId != storeId
-                }.flatMap { record ->
-                    if (record.receiptSplits.isNotEmpty()) {
-                        record.receiptSplits.filter {
-                            it.wechatIncome > 0.005 || it.alipayIncome > 0.005
-                        }.map { it.partnerId }
-                    } else {
-                        listOfNotNull(
-                            record.wechatCollectorId.takeIf { record.wechatIncome > 0.005 },
-                            record.alipayCollectorId.takeIf { record.alipayIncome > 0.005 }
-                        )
-                    }
-                }.filter { it > 0L }.toSet(),
-                canApply = editingRecordId != null ||
-                    todayRecords.none { it.storeId == storeId },
-                onApply = { rowId, wechatAmount, alipayAmount ->
-                    val index = receiptRows.indexOfFirst { it.rowId == rowId }
-                    if (index >= 0) {
-                        val original = receiptRows[index]
-                        receiptRows[index] = original.copy(
-                            wechat = cleanNumber(wechatAmount),
-                            alipay = cleanNumber(alipayAmount)
-                        )
-                        message = "已按今日自然日总额计算并填入微信/支付宝；请核对后保存营业记录"
-                        isError = false
-                    }
-                }
-            )
+        if (computedError!=null) {
+            item {
+                Text(computedError,color=MaterialTheme.colorScheme.error,
+                    style=MaterialTheme.typography.labelSmall)
+            }
         }
 
         item {
@@ -12518,6 +12641,16 @@ private fun ReceiptSplitDraftRow(
     historical: Boolean,
     showSubtotal: Boolean,
     canDelete: Boolean,
+    bookId: String,
+    businessDate: String,
+    overnightStoreId: Long?,
+    overnightTick: Int,
+    legacyNet: Boolean,
+    overnightState: OvernightInlineState?,
+    onOvernightChanged: () -> Unit,
+    onWechatToggle: () -> Unit,
+    onAlipayToggle: () -> Unit,
+    onUseNaturalInput: () -> Unit,
     onChange: (ReceiptDraftRow) -> Unit,
     onDelete: () -> Unit
 ) {
@@ -12547,7 +12680,7 @@ private fun ReceiptSplitDraftRow(
                 horizontalArrangement = Arrangement.spacedBy(5.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
-                Box(Modifier.weight(1.25f)) {
+                Column(Modifier.weight(1.25f)) {
                     CompactSelectButton(
                         "收款人",
                         display,
@@ -12572,20 +12705,24 @@ private fun ReceiptSplitDraftRow(
                             )
                         }
                     }
+                    Text("凌晨收款",fontSize=9.sp,color=Color.Gray,
+                        modifier=Modifier.padding(top=2.dp))
                 }
 
-                CompactNumberField(
-                    "微信",
-                    row.wechat,
-                    { onChange(row.copy(wechat = it)) },
-                    Modifier.weight(1f)
-                )
-                CompactNumberField(
-                    "支付宝",
-                    row.alipay,
-                    { onChange(row.copy(alipay = it)) },
-                    Modifier.weight(1f)
-                )
+                Column(Modifier.weight(1f)) {
+                    CompactNumberField(
+                        "微信",row.wechat,
+                        { onChange(row.copy(wechat=it)) },Modifier.fillMaxWidth())
+                    OvernightInlineNumber(bookId,businessDate,overnightStoreId,
+                        row.partnerId,"WECHAT",overnightTick,onOvernightChanged)
+                }
+                Column(Modifier.weight(1f)) {
+                    CompactNumberField(
+                        "支付宝",row.alipay,
+                        { onChange(row.copy(alipay=it)) },Modifier.fillMaxWidth())
+                    OvernightInlineNumber(bookId,businessDate,overnightStoreId,
+                        row.partnerId,"ALIPAY",overnightTick,onOvernightChanged)
+                }
                 Column(
                     Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(0.dp)
@@ -12621,8 +12758,19 @@ private fun ReceiptSplitDraftRow(
                         { onChange(row.copy(cash = it)) },
                         Modifier.fillMaxWidth()
                     )
+                    OvernightInlineNumber(bookId,businessDate,overnightStoreId,
+                        row.partnerId,"CASH",overnightTick,onOvernightChanged)
                 }
             }
+            if(legacyNet) {
+                Text("历史记录原始自然日收款未知，暂按已保存净额处理。" +
+                    "如要重新输入商家后台今日总额，点击此处切换",
+                    modifier=Modifier.clickable(onClick=onUseNaturalInput)
+                        .padding(vertical=3.dp),
+                    fontSize=10.sp,color=Color(0xFF996A00))
+            }
+            OvernightDeductionCaption(
+                overnightState,onWechatToggle,onAlipayToggle)
         }
     }
 }
