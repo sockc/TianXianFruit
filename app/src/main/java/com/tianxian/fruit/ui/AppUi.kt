@@ -1,6 +1,7 @@
 package com.tianxian.fruit.ui
 
 import com.tianxian.fruit.weather.BusinessWeekForecastPolicy
+import com.tianxian.fruit.weather.WeatherNotificationSettingsManager
 
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
@@ -2653,7 +2654,7 @@ private fun HomeWeatherCard(
         context.getSharedPreferences("tianxian_weather_plan_${currentBook.id}", Context.MODE_PRIVATE)
     }
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
-    var temporaryStoreId by remember(selectedDate) { mutableStateOf<Long?>(null) }
+    var temporaryStoreId by remember(currentBook.id) { mutableStateOf<Long?>(null) }
     var storeMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(selectedDate) {
@@ -2810,6 +2811,9 @@ private fun HomeWeatherCard(
 
     val overview = state.overview
     val current = overview?.current
+    val rainThreshold = remember(currentBook.id, dataVersion) {
+        WeatherNotificationSettingsManager(context).load(currentBook.id).rainProbabilityThreshold
+    }
     val day = overview?.daily?.firstOrNull { it.date == dateString } ?: overview?.selectedDay()
     val businessHours = storeBusinessHours(overview?.hourly.orEmpty(), dateString, selectedStore)
     val maxPop = businessHours.mapNotNull { it.precipitationProbability }.maxOrNull()
@@ -2817,7 +2821,8 @@ private fun HomeWeatherCard(
     val rainReminder = remember(
         overview?.rawJson,
         selectedDate,
-        selectedStore?.id
+        selectedStore?.id,
+        rainThreshold
     ) {
         HomeRainReminderPolicy.evaluate(
             date = selectedDate,
@@ -2829,7 +2834,8 @@ private fun HomeWeatherCard(
                 selectedStore
             ),
             businessHours = businessHours,
-            day = day
+            day = day,
+            rainProbabilityThreshold = rainThreshold
         )
     }
     val headline = current?.text?.takeIf { selectedDate == LocalDate.now() }
@@ -3010,7 +3016,8 @@ private fun HomeWeatherCard(
                     // not invented hour-by-hour rainfall estimates.
                     val forecastDays = BusinessWeekForecastPolicy.nextSevenDays(
                         overview.daily,
-                        LocalDate.now(ZoneId.of("Asia/Shanghai"))
+                        LocalDate.now(ZoneId.of("Asia/Shanghai")),
+                        rainThreshold
                     )
                     if (forecastDays.isNotEmpty()) {
                         Text(

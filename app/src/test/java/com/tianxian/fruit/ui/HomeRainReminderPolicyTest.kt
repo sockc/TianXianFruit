@@ -45,7 +45,7 @@ class HomeRainReminderPolicyTest {
 
     @Test fun preOpenRainGetsPriorityOverOtherTimeRain() {
         val early = hour("09:00", text = "小雨")
-        val pre = hour("15:00", pop = 50.0)
+        val pre = hour("15:00", pop = 65.0)
         val result = HomeRainReminderPolicy.evaluate(day, now, listOf(early, pre), listOf(pre), emptyList(), daily())
         assertNotNull(result)
         assertTrue(result!!.headline.contains("开摊前"))
@@ -63,6 +63,23 @@ class HomeRainReminderPolicyTest {
         assertFalse(result.detail.contains("19:00"))
     }
 
+    @Test fun noWarningBelowDefaultSixtyPercent() {
+        val borderline = hour("18:00", pop = 50.0)
+        assertNull(HomeRainReminderPolicy.evaluate(
+            day, now, listOf(borderline), emptyList(), listOf(borderline), daily()
+        ))
+    }
+    @Test fun savedCustomThresholdControlsHomepageWarning() {
+        val borderline = hour("18:00", pop = 65.0)
+        assertNull(HomeRainReminderPolicy.evaluate(
+            day, now, listOf(borderline), emptyList(), listOf(borderline), daily(),
+            rainProbabilityThreshold = 70.0
+        ))
+        assertNotNull(HomeRainReminderPolicy.evaluate(
+            day, now, listOf(borderline), emptyList(), listOf(borderline), daily(),
+            rainProbabilityThreshold = 60.0
+        ))
+    }
     @Test fun clearForecastDoesNotCreateWarning() {
         val sunny = hour("17:00")
         assertNull(HomeRainReminderPolicy.evaluate(day, now, listOf(sunny), emptyList(), listOf(sunny), daily()))
