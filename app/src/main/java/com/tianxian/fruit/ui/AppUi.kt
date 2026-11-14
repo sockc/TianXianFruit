@@ -11109,8 +11109,12 @@ private fun SessionScreen(
         append(actualStartTime).append('|').append(actualEndTime).append('|')
         receiptRows.forEach { row ->
             append(row.partnerId ?: 0L).append(':')
-            append(row.wechat).append(':').append(row.alipay).append(':').append(row.cash).append(';')
+            append(row.wechat).append(':').append(row.alipay).append(':').append(row.cash)
+            append(':').append(row.rowId in legacyNetRowIds)
+            row.partnerId?.let { append(':').append(chosenDeduction(it)) }
+            append(';')
         }
+        append("overnightTick=").append(overnightTick)
     }
 
     fun clearForm(keepDate: Boolean = true) {
@@ -11465,6 +11469,21 @@ private fun SessionScreen(
         }
 
         val normalizedReceiptRows = effectiveRows.filter { it.hasIncome }
+        // An account's full calendar-day total is a single value per day;
+        // never overwrite another position's raw total after official save.
+        val naturalCollision = receiptRows.filter {
+            it.partnerId != null && it.rowId !in legacyNetRowIds
+        }.any { row ->
+            overnightStore.naturalDrafts().any { old ->
+                old.businessDate == date && old.partnerId == row.partnerId &&
+                    old.storeId != requestedStore.id
+            }
+        }
+        if (naturalCollision) {
+            message = "该收款人这天的自然日总额已归属另一个位置，请按位置拆分后再保存"
+            isError = true
+            return false
+        }
         if (revenueNow > 0.005 && normalizedReceiptRows.isEmpty()) {
             message = "保存失败：请填写至少一位收款人的微信、支付宝或现金"
             isError = true
@@ -12058,6 +12077,9 @@ private fun SessionScreen(
                     partners = partners,
                     historical = editingRecordId != null,
                     showSubtotal = receiptRows.size > 1,
+                    computedSubtotal = computedRows.firstOrNull {
+                        it.rowId == row.rowId
+                    }?.total,
                     canDelete = index > 0,
                     bookId = currentBook.id,
                     businessDate = date,
@@ -12640,6 +12662,7 @@ private fun ReceiptSplitDraftRow(
     partners: List<PartnerOption>,
     historical: Boolean,
     showSubtotal: Boolean,
+    computedSubtotal: Double?,
     canDelete: Boolean,
     bookId: String,
     businessDate: String,
@@ -12736,7 +12759,7 @@ private fun ReceiptSplitDraftRow(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                "小计 ${money(row.total)}",
+                                "小计 ${money(computedSubtotal ?: row.total)}",
                                 fontSize = 9.sp,
                                 color = BrandGreen,
                                 maxLines = 1
