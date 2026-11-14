@@ -12034,6 +12034,55 @@ private fun SessionScreen(
             }
         }
 
+        // Auxiliary local-only cross-midnight receipt calculator. It only fills
+        // the existing pending input rows after confirmation; NEVER writes the
+        // daily revenue or settlement automatically.
+        item {
+            BusinessOvernightReceiptAction(
+                bookId = currentBook.id,
+                businessDate = date,
+                storeId = storeId,
+                collectors = receiptRows.map { row ->
+                    OvernightCollectorOption(
+                        rowId = row.rowId,
+                        partnerId = row.partnerId,
+                        partnerName = row.partnerNameSnapshot.ifBlank {
+                            partners.firstOrNull { it.id == row.partnerId }?.name
+                                ?: "未指定"
+                        }
+                    )
+                },
+                conflictingPartnerIds = todayRecords.filter { record ->
+                    record.storeId != storeId
+                }.flatMap { record ->
+                    if (record.receiptSplits.isNotEmpty()) {
+                        record.receiptSplits.filter {
+                            it.wechatIncome > 0.005 || it.alipayIncome > 0.005
+                        }.map { it.partnerId }
+                    } else {
+                        listOfNotNull(
+                            record.wechatCollectorId.takeIf { record.wechatIncome > 0.005 },
+                            record.alipayCollectorId.takeIf { record.alipayIncome > 0.005 }
+                        )
+                    }
+                }.filter { it > 0L }.toSet(),
+                canApply = editingRecordId != null ||
+                    todayRecords.none { it.storeId == storeId },
+                onApply = { rowId, wechatAmount, alipayAmount ->
+                    val index = receiptRows.indexOfFirst { it.rowId == rowId }
+                    if (index >= 0) {
+                        val original = receiptRows[index]
+                        receiptRows[index] = original.copy(
+                            wechat = cleanNumber(wechatAmount),
+                            alipay = cleanNumber(alipayAmount)
+                        )
+                        message = "已按今日自然日总额计算并填入微信/支付宝；请核对后保存营业记录"
+                        isError = false
+                    }
+                }
+            )
+        }
+
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 CompactIntegerField("新客", newCustomer, { newCustomer = it }, Modifier.weight(1f))

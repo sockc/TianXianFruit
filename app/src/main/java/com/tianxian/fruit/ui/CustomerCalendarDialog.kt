@@ -66,6 +66,7 @@ internal fun CustomerCalendarDialog(
     onQuickRange: (String) -> Unit,
     businessDates: Set<LocalDate> = emptySet(),
     incompleteBillDates: Set<LocalDate> = emptySet(),
+    businessStoreCounts: Map<LocalDate, Int> = emptyMap(),
     singleDayOnly: Boolean = false,
     onlyBusinessDays: Boolean = false,
     onOnlyBusinessDaysChange: (Boolean) -> Unit = {}
@@ -227,21 +228,24 @@ internal fun CustomerCalendarDialog(
                         }
                     }
                 }
-                if (singleDayOnly) {
+                if (businessDates.isNotEmpty()) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("● 有营业  ● 待补账单",
+                        Text("● 有营业  ● 账单待核对",
                             style = MaterialTheme.typography.labelSmall, color = accent)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("仅看营业日", style = MaterialTheme.typography.labelSmall)
-                            Switch(checked = onlyBusinessDays,
-                                onCheckedChange = onOnlyBusinessDaysChange,
-                                enabled = businessDates.isNotEmpty(),
-                                modifier = Modifier.height(30.dp))
+                        if (singleDayOnly) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("仅看营业日", style = MaterialTheme.typography.labelSmall)
+                                Switch(checked = onlyBusinessDays,
+                                    onCheckedChange = onOnlyBusinessDaysChange,
+                                    modifier = Modifier.height(30.dp))
+                            }
                         }
                     }
                 }
-                Text("已选：${chosen.label}",
+                Text("已选：${chosen.label}" +
+                    (if (chosen.start == chosen.end) businessStoreCounts[chosen.start]
+                        ?.let { " · ${it}个营业位置" }.orEmpty() else ""),
                     style = MaterialTheme.typography.bodySmall, color = accent,
                     fontWeight = FontWeight.SemiBold)
             }
