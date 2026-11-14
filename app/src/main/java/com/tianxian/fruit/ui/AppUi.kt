@@ -11049,13 +11049,16 @@ private fun SessionScreen(
     // Already saved historic records may contain FINAL/NET values. Do not
     // run midnight formulas on them unless their raw source is known.
     val legacyNetRowIds = remember { mutableStateListOf<Long>() }
-    val deductionChoices = remember { mutableStateMapOf<String, Pair<Boolean, Boolean>>() }
+    val deductionChoices = remember { mutableStateMapOf<String, Triple<Boolean, Boolean, Boolean>>() }
+    var pendingLegacyOvernightConfirm by remember(date, currentBook.id) {
+        mutableStateOf<Long?>(null)
+    }
     fun deductionKey(partnerId: Long) = "$date|${storeId ?: 0L}|$partnerId"
-    fun chosenDeduction(partnerId: Long): Pair<Boolean,Boolean> =
+    fun chosenDeduction(partnerId: Long): Triple<Boolean,Boolean,Boolean> =
         deductionChoices[deductionKey(partnerId)]
             ?: (storeId?.let { overnightStore.findNatural(date,it,partnerId) }
-                ?.let { it.deductWechat to it.deductAlipay })
-            ?: (true to true)
+                ?.let { Triple(it.deductWechat,it.deductAlipay,it.deductCash) })
+            ?: Triple(true,true,true)
 
     fun effectiveReceiptRows(): Pair<List<ReceiptDraftRow>, String?> {
         val currentStore = storeId ?: return receiptRows.toList() to null
@@ -11084,12 +11087,12 @@ private fun SessionScreen(
                     "同一支付宝收款人当天涉及多个位置，请先拆分各位置自然日收款金额"
             }
             if (!seen.add(partner)) return@map row
-            val (deductWx,deductAlipay)=chosenDeduction(partner)
+            val (deductWx,deductAlipay,deductCash)=chosenDeduction(partner)
             val input=NaturalDayReceiptDraft(date,currentStore,partner,
                 row.wechat.toDoubleOrNull() ?: 0.0,
                 row.alipay.toDoubleOrNull() ?: 0.0,
                 row.cash.toDoubleOrNull() ?: 0.0,
-                deductWx,deductAlipay)
+                deductWx,deductAlipay,deductCash=deductCash)
             val adjustment=OvernightReceiptPolicy.adjustment(input,overnightSnapshots)
                 ?: return emptyList<ReceiptDraftRow>() to
                     "凌晨扣减超过今日收款金额，请核对本日微信/支付宝总额与凌晨金额"
@@ -11129,6 +11132,7 @@ private fun SessionScreen(
         oldCustomer = ""
         receiptRows.clear()
         legacyNetRowIds.clear()
+        pendingLegacyOvernightConfirm = null
         receiptRows.add(
             ReceiptDraftRow(
                 rowId = nextReceiptRowId++,
@@ -11148,6 +11152,7 @@ private fun SessionScreen(
     fun loadRecord(r: StoreDailyRecord) {
         editingRecordId = r.id
         editingRecordDate = r.date
+        pendingLegacyOvernightConfirm = null
         onWorkDateChange(r.date)
         storeId = r.storeId
         historicalStoreName = r.storeName
@@ -11425,6 +11430,44 @@ private fun SessionScreen(
         }
     }
 
+    // Old records store final/net figures. Their original natural-day values
+    // cannot be inferred. Ask before counting a newly recorded next morning.
+    if (pendingLegacyOvernightConfirm != null) {
+        val pendingRowId = pendingLegacyOvernightConfirm
+        val pendingRow = receiptRows.firstOrNull { it.rowId == pendingRowId }
+        AlertDialog(
+            onDismissRequest = { pendingLegacyOvernightConfirm = null },
+            title = { Text("确认将凌晨收款计入营业额") },
+            text = {
+                Text("这条历史营业记录只保存了实际收款，无法判断当时是否已经手动加过凌晨金额。" +
+                    "确认后，按原来保存的金额加上这次登记的凌晨收款，" +
+                    "暂不重复扣除昨日凌晨。请核对营业额后再点“保存修改”。" +
+                    "如果原来已包含凌晨收款，请选择“暂不计入”，避免重复计算。")
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = pendingRow?.partnerId != null,
+                    onClick = {
+                        val rowId = pendingLegacyOvernightConfirm
+                        val pid = pendingRow?.partnerId
+                        if (pid != null && rowId != null) {
+                            deductionChoices[deductionKey(pid)] = Triple(false,false,false)
+                            legacyNetRowIds.remove(rowId)
+                            message = "已将新增凌晨收款加入待保存营业额；请核对后保存修改"
+                            isError = false
+                        }
+                        pendingLegacyOvernightConfirm = null
+                    }
+                ) { Text("计入并核对") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingLegacyOvernightConfirm = null }) {
+                    Text("暂不计入")
+                }
+            }
+        )
+    }
+
     fun saveBusinessEdits(): Boolean {
         if (
             editingRecordId != null &&
@@ -11574,7 +11617,7 @@ private fun SessionScreen(
             it.partnerId != null && it.rowId !in legacyNetRowIds
         }.groupBy { it.partnerId!! }
         rawGroups.forEach { (partnerId, rows) ->
-            val (deductWx, deductAli) = chosenDeduction(partnerId)
+            val (deductWx, deductAli, deductCash) = chosenDeduction(partnerId)
             val official=effectiveRows.filter { it.partnerId==partnerId }
             val persisted = overnightStore.saveNatural(NaturalDayReceiptDraft(
                 date, requestedStore.id, partnerId,
@@ -11584,7 +11627,8 @@ private fun SessionScreen(
                 deductWechat=deductWx,deductAlipay=deductAli,
                 savedWechat=official.sumOf { it.wechat.toDoubleOrNull() ?: 0.0 },
                 savedAlipay=official.sumOf { it.alipay.toDoubleOrNull() ?: 0.0 },
-                savedCash=official.sumOf { it.cash.toDoubleOrNull() ?: 0.0 }))
+                savedCash=official.sumOf { it.cash.toDoubleOrNull() ?: 0.0 },
+                deductCash=deductCash))
             if(!persisted) {
                 message="营业额已保存，但原始自然日总额草稿保存失败；请勿重复加减凌晨收款"
                 isError=true
@@ -12107,26 +12151,56 @@ private fun SessionScreen(
                                 }
                         }
                         val choices=chosenDeduction(partnerId)
-                        OvernightInlineState(previous,following,choices.first,choices.second,other)
+                        val legacy = row.rowId in legacyNetRowIds
+                        OvernightInlineState(previous,following,
+                            !legacy && choices.first,
+                            !legacy && choices.second,
+                            !legacy && choices.third,
+                            other)
                     },
                     onOvernightChanged = {
                         overnightTick++
+                        if (editingRecordId != null &&
+                            row.rowId in legacyNetRowIds) {
+                            pendingLegacyOvernightConfirm = row.rowId
+                        }
                         onChanged()
                     },
                     onWechatToggle = {
                         row.partnerId?.let { pid ->
                             val previous=chosenDeduction(pid)
-                            deductionChoices[deductionKey(pid)]=!previous.first to previous.second
+                            if (row.rowId in legacyNetRowIds) {
+                                pendingLegacyOvernightConfirm = row.rowId
+                            } else {
+                                deductionChoices[deductionKey(pid)] = Triple(
+                                    !previous.first,previous.second,previous.third)
+                            }
                         }
                     },
                     onAlipayToggle = {
                         row.partnerId?.let { pid ->
                             val previous=chosenDeduction(pid)
-                            deductionChoices[deductionKey(pid)]=previous.first to !previous.second
+                            if (row.rowId in legacyNetRowIds) {
+                                pendingLegacyOvernightConfirm = row.rowId
+                            } else {
+                                deductionChoices[deductionKey(pid)] = Triple(
+                                    previous.first,!previous.second,previous.third)
+                            }
+                        }
+                    },
+                    onCashToggle = {
+                        row.partnerId?.let { pid ->
+                            val previous=chosenDeduction(pid)
+                            if (row.rowId in legacyNetRowIds) {
+                                pendingLegacyOvernightConfirm = row.rowId
+                            } else {
+                                deductionChoices[deductionKey(pid)] = Triple(
+                                    previous.first,previous.second,!previous.third)
+                            }
                         }
                     },
                     onUseNaturalInput = {
-                        legacyNetRowIds.remove(row.rowId)
+                        pendingLegacyOvernightConfirm = row.rowId
                     },
                     onChange = { updated ->
                         val target = receiptRows.indexOfFirst { it.rowId == updated.rowId }
@@ -12673,6 +12747,7 @@ private fun ReceiptSplitDraftRow(
     onOvernightChanged: () -> Unit,
     onWechatToggle: () -> Unit,
     onAlipayToggle: () -> Unit,
+    onCashToggle: () -> Unit,
     onUseNaturalInput: () -> Unit,
     onChange: (ReceiptDraftRow) -> Unit,
     onDelete: () -> Unit
@@ -12728,23 +12803,20 @@ private fun ReceiptSplitDraftRow(
                             )
                         }
                     }
-                    Text("凌晨收款",fontSize=9.sp,color=Color.Gray,
-                        modifier=Modifier.padding(top=2.dp))
+                    // Keep the original collector selector dimensions unchanged.
                 }
 
                 Column(Modifier.weight(1f)) {
                     CompactNumberField(
                         "微信",row.wechat,
                         { onChange(row.copy(wechat=it)) },Modifier.fillMaxWidth())
-                    OvernightInlineNumber(bookId,businessDate,overnightStoreId,
-                        row.partnerId,"WECHAT",overnightTick,onOvernightChanged)
+                    // Night and prior-day numbers occupy two aligned rows below.
                 }
                 Column(Modifier.weight(1f)) {
                     CompactNumberField(
                         "支付宝",row.alipay,
                         { onChange(row.copy(alipay=it)) },Modifier.fillMaxWidth())
-                    OvernightInlineNumber(bookId,businessDate,overnightStoreId,
-                        row.partnerId,"ALIPAY",overnightTick,onOvernightChanged)
+                    // Aligned with the collector label and cash channel.
                 }
                 Column(
                     Modifier.weight(1f),
@@ -12781,19 +12853,70 @@ private fun ReceiptSplitDraftRow(
                         { onChange(row.copy(cash = it)) },
                         Modifier.fillMaxWidth()
                     )
+                    // No persistent editable night input field.
+                }
+            }
+            // "昨日凌晨" is tied to the SELECTED natural date, not the
+            // previous business date. On Nov 15 it is Nov 15 00:00+ money
+            // earned by the Nov 14 shift (NOT Nov 14 00:00+).
+            val yesterday = overnightState?.previous
+            val hasYesterday = listOf(
+                yesterday?.amount("WECHAT"),yesterday?.amount("ALIPAY"),
+                yesterday?.amount("CASH")
+            ).any { (it ?: 0.0)>0.005 }
+            if(hasYesterday) {
+                Row(Modifier.fillMaxWidth(),
+                    horizontalArrangement=Arrangement.spacedBy(5.dp),
+                    verticalAlignment=Alignment.CenterVertically) {
+                    Text("昨日凌晨",Modifier.weight(1.25f),fontSize=9.sp,
+                        color=Color.DarkGray,maxLines=1)
+                    Column(Modifier.weight(1f)) {
+                        OvernightYesterdayNumber(yesterday?.amount("WECHAT"),
+                            overnightState?.deductWechat==true,onWechatToggle)
+                    }
+                    Column(Modifier.weight(1f)) {
+                        OvernightYesterdayNumber(yesterday?.amount("ALIPAY"),
+                            overnightState?.deductAlipay==true,onAlipayToggle)
+                    }
+                    Column(Modifier.weight(1f)) {
+                        OvernightYesterdayNumber(yesterday?.amount("CASH"),
+                            overnightState?.deductCash==true,onCashToggle)
+                    }
+                }
+            }
+            Row(Modifier.fillMaxWidth(),
+                horizontalArrangement=Arrangement.spacedBy(5.dp),
+                verticalAlignment=Alignment.CenterVertically) {
+                Text("凌晨收款",Modifier.weight(1.25f),fontSize=9.sp,
+                    color=Color.Gray,maxLines=1)
+                Column(Modifier.weight(1f)) {
+                    OvernightInlineNumber(bookId,businessDate,overnightStoreId,
+                        row.partnerId,"WECHAT",overnightTick,onOvernightChanged)
+                }
+                Column(Modifier.weight(1f)) {
+                    OvernightInlineNumber(bookId,businessDate,overnightStoreId,
+                        row.partnerId,"ALIPAY",overnightTick,onOvernightChanged)
+                }
+                Column(Modifier.weight(1f)) {
                     OvernightInlineNumber(bookId,businessDate,overnightStoreId,
                         row.partnerId,"CASH",overnightTick,onOvernightChanged)
                 }
             }
-            if(legacyNet) {
-                Text("历史记录原始自然日收款未知，暂按已保存净额处理。" +
-                    "如要重新输入商家后台今日总额，点击此处切换",
+            val hasFollowingNight = listOf(
+                overnightState?.following?.amount("WECHAT"),
+                overnightState?.following?.amount("ALIPAY"),
+                overnightState?.following?.amount("CASH")
+            ).any { (it ?: 0.0)>0.005 }
+            if(legacyNet && hasFollowingNight) {
+                Text("历史净额暂未计入新登记的凌晨收款，点击确认加入",
                     modifier=Modifier.clickable(onClick=onUseNaturalInput)
                         .padding(vertical=3.dp),
                     fontSize=10.sp,color=Color(0xFF996A00))
             }
-            OvernightDeductionCaption(
-                overnightState,onWechatToggle,onAlipayToggle)
+            if(overnightState?.hasConflict==true) {
+                Text("同一收款人当天有多个位置，需先核对是否重复计算",
+                    fontSize=10.sp,color=Color(0xFF996A00))
+            }
         }
     }
 }

@@ -48,7 +48,10 @@ internal data class NaturalDayReceiptDraft(
     // Without these fields an older copied record may be already adjusted.
     val savedWechat: Double? = null,
     val savedAlipay: Double? = null,
-    val savedCash: Double? = null
+    val savedCash: Double? = null,
+    // Opt-in status per calendar day. This defaults to deduction for NEW
+    // drafts; persisted pre-123 cash drafts default false during migration.
+    val deductCash: Boolean = true
 )
 
 internal data class OvernightReceiptAdjustment(
@@ -118,10 +121,11 @@ internal object OvernightReceiptPolicy {
         val previousAlipay = if (draft.deductAlipay) previous?.amount("ALIPAY") ?: 0.0 else 0.0
         val nextWechat = following?.amount("WECHAT") ?: 0.0
         val nextAlipay = following?.amount("ALIPAY") ?: 0.0
+        val previousCash = if (draft.deductCash) previous?.amount("CASH") ?: 0.0 else 0.0
         val nextCash = following?.amount("CASH") ?: 0.0
         val wx = money(draft.wechat - previousWechat + nextWechat)
         val ali = money(draft.alipay - previousAlipay + nextAlipay)
-        val cash = money(draft.cash + nextCash)
+        val cash = money(draft.cash - previousCash + nextCash)
         if (wx < -0.005 || ali < -0.005 || cash < -0.005) return null
         return OvernightReceiptAdjustment(
             naturalWechat = money(draft.wechat),

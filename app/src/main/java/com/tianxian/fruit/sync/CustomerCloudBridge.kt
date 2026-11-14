@@ -122,7 +122,8 @@ internal object CustomerCloudBridge {
         .put("cash_recorded",s.cashRecorded)
 
     private fun naturalPayload(
-        s: NaturalDayReceiptDraft, storeSyncId:String, partnerSyncId:String
+        s: NaturalDayReceiptDraft, storeSyncId:String, partnerSyncId:String,
+        includeCashDeduction: Boolean = false
     ): JSONObject = JSONObject().put("date",s.businessDate)
         .put("store_sync_id",storeSyncId).put("partner_sync_id",partnerSyncId)
         .put("wechat",s.wechat).put("alipay",s.alipay).put("cash",s.cash)
@@ -130,6 +131,7 @@ internal object CustomerCloudBridge {
         .put("saved_wechat",s.savedWechat ?: JSONObject.NULL)
         .put("saved_alipay",s.savedAlipay ?: JSONObject.NULL)
         .put("saved_cash",s.savedCash ?: JSONObject.NULL)
+        .apply { if (includeCashDeduction) put("deduct_cash",s.deductCash) }
 
     private fun analysisState(excluded: Boolean, included: Boolean): String = when {
         included -> "INCLUDED"
@@ -143,7 +145,8 @@ internal object CustomerCloudBridge {
         includeAnalysis: Boolean = false,
         includeSettings: Boolean = false,
         includeSourceLinks: Boolean = false,
-        includeOvernight: Boolean = false
+        includeOvernight: Boolean = false,
+        includeCashDeduction: Boolean = false
     ): List<SyncItem> {
         val ack = ackMap(db.readableDatabase)
         val results = mutableListOf<SyncItem>()
@@ -304,7 +307,8 @@ internal object CustomerCloudBridge {
                     val partnerSyncId=stableRowId(sql,"partner",draft.partnerId)
                     if(storeSyncId.isBlank() || partnerSyncId.isBlank()) continue
                     if(include("NATURAL","${draft.businessDate}|$partnerSyncId",
-                            naturalPayload(draft,storeSyncId,partnerSyncId))) break
+                            naturalPayload(draft,storeSyncId,partnerSyncId,
+                                includeCashDeduction))) break
                 }
             }
         }
@@ -491,16 +495,27 @@ internal object CustomerCloudBridge {
                                 body.optBoolean("deduct_alipay",true),
                                 body.optDouble("saved_wechat",Double.NaN).takeIf { it.isFinite() },
                                 body.optDouble("saved_alipay",Double.NaN).takeIf { it.isFinite() },
-                                body.optDouble("saved_cash",Double.NaN).takeIf { it.isFinite() })
+                                body.optDouble("saved_cash",Double.NaN).takeIf { it.isFinite() },
+                                body.optBoolean("deduct_cash",false))
                             val local=storage.findNatural(date,resolvedStore,resolvedPartner)
                             val localHash=local?.let {
-                                digest(naturalPayload(it,stableStore,stablePartner).toString())
+                                digest(naturalPayload(it,stableStore,stablePartner,
+                                    body.has("deduct_cash")).toString())
                             }
                             if(local!=null && local!=incoming &&
                                 (previous==null || previous.hash!=localHash)) continue
+                            // Legacy 1.0.23 server has no cash deduction flag.
+                            // Do not let a pull silently undo a local cash choice.
+                            if (!body.has("deduct_cash") && local?.deductCash==true &&
+                                previous != null) {
+                                ack(database,kind,key,digest(naturalPayload(incoming,
+                                    stableStore,stablePartner).toString()),version)
+                                continue
+                            }
                             if(!storage.saveNatural(incoming))
                                 throw IllegalStateException("恢复自然日收款原值失败：$date")
-                            val hash=digest(naturalPayload(incoming,stableStore,stablePartner).toString())
+                            val hash=digest(naturalPayload(incoming,stableStore,stablePartner,
+                                body.has("deduct_cash")).toString())
                             ack(database,kind,key,hash,version)
                             knownAck[kind to key]=Ack(hash,version)
                         }
@@ -621,6 +636,7 @@ internal object CustomerCloudBridge {
         val supportsSettings = "analysis_settings" in supported
         val supportsSourceLinks = "bill_source_links" in supported
         val supportsOvernight = "overnight_rollover" in supported
+        val supportsCashDeduction = "overnight_cash_deduction" in supported
         val database = db.writableDatabase
         database.beginTransaction()
         try {
@@ -667,7 +683,7 @@ internal object CustomerCloudBridge {
             for (page in 0 until 400) {
                 val batch = pending(context, db, bookId, MAX_BATCH, supportsCollector,
                     supportsAnalysis, supportsSettings, supportsSourceLinks,
-                    supportsOvernight)
+                    supportsOvernight,supportsCashDeduction)
                 if (batch.isEmpty()) break
                 val body = JSONObject().put("items", JSONArray().apply {
                     batch.forEach { put(it.json()) }
@@ -725,7 +741,7 @@ internal object CustomerCloudBridge {
             }
             if (pending(context, db, bookId, 1, supportsCollector,
                 supportsAnalysis, supportsSettings, supportsSourceLinks,
-                supportsOvernight).isNotEmpty()) {
+                supportsOvernight,supportsCashDeduction).isNotEmpty()) {
                 throw IllegalStateException("待同步客流记录较多，已分批上传，仍有未确认记录")
             }
         }

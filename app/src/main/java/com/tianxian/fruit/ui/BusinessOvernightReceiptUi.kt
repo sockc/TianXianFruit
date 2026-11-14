@@ -60,7 +60,10 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
                     j.optBoolean("deduct_wechat",true),j.optBoolean("deduct_alipay",true),
                     j.optDouble("saved_wechat",Double.NaN).takeIf { it.isFinite() },
                     j.optDouble("saved_alipay",Double.NaN).takeIf { it.isFinite() },
-                    j.optDouble("saved_cash",Double.NaN).takeIf { it.isFinite() })
+                    j.optDouble("saved_cash",Double.NaN).takeIf { it.isFinite() },
+                    // Pre-V123 cash was never deducted; preserve that
+                    // behavior on previously saved draft records.
+                    j.optBoolean("deduct_cash",false))
                 if(s.storeId>0 && s.partnerId>0 &&
                     listOf(s.wechat,s.alipay,s.cash).all { it.isFinite() && it>=0.0 }) add(s)
             }
@@ -99,6 +102,7 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
                 .put("wechat",row.wechat).put("alipay",row.alipay).put("cash",row.cash)
                 .put("deduct_wechat",row.deductWechat)
                 .put("deduct_alipay",row.deductAlipay)
+                .put("deduct_cash",row.deductCash)
                 .put("saved_wechat",row.savedWechat)
                 .put("saved_alipay",row.savedAlipay)
                 .put("saved_cash",row.savedCash))
@@ -120,6 +124,7 @@ internal data class OvernightInlineState(
     val following: OvernightReceiptSnapshot?,
     val deductWechat: Boolean,
     val deductAlipay: Boolean,
+    val deductCash: Boolean,
     val hasConflict: Boolean
 )
 
@@ -214,34 +219,31 @@ internal fun OvernightInlineNumber(
     }
 }
 
-/** Already verified previous-morning amounts are deducted by default.
- * Tapping lets the user opt out independently for WeChat or Alipay.
+/**
+ * The previous (calendar) day's selling session may extend past 23:59.
+ * For the selected natural date D the "昨日凌晨" row is ONLY the snapshot
+ * stamped D 00:00 onwards, never D-1 00:00 or a prior selling session.
  */
 @Composable
-internal fun OvernightDeductionCaption(
-    state: OvernightInlineState?,
-    onWechatToggle: () -> Unit,
-    onAlipayToggle: () -> Unit
+internal fun OvernightYesterdayNumber(
+    amount: Double?,
+    deducted: Boolean,
+    onToggle: () -> Unit
 ) {
-    if(state==null) return
-    val prior=state.previous
-    Column(verticalArrangement=Arrangement.spacedBy(2.dp)) {
-        if(state.hasConflict)
-            Text("本日该收款人涉及多个位置，请先拆分微信/支付宝自然日总额。",
-                fontSize=10.sp,color=Color(0xFF9A6600))
-        listOf(
-            Triple("WECHAT",prior?.amount("WECHAT"),state.deductWechat),
-            Triple("ALIPAY",prior?.amount("ALIPAY"),state.deductAlipay)
-        ).forEach { (channel,amount,enabled) ->
-            if(amount!=null && amount>0.005) {
-                val name=if(channel=="WECHAT") "微信" else "支付宝"
-                Text("$name ${if(enabled) "已减" else "不减"}凌晨" +
-                    " ¥${String.format(Locale.CHINA,"%.2f",amount)} · 点击${if(enabled) "取消" else "恢复"}",
-                    fontSize=10.sp,color=if(enabled) Color(0xFF0A9566) else Color(0xFF9A6600),
-                    modifier=Modifier.clickable {
-                        if(channel=="WECHAT") onWechatToggle() else onAlipayToggle()
-                    }.padding(vertical=2.dp))
-            }
-        }
-    }
+    val show=amount!=null && amount>0.005
+    Text(
+        text=if(show) displayOvernight(amount) else "－",
+        modifier=Modifier.fillMaxWidth()
+            .clickable(enabled=show,onClick=onToggle)
+            .padding(vertical=2.dp),
+        color=when {
+            !show -> Color.Gray
+            deducted -> Color(0xFF098A50)
+            else -> Color(0xFFD43D42)
+        },
+        textAlign=androidx.compose.ui.text.style.TextAlign.Center,
+        fontSize=10.sp,
+        fontWeight=if(show) FontWeight.SemiBold else FontWeight.Normal,
+        maxLines=1
+    )
 }
