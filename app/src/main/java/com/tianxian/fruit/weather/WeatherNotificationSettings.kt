@@ -16,7 +16,7 @@ data class WeatherNotificationSettings(
     val temperatureSwingEnabled: Boolean = true,
     val temperatureSwingThresholdC: Double = 8.0,
     val rainEnabled: Boolean = true,
-    val rainProbabilityThreshold: Double = 40.0,
+    val rainProbabilityThreshold: Double = 60.0,
     val windEnabled: Boolean = true,
     val windSpeedThresholdKmh: Double = 25.0,
     val rapidCoolingEnabled: Boolean = true,
@@ -121,7 +121,7 @@ class WeatherNotificationSettingsManager(
             rainProbabilityThreshold =
                 doubleValue(
                     "rain_threshold",
-                    40.0
+                    60.0
                 ),
             windEnabled =
                 prefs.getBoolean(

@@ -30,6 +30,7 @@ import com.tianxian.fruit.sync.WeatherHour
 import com.tianxian.fruit.sync.WeatherOverview
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.ZoneId
 import java.time.OffsetDateTime
 import java.time.ZonedDateTime
 import java.util.concurrent.TimeUnit
@@ -186,75 +187,24 @@ class WeatherNotificationWorker(
             )
 
         return try {
-            val today =
-                LocalDate.now()
-            val store =
-                resolveStore(
-                    db,
-                    settings,
-                    today
-                )
-                    ?: return Result.success()
-
-            if (
-                store.latitude == null ||
-                store.longitude == null
-            ) {
-                return Result.success()
-            }
-
-            val overview =
-                loadOverview(
+            val today = LocalDate.now(ZoneId.of("Asia/Shanghai"))
+            val now = LocalDateTime.now(ZoneId.of("Asia/Shanghai"))
+            val stores = resolveStores(db, settings, today)
+            for (store in stores) {
+                val overview = loadOverview(
                     db = db,
-                    cloudSyncManager =
-                        cloudSyncManager,
-                    bookId =
-                        book.cloudBookId
-                            .ifBlank {
-                                book.id
-                                    .takeIf {
-                                        it.contains(
-                                            "-"
-                                        )
-                                    }
-                                    .orEmpty()
-                            },
+                    cloudSyncManager = cloudSyncManager,
+                    bookId = book.cloudBookId.ifBlank {
+                        book.id.takeIf { it.contains("-") }.orEmpty()
+                    },
                     store = store,
                     date = today
-                )
-                    ?: return Result.success()
-
-            val notices =
-                buildNotices(
-                    overview =
-                        overview,
-                    store = store,
-                    settings =
-                        settings,
-                    date = today,
-                    now =
-                        LocalDateTime.now()
-                )
-
-            notices.forEach {
-                notice ->
-                if (
-                    settingsManager
-                        .shouldNotify(
-                            ledgerId =
-                                book.id,
-                            key =
-                                notice.key,
-                            severity =
-                                notice.severity
-                        )
-                ) {
-                    postNotification(
-                        context =
-                            context,
-                        notice =
-                            notice
-                    )
+                ) ?: continue
+                val notices = buildNotices(overview, store, settings, today, now)
+                notices.forEach { notice ->
+                    if (settingsManager.shouldNotify(book.id, notice.key, notice.severity)) {
+                        postNotification(context, notice)
+                    }
                 }
             }
 
@@ -278,47 +228,26 @@ class WeatherNotificationWorker(
         }
     }
 
-    private fun resolveStore(
+    // Never guess the first stall in a multi-location ledger.
+    private fun resolveStores(
         db: AppDatabase,
         settings: WeatherNotificationSettings,
         date: LocalDate
-    ): StoreOption? {
-        val preferred =
-            settings.storeId
-                .takeIf {
-                    it > 0L
-                }
-                ?.let {
-                    db.getStoreById(
-                        it
-                    )
-                }
-                ?.takeIf {
-                    it.latitude != null &&
-                        it.longitude != null
-                }
-
-        if (
-            preferred != null
-        ) {
-            return preferred
+    ): List<StoreOption> {
+        val stores = db.getStores().filter {
+            it.latitude != null && it.longitude != null
         }
-
-        val automatic =
-            db.resolveWeatherStore(
-                date.toString()
-            ).store
-                ?.takeIf {
-                    it.latitude != null &&
-                        it.longitude != null
-                }
-
-        return automatic
-            ?: db.getStores()
-                .firstOrNull {
-                    it.latitude != null &&
-                        it.longitude != null
-                }
+        if (settings.storeId > 0L) {
+            return stores.filter { it.id == settings.storeId }
+        }
+        val actual = db.getBusinessStoresForDate(date.toString())
+            .filter { it.latitude != null && it.longitude != null }
+            .distinctBy { it.id }
+        if (actual.isNotEmpty()) return actual
+        val inferred = db.resolveWeatherStore(date.toString()).store
+        return if (inferred != null && inferred.latitude != null &&
+            inferred.longitude != null
+        ) listOf(inferred) else emptyList()
     }
 
     private fun loadOverview(
@@ -550,7 +479,94 @@ class WeatherNotificationWorker(
             )
         }
 
+        // The hourly worker runs opportunistically; a single risk summary
+        // is deduplicated each day and escalates only when severity increases.
+        if (settings.businessEnabled && now.hour in 13..17) {
+            buildSevenDayNotice(overview, store, settings, date)?.let(result::add)
+        }
+        if (settings.businessEnabled && settings.rainEnabled) {
+            buildImminentRainNotice(overview, store, settings, date, now)?.let(result::add)
+        }
         return result
+    }
+
+    private fun buildSevenDayNotice(
+        overview: WeatherOverview,
+        store: StoreOption,
+        settings: WeatherNotificationSettings,
+        date: LocalDate
+    ): Notice? {
+        val days = BusinessWeekForecastPolicy.nextSevenDays(
+            overview.daily, date, settings.rainProbabilityThreshold,
+            settings.heatThresholdC, settings.rapidCoolingThresholdC
+        )
+        val rain = days.count { settings.rainEnabled && it.rain }
+        val heat = days.count { settings.heatEnabled && it.heat }
+        val cool = days.count { settings.rapidCoolingEnabled && it.cooling }
+        if (rain + heat + cool == 0) return null
+        val risks = buildList {
+            if (rain > 0) add("${rain}天可能有雨")
+            if (heat > 0) add("${heat}天高温")
+            if (cool > 0) add("${cool}天日最高温明显下降")
+        }
+        val highest = days.filter {
+            (settings.rainEnabled && it.rain) ||
+                (settings.heatEnabled && it.heat) ||
+                (settings.rapidCoolingEnabled && it.cooling)
+        }.maxOfOrNull { it.severity } ?: 1
+        return Notice(
+            key = "business_week_${store.id}_$date",
+            title = "未来7天营业天气 · ${store.name}",
+            body = risks.joinToString("、") +
+                "。中远期仅为日级趋势，详情请查看逐小时预报。",
+            severity = highest
+        )
+    }
+
+    private fun buildImminentRainNotice(
+        overview: WeatherOverview,
+        store: StoreOption,
+        settings: WeatherNotificationSettings,
+        date: LocalDate,
+        now: LocalDateTime
+    ): Notice? {
+        val rows = rowsForWindow(
+            overview.hourly, date, store.defaultStartTime, store.defaultEndTime
+        ).mapNotNull { row -> hourTime(row)?.let { it to row } }
+            .sortedBy { it.first }
+        fun wet(hour: WeatherHour): Boolean =
+            (hour.precipitationProbability ?: 0.0) >= settings.rainProbabilityThreshold ||
+                (forecastRain(hour) ?: 0.0) > 0.1
+        val upcoming = rows.firstOrNull { (time, row) ->
+            time >= now.minusMinutes(15) && time <= now.plusHours(1) && wet(row)
+        } ?: return null
+        var start = upcoming.first
+        // Track one contiguous rain episode using its real onset, not each
+        // subsequent hourly check as a new event.
+        for (index in rows.indices.reversed()) {
+            val candidate = rows[index]
+            if (candidate.first >= start) continue
+            if (!wet(candidate.second) ||
+                java.time.Duration.between(candidate.first, start).toMinutes() > 65
+            ) break
+            start = candidate.first
+        }
+        if (start < now.minusHours(1)) return null
+        val rain = forecastRain(upcoming.second) ?: 0.0
+        val pop = upcoming.second.precipitationProbability ?: 0.0
+        val severity = when {
+            rain >= 5.0 || pop >= 85.0 -> 3
+            rain >= 2.0 || pop >= 70.0 -> 2
+            else -> 1
+        }
+        return Notice(
+            key = "imminent_rain_${store.id}_${start.toLocalDate()}_${start.hour}",
+            title = "营业降雨临近 · ${store.name}",
+            body = "预计${"%02d:%02d".format(start.hour, start.minute)}附近可能开始降雨" +
+                (if (pop > 0.0) "（概率约${pop.toInt()}%）" else "") +
+                "，请留意摊位防雨和水果遮盖。",
+            severity = severity
+        )
     }
 
     private fun buildWindowNotice(
@@ -844,7 +860,7 @@ class WeatherNotificationWorker(
 
         return Notice(
             key =
-                "${kind}_${date}_$riskSignature",
+                "${kind}_${date}_${store.id}_$riskSignature",
             title =
                 title,
             body =
@@ -927,7 +943,7 @@ class WeatherNotificationWorker(
 
         return Notice(
             key =
-                "rapid_cooling_$date",
+                "rapid_cooling_${store.id}_$date",
             title =
                 "未来6小时明显降温 · ${store.name}",
             body =
@@ -984,7 +1000,7 @@ class WeatherNotificationWorker(
 
         return Notice(
             key =
-                "alert_${date}_$signature",
+                "alert_${store.id}_${date}_$signature",
             title =
                 "天气预警 · ${store.name}",
             body =
