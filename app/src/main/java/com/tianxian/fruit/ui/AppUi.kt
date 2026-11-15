@@ -11095,7 +11095,7 @@ private fun SessionScreen(
                 deductWx,deductAlipay,deductCash=deductCash)
             val adjustment=OvernightReceiptPolicy.adjustment(input,overnightSnapshots)
                 ?: return emptyList<ReceiptDraftRow>() to
-                    "凌晨扣减超过今日收款金额，请核对本日微信/支付宝总额与凌晨金额"
+                    BusinessWarningDisplayPolicy.OVERNIGHT_OVERDRAW
             row.copy(wechat=cleanNumber(adjustment.adjustedWechat),
                 alipay=cleanNumber(adjustment.adjustedAlipay),
                 cash=cleanNumber(adjustment.adjustedCash))
@@ -11689,6 +11689,15 @@ private fun SessionScreen(
     }
 
     val (computedRows, computedError) = effectiveReceiptRows()
+    // When the selling form is still untouched, the previous natural day's
+    // overnight receipt is not an error. Preserve strict save-time validation.
+    val hasEnteredReceiptAmount = receiptRows.any { row ->
+        listOf(row.wechat, row.alipay, row.cash)
+            .any { (it.toDoubleOrNull() ?: 0.0) > 0.005 }
+    }
+    val visibleComputedError = BusinessWarningDisplayPolicy.visibleError(
+        computedError, editingRecordId != null, hasEnteredReceiptAmount
+    )
     val w = computedRows.sumOf { it.wechat.toDoubleOrNull() ?: 0.0 }
     val a = computedRows.sumOf { it.alipay.toDoubleOrNull() ?: 0.0 }
     val c = computedRows.sumOf { it.cash.toDoubleOrNull() ?: 0.0 }
@@ -12295,10 +12304,10 @@ private fun SessionScreen(
             }
         }
 
-        if (computedError!=null) {
+        if (visibleComputedError != null) {
             item {
-                Text(computedError,color=MaterialTheme.colorScheme.error,
-                    style=MaterialTheme.typography.labelSmall)
+                Text(visibleComputedError, color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelSmall)
             }
         }
 
@@ -29249,7 +29258,8 @@ private fun AddStoreDialog(
     val lon = longitude.toDoubleOrNull()
     val coordsValid = (latitude.isBlank() && longitude.isBlank()) ||
         (lat != null && lat in -90.0..90.0 && lon != null && lon in -180.0..180.0)
-    val timeValid = storeTimeMinutes(endTime, 24 * 60) > storeTimeMinutes(startTime, 16 * 60)
+    val timeValid = StoreBusinessHoursPolicy.valid(startTime, endTime)
+    val endsNextDay = StoreBusinessHoursPolicy.endsNextDay(startTime, endTime)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -29264,7 +29274,13 @@ private fun AddStoreDialog(
                     StoreTimePickerField("结束时间", endTime, true, Modifier.weight(1f)) { endTime = it }
                 }
                 if (!timeValid) {
-                    Text("结束时间必须晚于开始时间；结束到午夜请选择 24:00。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    Text("营业起止时间不能相同；跨午夜收摊请选择次日时刻，例如 01:30。整点午夜使用 24:00。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error)
+                } else if (endsNextDay) {
+                    Text("次日收摊 · ${endTime}（归属开摊当天的营业日）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = BrandGreen)
                 }
                 Text("天气定位", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
