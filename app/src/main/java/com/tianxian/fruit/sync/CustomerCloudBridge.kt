@@ -5,6 +5,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import com.tianxian.fruit.data.AppDatabase
 import com.tianxian.fruit.data.OvernightReceiptSnapshot
+import com.tianxian.fruit.data.OvernightReceiptDeletionPolicy
 import com.tianxian.fruit.data.NaturalDayReceiptDraft
 import com.tianxian.fruit.ui.OvernightReceiptDraftStore
 import com.tianxian.fruit.ui.OfficialWechatCustomerStatsLocal
@@ -12,6 +13,7 @@ import com.tianxian.fruit.ui.OfficialWechatDailyCount
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
+import java.time.LocalDate
 
 /**
  * Syncs analysis data through the separate Server V1.0.19 customer API.
@@ -315,6 +317,42 @@ internal object CustomerCloudBridge {
         return results
     }
 
+    private fun wasBusinessDeleted(database: SQLiteDatabase, date: String, storeId: Long): Boolean {
+        if (storeId <= 0L) return false
+        // An active business row takes priority over any older deletion alias.
+        return database.rawQuery(
+            "SELECT deleted FROM store_daily_record WHERE date=? AND store_id=? " +
+                "ORDER BY deleted ASC,updated_at DESC LIMIT 1",
+            arrayOf(date, storeId.toString())
+        ).use { c -> c.moveToFirst() && c.getInt(0) == 1 }
+    }
+
+    /**
+     * Reconcile older or remotely-deleted business rows even when there is no
+     * new overnight cloud event to trigger applyRemote(). Never mutate bill
+     * transactions: only the auxiliary overnight/natural-day snapshots.
+     */
+    private fun reconcileDeletedBusinessOvernight(
+        context: Context, db: AppDatabase, bookId: String
+    ) {
+        val store = OvernightReceiptDraftStore(context, bookId)
+        val keys = buildSet<Pair<String, Long>> {
+            store.snapshots().forEach { row ->
+                val date = runCatching {
+                    LocalDate.parse(row.calendarDate).minusDays(1).toString()
+                }.getOrNull()
+                if (date != null) add(date to row.storeId)
+            }
+            store.naturalDrafts().forEach { row -> add(row.businessDate to row.storeId) }
+        }
+        for ((date, storeId) in keys) {
+            if (wasBusinessDeleted(db.readableDatabase, date, storeId) &&
+                !store.clearForDeletedBusiness(date, storeId)) {
+                throw IllegalStateException("营业记录已删除，但凌晨收款未能清理：$date")
+            }
+        }
+    }
+
     private fun ack(db: SQLiteDatabase, kind: String, key: String,
                     payloadHash: String, revision: Long) {
         db.insertWithOnConflict("customer_cloud_ack", null, ContentValues().apply {
@@ -466,6 +504,13 @@ internal object CustomerCloudBridge {
                             throw IllegalStateException(
                                 "跨日数据收款人或位置尚未同步，稍后重试：$date")
                         val storage=OvernightReceiptDraftStore(context,bookId)
+                        // A remotely deleted sale must not recover its former
+                        // overnight amount from an older customer-API event.
+                        val saleDate = if (kind == "OVERNIGHT") runCatching {
+                            LocalDate.parse(date).minusDays(1).toString()
+                        }.getOrNull() else date
+                        val deletedBusiness = saleDate != null &&
+                            wasBusinessDeleted(database, saleDate, resolvedStore)
                         val previous=knownAck[kind to key]
                         if(kind=="OVERNIGHT") {
                             val incoming=OvernightReceiptSnapshot(
@@ -474,6 +519,23 @@ internal object CustomerCloudBridge {
                                 body.optDouble("cash"),body.optBoolean("wechat_recorded"),
                                 body.optBoolean("alipay_recorded"),
                                 body.optBoolean("cash_recorded"))
+                            if (deletedBusiness) {
+                                val blank = OvernightReceiptDeletionPolicy.clearedSnapshot(
+                                    incoming, saleDate!!, resolvedStore
+                                )
+                                val existing = storage.findSnapshot(date,resolvedPartner)
+                                if (existing == null || existing.storeId == resolvedStore) {
+                                    if (!storage.saveSnapshot(blank))
+                                        throw IllegalStateException("清除已删除营业的凌晨收款失败：$date")
+                                }
+                                // Acknowledge the old remote revision, then push
+                                // our blank value with the correct CAS version.
+                                val remoteHash = digest(overnightPayload(
+                                    incoming,stableStore,stablePartner).toString())
+                                ack(database,kind,key,remoteHash,version)
+                                knownAck[kind to key]=Ack(remoteHash,version)
+                                continue
+                            }
                             val local=storage.findSnapshot(date,resolvedPartner)
                             val localHash=local?.let {
                                 digest(overnightPayload(it,stableStore,stablePartner).toString())
@@ -497,6 +559,19 @@ internal object CustomerCloudBridge {
                                 body.optDouble("saved_alipay",Double.NaN).takeIf { it.isFinite() },
                                 body.optDouble("saved_cash",Double.NaN).takeIf { it.isFinite() },
                                 body.optBoolean("deduct_cash",false))
+                            if (deletedBusiness) {
+                                val blank = OvernightReceiptDeletionPolicy.clearedNatural(
+                                    incoming, saleDate!!, resolvedStore
+                                )
+                                if (!storage.saveNatural(blank))
+                                    throw IllegalStateException("清除已删除营业的自然日原值失败：$date")
+                                val remoteHash=digest(naturalPayload(
+                                    incoming,stableStore,stablePartner,
+                                    body.has("deduct_cash")).toString())
+                                ack(database,kind,key,remoteHash,version)
+                                knownAck[kind to key]=Ack(remoteHash,version)
+                                continue
+                            }
                             val local=storage.findNatural(date,resolvedStore,resolvedPartner)
                             val localHash=local?.let {
                                 digest(naturalPayload(it,stableStore,stablePartner,
@@ -675,6 +750,9 @@ internal object CustomerCloudBridge {
             throw IllegalStateException("客流云端变化超过单次安全页数，保留游标稍后重试")
         }
 
+        // A business tombstone may have arrived in the official ledger sync
+        // without any corresponding new customer-API event.
+        reconcileDeletedBusinessOvernight(context, db, bookId)
         // Download before upload so an offline device sees server additions.
         pull()
         var uploaded = 0
