@@ -280,16 +280,14 @@ internal fun CustomerAnalysisContent(
     }
     // Overview and customers use ALL saved operating positions, not the
     // last store selected on the location tab.
-    val calendarBusinessDates = remember(trafficSessions, selectedStoreId, tab) {
+    val calendarBusinessDates = remember(trafficSessions, selectedStoreId) {
         trafficSessions.asSequence().filter {
-            tab != CustomerAnalysisTab.LOCATION || selectedStoreId <= 0L ||
-                it.storeId == selectedStoreId
+            selectedStoreId <= 0L || it.storeId == selectedStoreId
         }.mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }.toSet()
     }
-    val calendarStoreCounts = remember(trafficSessions, selectedStoreId, tab) {
+    val calendarStoreCounts = remember(trafficSessions, selectedStoreId) {
         trafficSessions.filter {
-            tab != CustomerAnalysisTab.LOCATION || selectedStoreId <= 0L ||
-                it.storeId == selectedStoreId
+            selectedStoreId <= 0L || it.storeId == selectedStoreId
         }.groupBy { it.date }.mapNotNull { (date, values) ->
             runCatching { LocalDate.parse(date) }.getOrNull()?.let {
                 it to values.map { row -> row.storeId }.filter { id -> id > 0L }.distinct().size
@@ -354,14 +352,13 @@ internal fun CustomerAnalysisContent(
         CustomerAnalyticsEngine.filterRecords(rawRecords, settings).included
     }
     val incompleteCalendarDates = remember(locationRecords, dailyHistory,
-        calendarBusinessDates, selectedStoreId, selectedPlatform, tab) {
+        calendarBusinessDates, selectedStoreId, selectedPlatform) {
         val available = locationRecords.asSequence().filter { it.netAmount > 0.005 }
             .groupBy { it.businessDate to it.storeId }
             .mapValues { (_, payments) -> payments.map { it.platform }.toSet() }
         dailyHistory.asSequence().filter { record ->
             record.storeId > 0L &&
-                (tab != CustomerAnalysisTab.LOCATION || selectedStoreId <= 0L ||
-                    record.storeId == selectedStoreId)
+                (selectedStoreId <= 0L || record.storeId == selectedStoreId)
         }.filter { record ->
             // Missing a channel that was never used is NOT a missing bill.
             val channels = buildSet {
@@ -484,17 +481,16 @@ internal fun CustomerAnalysisContent(
     }
 
     val analysis =
-        remember(
-            allRecords,
-            dateRange,
-            today
-        ) {
-            CustomerAnalyticsEngine.analyze(
-                allRecords = allRecords,
-                startDate = dateRange.first,
-                endDate = dateRange.second,
-                today = today
-            )
+        remember(allRecords, dateRange, today, tab) {
+            if (tab == CustomerAnalysisTab.OVERVIEW ||
+                tab == CustomerAnalysisTab.CUSTOMERS) {
+                CustomerAnalyticsEngine.analyze(
+                    allRecords = allRecords,
+                    startDate = dateRange.first,
+                    endDate = dateRange.second,
+                    today = today
+                )
+            } else null
         }
 
     val periodPayments = remember(allRecords, dateRange) {
@@ -615,15 +611,9 @@ internal fun CustomerAnalysisContent(
     }
 
     val hourlyTraffic =
-        remember(
-            allRecords,
-            range,
-            dayAnchor
-        ) {
-            if (
-                range ==
-                CustomerRange.TODAY
-            ) {
+        remember(allRecords, range, dayAnchor, tab) {
+            if (tab == CustomerAnalysisTab.OVERVIEW &&
+                range == CustomerRange.TODAY) {
                 CustomerAnalyticsEngine.hourlyTraffic(
                     allRecords =
                         allRecords,
@@ -635,24 +625,20 @@ internal fun CustomerAnalysisContent(
             }
         }
 
-    val platformHourlyTraffic = remember(allRecords, range, dayAnchor) {
-        if (range == CustomerRange.TODAY) PaymentTrafficAnalytics.hourly(allRecords, dayAnchor.toString())
+    val platformHourlyTraffic = remember(allRecords, range, dayAnchor, tab) {
+        if (tab == CustomerAnalysisTab.OVERVIEW && range == CustomerRange.TODAY)
+            PaymentTrafficAnalytics.hourly(allRecords, dayAnchor.toString())
         else emptyList()
     }
-    val singleDayRecords = remember(allRecords, range, dayAnchor) {
-        if (range == CustomerRange.TODAY) allRecords.filter { it.businessDate == dayAnchor.toString() }
+    val singleDayRecords = remember(allRecords, range, dayAnchor, tab) {
+        if (tab == CustomerAnalysisTab.OVERVIEW && range == CustomerRange.TODAY)
+            allRecords.filter { it.businessDate == dayAnchor.toString() }
         else emptyList()
     }
     val sameWeekdayComparisons =
-        remember(
-            allRecords,
-            range,
-            dayAnchor
-        ) {
-            if (
-                range ==
-                CustomerRange.TODAY
-            ) {
+        remember(allRecords, range, dayAnchor, tab) {
+            if (tab == CustomerAnalysisTab.OVERVIEW &&
+                range == CustomerRange.TODAY) {
                 CustomerAnalyticsEngine.sameWeekdayComparisons(
                     allRecords =
                         allRecords,
@@ -665,8 +651,8 @@ internal fun CustomerAnalysisContent(
         }
 
     val trafficComparisons = remember(allRecords, trafficSessions, range, dayAnchor,
-        selectedStoreId, selectedPlatform) {
-        if (range == CustomerRange.TODAY) {
+        selectedStoreId, selectedPlatform, tab) {
+        if (tab == CustomerAnalysisTab.OVERVIEW && range == CustomerRange.TODAY) {
             CustomerTrafficDeepDive.compare(
                 rows = allRecords,
                 sessions = trafficSessions,
@@ -699,22 +685,26 @@ internal fun CustomerAnalysisContent(
         )
     }
     val storePerformances = remember(rawRecords, settings, trafficSessions,
-        selectedPlatform, dateRange) {
-        val included = CustomerAnalyticsEngine.filterRecords(rawRecords, settings).included
-        val scoped = PaymentTrafficAnalytics.select(included,
-            selectedPlatform.name, 0L)
-        CustomerOverviewPolicies.performance(
-            scoped, trafficSessions, dateRange.first, dateRange.second
-        )
+        selectedPlatform, dateRange, tab) {
+        if (tab == CustomerAnalysisTab.OVERVIEW) {
+            val included = CustomerAnalyticsEngine.filterRecords(rawRecords, settings).included
+            val scoped = PaymentTrafficAnalytics.select(included,
+                selectedPlatform.name, 0L)
+            CustomerOverviewPolicies.performance(
+                scoped, trafficSessions, dateRange.first, dateRange.second
+            )
+        } else emptyList()
     }
-    val paymentAmountBands = remember(periodPayments) {
-        CustomerTrafficDeepDive.amountBands(periodPayments)
+    val paymentAmountBands = remember(periodPayments, tab) {
+        if (tab == CustomerAnalysisTab.OVERVIEW)
+            CustomerTrafficDeepDive.amountBands(periodPayments) else emptyList()
     }
-    val storeTrafficPatterns = remember(allRecords, trafficSessions, dateRange, selectedPlatform) {
-        CustomerTrafficDeepDive.storePatterns(
-            allRecords, trafficSessions, selectedPlatform.name,
-            dateRange.second ?: today.toString()
-        )
+    val storeTrafficPatterns = remember(allRecords, trafficSessions, dateRange, selectedPlatform, tab) {
+        if (tab == CustomerAnalysisTab.OVERVIEW)
+            CustomerTrafficDeepDive.storePatterns(
+                allRecords, trafficSessions, selectedPlatform.name,
+                dateRange.second ?: today.toString()
+            ) else emptyList()
     }
 
     val dailyTraffic =
@@ -1059,7 +1049,7 @@ internal fun CustomerAnalysisContent(
                         CustomerAnalysisTab.OVERVIEW ->
                             CustomerOverview(
                                 result =
-                                    analysis,
+                                    requireNotNull(analysis),
                                 hourlyTraffic =
                                     hourlyTraffic,
                                  platformHourlyTraffic = platformHourlyTraffic,
@@ -1136,7 +1126,7 @@ internal fun CustomerAnalysisContent(
 
                         CustomerAnalysisTab.CUSTOMERS ->
                             CustomerDetailsContent(
-                                result = analysis,
+                                result = requireNotNull(analysis),
                                 section = customerSection,
                                 onSectionChange = { customerSection = it },
                                 businessCustomerSummary = businessCustomerSummary,
@@ -2424,11 +2414,15 @@ private fun CustomerOverview(
                     Metric("付款笔数", s.paymentCount.toString(), Modifier.weight(1f))
                     Metric("笔均收款", money(s.averageTicket), Modifier.weight(1f))
                 }
-                Text(CustomerOverviewPolicies.headline(
-                    trafficComparisons, selectedStoreId, comparisonRecords, selectedPlatform.name),
-                    color = Color(0xFF087D4E),
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(horizontal = 2.dp))
+                // The hour chart already explains why an all-store comparison is unavailable.
+                // Avoid repeating the same multi-line warning above the audit section.
+                if (singleDay && selectedStoreId > 0L) {
+                    Text(CustomerOverviewPolicies.headline(
+                        trafficComparisons, selectedStoreId, comparisonRecords, selectedPlatform.name),
+                        color = Color(0xFF087D4E),
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 2.dp))
+                }
             }
         }
         item {
