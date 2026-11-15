@@ -98,7 +98,8 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
         val before=naturalDrafts()
         // One provider calendar total belongs to one store per collector/date.
         if(before.any { it.businessDate==s.businessDate &&
-                it.partnerId==s.partnerId && it.storeId!=s.storeId }) return false
+                it.partnerId==s.partnerId && it.storeId!=s.storeId &&
+                !OvernightReceiptDeletionPolicy.isClearedNatural(it) }) return false
         val next=before.filterNot {
             it.businessDate==s.businessDate && it.partnerId==s.partnerId
         }+s
