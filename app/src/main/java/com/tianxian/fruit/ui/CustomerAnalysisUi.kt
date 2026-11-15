@@ -579,7 +579,8 @@ internal fun CustomerAnalysisContent(
         range == CustomerRange.TODAY
     val headerDateLabel = CustomerAnalysisDisplayPolicy.dateLabel(
         if (headerShowsDay) "TODAY" else range.name,
-        dayAnchor, monthAnchor, customStart, customEnd
+        if (range in setOf(CustomerRange.LAST_7, CustomerRange.LAST_30)) today else dayAnchor,
+        monthAnchor, customStart, customEnd
     )
     val selectedStoreName = when (selectedStoreId) {
         0L -> "全部位置"
@@ -2787,7 +2788,7 @@ private fun HourlyCustomerTrafficCard(
                     CustomerComparisonChange("笔均收款", ticketText, Modifier.weight(1f))
                 }
             }
-            Text("绿色本次 · 灰色同位置、同星期历史均值；仅对比相同已结束营业小时",
+            Text("绿色本次 · 灰色历史同小时均值 · 仅对比已结束营业小时",
                 style = MaterialTheme.typography.labelSmall, color = Color.Gray)
             if (comparison == null) {
                 Text("请选择有正式营业时段的单个位置，才可显示历史同期；当前只展示已观察到的付款。",
@@ -2845,9 +2846,23 @@ private fun HourlyCustomerTrafficCard(
                 " · 历史${pastText} · 差额${diff}",
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.SemiBold)
-            if (selectedCount != null)
-                Text("该小时：${selectedCount.paymentCount}笔 / ${money(selectedCount.amount)}",
+            if (selectedCount != null) {
+                val currentAverage = selectedCount.paymentCount.takeIf { it > 0 }
+                    ?.let { money(selectedCount.amount / it) } ?: "—"
+                Text("该小时：${selectedCount.paymentCount}笔 · ${money(selectedCount.amount)} · 笔均${currentAverage}",
                     style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                if (validComparison != null) {
+                    val historicCount = comparisonHours[selectedHour]?.historicAverage
+                    val historicAmount = CustomerOverviewPolicies.historicHourAmount(
+                        validComparison, historicRecords, selectedHour)
+                    val pastAverage = if (historicCount != null && historicCount > 0.005 &&
+                        historicAmount != null) money(historicAmount / historicCount) else "—"
+                    Text("历史同小时：${historicCount?.let {
+                        String.format(Locale.CHINA, "%.1f", it)
+                    } ?: "—"}笔 · ${historicAmount?.let(::money) ?: "—"} · 笔均${pastAverage}",
+                        style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                }
+            }
             TextButton(onClick = { detailsExpanded = !detailsExpanded },
                 contentPadding = PaddingValues(horizontal = 0.dp)) {
                 Text(if (detailsExpanded) "收起交易明细 ⌃" else "此小时交易明细 ›")
