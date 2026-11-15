@@ -1138,7 +1138,11 @@ internal fun CustomerAnalysisContent(
                             CustomerLocationHistoryContent(
                                 db = db,
                                 dataVersion = dataVersion,
-                                records = filteredLocationRecords,
+                                // Preserve the independent location source:
+                                // never reuse the overview's selected-store subset.
+                                records = locationRecords.takeIf {
+                                    selectedCollectorSyncId == "*"
+                                } ?: filteredLocationRecords,
                                 sessions = trafficSessions,
                                 sharedGroups = filteredLocationShared,
                                 stores = storeOptions,
