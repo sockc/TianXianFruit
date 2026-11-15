@@ -6,6 +6,7 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.util.Log
+import com.tianxian.fruit.ui.OvernightReceiptDraftStore
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
@@ -12311,24 +12312,38 @@ class AppDatabase(
         val old = getStoreDailyRecordById(id) ?: return false
         val db = writableDatabase
         db.beginTransaction()
-        try {
+        val deleted = try {
             val now = System.currentTimeMillis()
             val changed = db.update("store_daily_record", ContentValues().apply {
                 put("deleted", 1)
                 put("sync_status", 2)
                 put("updated_at", now)
             }, "id=?", arrayOf(id.toString()))
-            if (changed <= 0) return false
-
-            invalidateProfitDistributionForDate(db, old.date)
-            invalidateCashSettlementForDate(db, old.date)
-            updateBusinessScoreActualOutcome(db, old.date, old.storeId)
-
-            db.setTransactionSuccessful()
-            return true
+            if (changed <= 0) {
+                false
+            } else {
+                invalidateProfitDistributionForDate(db, old.date)
+                invalidateCashSettlementForDate(db, old.date)
+                updateBusinessScoreActualOutcome(db, old.date, old.storeId)
+                db.setTransactionSuccessful()
+                true
+            }
         } finally {
             db.endTransaction()
         }
+        if (deleted) {
+            // Clean only THIS stall's D+1 morning and D's natural-day draft.
+            // Keep blank synced records (not a local-only delete), otherwise
+            // CustomerCloudBridge could pull the old amount back on next sync.
+            val collectors = (old.receiptSplits.map { it.partnerId } +
+                listOf(old.wechatCollectorId, old.alipayCollectorId, old.cashCollectorId))
+                .filter { it > 0L }.toSet()
+            if (!OvernightReceiptDraftStore(appContext, ledgerId)
+                    .clearForDeletedBusiness(old.date, old.storeId, collectors)) {
+                Log.e("AppDatabase", "营业已删除，但凌晨收款辅助数据清理失败：${old.date}/${old.storeId}")
+            }
+        }
+        return deleted
     }
 
     fun getDailyRecords(
