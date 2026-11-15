@@ -72,6 +72,20 @@ class OvernightReceiptDeletionPolicyTest {
         assertNull(OvernightReceiptDeletionPolicy.emptySnapshot("invalid", 1L, 5L))
     }
 
+    @Test fun aClearedMorningCanBeReassignedButAnActiveOneCannot() {
+        val active = morning("2026-11-15", 1L, 5L)
+        val moved = morning("2026-11-15", 2L, 5L)
+        assertFalse(OvernightReceiptPolicy.canRegister(moved, listOf(active)))
+        val blank = OvernightReceiptDeletionPolicy.clearedSnapshot(
+            active, "2026-11-14", 1L)
+        assertTrue(OvernightReceiptDeletionPolicy.isClearedSnapshot(blank))
+        assertTrue(OvernightReceiptPolicy.canRegister(moved, listOf(blank)))
+        assertEquals(moved, OvernightReceiptPolicy.replace(moved,listOf(blank))!!.single())
+        val natural = NaturalDayReceiptDraft("2026-11-14", 1L, 5L, 10.0)
+        assertTrue(OvernightReceiptDeletionPolicy.isClearedNatural(
+            OvernightReceiptDeletionPolicy.clearedNatural(natural, "2026-11-14", 1L)))
+    }
+
     @Test fun emptyStateRemainsEmptyWhenAppliedRepeatedly() {
         val once = OvernightReceiptDeletionPolicy.clearedSnapshot(
             morning("2026-11-15", 1L), "2026-11-14", 1L)
