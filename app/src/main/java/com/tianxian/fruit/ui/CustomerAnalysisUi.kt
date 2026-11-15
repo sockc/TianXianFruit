@@ -1085,6 +1085,9 @@ internal fun CustomerAnalysisContent(
                                 comparisonRecords = allRecords,
                                 selectedPlatform = selectedPlatform,
                                 onPlatformChange = { selectedPlatform = it },
+                                displayDate = dayAnchor,
+                                displayStoreName = selectedStoreName,
+                                displayCollectorName = selectedCollectorName,
                                 dailySessions = trafficSessions,
                                 dailyBusiness = dailyHistory,
                                 singleDay =
@@ -2319,6 +2322,9 @@ private fun CustomerOverview(
     comparisonRecords: List<CustomerPaymentRecord>,
     selectedPlatform: CustomerPaymentPlatform,
     onPlatformChange: (CustomerPaymentPlatform) -> Unit,
+    displayDate: LocalDate,
+    displayStoreName: String,
+    displayCollectorName: String,
     dailySessions: List<CustomerTrafficSession>,
     dailyBusiness: List<StoreDailyRecord>,
     singleDay: Boolean,
@@ -2508,7 +2514,10 @@ private fun CustomerOverview(
                         ?.takeIf { selectedStoreId > 0L && it.storeId == selectedStoreId },
                     historicRecords = comparisonRecords,
                     selectedPlatform = selectedPlatform,
-                    onPlatformChange = onPlatformChange
+                    onPlatformChange = onPlatformChange,
+                    displayDate = displayDate,
+                    displayStoreName = displayStoreName,
+                    displayCollectorName = displayCollectorName
                 )
             }
             if (trafficComparisons.isNotEmpty()) {
@@ -2632,6 +2641,27 @@ private fun PaymentSourceCoverageCard(coverage: List<PaymentPlatformCoverage>) {
 }
 
 @Composable
+private fun CustomerComparisonChange(
+    label: String,
+    change: String,
+    modifier: Modifier = Modifier
+) {
+    val color = when {
+        change.startsWith("-") -> Color(0xFFC44A42)
+        change.startsWith("+") -> Color(0xFF087D4E)
+        else -> Color.Gray
+    }
+    Column(modifier.background(Color(0xFFF4F7F5), RoundedCornerShape(7.dp))
+        .padding(horizontal = 7.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray,
+            softWrap = true)
+        Text(change, fontWeight = FontWeight.SemiBold,
+            style = MaterialTheme.typography.bodyMedium, color = color)
+    }
+}
+
+@Composable
 private fun HourlyCustomerTrafficCard(
     points: List<CustomerHourlyPoint>,
     platformHours: List<PaymentPlatformHour>,
@@ -2639,7 +2669,10 @@ private fun HourlyCustomerTrafficCard(
     comparison: CustomerTrafficComparison?,
     historicRecords: List<CustomerPaymentRecord>,
     selectedPlatform: CustomerPaymentPlatform,
-    onPlatformChange: (CustomerPaymentPlatform) -> Unit
+    onPlatformChange: (CustomerPaymentPlatform) -> Unit,
+    displayDate: LocalDate,
+    displayStoreName: String,
+    displayCollectorName: String
 ) {
     var metric by remember { mutableStateOf(CustomerTrafficMetric.PAYMENTS) }
     val byHour = remember(points) { points.associateBy { it.hour } }
@@ -2669,25 +2702,66 @@ private fun HourlyCustomerTrafficCard(
     val selectedCount = byHour[selectedHour]
     val baselineValue = baseline(selectedHour)
     val selectedValue = current(selectedHour)
-    val detailRows = remember(dayRecords, selectedHour) {
-        dayRecords.filter { it.tradeTime.drop(11).take(2).toIntOrNull() == selectedHour }
-            .sortedWith(compareByDescending<CustomerPaymentRecord> { it.tradeTime }
-                .thenByDescending { it.id })
+    val detailRows = remember(dayRecords, selectedHour, comparison?.storeId) {
+        dayRecords.filter {
+            it.tradeTime.drop(11).take(2).toIntOrNull() == selectedHour &&
+                (comparison == null || it.storeId == comparison.storeId)
+        }.sortedWith(compareByDescending<CustomerPaymentRecord> { it.tradeTime }
+            .thenByDescending { it.id })
     }
+    val validComparison = comparison?.takeIf {
+        it.sampleSufficient && (selectedPlatform != CustomerPaymentPlatform.ALL ||
+            it.sourceCoverage.contains("＋"))
+    }
+    val comparisonHoursSet = remember(validComparison) {
+        validComparison?.hourRows?.map { it.hour }?.toSet().orEmpty()
+    }
+    val currentComparableAmount = remember(dayRecords, comparisonHoursSet, validComparison) {
+        if (validComparison == null) 0.0 else dayRecords.asSequence().filter {
+            it.netAmount > 0.005 && it.storeId == validComparison.storeId &&
+                it.tradeTime.drop(11).take(2).toIntOrNull() in comparisonHoursSet
+        }.sumOf { it.netAmount }
+    }
+    val historicComparableAmount = remember(validComparison, historicRecords) {
+        validComparison?.let { CustomerOverviewPolicies.historicTotalAmount(it, historicRecords) }
+    }
+    val historicTicket = validComparison?.baselinePayments?.takeIf { it > 0.005 }
+        ?.let { count -> historicComparableAmount?.let { it / count } }
+    val currentTicket = validComparison?.currentPayments?.takeIf { it > 0 }
+        ?.let { currentComparableAmount / it }
     Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
         Column(Modifier.fillMaxWidth().padding(10.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("逐小时付款 · 本次与历史同期", fontWeight = FontWeight.Bold)
-            Row(Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                CustomerPaymentPlatform.entries.forEach { option ->
-                    FilterChip(selected = selectedPlatform == option,
-                        onClick = { onPlatformChange(option) },
-                        label = { Text(option.label) })
-                }
+            Text(CustomerAnalysisDisplayPolicy.detailContext(
+                    displayDate, displayStoreName, selectedPlatform.label,
+                    displayCollectorName.takeUnless { it == "全部收款人" }.orEmpty()),
+                style = MaterialTheme.typography.labelSmall, color = Color(0xFF087D4E),
+                softWrap = true)
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 listOf(CustomerTrafficMetric.PAYMENTS, CustomerTrafficMetric.AMOUNT).forEach { option ->
                     FilterChip(selected = metric == option, onClick = { metric = option },
                         label = { Text(option.label) })
+                }
+            }
+            if (validComparison != null) {
+                val currentCount = validComparison.currentPayments.toDouble()
+                val countText = CustomerAnalysisDisplayPolicy.percentageChange(
+                    currentCount, validComparison.baselinePayments, validComparison.historicDates.size
+                ) ?: "—"
+                val amountText = CustomerAnalysisDisplayPolicy.percentageChange(
+                    currentComparableAmount, historicComparableAmount, validComparison.historicDates.size
+                ) ?: "—"
+                val ticketText = CustomerAnalysisDisplayPolicy.percentageChange(
+                    currentTicket ?: 0.0, historicTicket, validComparison.historicDates.size
+                ) ?: "—"
+                Text("历史可比营业日 ${validComparison.historicDates.size} 天 · 相同完整营业小时",
+                    style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Row(Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    CustomerComparisonChange("付款笔数", countText, Modifier.weight(1f))
+                    CustomerComparisonChange("收款金额", amountText, Modifier.weight(1f))
+                    CustomerComparisonChange("笔均收款", ticketText, Modifier.weight(1f))
                 }
             }
             Text("绿色本次 · 灰色同位置、同星期历史均值；仅对比相同已结束营业小时",
@@ -2697,6 +2771,9 @@ private fun HourlyCustomerTrafficCard(
                     style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
             } else if (!comparison.sampleSufficient) {
                 Text("仅有${comparison.historicDates.size}个可比营业日（至少3个），历史均值暂不展示；账单覆盖需核验。",
+                    style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
+            } else if (validComparison == null) {
+                Text("合并对比缺少微信或支付宝记录，暂不显示涨跌百分比；请核验账单覆盖。",
                     style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
             }
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
