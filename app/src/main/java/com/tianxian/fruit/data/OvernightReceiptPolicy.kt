@@ -90,7 +90,8 @@ internal object OvernightReceiptPolicy {
         listOf(snapshot.wechat, snapshot.alipay, snapshot.cash).all(::validAmount) &&
         saved.none {
             it.calendarDate == snapshot.calendarDate &&
-                it.partnerId == snapshot.partnerId && it.storeId != snapshot.storeId
+                it.partnerId == snapshot.partnerId && it.storeId != snapshot.storeId &&
+                !OvernightReceiptDeletionPolicy.isClearedSnapshot(it)
         }
 
     fun replace(
@@ -152,6 +153,16 @@ internal object OvernightReceiptPolicy {
  * blank revision, preventing older server entries from restoring the amount.
  */
 internal object OvernightReceiptDeletionPolicy {
+    fun isClearedSnapshot(row: OvernightReceiptSnapshot): Boolean =
+        !row.wechatRecorded && !row.alipayRecorded && !row.cashRecorded &&
+            row.wechat == 0.0 && row.alipay == 0.0 && row.cash == 0.0
+
+    fun isClearedNatural(row: NaturalDayReceiptDraft): Boolean =
+        row.wechat == 0.0 && row.alipay == 0.0 && row.cash == 0.0 &&
+            row.savedWechat == null && row.savedAlipay == null && row.savedCash == null &&
+            row.deductWechat && row.deductAlipay && row.deductCash
+
+
     fun clearedSnapshot(
         row: OvernightReceiptSnapshot,
         businessDate: String,
