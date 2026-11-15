@@ -351,6 +351,27 @@ internal fun CustomerAnalysisContent(
     val locationRecords = remember(rawRecords, settings) {
         CustomerAnalyticsEngine.filterRecords(rawRecords, settings).included
     }
+    // The top collector selector also scopes the location tab, without
+    // changing the stored transactions or assigning shared receipts to a stall.
+    val filteredLocationRecords = remember(
+        locationRecords, selectedCollectorSyncId, collectorByReceipt
+    ) {
+        if (selectedCollectorSyncId == "*") locationRecords
+        else locationRecords.filter { record ->
+            if (selectedCollectorSyncId == "?")
+                collectorByReceipt[record.id].isNullOrBlank()
+            else collectorByReceipt[record.id] == selectedCollectorSyncId
+        }
+    }
+    val filteredLocationShared = remember(
+        collectorAttribution.shared, selectedCollectorSyncId, collectorPartnerIds
+    ) {
+        if (selectedCollectorSyncId == "*") collectorAttribution.shared
+        else if (selectedCollectorSyncId == "?") emptyList()
+        else collectorAttribution.shared.filter {
+            it.partnerId == collectorPartnerIds[selectedCollectorSyncId]
+        }
+    }
     val incompleteCalendarDates = remember(locationRecords, dailyHistory,
         calendarBusinessDates, selectedStoreId, selectedPlatform) {
         val available = locationRecords.asSequence().filter { it.netAmount > 0.005 }
@@ -552,8 +573,13 @@ internal fun CustomerAnalysisContent(
                 range.label
         }
 
+    // Location history is anchored to one selling date even if the previous
+    // tab was displaying a month or range.
+    val headerShowsDay = tab == CustomerAnalysisTab.LOCATION ||
+        range == CustomerRange.TODAY
     val headerDateLabel = CustomerAnalysisDisplayPolicy.dateLabel(
-        range.name, dayAnchor, monthAnchor, customStart, customEnd
+        if (headerShowsDay) "TODAY" else range.name,
+        dayAnchor, monthAnchor, customStart, customEnd
     )
     val selectedStoreName = when (selectedStoreId) {
         0L -> "全部位置"
@@ -586,12 +612,15 @@ internal fun CustomerAnalysisContent(
         add("?" to "未指定收款人")
     }
     fun navigateCustomerDay(step: Int) {
-        if (range != CustomerRange.TODAY) return
+        if (!headerShowsDay) return
         val next = CustomerBusinessDayNavigation.shift(
             dayAnchor, step, businessDatesForSelectedStore.toSet(),
             selectedStoreId > 0L && onlyBusinessDays
         )
-        if (!next.isAfter(today)) dayAnchor = next
+        if (!next.isAfter(today)) {
+            dayAnchor = next
+            range = CustomerRange.TODAY
+        }
     }
 
     fun pickDate(
@@ -809,7 +838,7 @@ internal fun CustomerAnalysisContent(
 
                 Row(Modifier.fillMaxWidth().heightIn(min = 38.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    if (range == CustomerRange.TODAY) {
+                    if (headerShowsDay) {
                         TextButton(
                             onClick = { navigateCustomerDay(-1) },
                             modifier = Modifier.width(32.dp),
@@ -825,7 +854,7 @@ internal fun CustomerAnalysisContent(
                                 detectHorizontalDragGestures(
                                     onDragStart = { movedX = 0f },
                                     onDragEnd = {
-                                        if (range == CustomerRange.TODAY && abs(movedX) > 45f)
+                                        if (headerShowsDay && abs(movedX) > 45f)
                                             navigateCustomerDay(if (movedX > 0f) -1 else 1)
                                     },
                                     onHorizontalDrag = { change, drag ->
@@ -841,7 +870,7 @@ internal fun CustomerAnalysisContent(
                         fontWeight = FontWeight.SemiBold,
                         softWrap = true
                     )
-                    if (range == CustomerRange.TODAY) {
+                    if (headerShowsDay) {
                         TextButton(
                             onClick = { navigateCustomerDay(1) },
                             enabled = dayAnchor.isBefore(today),
@@ -1108,9 +1137,9 @@ internal fun CustomerAnalysisContent(
                             CustomerLocationHistoryContent(
                                 db = db,
                                 dataVersion = dataVersion,
-                                records = locationRecords,
+                                records = filteredLocationRecords,
                                 sessions = trafficSessions,
-                                sharedGroups = collectorAttribution.shared,
+                                sharedGroups = filteredLocationShared,
                                 stores = storeOptions,
                                 selectedStoreId = selectedStoreId,
                                 onStoreChange = { selectedStoreId = it },
