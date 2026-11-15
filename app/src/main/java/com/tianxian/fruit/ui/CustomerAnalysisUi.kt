@@ -1091,50 +1091,54 @@ internal fun CustomerAnalysisContent(
 
                 tab ==
                     CustomerAnalysisTab.RECORDS ->
-                    Column(Modifier.fillMaxSize()) {
-                        Text(
-                            if (showBillStatus) "账单日期与同步状态 ⌃" else "账单日期与同步状态 ›",
-                            modifier = Modifier.fillMaxWidth().clickable { showBillStatus = !showBillStatus }
-                                .padding(horizontal = 12.dp, vertical = 5.dp),
-                            color = Color(0xFF087D4E),
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                        AnimatedVisibility(showBillStatus) {
-                            CustomerImportCoverageStrip(
-                                            records = rawRecords,
-                                            sessions = trafficSessions,
-                                            initialMonth = java.time.YearMonth.from(
-                                                if (range == CustomerRange.THIS_MONTH) monthAnchor else
-                                                    if (range == CustomerRange.TODAY) dayAnchor else today
-                                            ),
-                                            ledgerId = ledgerId,
-                                            dataVersion = dataVersion.toLong()
-                                        )
-                        }
-                        Box(Modifier.weight(1f)) {
-                            CustomerPaymentRecordsContent(
-                                records = periodRawRecords,
-                                importBatches = importBatches,
-                                settings = settings,
-                                excludedIds = filterResult.excludedIds,
-                                autoLargeIds = filterResult.autoLargeIds,
-                                onStateChange = { id, state ->
-                                    db.setCustomerPaymentAnalysisState(id, state)
-                                    onChanged()
-                                },
-                                collectorAssignments = collectorAssignments,
-                                collectorOptions = collectorOptions,
-                                onAssignBatch = { editBatchCollector = it },
-                                onAssignBatches = { batches, collector ->
-                                    val ok = batches.all { batch ->
-                                        db.setCustomerBillCollector(batch.platform, batch.fileHash, collector)
-                                    }
-                                    if (ok) onChanged()
-                                    ok
+                    CustomerPaymentRecordsContent(
+                        records = periodRawRecords,
+                        importBatches = importBatches,
+                        settings = settings,
+                        excludedIds = filterResult.excludedIds,
+                        autoLargeIds = filterResult.autoLargeIds,
+                        onStateChange = { id, state ->
+                            db.setCustomerPaymentAnalysisState(id, state)
+                            onChanged()
+                        },
+                        collectorAssignments = collectorAssignments,
+                        collectorOptions = collectorOptions,
+                        onAssignBatch = { editBatchCollector = it },
+                        onAssignBatches = { batches, collector ->
+                            val ok = batches.all { batch ->
+                                db.setCustomerBillCollector(batch.platform, batch.fileHash, collector)
+                            }
+                            if (ok) onChanged()
+                            ok
+                        },
+                        listState = billListState,
+                        coverageContent = {
+                            Column(Modifier.fillMaxWidth()) {
+                                Text(
+                                    if (showBillStatus) "账单日期与同步状态 ⌃"
+                                    else "账单日期与同步状态 ›",
+                                    modifier = Modifier.fillMaxWidth()
+                                        .clickable { showBillStatus = !showBillStatus }
+                                        .padding(horizontal = 4.dp, vertical = 6.dp),
+                                    color = Color(0xFF087D4E),
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                                AnimatedVisibility(showBillStatus) {
+                                    CustomerImportCoverageStrip(
+                                        records = rawRecords,
+                                        sessions = trafficSessions,
+                                        initialMonth = java.time.YearMonth.from(
+                                            if (range == CustomerRange.THIS_MONTH) monthAnchor
+                                            else if (range == CustomerRange.TODAY) dayAnchor
+                                            else today
+                                        ),
+                                        ledgerId = ledgerId,
+                                        dataVersion = dataVersion.toLong()
+                                    )
                                 }
-                            )
+                            }
                         }
-                    }
+                    )
 
                 allRecords.isEmpty() && sharedForFilters.isEmpty() &&
                     tab != CustomerAnalysisTab.CUSTOMERS && tab != CustomerAnalysisTab.LOCATION ->
@@ -1628,7 +1632,9 @@ private fun CustomerPaymentRecordsContent(
     collectorAssignments: Map<String, String>,
     collectorOptions: List<Pair<String, String>>,
     onAssignBatch: (PaymentImportBatchRecord) -> Unit,
-    onAssignBatches: (List<PaymentImportBatchRecord>, String) -> Boolean
+    onAssignBatches: (List<PaymentImportBatchRecord>, String) -> Boolean,
+    listState: LazyListState,
+    coverageContent: @Composable () -> Unit
 ) {
     var filter by remember {
         mutableStateOf(
@@ -1693,89 +1699,62 @@ private fun CustomerPaymentRecordsContent(
         }
 
     var pageSize by remember(records, filter) { mutableIntStateOf(200) }
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text("收款记录 · ${visible.size}笔", style = MaterialTheme.typography.bodySmall,
-                color = Color.Gray)
-            TextButton(onClick = { showImportHistory = true }) {
-                Text("账单归属 ›")
-            }
-        }
-
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .horizontalScroll(
-                    rememberScrollState()
-                )
-                .padding(
-                    horizontal = 10.dp,
-                    vertical = 5.dp
-                ),
-            horizontalArrangement =
-                Arrangement.spacedBy(
-                    6.dp
-                )
-        ) {
-            CustomerRecordFilter.entries.forEach {
-                item ->
-                FilterChip(
-                    selected =
-                        filter == item,
-                    onClick = {
-                        filter = item
-                    },
-                    label = {
-                        Text(
-                            item.label
-                        )
-                    }
-                )
-            }
-        }
-
-        if (
-            settings.excludeLargePayments
-        ) {
-            Text(
-                "单笔 ≥ ${money(settings.largePaymentThreshold)} 默认不进入客户分析；可在单笔记录中选择“仍计入”。",
-                modifier =
-                    Modifier.padding(
-                        horizontal = 12.dp,
-                        vertical = 2.dp
-                    ),
-                style =
-                    MaterialTheme
-                        .typography
-                        .labelSmall,
-                color =
-                    Color.Gray
-            )
-        }
-
-        if (
-            visible.isEmpty()
-        ) {
-            SimpleEmpty(
-                "当前筛选没有收款记录。"
-            )
-        } else {
-            LazyColumn(
-                Modifier.fillMaxSize(),
-                contentPadding =
-                    PaddingValues(
-                        horizontal = 10.dp,
-                        vertical = 6.dp
-                    ),
-                verticalArrangement =
-                    Arrangement.spacedBy(
-                        6.dp
-                    )
+    // One vertical scroll container for coverage, toolbar, filters and cards:
+    // none of the records controls steals height from the actual list.
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        state = listState,
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        item(key = "coverage") { coverageContent() }
+        item(key = "records_toolbar") {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
+                Text("收款记录 · ${visible.size}笔",
+                    style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                TextButton(onClick = { showImportHistory = true }) {
+                    Text("账单归属 ›")
+                }
+            }
+        }
+        item(key = "records_filters") {
+            Row(
+                Modifier.fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                CustomerRecordFilter.entries.forEach { option ->
+                    FilterChip(
+                        selected = filter == option,
+                        onClick = { filter = option },
+                        label = { Text(option.label) }
+                    )
+                }
+            }
+        }
+        if (settings.excludeLargePayments) {
+            item(key = "large_payment_hint") {
+                Text(
+                    "单笔 ≥ ${money(settings.largePaymentThreshold)} 默认不进入客户分析；可在单笔记录中选择“仍计入”。",
+                    modifier = Modifier.padding(horizontal = 2.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.Gray
+                )
+            }
+        }
+        if (visible.isEmpty()) {
+            item(key = "empty_receipts") {
+                Text("当前筛选没有收款记录。",
+                    modifier = Modifier.padding(16.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray)
+            }
+        }
                 items(
                     visible.take(pageSize),
                     key = {
@@ -2029,8 +2008,6 @@ private fun CustomerPaymentRecordsContent(
                         }
                     }
                 }
-            }
-        }
     }
     if (showImportHistory) {
         var billQuery by remember { mutableStateOf("") }
