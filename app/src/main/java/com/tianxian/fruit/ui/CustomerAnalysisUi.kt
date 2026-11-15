@@ -280,16 +280,14 @@ internal fun CustomerAnalysisContent(
     }
     // Overview and customers use ALL saved operating positions, not the
     // last store selected on the location tab.
-    val calendarBusinessDates = remember(trafficSessions, selectedStoreId, tab) {
+    val calendarBusinessDates = remember(trafficSessions, selectedStoreId) {
         trafficSessions.asSequence().filter {
-            tab != CustomerAnalysisTab.LOCATION || selectedStoreId <= 0L ||
-                it.storeId == selectedStoreId
+            selectedStoreId <= 0L || it.storeId == selectedStoreId
         }.mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }.toSet()
     }
-    val calendarStoreCounts = remember(trafficSessions, selectedStoreId, tab) {
+    val calendarStoreCounts = remember(trafficSessions, selectedStoreId) {
         trafficSessions.filter {
-            tab != CustomerAnalysisTab.LOCATION || selectedStoreId <= 0L ||
-                it.storeId == selectedStoreId
+            selectedStoreId <= 0L || it.storeId == selectedStoreId
         }.groupBy { it.date }.mapNotNull { (date, values) ->
             runCatching { LocalDate.parse(date) }.getOrNull()?.let {
                 it to values.map { row -> row.storeId }.filter { id -> id > 0L }.distinct().size
@@ -353,15 +351,35 @@ internal fun CustomerAnalysisContent(
     val locationRecords = remember(rawRecords, settings) {
         CustomerAnalyticsEngine.filterRecords(rawRecords, settings).included
     }
+    // The top collector selector also scopes the location tab, without
+    // changing the stored transactions or assigning shared receipts to a stall.
+    val filteredLocationRecords = remember(
+        locationRecords, selectedCollectorSyncId, collectorByReceipt
+    ) {
+        if (selectedCollectorSyncId == "*") locationRecords
+        else locationRecords.filter { record ->
+            if (selectedCollectorSyncId == "?")
+                collectorByReceipt[record.id].isNullOrBlank()
+            else collectorByReceipt[record.id] == selectedCollectorSyncId
+        }
+    }
+    val filteredLocationShared = remember(
+        collectorAttribution.shared, selectedCollectorSyncId, collectorPartnerIds
+    ) {
+        if (selectedCollectorSyncId == "*") collectorAttribution.shared
+        else if (selectedCollectorSyncId == "?") emptyList()
+        else collectorAttribution.shared.filter {
+            it.partnerId == collectorPartnerIds[selectedCollectorSyncId]
+        }
+    }
     val incompleteCalendarDates = remember(locationRecords, dailyHistory,
-        calendarBusinessDates, selectedStoreId, selectedPlatform, tab) {
+        calendarBusinessDates, selectedStoreId, selectedPlatform) {
         val available = locationRecords.asSequence().filter { it.netAmount > 0.005 }
             .groupBy { it.businessDate to it.storeId }
             .mapValues { (_, payments) -> payments.map { it.platform }.toSet() }
         dailyHistory.asSequence().filter { record ->
             record.storeId > 0L &&
-                (tab != CustomerAnalysisTab.LOCATION || selectedStoreId <= 0L ||
-                    record.storeId == selectedStoreId)
+                (selectedStoreId <= 0L || record.storeId == selectedStoreId)
         }.filter { record ->
             // Missing a channel that was never used is NOT a missing bill.
             val channels = buildSet {
@@ -484,17 +502,16 @@ internal fun CustomerAnalysisContent(
     }
 
     val analysis =
-        remember(
-            allRecords,
-            dateRange,
-            today
-        ) {
-            CustomerAnalyticsEngine.analyze(
-                allRecords = allRecords,
-                startDate = dateRange.first,
-                endDate = dateRange.second,
-                today = today
-            )
+        remember(allRecords, dateRange, today, tab) {
+            if (tab == CustomerAnalysisTab.OVERVIEW ||
+                tab == CustomerAnalysisTab.CUSTOMERS) {
+                CustomerAnalyticsEngine.analyze(
+                    allRecords = allRecords,
+                    startDate = dateRange.first,
+                    endDate = dateRange.second,
+                    today = today
+                )
+            } else null
         }
 
     val periodPayments = remember(allRecords, dateRange) {
@@ -556,6 +573,57 @@ internal fun CustomerAnalysisContent(
                 range.label
         }
 
+    // Location history is anchored to one selling date even if the previous
+    // tab was displaying a month or range.
+    val headerShowsDay = tab == CustomerAnalysisTab.LOCATION ||
+        range == CustomerRange.TODAY
+    val headerDateLabel = CustomerAnalysisDisplayPolicy.dateLabel(
+        if (headerShowsDay) "TODAY" else range.name,
+        if (range in setOf(CustomerRange.LAST_7, CustomerRange.LAST_30)) today else dayAnchor,
+        monthAnchor, customStart, customEnd
+    )
+    val selectedStoreName = when (selectedStoreId) {
+        0L -> "全部位置"
+        -1L -> "未匹配位置"
+        else -> storeOptions.firstOrNull { it.first == selectedStoreId }?.second ?: "已失效位置"
+    }
+    val selectedCollectorName = when (selectedCollectorSyncId) {
+        "*" -> "全部收款人"
+        "?" -> "未指定收款人"
+        else -> collectorOptions.firstOrNull { it.first == selectedCollectorSyncId }?.second
+            ?: "已失效人员"
+    }
+    val relatedCollectorIds = remember(rawRecords, selectedStoreId, collectorByReceipt) {
+        if (selectedStoreId <= 0L) emptySet() else rawRecords.asSequence()
+            .filter { it.storeId == selectedStoreId }.mapNotNull { collectorByReceipt[it.id] }
+            .toSet()
+    }
+    val storeFilterOptions = buildList {
+        if (tab != CustomerAnalysisTab.LOCATION) add("0" to "全部位置")
+        storeOptions.forEach { (id, name) -> add(id.toString() to name) }
+        if (hasUnmatchedStore && tab != CustomerAnalysisTab.LOCATION)
+            add("-1" to "未匹配位置")
+    }
+    val collectorFilterOptions = buildList {
+        add("*" to "全部收款人")
+        collectorOptions.forEach { (id, name) ->
+            add(id to (name + if (selectedStoreId > 0L && id in relatedCollectorIds)
+                " · 本位置" else ""))
+        }
+        add("?" to "未指定收款人")
+    }
+    fun navigateCustomerDay(step: Int) {
+        if (!headerShowsDay) return
+        val next = CustomerBusinessDayNavigation.shift(
+            dayAnchor, step, businessDatesForSelectedStore.toSet(),
+            selectedStoreId > 0L && onlyBusinessDays
+        )
+        if (!next.isAfter(today)) {
+            dayAnchor = next
+            range = CustomerRange.TODAY
+        }
+    }
+
     fun pickDate(
         initial: LocalDate,
         minDate: LocalDate? = null,
@@ -573,15 +641,9 @@ internal fun CustomerAnalysisContent(
     }
 
     val hourlyTraffic =
-        remember(
-            allRecords,
-            range,
-            dayAnchor
-        ) {
-            if (
-                range ==
-                CustomerRange.TODAY
-            ) {
+        remember(allRecords, range, dayAnchor, tab) {
+            if (tab == CustomerAnalysisTab.OVERVIEW &&
+                range == CustomerRange.TODAY) {
                 CustomerAnalyticsEngine.hourlyTraffic(
                     allRecords =
                         allRecords,
@@ -593,24 +655,20 @@ internal fun CustomerAnalysisContent(
             }
         }
 
-    val platformHourlyTraffic = remember(allRecords, range, dayAnchor) {
-        if (range == CustomerRange.TODAY) PaymentTrafficAnalytics.hourly(allRecords, dayAnchor.toString())
+    val platformHourlyTraffic = remember(allRecords, range, dayAnchor, tab) {
+        if (tab == CustomerAnalysisTab.OVERVIEW && range == CustomerRange.TODAY)
+            PaymentTrafficAnalytics.hourly(allRecords, dayAnchor.toString())
         else emptyList()
     }
-    val singleDayRecords = remember(allRecords, range, dayAnchor) {
-        if (range == CustomerRange.TODAY) allRecords.filter { it.businessDate == dayAnchor.toString() }
+    val singleDayRecords = remember(allRecords, range, dayAnchor, tab) {
+        if (tab == CustomerAnalysisTab.OVERVIEW && range == CustomerRange.TODAY)
+            allRecords.filter { it.businessDate == dayAnchor.toString() }
         else emptyList()
     }
     val sameWeekdayComparisons =
-        remember(
-            allRecords,
-            range,
-            dayAnchor
-        ) {
-            if (
-                range ==
-                CustomerRange.TODAY
-            ) {
+        remember(allRecords, range, dayAnchor, tab) {
+            if (tab == CustomerAnalysisTab.OVERVIEW &&
+                range == CustomerRange.TODAY) {
                 CustomerAnalyticsEngine.sameWeekdayComparisons(
                     allRecords =
                         allRecords,
@@ -623,8 +681,8 @@ internal fun CustomerAnalysisContent(
         }
 
     val trafficComparisons = remember(allRecords, trafficSessions, range, dayAnchor,
-        selectedStoreId, selectedPlatform) {
-        if (range == CustomerRange.TODAY) {
+        selectedStoreId, selectedPlatform, tab) {
+        if (tab == CustomerAnalysisTab.OVERVIEW && range == CustomerRange.TODAY) {
             CustomerTrafficDeepDive.compare(
                 rows = allRecords,
                 sessions = trafficSessions,
@@ -657,22 +715,26 @@ internal fun CustomerAnalysisContent(
         )
     }
     val storePerformances = remember(rawRecords, settings, trafficSessions,
-        selectedPlatform, dateRange) {
-        val included = CustomerAnalyticsEngine.filterRecords(rawRecords, settings).included
-        val scoped = PaymentTrafficAnalytics.select(included,
-            selectedPlatform.name, 0L)
-        CustomerOverviewPolicies.performance(
-            scoped, trafficSessions, dateRange.first, dateRange.second
-        )
+        selectedPlatform, dateRange, tab) {
+        if (tab == CustomerAnalysisTab.OVERVIEW) {
+            val included = CustomerAnalyticsEngine.filterRecords(rawRecords, settings).included
+            val scoped = PaymentTrafficAnalytics.select(included,
+                selectedPlatform.name, 0L)
+            CustomerOverviewPolicies.performance(
+                scoped, trafficSessions, dateRange.first, dateRange.second
+            )
+        } else emptyList()
     }
-    val paymentAmountBands = remember(periodPayments) {
-        CustomerTrafficDeepDive.amountBands(periodPayments)
+    val paymentAmountBands = remember(periodPayments, tab) {
+        if (tab == CustomerAnalysisTab.OVERVIEW)
+            CustomerTrafficDeepDive.amountBands(periodPayments) else emptyList()
     }
-    val storeTrafficPatterns = remember(allRecords, trafficSessions, dateRange, selectedPlatform) {
-        CustomerTrafficDeepDive.storePatterns(
-            allRecords, trafficSessions, selectedPlatform.name,
-            dateRange.second ?: today.toString()
-        )
+    val storeTrafficPatterns = remember(allRecords, trafficSessions, dateRange, selectedPlatform, tab) {
+        if (tab == CustomerAnalysisTab.OVERVIEW)
+            CustomerTrafficDeepDive.storePatterns(
+                allRecords, trafficSessions, selectedPlatform.name,
+                dateRange.second ?: today.toString()
+            ) else emptyList()
     }
 
     val dailyTraffic =
@@ -746,215 +808,160 @@ internal fun CustomerAnalysisContent(
                 )
             )
     ) {
-        AnimatedVisibility(
-            visible =
-                chromeVisible
-        ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(
-                    horizontal = 10.dp,
-                    vertical = 4.dp
-                ),
-            verticalArrangement =
-                Arrangement.spacedBy(
-                    2.dp
-                )
-        ) {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment =
-                    androidx.compose.ui.Alignment.CenterVertically
+        AnimatedVisibility(visible = chromeVisible) {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 3.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
-                TextButton(
-                    onClick = onBack,
-                    modifier = Modifier.width(32.dp),
-                    contentPadding = PaddingValues(0.dp)
-                ) {
-                    Text("‹", style = MaterialTheme.typography.headlineSmall)
+                // Date no longer competes with the back button, import, and settings.
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        onClick = onBack,
+                        modifier = Modifier.width(30.dp).height(36.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) { Text("‹", style = MaterialTheme.typography.headlineSmall) }
+                    Text(
+                        "客户分析", modifier = Modifier.weight(1f),
+                        fontWeight = FontWeight.Bold, color = Color(0xFF087D4E),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    TextButton(
+                        onClick = { showImportCollectorPicker = true },
+                        enabled = canImport && !importing,
+                        contentPadding = PaddingValues(horizontal = 6.dp)
+                    ) { Text(if (importing) "导入中" else "导入") }
+                    TextButton(
+                        onClick = { showSettings = true },
+                        modifier = Modifier.width(40.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) { Text("⚙", style = MaterialTheme.typography.titleLarge) }
                 }
-                Text(
-                    "客户分析",
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFF087D4E),
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1
-                )
-                Text(
-                    (if (tab == CustomerAnalysisTab.LOCATION || range == CustomerRange.TODAY)
-                        "‹ " + dayAnchor.format(DateTimeFormatter.ofPattern("yyyy年M月d日")) + " ›"
-                     else "$rangeLabel ▾"),
-                    modifier = Modifier.weight(1f)
-                        .pointerInput(tab, selectedStoreId, onlyBusinessDays,
-                            businessDatesForSelectedStore) {
-                            var movedX = 0f
-                            detectHorizontalDragGestures(
-                                onDragStart = { movedX = 0f },
-                                onDragEnd = {
-                                    if ((tab == CustomerAnalysisTab.LOCATION || range == CustomerRange.TODAY)
-                                        && abs(movedX) > 45f) {
-                                        dayAnchor = CustomerBusinessDayNavigation.shift(
-                                            dayAnchor, if (movedX > 0) -1 else 1,
-                                            businessDatesForSelectedStore.toSet(),
-                                            tab == CustomerAnalysisTab.LOCATION && onlyBusinessDays
-                                        )
-                                        range = CustomerRange.TODAY
+
+                Row(Modifier.fillMaxWidth().heightIn(min = 38.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    if (headerShowsDay) {
+                        TextButton(
+                            onClick = { navigateCustomerDay(-1) },
+                            modifier = Modifier.width(32.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) { Text("‹", style = MaterialTheme.typography.titleLarge) }
+                    }
+                    Text(
+                        headerDateLabel + " ▾",
+                        modifier = Modifier.weight(1f)
+                            .pointerInput(range, selectedStoreId, onlyBusinessDays,
+                                businessDatesForSelectedStore) {
+                                var movedX = 0f
+                                detectHorizontalDragGestures(
+                                    onDragStart = { movedX = 0f },
+                                    onDragEnd = {
+                                        if (headerShowsDay && abs(movedX) > 45f)
+                                            navigateCustomerDay(if (movedX > 0f) -1 else 1)
+                                    },
+                                    onHorizontalDrag = { change, drag ->
+                                        change.consume()
+                                        movedX += drag
                                     }
-                                },
-                                onHorizontalDrag = { change, drag ->
-                                    change.consume()
-                                    movedX += drag
-                                }
+                                )
+                            }
+                            .clickable { showCalendarDialog = true }
+                            .padding(horizontal = 5.dp, vertical = 7.dp),
+                        color = Color(0xFF087D4E),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        softWrap = true
+                    )
+                    if (headerShowsDay) {
+                        TextButton(
+                            onClick = { navigateCustomerDay(1) },
+                            enabled = dayAnchor.isBefore(today),
+                            modifier = Modifier.width(32.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) { Text("›", style = MaterialTheme.typography.titleLarge) }
+                    }
+                    TextButton(
+                        onClick = { showCalendarDialog = true },
+                        modifier = Modifier.width(40.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) { Text("▦", color = Color(0xFF087D4E)) }
+                }
+
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    if (maxWidth < 350.dp) {
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            CustomerAnalysisFilterDropdown(
+                                label = "营业位置", value = selectedStoreName,
+                                options = storeFilterOptions, modifier = Modifier.fillMaxWidth(),
+                                onSelect = { selectedStoreId = it.toLongOrNull() ?: 0L }
+                            )
+                            CustomerAnalysisFilterDropdown(
+                                label = "收款人", value = selectedCollectorName,
+                                options = collectorFilterOptions, modifier = Modifier.fillMaxWidth(),
+                                onSelect = { selectedCollectorSyncId = it }
                             )
                         }
-                        .clickable { showCalendarDialog = true }
-                        .padding(horizontal = 6.dp, vertical = 8.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.SemiBold,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.End,
-                    color = Color(0xFF087D4E),
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                )
-                TextButton(
-                    onClick = {
-                        showImportCollectorPicker = true
-                    },
-                    enabled = canImport && !importing,
-                    contentPadding = PaddingValues(horizontal = 5.dp)
-                ) { Text(if (importing) "导入中" else "导入") }
-                /* File picker follows the collector confirmation. */
-                
-                TextButton(
-                    onClick = {
-                        showSettings = true
-                    },
-                    contentPadding =
-                        PaddingValues(
-                            horizontal = 8.dp
-                        )
-                ) {
-                    Text("⚙", style = MaterialTheme.typography.titleLarge)
+                    } else {
+                        Row(Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            CustomerAnalysisFilterDropdown(
+                                label = "位置", value = selectedStoreName,
+                                options = storeFilterOptions, modifier = Modifier.weight(1f),
+                                onSelect = { selectedStoreId = it.toLongOrNull() ?: 0L }
+                            )
+                            CustomerAnalysisFilterDropdown(
+                                label = "收款人", value = selectedCollectorName,
+                                options = collectorFilterOptions, modifier = Modifier.weight(1f),
+                                onSelect = { selectedCollectorSyncId = it }
+                            )
+                        }
+                    }
                 }
-            }
 
-            if (conflictingCollectorCount > 0) {
-                Text(
-                    "有 ${conflictingCollectorCount} 笔收款关联不同收款人，请在账单归属中核对；暂不自动分配位置。",
-                    color = Color(0xFFB26A00),
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.dp)
-                )
-            }
-
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                CustomerPaymentPlatform.entries.forEach { option ->
-                    val selected = selectedPlatform == option
-                    Surface(
-                        color = if (selected) Color.White else Color(0xFFE8EFEB),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.weight(1f).clickable { selectedPlatform = option }
+                Row(Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    CustomerPaymentPlatform.entries.forEach { option ->
+                        val selected = selectedPlatform == option
+                        Surface(
+                            color = if (selected) Color.White else Color(0xFFE8EFEB),
+                            shape = RoundedCornerShape(7.dp),
+                            modifier = Modifier.weight(1f).clickable { selectedPlatform = option }
+                        ) {
+                            Text(option.label,
+                                modifier = Modifier.padding(vertical = 6.dp),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                color = if (selected) Color(0xFF087D4E) else Color.DarkGray,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                if (conflictingCollectorCount > 0) {
+                    Text(
+                        "收款人关联冲突 ${conflictingCollectorCount} 笔 · 请在账单归属中核对",
+                        color = Color(0xFFB26A00),
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 3.dp)
+                    )
+                }
+                if (importing) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (message.isNotBlank()) {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { showMessageDetails = true },
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            option.label,
-                            modifier = Modifier.padding(vertical = 9.dp),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            color = if (selected) Color(0xFF087D4E) else Color.DarkGray,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                            style = MaterialTheme.typography.bodySmall
+                            if (message.contains("失败") || message.contains("异常"))
+                                "账单处理需要核对" else "账单处理完成",
+                            modifier = Modifier.weight(1f),
+                            color = if (message.contains("失败")) MaterialTheme.colorScheme.error
+                                else Color(0xFF087D4E),
+                            style = MaterialTheme.typography.labelSmall, maxLines = 1
                         )
-                    }
-                }
-
-                Box(contentAlignment = Alignment.CenterEnd, modifier = Modifier.weight(1.25f)) {
-                    val storeName = when (selectedStoreId) {
-                        0L -> "全部位置"
-                        -1L -> "未匹配"
-                        else -> storeOptions.firstOrNull { it.first == selectedStoreId }?.second ?: "已失效"
-                    }
-                    Text(
-                        "$storeName ▾",
-                        modifier = Modifier.fillMaxWidth().clickable { showStoreMenu = true }
-                            .padding(horizontal = 3.dp, vertical = 9.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF087D4E),
-                        maxLines = 1,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.End,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                    )
-                    DropdownMenu(expanded = showStoreMenu, onDismissRequest = { showStoreMenu = false }) {
-                        if (tab != CustomerAnalysisTab.LOCATION)
-                            DropdownMenuItem(text = { Text("全部位置") }, onClick = {
-                                selectedStoreId = 0L; showStoreMenu = false
-                            })
-                        storeOptions.forEach { (id, name) ->
-                            DropdownMenuItem(text = { Text(name) }, onClick = {
-                                selectedStoreId = id; showStoreMenu = false
-                            })
-                        }
-                        if (hasUnmatchedStore && tab != CustomerAnalysisTab.LOCATION)
-                            DropdownMenuItem(text = { Text("未匹配位置") }, onClick = {
-                            selectedStoreId = -1L; showStoreMenu = false
-                        })
-                    }
-                }
-                Box(modifier = Modifier.weight(1.1f), contentAlignment = Alignment.CenterEnd) {
-                    val collectorLabel = when (selectedCollectorSyncId) {
-                        "*" -> "全部收款人"
-                        "?" -> "未指定"
-                        else -> collectorOptions.firstOrNull { it.first == selectedCollectorSyncId }?.second
-                            ?: "已失效人员"
-                    }
-                    Text("$collectorLabel ▾",
-                        modifier = Modifier.fillMaxWidth().clickable { showCollectorMenu = true }
-                            .padding(horizontal = 2.dp, vertical = 9.dp),
-                        maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.End,
-                        style = MaterialTheme.typography.labelSmall, color = Color(0xFF087D4E))
-                    DropdownMenu(expanded = showCollectorMenu,
-                        onDismissRequest = { showCollectorMenu = false }) {
-                        DropdownMenuItem(text = { Text("全部收款人") }, onClick = {
-                            selectedCollectorSyncId = "*"; showCollectorMenu = false
-                        })
-                        collectorOptions.forEach { (id, name) ->
-                            DropdownMenuItem(text = { Text(name) }, onClick = {
-                                selectedCollectorSyncId = id; showCollectorMenu = false
-                            })
-                        }
-                        DropdownMenuItem(text = { Text("未指定收款人") }, onClick = {
-                            selectedCollectorSyncId = "?"; showCollectorMenu = false
-                        })
+                        Text("详情 ›", color = Color(0xFF087D4E),
+                            style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
-            if (importing) {
-                LinearProgressIndicator(
-                    Modifier.fillMaxWidth()
-                )
-            }
-            if (message.isNotBlank()) {
-                Row(Modifier.fillMaxWidth().clickable { showMessageDetails = true },
-                    verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        if (message.contains("失败") || message.contains("异常")) "账单处理需要核对"
-                        else "账单处理完成",
-                        modifier = Modifier.weight(1f),
-                        color = if (message.contains("失败")) MaterialTheme.colorScheme.error
-                            else Color(0xFF087D4E),
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1
-                    )
-                    Text("详情 ›", color = Color(0xFF087D4E),
-                        style = MaterialTheme.typography.labelSmall)
-                }
-            }
-        }
         }
 
         AnimatedVisibility(
@@ -1072,7 +1079,7 @@ internal fun CustomerAnalysisContent(
                         CustomerAnalysisTab.OVERVIEW ->
                             CustomerOverview(
                                 result =
-                                    analysis,
+                                    requireNotNull(analysis),
                                 hourlyTraffic =
                                     hourlyTraffic,
                                  platformHourlyTraffic = platformHourlyTraffic,
@@ -1098,6 +1105,9 @@ internal fun CustomerAnalysisContent(
                                 comparisonRecords = allRecords,
                                 selectedPlatform = selectedPlatform,
                                 onPlatformChange = { selectedPlatform = it },
+                                displayDate = dayAnchor,
+                                displayStoreName = selectedStoreName,
+                                displayCollectorName = selectedCollectorName,
                                 dailySessions = trafficSessions,
                                 dailyBusiness = dailyHistory,
                                 singleDay =
@@ -1128,9 +1138,13 @@ internal fun CustomerAnalysisContent(
                             CustomerLocationHistoryContent(
                                 db = db,
                                 dataVersion = dataVersion,
-                                records = locationRecords,
+                                // Preserve the independent location source:
+                                // never reuse the overview's selected-store subset.
+                                records = locationRecords.takeIf {
+                                    selectedCollectorSyncId == "*"
+                                } ?: filteredLocationRecords,
                                 sessions = trafficSessions,
-                                sharedGroups = collectorAttribution.shared,
+                                sharedGroups = filteredLocationShared,
                                 stores = storeOptions,
                                 selectedStoreId = selectedStoreId,
                                 onStoreChange = { selectedStoreId = it },
@@ -1146,7 +1160,7 @@ internal fun CustomerAnalysisContent(
 
                         CustomerAnalysisTab.CUSTOMERS ->
                             CustomerDetailsContent(
-                                result = analysis,
+                                result = requireNotNull(analysis),
                                 section = customerSection,
                                 onSectionChange = { customerSection = it },
                                 businessCustomerSummary = businessCustomerSummary,
@@ -1498,6 +1512,41 @@ private fun CustomerAnalysisSettingsDialog(
             }
         }
     )
+}
+
+@Composable
+private fun CustomerAnalysisFilterDropdown(
+    label: String,
+    value: String,
+    options: List<Pair<String, String>>,
+    modifier: Modifier = Modifier,
+    onSelect: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(modifier) {
+        Surface(color = Color(0xFFE8EFEB), shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth().clickable { expanded = true }) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text("$label  ", color = Color.Gray,
+                    style = MaterialTheme.typography.labelSmall)
+                Text(value, modifier = Modifier.weight(1f),
+                    color = Color(0xFF087D4E), fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.bodySmall,
+                    softWrap = true)
+                Text("⌄", color = Color(0xFF087D4E),
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { (key, text) ->
+                DropdownMenuItem(
+                    text = { Text(text, softWrap = true) },
+                    onClick = { expanded = false; onSelect(key) }
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -2297,6 +2346,9 @@ private fun CustomerOverview(
     comparisonRecords: List<CustomerPaymentRecord>,
     selectedPlatform: CustomerPaymentPlatform,
     onPlatformChange: (CustomerPaymentPlatform) -> Unit,
+    displayDate: LocalDate,
+    displayStoreName: String,
+    displayCollectorName: String,
     dailySessions: List<CustomerTrafficSession>,
     dailyBusiness: List<StoreDailyRecord>,
     singleDay: Boolean,
@@ -2396,11 +2448,15 @@ private fun CustomerOverview(
                     Metric("付款笔数", s.paymentCount.toString(), Modifier.weight(1f))
                     Metric("笔均收款", money(s.averageTicket), Modifier.weight(1f))
                 }
-                Text(CustomerOverviewPolicies.headline(
-                    trafficComparisons, selectedStoreId, comparisonRecords, selectedPlatform.name),
-                    color = Color(0xFF087D4E),
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(horizontal = 2.dp))
+                // The hour chart already explains why an all-store comparison is unavailable.
+                // Avoid repeating the same multi-line warning above the audit section.
+                if (singleDay && selectedStoreId > 0L) {
+                    Text(CustomerOverviewPolicies.headline(
+                        trafficComparisons, selectedStoreId, comparisonRecords, selectedPlatform.name),
+                        color = Color(0xFF087D4E),
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 2.dp))
+                }
             }
         }
         item {
@@ -2486,7 +2542,10 @@ private fun CustomerOverview(
                         ?.takeIf { selectedStoreId > 0L && it.storeId == selectedStoreId },
                     historicRecords = comparisonRecords,
                     selectedPlatform = selectedPlatform,
-                    onPlatformChange = onPlatformChange
+                    onPlatformChange = onPlatformChange,
+                    displayDate = displayDate,
+                    displayStoreName = displayStoreName,
+                    displayCollectorName = displayCollectorName
                 )
             }
             if (trafficComparisons.isNotEmpty()) {
@@ -2610,6 +2669,27 @@ private fun PaymentSourceCoverageCard(coverage: List<PaymentPlatformCoverage>) {
 }
 
 @Composable
+private fun CustomerComparisonChange(
+    label: String,
+    change: String,
+    modifier: Modifier = Modifier
+) {
+    val color = when {
+        change.startsWith("-") -> Color(0xFFC44A42)
+        change.startsWith("+") -> Color(0xFF087D4E)
+        else -> Color.Gray
+    }
+    Column(modifier.background(Color(0xFFF4F7F5), RoundedCornerShape(7.dp))
+        .padding(horizontal = 7.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray,
+            softWrap = true)
+        Text(change, fontWeight = FontWeight.SemiBold,
+            style = MaterialTheme.typography.bodyMedium, color = color)
+    }
+}
+
+@Composable
 private fun HourlyCustomerTrafficCard(
     points: List<CustomerHourlyPoint>,
     platformHours: List<PaymentPlatformHour>,
@@ -2617,7 +2697,10 @@ private fun HourlyCustomerTrafficCard(
     comparison: CustomerTrafficComparison?,
     historicRecords: List<CustomerPaymentRecord>,
     selectedPlatform: CustomerPaymentPlatform,
-    onPlatformChange: (CustomerPaymentPlatform) -> Unit
+    onPlatformChange: (CustomerPaymentPlatform) -> Unit,
+    displayDate: LocalDate,
+    displayStoreName: String,
+    displayCollectorName: String
 ) {
     var metric by remember { mutableStateOf(CustomerTrafficMetric.PAYMENTS) }
     val byHour = remember(points) { points.associateBy { it.hour } }
@@ -2647,34 +2730,78 @@ private fun HourlyCustomerTrafficCard(
     val selectedCount = byHour[selectedHour]
     val baselineValue = baseline(selectedHour)
     val selectedValue = current(selectedHour)
-    val detailRows = remember(dayRecords, selectedHour) {
-        dayRecords.filter { it.tradeTime.drop(11).take(2).toIntOrNull() == selectedHour }
-            .sortedWith(compareByDescending<CustomerPaymentRecord> { it.tradeTime }
-                .thenByDescending { it.id })
+    val detailRows = remember(dayRecords, selectedHour, comparison?.storeId) {
+        dayRecords.filter {
+            it.tradeTime.drop(11).take(2).toIntOrNull() == selectedHour &&
+                (comparison == null || it.storeId == comparison.storeId)
+        }.sortedWith(compareByDescending<CustomerPaymentRecord> { it.tradeTime }
+            .thenByDescending { it.id })
     }
+    val validComparison = comparison?.takeIf {
+        it.sampleSufficient && (selectedPlatform != CustomerPaymentPlatform.ALL ||
+            it.sourceCoverage.contains("＋"))
+    }
+    val comparisonHoursSet = remember(validComparison) {
+        validComparison?.hourRows?.map { it.hour }?.toSet().orEmpty()
+    }
+    val currentComparableAmount = remember(dayRecords, comparisonHoursSet, validComparison) {
+        if (validComparison == null) 0.0 else dayRecords.asSequence().filter {
+            it.netAmount > 0.005 && it.storeId == validComparison.storeId &&
+                it.tradeTime.drop(11).take(2).toIntOrNull() in comparisonHoursSet
+        }.sumOf { it.netAmount }
+    }
+    val historicComparableAmount = remember(validComparison, historicRecords) {
+        validComparison?.let { CustomerOverviewPolicies.historicTotalAmount(it, historicRecords) }
+    }
+    val historicTicket = validComparison?.baselinePayments?.takeIf { it > 0.005 }
+        ?.let { count -> historicComparableAmount?.let { it / count } }
+    val currentTicket = validComparison?.currentPayments?.takeIf { it > 0 }
+        ?.let { currentComparableAmount / it }
     Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
         Column(Modifier.fillMaxWidth().padding(10.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("逐小时付款 · 本次与历史同期", fontWeight = FontWeight.Bold)
-            Row(Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                CustomerPaymentPlatform.entries.forEach { option ->
-                    FilterChip(selected = selectedPlatform == option,
-                        onClick = { onPlatformChange(option) },
-                        label = { Text(option.label) })
-                }
+            Text(CustomerAnalysisDisplayPolicy.detailContext(
+                    displayDate, displayStoreName, selectedPlatform.label,
+                    displayCollectorName.takeUnless { it == "全部收款人" }.orEmpty()),
+                style = MaterialTheme.typography.labelSmall, color = Color(0xFF087D4E),
+                softWrap = true)
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 listOf(CustomerTrafficMetric.PAYMENTS, CustomerTrafficMetric.AMOUNT).forEach { option ->
                     FilterChip(selected = metric == option, onClick = { metric = option },
                         label = { Text(option.label) })
                 }
             }
-            Text("绿色本次 · 灰色同位置、同星期历史均值；仅对比相同已结束营业小时",
+            if (validComparison != null) {
+                val currentCount = validComparison.currentPayments.toDouble()
+                val countText = CustomerAnalysisDisplayPolicy.percentageChange(
+                    currentCount, validComparison.baselinePayments, validComparison.historicDates.size
+                ) ?: "—"
+                val amountText = CustomerAnalysisDisplayPolicy.percentageChange(
+                    currentComparableAmount, historicComparableAmount, validComparison.historicDates.size
+                ) ?: "—"
+                val ticketText = CustomerAnalysisDisplayPolicy.percentageChange(
+                    currentTicket ?: 0.0, historicTicket, validComparison.historicDates.size
+                ) ?: "—"
+                Text("历史可比营业日 ${validComparison.historicDates.size} 天 · 相同完整营业小时",
+                    style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Row(Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    CustomerComparisonChange("付款笔数", countText, Modifier.weight(1f))
+                    CustomerComparisonChange("收款金额", amountText, Modifier.weight(1f))
+                    CustomerComparisonChange("笔均收款", ticketText, Modifier.weight(1f))
+                }
+            }
+            Text("绿色本次 · 灰色历史同小时均值 · 仅对比已结束营业小时",
                 style = MaterialTheme.typography.labelSmall, color = Color.Gray)
             if (comparison == null) {
                 Text("请选择有正式营业时段的单个位置，才可显示历史同期；当前只展示已观察到的付款。",
                     style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
             } else if (!comparison.sampleSufficient) {
                 Text("仅有${comparison.historicDates.size}个可比营业日（至少3个），历史均值暂不展示；账单覆盖需核验。",
+                    style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
+            } else if (validComparison == null) {
+                Text("合并对比缺少微信或支付宝记录，暂不显示涨跌百分比；请核验账单覆盖。",
                     style = MaterialTheme.typography.labelSmall, color = Color(0xFF9A6700))
             }
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -2723,9 +2850,23 @@ private fun HourlyCustomerTrafficCard(
                 " · 历史${pastText} · 差额${diff}",
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.SemiBold)
-            if (selectedCount != null)
-                Text("该小时：${selectedCount.paymentCount}笔 / ${money(selectedCount.amount)}",
+            if (selectedCount != null) {
+                val currentAverage = selectedCount.paymentCount.takeIf { it > 0 }
+                    ?.let { money(selectedCount.amount / it) } ?: "—"
+                Text("该小时：${selectedCount.paymentCount}笔 · ${money(selectedCount.amount)} · 笔均${currentAverage}",
                     style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                if (validComparison != null) {
+                    val historicCount = comparisonHours[selectedHour]?.historicAverage
+                    val historicAmount = CustomerOverviewPolicies.historicHourAmount(
+                        validComparison, historicRecords, selectedHour)
+                    val pastAverage = if (historicCount != null && historicCount > 0.005 &&
+                        historicAmount != null) money(historicAmount / historicCount) else "—"
+                    Text("历史同小时：${historicCount?.let {
+                        String.format(Locale.CHINA, "%.1f", it)
+                    } ?: "—"}笔 · ${historicAmount?.let(::money) ?: "—"} · 笔均${pastAverage}",
+                        style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                }
+            }
             TextButton(onClick = { detailsExpanded = !detailsExpanded },
                 contentPadding = PaddingValues(horizontal = 0.dp)) {
                 Text(if (detailsExpanded) "收起交易明细 ⌃" else "此小时交易明细 ›")
