@@ -144,3 +144,58 @@ internal object OvernightReceiptPolicy {
         )
     }
 }
+
+
+/**
+ * Clearing a selling session's helper data must use its NEXT calendar morning.
+ * Keep blank rows instead of dropping them: CustomerCloudBridge uploads the
+ * blank revision, preventing older server entries from restoring the amount.
+ */
+internal object OvernightReceiptDeletionPolicy {
+    fun clearedSnapshot(
+        row: OvernightReceiptSnapshot,
+        businessDate: String,
+        storeId: Long
+    ): OvernightReceiptSnapshot {
+        val morning = runCatching {
+            LocalDate.parse(businessDate).plusDays(1).toString()
+        }.getOrNull() ?: return row
+        if (row.calendarDate != morning || row.storeId != storeId) return row
+        return row.copy(
+            wechat = 0.0, alipay = 0.0, cash = 0.0,
+            wechatRecorded = false, alipayRecorded = false, cashRecorded = false
+        )
+    }
+
+    fun clearedNatural(
+        row: NaturalDayReceiptDraft,
+        businessDate: String,
+        storeId: Long
+    ): NaturalDayReceiptDraft {
+        if (row.businessDate != businessDate || row.storeId != storeId) return row
+        return row.copy(
+            wechat = 0.0, alipay = 0.0, cash = 0.0,
+            deductWechat = true, deductAlipay = true, deductCash = true,
+            savedWechat = null, savedAlipay = null, savedCash = null
+        )
+    }
+
+    fun emptySnapshot(
+        businessDate: String,
+        storeId: Long,
+        partnerId: Long
+    ): OvernightReceiptSnapshot? {
+        if (storeId <= 0L || partnerId <= 0L) return null
+        val morning = runCatching {
+            LocalDate.parse(businessDate).plusDays(1).toString()
+        }.getOrNull() ?: return null
+        return OvernightReceiptSnapshot(
+            calendarDate = morning,
+            storeId = storeId,
+            partnerId = partnerId,
+            wechatRecorded = false,
+            alipayRecorded = false,
+            cashRecorded = false
+        )
+    }
+}
