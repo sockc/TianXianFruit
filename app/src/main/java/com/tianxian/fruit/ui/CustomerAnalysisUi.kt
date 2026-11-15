@@ -556,6 +556,48 @@ internal fun CustomerAnalysisContent(
                 range.label
         }
 
+    val headerDateLabel = CustomerAnalysisDisplayPolicy.dateLabel(
+        range.name, dayAnchor, monthAnchor, customStart, customEnd
+    )
+    val selectedStoreName = when (selectedStoreId) {
+        0L -> "全部位置"
+        -1L -> "未匹配位置"
+        else -> storeOptions.firstOrNull { it.first == selectedStoreId }?.second ?: "已失效位置"
+    }
+    val selectedCollectorName = when (selectedCollectorSyncId) {
+        "*" -> "全部收款人"
+        "?" -> "未指定收款人"
+        else -> collectorOptions.firstOrNull { it.first == selectedCollectorSyncId }?.second
+            ?: "已失效人员"
+    }
+    val relatedCollectorIds = remember(rawRecords, selectedStoreId, collectorByReceipt) {
+        if (selectedStoreId <= 0L) emptySet() else rawRecords.asSequence()
+            .filter { it.storeId == selectedStoreId }.mapNotNull { collectorByReceipt[it.id] }
+            .toSet()
+    }
+    val storeFilterOptions = buildList {
+        if (tab != CustomerAnalysisTab.LOCATION) add("0" to "全部位置")
+        storeOptions.forEach { (id, name) -> add(id.toString() to name) }
+        if (hasUnmatchedStore && tab != CustomerAnalysisTab.LOCATION)
+            add("-1" to "未匹配位置")
+    }
+    val collectorFilterOptions = buildList {
+        add("*" to "全部收款人")
+        collectorOptions.forEach { (id, name) ->
+            add(id to (name + if (selectedStoreId > 0L && id in relatedCollectorIds)
+                " · 本位置" else ""))
+        }
+        add("?" to "未指定收款人")
+    }
+    fun navigateCustomerDay(step: Int) {
+        if (range != CustomerRange.TODAY) return
+        val next = CustomerBusinessDayNavigation.shift(
+            dayAnchor, step, businessDatesForSelectedStore.toSet(),
+            selectedStoreId > 0L && onlyBusinessDays
+        )
+        if (!next.isAfter(today)) dayAnchor = next
+    }
+
     fun pickDate(
         initial: LocalDate,
         minDate: LocalDate? = null,
@@ -746,215 +788,160 @@ internal fun CustomerAnalysisContent(
                 )
             )
     ) {
-        AnimatedVisibility(
-            visible =
-                chromeVisible
-        ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(
-                    horizontal = 10.dp,
-                    vertical = 4.dp
-                ),
-            verticalArrangement =
-                Arrangement.spacedBy(
-                    2.dp
-                )
-        ) {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment =
-                    androidx.compose.ui.Alignment.CenterVertically
+        AnimatedVisibility(visible = chromeVisible) {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 3.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
-                TextButton(
-                    onClick = onBack,
-                    modifier = Modifier.width(32.dp),
-                    contentPadding = PaddingValues(0.dp)
-                ) {
-                    Text("‹", style = MaterialTheme.typography.headlineSmall)
+                // Date no longer competes with the back button, import, and settings.
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(
+                        onClick = onBack,
+                        modifier = Modifier.width(30.dp).height(36.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) { Text("‹", style = MaterialTheme.typography.headlineSmall) }
+                    Text(
+                        "客户分析", modifier = Modifier.weight(1f),
+                        fontWeight = FontWeight.Bold, color = Color(0xFF087D4E),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    TextButton(
+                        onClick = { showImportCollectorPicker = true },
+                        enabled = canImport && !importing,
+                        contentPadding = PaddingValues(horizontal = 6.dp)
+                    ) { Text(if (importing) "导入中" else "导入") }
+                    TextButton(
+                        onClick = { showSettings = true },
+                        modifier = Modifier.width(40.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) { Text("⚙", style = MaterialTheme.typography.titleLarge) }
                 }
-                Text(
-                    "客户分析",
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFF087D4E),
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1
-                )
-                Text(
-                    (if (tab == CustomerAnalysisTab.LOCATION || range == CustomerRange.TODAY)
-                        "‹ " + dayAnchor.format(DateTimeFormatter.ofPattern("yyyy年M月d日")) + " ›"
-                     else "$rangeLabel ▾"),
-                    modifier = Modifier.weight(1f)
-                        .pointerInput(tab, selectedStoreId, onlyBusinessDays,
-                            businessDatesForSelectedStore) {
-                            var movedX = 0f
-                            detectHorizontalDragGestures(
-                                onDragStart = { movedX = 0f },
-                                onDragEnd = {
-                                    if ((tab == CustomerAnalysisTab.LOCATION || range == CustomerRange.TODAY)
-                                        && abs(movedX) > 45f) {
-                                        dayAnchor = CustomerBusinessDayNavigation.shift(
-                                            dayAnchor, if (movedX > 0) -1 else 1,
-                                            businessDatesForSelectedStore.toSet(),
-                                            tab == CustomerAnalysisTab.LOCATION && onlyBusinessDays
-                                        )
-                                        range = CustomerRange.TODAY
+
+                Row(Modifier.fillMaxWidth().heightIn(min = 38.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    if (range == CustomerRange.TODAY) {
+                        TextButton(
+                            onClick = { navigateCustomerDay(-1) },
+                            modifier = Modifier.width(32.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) { Text("‹", style = MaterialTheme.typography.titleLarge) }
+                    }
+                    Text(
+                        headerDateLabel + " ▾",
+                        modifier = Modifier.weight(1f)
+                            .pointerInput(range, selectedStoreId, onlyBusinessDays,
+                                businessDatesForSelectedStore) {
+                                var movedX = 0f
+                                detectHorizontalDragGestures(
+                                    onDragStart = { movedX = 0f },
+                                    onDragEnd = {
+                                        if (range == CustomerRange.TODAY && abs(movedX) > 45f)
+                                            navigateCustomerDay(if (movedX > 0f) -1 else 1)
+                                    },
+                                    onHorizontalDrag = { change, drag ->
+                                        change.consume()
+                                        movedX += drag
                                     }
-                                },
-                                onHorizontalDrag = { change, drag ->
-                                    change.consume()
-                                    movedX += drag
-                                }
+                                )
+                            }
+                            .clickable { showCalendarDialog = true }
+                            .padding(horizontal = 5.dp, vertical = 7.dp),
+                        color = Color(0xFF087D4E),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        softWrap = true
+                    )
+                    if (range == CustomerRange.TODAY) {
+                        TextButton(
+                            onClick = { navigateCustomerDay(1) },
+                            enabled = dayAnchor.isBefore(today),
+                            modifier = Modifier.width(32.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) { Text("›", style = MaterialTheme.typography.titleLarge) }
+                    }
+                    TextButton(
+                        onClick = { showCalendarDialog = true },
+                        modifier = Modifier.width(40.dp),
+                        contentPadding = PaddingValues(0.dp)
+                    ) { Text("▦", color = Color(0xFF087D4E)) }
+                }
+
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    if (maxWidth < 350.dp) {
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            CustomerAnalysisFilterDropdown(
+                                label = "营业位置", value = selectedStoreName,
+                                options = storeFilterOptions, modifier = Modifier.fillMaxWidth(),
+                                onSelect = { selectedStoreId = it.toLongOrNull() ?: 0L }
+                            )
+                            CustomerAnalysisFilterDropdown(
+                                label = "收款人", value = selectedCollectorName,
+                                options = collectorFilterOptions, modifier = Modifier.fillMaxWidth(),
+                                onSelect = { selectedCollectorSyncId = it }
                             )
                         }
-                        .clickable { showCalendarDialog = true }
-                        .padding(horizontal = 6.dp, vertical = 8.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.SemiBold,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.End,
-                    color = Color(0xFF087D4E),
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                )
-                TextButton(
-                    onClick = {
-                        showImportCollectorPicker = true
-                    },
-                    enabled = canImport && !importing,
-                    contentPadding = PaddingValues(horizontal = 5.dp)
-                ) { Text(if (importing) "导入中" else "导入") }
-                /* File picker follows the collector confirmation. */
-                
-                TextButton(
-                    onClick = {
-                        showSettings = true
-                    },
-                    contentPadding =
-                        PaddingValues(
-                            horizontal = 8.dp
-                        )
-                ) {
-                    Text("⚙", style = MaterialTheme.typography.titleLarge)
+                    } else {
+                        Row(Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            CustomerAnalysisFilterDropdown(
+                                label = "位置", value = selectedStoreName,
+                                options = storeFilterOptions, modifier = Modifier.weight(1f),
+                                onSelect = { selectedStoreId = it.toLongOrNull() ?: 0L }
+                            )
+                            CustomerAnalysisFilterDropdown(
+                                label = "收款人", value = selectedCollectorName,
+                                options = collectorFilterOptions, modifier = Modifier.weight(1f),
+                                onSelect = { selectedCollectorSyncId = it }
+                            )
+                        }
+                    }
                 }
-            }
 
-            if (conflictingCollectorCount > 0) {
-                Text(
-                    "有 ${conflictingCollectorCount} 笔收款关联不同收款人，请在账单归属中核对；暂不自动分配位置。",
-                    color = Color(0xFFB26A00),
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 1.dp)
-                )
-            }
-
-            Row(
-                Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                CustomerPaymentPlatform.entries.forEach { option ->
-                    val selected = selectedPlatform == option
-                    Surface(
-                        color = if (selected) Color.White else Color(0xFFE8EFEB),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.weight(1f).clickable { selectedPlatform = option }
+                Row(Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    CustomerPaymentPlatform.entries.forEach { option ->
+                        val selected = selectedPlatform == option
+                        Surface(
+                            color = if (selected) Color.White else Color(0xFFE8EFEB),
+                            shape = RoundedCornerShape(7.dp),
+                            modifier = Modifier.weight(1f).clickable { selectedPlatform = option }
+                        ) {
+                            Text(option.label,
+                                modifier = Modifier.padding(vertical = 6.dp),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                color = if (selected) Color(0xFF087D4E) else Color.DarkGray,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                if (conflictingCollectorCount > 0) {
+                    Text(
+                        "收款人关联冲突 ${conflictingCollectorCount} 笔 · 请在账单归属中核对",
+                        color = Color(0xFFB26A00),
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 3.dp)
+                    )
+                }
+                if (importing) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (message.isNotBlank()) {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { showMessageDetails = true },
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            option.label,
-                            modifier = Modifier.padding(vertical = 9.dp),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            color = if (selected) Color(0xFF087D4E) else Color.DarkGray,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                            style = MaterialTheme.typography.bodySmall
+                            if (message.contains("失败") || message.contains("异常"))
+                                "账单处理需要核对" else "账单处理完成",
+                            modifier = Modifier.weight(1f),
+                            color = if (message.contains("失败")) MaterialTheme.colorScheme.error
+                                else Color(0xFF087D4E),
+                            style = MaterialTheme.typography.labelSmall, maxLines = 1
                         )
-                    }
-                }
-
-                Box(contentAlignment = Alignment.CenterEnd, modifier = Modifier.weight(1.25f)) {
-                    val storeName = when (selectedStoreId) {
-                        0L -> "全部位置"
-                        -1L -> "未匹配"
-                        else -> storeOptions.firstOrNull { it.first == selectedStoreId }?.second ?: "已失效"
-                    }
-                    Text(
-                        "$storeName ▾",
-                        modifier = Modifier.fillMaxWidth().clickable { showStoreMenu = true }
-                            .padding(horizontal = 3.dp, vertical = 9.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF087D4E),
-                        maxLines = 1,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.End,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                    )
-                    DropdownMenu(expanded = showStoreMenu, onDismissRequest = { showStoreMenu = false }) {
-                        if (tab != CustomerAnalysisTab.LOCATION)
-                            DropdownMenuItem(text = { Text("全部位置") }, onClick = {
-                                selectedStoreId = 0L; showStoreMenu = false
-                            })
-                        storeOptions.forEach { (id, name) ->
-                            DropdownMenuItem(text = { Text(name) }, onClick = {
-                                selectedStoreId = id; showStoreMenu = false
-                            })
-                        }
-                        if (hasUnmatchedStore && tab != CustomerAnalysisTab.LOCATION)
-                            DropdownMenuItem(text = { Text("未匹配位置") }, onClick = {
-                            selectedStoreId = -1L; showStoreMenu = false
-                        })
-                    }
-                }
-                Box(modifier = Modifier.weight(1.1f), contentAlignment = Alignment.CenterEnd) {
-                    val collectorLabel = when (selectedCollectorSyncId) {
-                        "*" -> "全部收款人"
-                        "?" -> "未指定"
-                        else -> collectorOptions.firstOrNull { it.first == selectedCollectorSyncId }?.second
-                            ?: "已失效人员"
-                    }
-                    Text("$collectorLabel ▾",
-                        modifier = Modifier.fillMaxWidth().clickable { showCollectorMenu = true }
-                            .padding(horizontal = 2.dp, vertical = 9.dp),
-                        maxLines = 1,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.End,
-                        style = MaterialTheme.typography.labelSmall, color = Color(0xFF087D4E))
-                    DropdownMenu(expanded = showCollectorMenu,
-                        onDismissRequest = { showCollectorMenu = false }) {
-                        DropdownMenuItem(text = { Text("全部收款人") }, onClick = {
-                            selectedCollectorSyncId = "*"; showCollectorMenu = false
-                        })
-                        collectorOptions.forEach { (id, name) ->
-                            DropdownMenuItem(text = { Text(name) }, onClick = {
-                                selectedCollectorSyncId = id; showCollectorMenu = false
-                            })
-                        }
-                        DropdownMenuItem(text = { Text("未指定收款人") }, onClick = {
-                            selectedCollectorSyncId = "?"; showCollectorMenu = false
-                        })
+                        Text("详情 ›", color = Color(0xFF087D4E),
+                            style = MaterialTheme.typography.labelSmall)
                     }
                 }
             }
-            if (importing) {
-                LinearProgressIndicator(
-                    Modifier.fillMaxWidth()
-                )
-            }
-            if (message.isNotBlank()) {
-                Row(Modifier.fillMaxWidth().clickable { showMessageDetails = true },
-                    verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        if (message.contains("失败") || message.contains("异常")) "账单处理需要核对"
-                        else "账单处理完成",
-                        modifier = Modifier.weight(1f),
-                        color = if (message.contains("失败")) MaterialTheme.colorScheme.error
-                            else Color(0xFF087D4E),
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1
-                    )
-                    Text("详情 ›", color = Color(0xFF087D4E),
-                        style = MaterialTheme.typography.labelSmall)
-                }
-            }
-        }
         }
 
         AnimatedVisibility(
@@ -1498,6 +1485,41 @@ private fun CustomerAnalysisSettingsDialog(
             }
         }
     )
+}
+
+@Composable
+private fun CustomerAnalysisFilterDropdown(
+    label: String,
+    value: String,
+    options: List<Pair<String, String>>,
+    modifier: Modifier = Modifier,
+    onSelect: (String) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(modifier) {
+        Surface(color = Color(0xFFE8EFEB), shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth().clickable { expanded = true }) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text("$label  ", color = Color.Gray,
+                    style = MaterialTheme.typography.labelSmall)
+                Text(value, modifier = Modifier.weight(1f),
+                    color = Color(0xFF087D4E), fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.bodySmall,
+                    softWrap = true)
+                Text("⌄", color = Color(0xFF087D4E),
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { (key, text) ->
+                DropdownMenuItem(
+                    text = { Text(text, softWrap = true) },
+                    onClick = { expanded = false; onSelect(key) }
+                )
+            }
+        }
+    }
 }
 
 @Composable
