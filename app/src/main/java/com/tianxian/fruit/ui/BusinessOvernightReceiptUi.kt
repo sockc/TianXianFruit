@@ -22,6 +22,11 @@ import java.util.Locale
  * Book-isolated edit metadata, NOT part of official business/settlement data.
  * Stable sync IDs are resolved by CustomerCloudBridge before network upload.
  */
+internal object OvernightReceiptRefresh {
+    val revision = mutableIntStateOf(0)
+    fun changed() { revision.intValue += 1 }
+}
+
 internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
     private val prefs=context.getSharedPreferences(
         "overnight_receipts_${bookId.hashCode()}",Context.MODE_PRIVATE)
@@ -81,7 +86,9 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
                 .put("alipay_recorded",row.alipayRecorded)
                 .put("cash_recorded",row.cashRecorded))
         }
-        return prefs.edit().putString("snapshots",a.toString()).commit()
+        val saved = prefs.edit().putString("snapshots",a.toString()).commit()
+        if (saved) OvernightReceiptRefresh.changed()
+        return saved
     }
 
     fun saveNatural(s: NaturalDayReceiptDraft): Boolean {
@@ -107,7 +114,72 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
                 .put("saved_alipay",row.savedAlipay)
                 .put("saved_cash",row.savedCash))
         }
-        return prefs.edit().putString("natural",a.toString()).commit()
+        val saved = prefs.edit().putString("natural",a.toString()).commit()
+        if (saved) OvernightReceiptRefresh.changed()
+        return saved
+    }
+
+    /**
+     * A deleted sale for D owns the morning of D+1, not the morning of D.
+     * Retain cleared rows as syncable tombstones so remote devices cannot
+     * restore yesterday's amount from the customer-analytics API.
+     */
+    fun clearForDeletedBusiness(
+        businessDate: String,
+        storeId: Long,
+        partnerIds: Set<Long> = emptySet()
+    ): Boolean {
+        val morning = OvernightReceiptDeletionPolicy.emptySnapshot(
+            businessDate, storeId, 1L
+        )?.calendarDate ?: return false
+        val oldSnapshots = snapshots()
+        val oldNatural = naturalDrafts()
+        val nextSnapshots = oldSnapshots.map {
+            OvernightReceiptDeletionPolicy.clearedSnapshot(it, businessDate, storeId)
+        }.toMutableList()
+        for (partnerId in partnerIds.filter { it > 0L }) {
+            // Never steal an adjacent stall's snapshot for the same collector.
+            if (nextSnapshots.any { it.calendarDate == morning && it.partnerId == partnerId }) {
+                continue
+            }
+            OvernightReceiptDeletionPolicy.emptySnapshot(
+                businessDate, storeId, partnerId
+            )?.let { nextSnapshots.add(it) }
+        }
+        val nextNatural = oldNatural.map {
+            OvernightReceiptDeletionPolicy.clearedNatural(it, businessDate, storeId)
+        }
+        if (nextSnapshots == oldSnapshots && nextNatural == oldNatural) return true
+
+        val snapshotJson = JSONArray()
+        nextSnapshots.forEach { row ->
+            snapshotJson.put(JSONObject().put("date", row.calendarDate)
+                .put("store", row.storeId).put("partner", row.partnerId)
+                .put("wechat", row.wechat).put("alipay", row.alipay)
+                .put("cash", row.cash)
+                .put("wechat_recorded", row.wechatRecorded)
+                .put("alipay_recorded", row.alipayRecorded)
+                .put("cash_recorded", row.cashRecorded))
+        }
+        val naturalJson = JSONArray()
+        nextNatural.forEach { row ->
+            naturalJson.put(JSONObject().put("date", row.businessDate)
+                .put("store", row.storeId).put("partner", row.partnerId)
+                .put("wechat", row.wechat).put("alipay", row.alipay)
+                .put("cash", row.cash)
+                .put("deduct_wechat", row.deductWechat)
+                .put("deduct_alipay", row.deductAlipay)
+                .put("deduct_cash", row.deductCash)
+                .put("saved_wechat", row.savedWechat)
+                .put("saved_alipay", row.savedAlipay)
+                .put("saved_cash", row.savedCash))
+        }
+        val saved = prefs.edit()
+            .putString("snapshots", snapshotJson.toString())
+            .putString("natural", naturalJson.toString())
+            .commit()
+        if (saved) OvernightReceiptRefresh.changed()
+        return saved
     }
 
     fun findSnapshot(date:String,partner:Long): OvernightReceiptSnapshot? =
@@ -153,7 +225,8 @@ internal fun OvernightInlineNumber(
     val morning=remember(date) {
         runCatching { LocalDate.parse(date).plusDays(1) }.getOrNull()
     }
-    val snapshot=remember(tick,date,partnerId) {
+    val refreshVersion = OvernightReceiptRefresh.revision.intValue
+    val snapshot=remember(tick,date,storeId,partnerId,refreshVersion) {
         if (morning!=null && partnerId!=null)
             store.findSnapshot(morning.toString(),partnerId) else null
     }
