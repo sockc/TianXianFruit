@@ -12335,11 +12335,8 @@ class AppDatabase(
             // Clean only THIS stall's D+1 morning and D's natural-day draft.
             // Keep blank synced records (not a local-only delete), otherwise
             // CustomerCloudBridge could pull the old amount back on next sync.
-            val collectors = (old.receiptSplits.map { it.partnerId } +
-                listOf(old.wechatCollectorId, old.alipayCollectorId, old.cashCollectorId))
-                .filter { it > 0L }.toSet()
             if (!OvernightReceiptDraftStore(appContext, ledgerId)
-                    .clearForDeletedBusiness(old.date, old.storeId, collectors)) {
+                    .clearForDeletedBusiness(old.date, old.storeId)) {
                 Log.e("AppDatabase", "营业已删除，但凌晨收款辅助数据清理失败：${old.date}/${old.storeId}")
             }
         }
