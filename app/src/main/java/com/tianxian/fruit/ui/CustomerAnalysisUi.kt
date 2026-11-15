@@ -6,12 +6,19 @@ import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,7 +28,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -148,10 +160,33 @@ internal fun CustomerAnalysisContent(
             LocalDate.parse(prefs.getString("day", "") ?: "")
         }.getOrNull() ?: today)
     }
-    // Keep the filters and navigation tabs fixed. The old onPreScroll handler
-    // hid/showed them for every small drag delta, resizing the list while
-    // the finger was still moving and causing visible jumps.
-    val chromeVisible = true
+    // One visibility state shared by all four tabs; only user-driven vertical
+    // scroll changes it. The tab row remains pinned so navigation never vanishes.
+    val chromeExpanded = remember(ledgerId) { mutableStateOf(true) }
+    val chromeDensity = LocalDensity.current
+    val chromePolicy = remember(ledgerId, chromeDensity) {
+        CustomerChromeScrollPolicy(
+            hideThresholdPx = with(chromeDensity) { 72.dp.toPx() },
+            showThresholdPx = with(chromeDensity) { 44.dp.toPx() }
+        )
+    }
+    val chromeConnection = remember(chromeExpanded, chromePolicy) {
+        object : NestedScrollConnection {
+            override fun onPostScroll(
+                consumed: Offset, available: Offset, source: NestedScrollSource
+            ): Offset {
+                if (source != NestedScrollSource.UserInput) return Offset.Zero
+                // Post-scroll observes actual child LazyColumn movement. At an
+                // edge, use the remaining drag to let down-swipe expand too.
+                val dy = if (abs(consumed.y) >= 0.5f) consumed.y else available.y
+                chromePolicy.record(dy, chromeExpanded.value)?.let {
+                    chromeExpanded.value = it
+                }
+                return Offset.Zero
+            }
+        }
+    }
+    val billListState = rememberLazyListState()
     var tab by remember { mutableStateOf(CustomerAnalysisTab.OVERVIEW) }
     var customerSection by remember { mutableStateOf(CustomerDetailSection.REPEAT) }
     var locationMetric by remember { mutableStateOf(CustomerDailyMetric.PAYMENTS) }
@@ -802,13 +837,16 @@ internal fun CustomerAnalysisContent(
     Column(
         Modifier
             .fillMaxSize()
-            .background(
-                Color(
-                    0xFFF7F8F8
-                )
-            )
+            .nestedScroll(chromeConnection)
+            .background(Color(0xFFF7F8F8))
     ) {
-        AnimatedVisibility(visible = chromeVisible) {
+        AnimatedVisibility(
+            visible = chromeExpanded.value,
+            enter = expandVertically(animationSpec = tween(200)) +
+                fadeIn(animationSpec = tween(160)),
+            exit = shrinkVertically(animationSpec = tween(200)) +
+                fadeOut(animationSpec = tween(140))
+        ) {
             Column(
                 Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 3.dp),
                 verticalArrangement = Arrangement.spacedBy(3.dp)
@@ -965,9 +1003,38 @@ internal fun CustomerAnalysisContent(
         }
 
         AnimatedVisibility(
-            visible =
-                chromeVisible
+            visible = !chromeExpanded.value,
+            enter = expandVertically(animationSpec = tween(200)) +
+                fadeIn(animationSpec = tween(160)),
+            exit = shrinkVertically(animationSpec = tween(200)) +
+                fadeOut(animationSpec = tween(140))
         ) {
+            Row(
+                modifier = Modifier.fillMaxWidth()
+                    .clickable {
+                        chromePolicy.reset()
+                        chromeExpanded.value = true
+                    }.padding(horizontal = 9.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp)
+            ) {
+                TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp),
+                    modifier = Modifier.width(30.dp)) {
+                    Text("‹", style = MaterialTheme.typography.titleLarge)
+                }
+                Column(Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Text(headerDateLabel, color = Color(0xFF087D4E),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold, softWrap = true)
+                    Text(selectedStoreName, style = MaterialTheme.typography.labelSmall,
+                        color = Color.DarkGray, softWrap = true, maxLines = 2)
+                }
+                Text("筛选 ⌄", color = Color(0xFF087D4E),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold)
+            }
+        }
         TabRow(
             selectedTabIndex = tab.ordinal
         ) {
@@ -979,6 +1046,8 @@ internal fun CustomerAnalysisContent(
                     onClick = {
                         tab = item
                         showRhythmDetails = false
+                        chromePolicy.reset()
+                        chromeExpanded.value = true
                     },
                     text = {
                         Text(
@@ -988,9 +1057,8 @@ internal fun CustomerAnalysisContent(
                 )
             }
         }
-        }
 
-        // Only the content below the fixed header consumes remaining height.
+        // The pinned tab row is the only permanent chrome while scrolling.
         Box(Modifier.fillMaxWidth().weight(1f)) {
             when {
                 showRhythmDetails && tab == CustomerAnalysisTab.OVERVIEW ->
