@@ -543,7 +543,9 @@ internal object CustomerCloudBridge {
                             // Keep unsent changes; report CAS conflict rather than
                             // silently overwriting another device's midnight entry.
                             if(local!=null && local!=incoming &&
-                                (previous==null || previous.hash!=localHash)) continue
+                                (previous==null || previous.hash!=localHash) &&
+                                !(local.storeId != resolvedStore &&
+                                    OvernightReceiptDeletionPolicy.isClearedSnapshot(local))) continue
                             if(!storage.saveSnapshot(incoming))
                                 throw IllegalStateException("恢复跨日收款失败：$date")
                             val hash=digest(overnightPayload(incoming,stableStore,stablePartner).toString())
@@ -563,8 +565,13 @@ internal object CustomerCloudBridge {
                                 val blank = OvernightReceiptDeletionPolicy.clearedNatural(
                                     incoming, saleDate!!, resolvedStore
                                 )
-                                if (!storage.saveNatural(blank))
-                                    throw IllegalStateException("清除已删除营业的自然日原值失败：$date")
+                                val existing = storage.naturalDrafts().firstOrNull {
+                                    it.businessDate == date && it.partnerId == resolvedPartner
+                                }
+                                if (existing == null || existing.storeId == resolvedStore) {
+                                    if (!storage.saveNatural(blank))
+                                        throw IllegalStateException("清除已删除营业的自然日原值失败：$date")
+                                }
                                 val remoteHash=digest(naturalPayload(
                                     incoming,stableStore,stablePartner,
                                     body.has("deduct_cash")).toString())
