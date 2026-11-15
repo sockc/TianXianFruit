@@ -126,26 +126,16 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
      */
     fun clearForDeletedBusiness(
         businessDate: String,
-        storeId: Long,
-        partnerIds: Set<Long> = emptySet()
+        storeId: Long
     ): Boolean {
-        val morning = OvernightReceiptDeletionPolicy.emptySnapshot(
-            businessDate, storeId, 1L
-        )?.calendarDate ?: return false
+        if (storeId <= 0L || runCatching {
+                LocalDate.parse(businessDate)
+            }.isFailure) return false
         val oldSnapshots = snapshots()
         val oldNatural = naturalDrafts()
         val nextSnapshots = oldSnapshots.map {
             OvernightReceiptDeletionPolicy.clearedSnapshot(it, businessDate, storeId)
         }.toMutableList()
-        for (partnerId in partnerIds.filter { it > 0L }) {
-            // Never steal an adjacent stall's snapshot for the same collector.
-            if (nextSnapshots.any { it.calendarDate == morning && it.partnerId == partnerId }) {
-                continue
-            }
-            OvernightReceiptDeletionPolicy.emptySnapshot(
-                businessDate, storeId, partnerId
-            )?.let { nextSnapshots.add(it) }
-        }
         val nextNatural = oldNatural.map {
             OvernightReceiptDeletionPolicy.clearedNatural(it, businessDate, storeId)
         }
