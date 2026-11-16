@@ -11,33 +11,18 @@ class OvernightReceiptDeletionPolicyTest {
             wechatRecorded = true, alipayRecorded = true, cashRecorded = true
         )
 
-    @Test fun deletingFourteenthClearsFifteenthMorningNotFourteenthMorning() {
-        val previous = morning("2026-11-14", 1L)
-        val target = morning("2026-11-15", 1L)
-        val following = morning("2026-11-16", 1L)
-        assertEquals(previous,
-            OvernightReceiptDeletionPolicy.clearedSnapshot(previous, "2026-11-14", 1L))
-        assertEquals(following,
-            OvernightReceiptDeletionPolicy.clearedSnapshot(following, "2026-11-14", 1L))
-        val cleared = OvernightReceiptDeletionPolicy.clearedSnapshot(target, "2026-11-14", 1L)
-        assertNull(cleared.amount("WECHAT"))
-        assertNull(cleared.amount("ALIPAY"))
-        assertNull(cleared.amount("CASH"))
-        assertEquals(0.0, cleared.wechat, 0.001)
-        assertEquals(0.0, cleared.alipay, 0.001)
-        assertEquals(0.0, cleared.cash, 0.001)
+    @Test fun deletingSaleNeverInvalidatesCollectorMorningMoney() {
+        val morning = morning("2026-11-15", 1L)
+        assertEquals(120.0, morning.amount("WECHAT")!!, 0.001)
+        assertEquals(65.0, morning.amount("ALIPAY")!!, 0.001)
+        // Deletion policy deliberately exposes no clearedSnapshot method.
+        // A deleted store can only clear its position-owned natural draft.
+        val draft=NaturalDayReceiptDraft("2026-11-14", 1L, 5L, 1000.0)
+        OvernightReceiptDeletionPolicy.clearedNatural(draft, "2026-11-14", 1L)
+        assertEquals(120.0, morning.amount("WECHAT")!!, 0.001)
     }
 
-    @Test fun deletionDoesNotClearDifferentStoreOrCollectorOnSameMorning() {
-        val otherStore = morning("2026-11-15", 2L, 5L)
-        val differentDay = morning("2026-11-16", 1L, 6L)
-        assertEquals(otherStore,
-            OvernightReceiptDeletionPolicy.clearedSnapshot(otherStore, "2026-11-14", 1L))
-        assertEquals(differentDay,
-            OvernightReceiptDeletionPolicy.clearedSnapshot(differentDay, "2026-11-14", 1L))
-    }
-
-    @Test fun deletionResetsNaturalDaySourceAndSavedNetButNotDifferentDay() {
+    @Test fun deletedStoreClearsNaturalDraftOnlyForSameDateAndPosition() {
         val original = NaturalDayReceiptDraft(
             businessDate = "2026-11-14", storeId = 1L, partnerId = 5L,
             wechat = 1000.0, alipay = 400.0, cash = 30.0,
@@ -55,41 +40,48 @@ class OvernightReceiptDeletionPolicyTest {
         assertTrue(cleared.deductWechat)
         assertTrue(cleared.deductAlipay)
         assertTrue(cleared.deductCash)
+        assertTrue(OvernightReceiptDeletionPolicy.isClearedNatural(cleared))
         assertEquals(original,
             OvernightReceiptDeletionPolicy.clearedNatural(original, "2026-11-13", 1L))
         assertEquals(original,
             OvernightReceiptDeletionPolicy.clearedNatural(original, "2026-11-14", 2L))
     }
 
-    @Test fun blankTombstoneIsUnrecordedAndBelongsToNextCalendarMorning() {
-        val blank = OvernightReceiptDeletionPolicy.emptySnapshot("2026-11-14", 1L, 5L)!!
-        assertEquals("2026-11-15", blank.calendarDate)
-        assertEquals(1L, blank.storeId)
-        assertEquals(5L, blank.partnerId)
-        assertNull(blank.amount("WECHAT"))
-        assertNull(blank.amount("ALIPAY"))
-        assertNull(blank.amount("CASH"))
-        assertNull(OvernightReceiptDeletionPolicy.emptySnapshot("invalid", 1L, 5L))
+    @Test fun sharedCollectorDeductionIsOwnedByOnlyOneActivePosition() {
+        val records = listOf(1L to 5L, 2L to 5L, 1L to 6L)
+        val source = NaturalDayReceiptDraft(
+            businessDate = "2026-11-16", storeId = 1L, partnerId = 5L,
+            wechat = 1000.0
+        )
+        assertTrue(OvernightReceiptAllocationPolicy.ownsAdjustment(
+            "2026-11-16", 1L, 5L, listOf(source), records))
+        assertFalse(OvernightReceiptAllocationPolicy.ownsAdjustment(
+            "2026-11-16", 2L, 5L, listOf(source), records))
+        assertTrue(OvernightReceiptAllocationPolicy.ownsAdjustment(
+            "2026-11-16", 1L, 6L, listOf(source), records))
     }
 
-    @Test fun aClearedMorningCanBeReassignedButAnActiveOneCannot() {
-        val active = morning("2026-11-15", 1L, 5L)
-        val moved = morning("2026-11-15", 2L, 5L)
-        assertFalse(OvernightReceiptPolicy.canRegister(moved, listOf(active)))
-        val blank = OvernightReceiptDeletionPolicy.clearedSnapshot(
-            active, "2026-11-14", 1L)
-        assertTrue(OvernightReceiptDeletionPolicy.isClearedSnapshot(blank))
-        assertTrue(OvernightReceiptPolicy.canRegister(moved, listOf(blank)))
-        assertEquals(moved, OvernightReceiptPolicy.replace(moved,listOf(blank))!!.single())
-        val natural = NaturalDayReceiptDraft("2026-11-14", 1L, 5L, 10.0)
-        assertTrue(OvernightReceiptDeletionPolicy.isClearedNatural(
-            OvernightReceiptDeletionPolicy.clearedNatural(natural, "2026-11-14", 1L)))
+    @Test fun newPositionDoesNotDeductAgainWhenCollectorAlreadySoldElsewhere() {
+        val existing = listOf(1L to 5L)
+        assertFalse(OvernightReceiptAllocationPolicy.ownsAdjustment(
+            "2026-11-16", 2L, 5L, emptyList(), existing))
+        assertTrue(OvernightReceiptAllocationPolicy.ownsAdjustment(
+            "2026-11-16", 2L, 6L, emptyList(), existing))
     }
 
-    @Test fun emptyStateRemainsEmptyWhenAppliedRepeatedly() {
-        val once = OvernightReceiptDeletionPolicy.clearedSnapshot(
-            morning("2026-11-15", 1L), "2026-11-14", 1L)
-        assertEquals(once,
-            OvernightReceiptDeletionPolicy.clearedSnapshot(once, "2026-11-14", 1L))
+    @Test fun staleDeletedLocationSourceDoesNotBlockValidNewOwner() {
+        val old = NaturalDayReceiptDraft("2026-11-16", 1L, 5L, 100.0)
+        assertTrue(OvernightReceiptAllocationPolicy.ownsAdjustment(
+            "2026-11-16", 2L, 5L, listOf(old), emptyList()))
+        val cleared = OvernightReceiptDeletionPolicy.clearedNatural(old,"2026-11-16",1L)
+        assertTrue(OvernightReceiptAllocationPolicy.ownsAdjustment(
+            "2026-11-16", 2L, 5L, listOf(cleared), emptyList()))
+    }
+
+    @Test fun confirmedZeroAndEmptyMorningAreDifferent() {
+        val untouched=morning("2026-11-17",1L).withAmount("WECHAT",null)
+        val zero=untouched.withAmount("WECHAT",0.0)
+        assertNull(untouched.amount("WECHAT"))
+        assertEquals(0.0,zero.amount("WECHAT")!!,0.0)
     }
 }
