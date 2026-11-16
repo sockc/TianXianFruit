@@ -4,9 +4,10 @@ import java.time.LocalDate
 import kotlin.math.round
 
 /**
- * Store/day/collector auxiliary metadata. "calendarDate" is the NEXT calendar
- * morning; a snapshot for D belongs to the selling session on D-1.
- *
+ * Collector-level calendar-morning receipt. Identity is ledger (in the owning
+ * SharedPreferences) + calendarDate + partnerId. storeId is inert legacy
+ * transport metadata for servers requiring store_sync_id; it MUST NOT decide
+ * read/write ownership, deductions or business-record deletion.
  * Recorded flags distinguish untouched "-" from a confirmed zero.
  */
 internal data class OvernightReceiptSnapshot(
@@ -87,12 +88,7 @@ internal object OvernightReceiptPolicy {
         saved: List<OvernightReceiptSnapshot>
     ): Boolean = snapshot.storeId > 0 && snapshot.partnerId > 0 &&
         runCatching { LocalDate.parse(snapshot.calendarDate) }.isSuccess &&
-        listOf(snapshot.wechat, snapshot.alipay, snapshot.cash).all(::validAmount) &&
-        saved.none {
-            it.calendarDate == snapshot.calendarDate &&
-                it.partnerId == snapshot.partnerId && it.storeId != snapshot.storeId &&
-                !OvernightReceiptDeletionPolicy.isClearedSnapshot(it)
-        }
+        listOf(snapshot.wechat, snapshot.alipay, snapshot.cash).all(::validAmount)
 
     fun replace(
         snapshot: OvernightReceiptSnapshot,
@@ -116,7 +112,7 @@ internal object OvernightReceiptPolicy {
         }.singleOrNull()
         val following = saved.filter {
             it.calendarDate == day.plusDays(1).toString() &&
-                it.partnerId == draft.partnerId && it.storeId == draft.storeId
+                it.partnerId == draft.partnerId
         }.singleOrNull()
         val previousWechat = if (draft.deductWechat) previous?.amount("WECHAT") ?: 0.0 else 0.0
         val previousAlipay = if (draft.deductAlipay) previous?.amount("ALIPAY") ?: 0.0 else 0.0
@@ -148,9 +144,9 @@ internal object OvernightReceiptPolicy {
 
 
 /**
- * Clearing a selling session's helper data must use its NEXT calendar morning.
- * Keep blank rows instead of dropping them: CustomerCloudBridge uploads the
- * blank revision, preventing older server entries from restoring the amount.
+ * A seller's calendar-morning receipt is independent of where that seller
+ * works. Deleting one stall's sale must never clear a shared morning receipt.
+ * Natural-day drafts remain the per-sale provenance for the one adjustment.
  */
 internal object OvernightReceiptDeletionPolicy {
     fun isClearedSnapshot(row: OvernightReceiptSnapshot): Boolean =
@@ -161,22 +157,6 @@ internal object OvernightReceiptDeletionPolicy {
         row.wechat == 0.0 && row.alipay == 0.0 && row.cash == 0.0 &&
             row.savedWechat == null && row.savedAlipay == null && row.savedCash == null &&
             row.deductWechat && row.deductAlipay && row.deductCash
-
-
-    fun clearedSnapshot(
-        row: OvernightReceiptSnapshot,
-        businessDate: String,
-        storeId: Long
-    ): OvernightReceiptSnapshot {
-        val morning = runCatching {
-            LocalDate.parse(businessDate).plusDays(1).toString()
-        }.getOrNull() ?: return row
-        if (row.calendarDate != morning || row.storeId != storeId) return row
-        return row.copy(
-            wechat = 0.0, alipay = 0.0, cash = 0.0,
-            wechatRecorded = false, alipayRecorded = false, cashRecorded = false
-        )
-    }
 
     fun clearedNatural(
         row: NaturalDayReceiptDraft,
@@ -190,23 +170,32 @@ internal object OvernightReceiptDeletionPolicy {
             savedWechat = null, savedAlipay = null, savedCash = null
         )
     }
+}
 
-    fun emptySnapshot(
+/**
+ * A collector's morning adjustment may be applied to only ONE position on
+ * any given business date. Actual business receipts remain position-specific.
+ *
+ * Existing, nonempty natural-day sources retain their original owner. For new
+ * records, a previously saved active sale by this collector takes priority.
+ * Unrelated collectors and deleted/blank sources never block another stall.
+ */
+internal object OvernightReceiptAllocationPolicy {
+    fun ownsAdjustment(
         businessDate: String,
         storeId: Long,
-        partnerId: Long
-    ): OvernightReceiptSnapshot? {
-        if (storeId <= 0L || partnerId <= 0L) return null
-        val morning = runCatching {
-            LocalDate.parse(businessDate).plusDays(1).toString()
-        }.getOrNull() ?: return null
-        return OvernightReceiptSnapshot(
-            calendarDate = morning,
-            storeId = storeId,
-            partnerId = partnerId,
-            wechatRecorded = false,
-            alipayRecorded = false,
-            cashRecorded = false
-        )
+        partnerId: Long,
+        drafts: List<NaturalDayReceiptDraft>,
+        activeStoreCollectors: List<Pair<Long, Long>>
+    ): Boolean {
+        if (storeId <= 0L || partnerId <= 0L) return false
+        val claimed = drafts.firstOrNull {
+            it.businessDate == businessDate && it.partnerId == partnerId &&
+                !OvernightReceiptDeletionPolicy.isClearedNatural(it)
+        }
+        if (claimed != null) return claimed.storeId == storeId
+        return activeStoreCollectors.none { (otherStore, otherPartner) ->
+            otherStore != storeId && otherPartner == partnerId
+        }
     }
 }
