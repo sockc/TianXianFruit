@@ -191,7 +191,11 @@ internal object OvernightReceiptAllocationPolicy {
         if (storeId <= 0L || partnerId <= 0L) return false
         val claimed = drafts.firstOrNull {
             it.businessDate == businessDate && it.partnerId == partnerId &&
-                !OvernightReceiptDeletionPolicy.isClearedNatural(it)
+                !OvernightReceiptDeletionPolicy.isClearedNatural(it) &&
+                // A stale old position's source should not reserve the
+                // collector forever after that position ceased trading.
+                (it.storeId == storeId ||
+                    activeStoreCollectors.contains(it.storeId to partnerId))
         }
         if (claimed != null) return claimed.storeId == storeId
         return activeStoreCollectors.none { (otherStore, otherPartner) ->
