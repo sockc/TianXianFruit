@@ -336,15 +336,11 @@ internal object CustomerCloudBridge {
         context: Context, db: AppDatabase, bookId: String
     ) {
         val store = OvernightReceiptDraftStore(context, bookId)
-        val keys = buildSet<Pair<String, Long>> {
-            store.snapshots().forEach { row ->
-                val date = runCatching {
-                    LocalDate.parse(row.calendarDate).minusDays(1).toString()
-                }.getOrNull()
-                if (date != null) add(date to row.storeId)
-            }
-            store.naturalDrafts().forEach { row -> add(row.businessDate to row.storeId) }
-        }
+        // A collector's morning amount is never owned by a position.
+        // Deletion reconciliation only invalidates per-sale natural-day
+        // provenance; it must not clear the collector/date receipt.
+        val keys = store.naturalDrafts()
+            .map { it.businessDate to it.storeId }.toSet()
         for ((date, storeId) in keys) {
             if (wasBusinessDeleted(db.readableDatabase, date, storeId) &&
                 !store.clearForDeletedBusiness(date, storeId)) {
@@ -509,7 +505,8 @@ internal object CustomerCloudBridge {
                         val saleDate = if (kind == "OVERNIGHT") runCatching {
                             LocalDate.parse(date).minusDays(1).toString()
                         }.getOrNull() else date
-                        val deletedBusiness = saleDate != null &&
+                        val deletedBusiness = kind == "NATURAL" &&
+                            saleDate != null &&
                             wasBusinessDeleted(database, saleDate, resolvedStore)
                         val previous=knownAck[kind to key]
                         if(kind=="OVERNIGHT") {
@@ -519,23 +516,9 @@ internal object CustomerCloudBridge {
                                 body.optDouble("cash"),body.optBoolean("wechat_recorded"),
                                 body.optBoolean("alipay_recorded"),
                                 body.optBoolean("cash_recorded"))
-                            if (deletedBusiness) {
-                                val blank = OvernightReceiptDeletionPolicy.clearedSnapshot(
-                                    incoming, saleDate!!, resolvedStore
-                                )
-                                val existing = storage.findSnapshot(date,resolvedPartner)
-                                if (existing == null || existing.storeId == resolvedStore) {
-                                    if (!storage.saveSnapshot(blank))
-                                        throw IllegalStateException("清除已删除营业的凌晨收款失败：$date")
-                                }
-                                // Acknowledge the old remote revision, then push
-                                // our blank value with the correct CAS version.
-                                val remoteHash = digest(overnightPayload(
-                                    incoming,stableStore,stablePartner).toString())
-                                ack(database,kind,key,remoteHash,version)
-                                knownAck[kind to key]=Ack(remoteHash,version)
-                                continue
-                            }
+                            // Morning receipts are collector-level. A
+                            // deleted selling position has no authority to
+                            // erase this date/collector record.
                             val local=storage.findSnapshot(date,resolvedPartner)
                             val localHash=local?.let {
                                 digest(overnightPayload(it,stableStore,stablePartner).toString())
@@ -757,8 +740,8 @@ internal object CustomerCloudBridge {
             throw IllegalStateException("客流云端变化超过单次安全页数，保留游标稍后重试")
         }
 
-        // A business tombstone may have arrived in the official ledger sync
-        // without any corresponding new customer-API event.
+        // Only the position's natural-day helper may be invalidated by an
+        // official deleted sale. Collector-level mornings must be retained.
         reconcileDeletedBusinessOvernight(context, db, bookId)
         // Download before upload so an offline device sees server additions.
         pull()
