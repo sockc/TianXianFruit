@@ -12132,7 +12132,10 @@ private fun SessionScreen(
                     businessDate = date,
                     overnightStoreId = storeId,
                     overnightTick = overnightTick + dataVersion,
-                    legacyNet = row.rowId in legacyNetRowIds,
+                    // A non-owner location's saved net figure must never
+                    // offer to add the same collector morning a second time.
+                    legacyNet = row.rowId in legacyNetRowIds &&
+                        (row.partnerId?.let(::collectorOwnsAdjustment) == true),
                     overnightState = row.partnerId?.let { partnerId ->
                         val currentStoreId=storeId ?: 0L
                         val previous=overnightSnapshots.firstOrNull {
@@ -12164,7 +12167,8 @@ private fun SessionScreen(
                     onOvernightChanged = {
                         overnightTick++
                         if (editingRecordId != null &&
-                            row.rowId in legacyNetRowIds) {
+                            row.rowId in legacyNetRowIds &&
+                            (row.partnerId?.let(::collectorOwnsAdjustment) == true)) {
                             pendingLegacyOvernightConfirm = row.rowId
                         }
                         onChanged()
@@ -12212,7 +12216,12 @@ private fun SessionScreen(
                         }
                     },
                     onUseNaturalInput = {
-                        pendingLegacyOvernightConfirm = row.rowId
+                        if (row.partnerId?.let(::collectorOwnsAdjustment) == true) {
+                            pendingLegacyOvernightConfirm = row.rowId
+                        } else {
+                            message = "该收款人的凌晨金额已由另一个位置处理，不能重复加入"
+                            isError = false
+                        }
                     },
                     onChange = { updated ->
                         val target = receiptRows.indexOfFirst { it.rowId == updated.rowId }
