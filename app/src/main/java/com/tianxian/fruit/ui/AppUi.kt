@@ -11053,40 +11053,44 @@ private fun SessionScreen(
     var pendingLegacyOvernightConfirm by remember(date, currentBook.id) {
         mutableStateOf<Long?>(null)
     }
-    fun deductionKey(partnerId: Long) = "$date|${storeId ?: 0L}|$partnerId"
+    fun deductionKey(partnerId: Long) = "$date|$partnerId"
     fun chosenDeduction(partnerId: Long): Triple<Boolean,Boolean,Boolean> =
         deductionChoices[deductionKey(partnerId)]
             ?: (storeId?.let { overnightStore.findNatural(date,it,partnerId) }
                 ?.let { Triple(it.deductWechat,it.deductAlipay,it.deductCash) })
             ?: Triple(true,true,true)
 
+    // One collector's morning adjustment may be applied to a business date
+    // once, even when the same collector receives money at multiple stalls.
+    val activeStoreCollectors = todayRecords.flatMap { saved ->
+        val partnerIds = if (saved.receiptSplits.isNotEmpty()) {
+            saved.receiptSplits.filter { it.amount > 0.005 }.map { it.partnerId }
+        } else {
+            listOf(saved.wechatCollectorId.takeIf { saved.wechatIncome > 0.005 },
+                saved.alipayCollectorId.takeIf { saved.alipayIncome > 0.005 },
+                saved.cashCollectorId.takeIf { saved.cashIncome > 0.005 })
+                .filterNotNull()
+        }
+        partnerIds.filter { it > 0L }.map { saved.storeId to it }
+    }
+    fun collectorOwnsAdjustment(partnerId: Long): Boolean {
+        val currentStore = storeId ?: return false
+        return OvernightReceiptAllocationPolicy.ownsAdjustment(
+            date, currentStore, partnerId,
+            overnightStore.naturalDrafts(), activeStoreCollectors
+        )
+    }
+
     fun effectiveReceiptRows(): Pair<List<ReceiptDraftRow>, String?> {
         val currentStore = storeId ?: return receiptRows.toList() to null
         val seen = mutableSetOf<Long>()
-        val activeOtherStores = todayRecords.filter { it.storeId != currentStore }
-            .flatMap { saved ->
-                if (saved.receiptSplits.isNotEmpty()) saved.receiptSplits.filter {
-                    it.wechatIncome > 0.005 || it.alipayIncome > 0.005
-                }.map { it.partnerId } else listOf(
-                    saved.wechatCollectorId.takeIf { saved.wechatIncome > 0.005 } ?: 0L,
-                    saved.alipayCollectorId.takeIf { saved.alipayIncome > 0.005 } ?: 0L
-                )
-            }.filter { it>0L }.toSet()
         return receiptRows.map { row ->
             val partner = row.partnerId ?: return@map row
             if (row.rowId in legacyNetRowIds) return@map row
-            // One merchant-day amount may NOT be attributed to two stalls.
-            if (partner in activeOtherStores &&
-                (row.wechat.toDoubleOrNull() ?: 0.0)>0.005) {
-                return emptyList<ReceiptDraftRow>() to
-                    "同一微信收款人当天涉及多个位置，请先拆分各位置自然日收款金额"
-            }
-            if (partner in activeOtherStores &&
-                (row.alipay.toDoubleOrNull() ?: 0.0)>0.005) {
-                return emptyList<ReceiptDraftRow>() to
-                    "同一支付宝收款人当天涉及多个位置，请先拆分各位置自然日收款金额"
-            }
             if (!seen.add(partner)) return@map row
+            // Another saved position already claimed the collector's one
+            // deduction/addition. Current inputs are position-split receipts.
+            if (!collectorOwnsAdjustment(partner)) return@map row
             val (deductWx,deductAlipay,deductCash)=chosenDeduction(partner)
             val input=NaturalDayReceiptDraft(date,currentStore,partner,
                 row.wechat.toDoubleOrNull() ?: 0.0,
@@ -11512,21 +11516,8 @@ private fun SessionScreen(
         }
 
         val normalizedReceiptRows = effectiveRows.filter { it.hasIncome }
-        // An account's full calendar-day total is a single value per day;
-        // never overwrite another position's raw total after official save.
-        val naturalCollision = receiptRows.filter {
-            it.partnerId != null && it.rowId !in legacyNetRowIds
-        }.any { row ->
-            overnightStore.naturalDrafts().any { old ->
-                old.businessDate == date && old.partnerId == row.partnerId &&
-                    old.storeId != requestedStore.id
-            }
-        }
-        if (naturalCollision) {
-            message = "该收款人这天的自然日总额已归属另一个位置，请按位置拆分后再保存"
-            isError = true
-            return false
-        }
+        // Same collector may sell at multiple positions on this date.
+        // Each position's own receipts remain a separate official record.
         if (revenueNow > 0.005 && normalizedReceiptRows.isEmpty()) {
             message = "保存失败：请填写至少一位收款人的微信、支付宝或现金"
             isError = true
@@ -11617,6 +11608,9 @@ private fun SessionScreen(
             it.partnerId != null && it.rowId !in legacyNetRowIds
         }.groupBy { it.partnerId!! }
         rawGroups.forEach { (partnerId, rows) ->
+            // Never overwrite another position's original collector-day
+            // helper source using this position's split amount.
+            if (!collectorOwnsAdjustment(partnerId)) return@forEach
             val (deductWx, deductAli, deductCash) = chosenDeduction(partnerId)
             val official=effectiveRows.filter { it.partnerId==partnerId }
             val persisted = overnightStore.saveNatural(NaturalDayReceiptDraft(
@@ -12148,8 +12142,7 @@ private fun SessionScreen(
                             LocalDate.parse(date).plusDays(1).toString()
                         }.getOrNull()?.let { nextDate ->
                             overnightSnapshots.firstOrNull {
-                                it.calendarDate==nextDate && it.partnerId==partnerId &&
-                                    it.storeId==currentStoreId
+                                it.calendarDate==nextDate && it.partnerId==partnerId
                             }
                         }
                         val other=todayRecords.any { rec ->
@@ -12161,10 +12154,11 @@ private fun SessionScreen(
                         }
                         val choices=chosenDeduction(partnerId)
                         val legacy = row.rowId in legacyNetRowIds
+                        val owns = collectorOwnsAdjustment(partnerId)
                         OvernightInlineState(previous,following,
-                            !legacy && choices.first,
-                            !legacy && choices.second,
-                            !legacy && choices.third,
+                            !legacy && owns && choices.first,
+                            !legacy && owns && choices.second,
+                            !legacy && owns && choices.third,
                             other)
                     },
                     onOvernightChanged = {
@@ -12180,6 +12174,9 @@ private fun SessionScreen(
                             val previous=chosenDeduction(pid)
                             if (row.rowId in legacyNetRowIds) {
                                 pendingLegacyOvernightConfirm = row.rowId
+                            } else if (!collectorOwnsAdjustment(pid)) {
+                                message = "该收款人的凌晨金额已在另一位置处理，此处只录本位置收款"
+                                isError = false
                             } else {
                                 deductionChoices[deductionKey(pid)] = Triple(
                                     !previous.first,previous.second,previous.third)
@@ -12191,6 +12188,9 @@ private fun SessionScreen(
                             val previous=chosenDeduction(pid)
                             if (row.rowId in legacyNetRowIds) {
                                 pendingLegacyOvernightConfirm = row.rowId
+                            } else if (!collectorOwnsAdjustment(pid)) {
+                                message = "该收款人的凌晨金额已在另一位置处理，此处只录本位置收款"
+                                isError = false
                             } else {
                                 deductionChoices[deductionKey(pid)] = Triple(
                                     previous.first,!previous.second,previous.third)
@@ -12202,6 +12202,9 @@ private fun SessionScreen(
                             val previous=chosenDeduction(pid)
                             if (row.rowId in legacyNetRowIds) {
                                 pendingLegacyOvernightConfirm = row.rowId
+                            } else if (!collectorOwnsAdjustment(pid)) {
+                                message = "该收款人的凌晨金额已在另一位置处理，此处只录本位置收款"
+                                isError = false
                             } else {
                                 deductionChoices[deductionKey(pid)] = Triple(
                                     previous.first,previous.second,!previous.third)
@@ -12923,7 +12926,7 @@ private fun ReceiptSplitDraftRow(
                     fontSize=10.sp,color=Color(0xFF996A00))
             }
             if(overnightState?.hasConflict==true) {
-                Text("同一收款人当天有多个位置，需先核对是否重复计算",
+                Text("同一收款人跨多个位置：凌晨只扣减一次，营业额请按位置分别填写",
                     fontSize=10.sp,color=Color(0xFF996A00))
             }
         }
