@@ -30,19 +30,21 @@ class OvernightReceiptPolicyTest {
         assertEquals(2920.0,result.adjustedWechat,0.001)
         assertEquals(1315.0,result.adjustedAlipay,0.001)
     }
-    @Test fun doesNotCreditOtherStoreFromFollowingMorning() {
+    @Test fun followingMorningCreditsCollectorEvenAfterMovingToAnotherStore() {
         val result=OvernightReceiptPolicy.adjustment(day(),
             listOf(morning("2026-11-15",2,wx=180.0),
                 morning("2026-11-16",3,wx=120.0)))!!
-        assertEquals(2620.0,result.adjustedWechat,0.001)
-        assertFalse(result.followingConfirmed)
+        assertEquals(2740.0,result.adjustedWechat,0.001)
+        assertTrue(result.followingConfirmed)
     }
-    @Test fun sameCollectorMorningCannotBelongToTwoStores() {
+    @Test fun collectorMorningCanBeEditedFromAnyStoreWithoutDuplicating() {
         val first=morning("2026-11-16",1,wx=150.0)
-        assertNull(OvernightReceiptPolicy.replace(morning("2026-11-16",2,wx=150.0),listOf(first)))
-        val changed=OvernightReceiptPolicy.replace(morning("2026-11-16",1,wx=175.0),listOf(first))!!
+        val updated=morning("2026-11-16",2,wx=175.0)
+        val changed=OvernightReceiptPolicy.replace(updated,listOf(first))!!
         assertEquals(1,changed.size)
         assertEquals(175.0,changed.single().wechat,0.001)
+        assertEquals(2L,changed.single().storeId) // Legacy transport metadata only.
+        assertEquals(1,OvernightReceiptPolicy.replace(updated,changed)!!.size)
     }
     @Test fun blankAndConfirmedZeroAreDistinguished() {
         val empty=OvernightReceiptSnapshot("2026-11-16",1,5,wechatRecorded=false,
