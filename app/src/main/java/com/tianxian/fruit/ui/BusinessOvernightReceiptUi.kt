@@ -96,10 +96,8 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
             s.storeId<=0 || s.partnerId<=0 ||
             listOf(s.wechat,s.alipay,s.cash).any { !it.isFinite() || it<0.0 }) return false
         val before=naturalDrafts()
-        // One provider calendar total belongs to one store per collector/date.
-        if(before.any { it.businessDate==s.businessDate &&
-                it.partnerId==s.partnerId && it.storeId!=s.storeId &&
-                !OvernightReceiptDeletionPolicy.isClearedNatural(it) }) return false
+        // The position shown here is where the collector's one adjusted
+        // natural-day source was first saved, not the collector's identity.
         val next=before.filterNot {
             it.businessDate==s.businessDate && it.partnerId==s.partnerId
         }+s
@@ -121,9 +119,9 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
     }
 
     /**
-     * A deleted sale for D owns the morning of D+1, not the morning of D.
-     * Retain cleared rows as syncable tombstones so remote devices cannot
-     * restore yesterday's amount from the customer-analytics API.
+     * Only delete the *position-owned* original natural-day helper source.
+     * A calendar-morning receipt belongs to the collector, even when their
+     * original stall is deleted. Never modify snapshots on a sale deletion.
      */
     fun clearForDeletedBusiness(
         businessDate: String,
@@ -132,29 +130,14 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
         if (storeId <= 0L || runCatching {
                 LocalDate.parse(businessDate)
             }.isFailure) return false
-        val oldSnapshots = snapshots()
-        val oldNatural = naturalDrafts()
-        val nextSnapshots = oldSnapshots.map {
-            OvernightReceiptDeletionPolicy.clearedSnapshot(it, businessDate, storeId)
-        }.toMutableList()
-        val nextNatural = oldNatural.map {
+        val before = naturalDrafts()
+        val after = before.map {
             OvernightReceiptDeletionPolicy.clearedNatural(it, businessDate, storeId)
         }
-        if (nextSnapshots == oldSnapshots && nextNatural == oldNatural) return true
-
-        val snapshotJson = JSONArray()
-        nextSnapshots.forEach { row ->
-            snapshotJson.put(JSONObject().put("date", row.calendarDate)
-                .put("store", row.storeId).put("partner", row.partnerId)
-                .put("wechat", row.wechat).put("alipay", row.alipay)
-                .put("cash", row.cash)
-                .put("wechat_recorded", row.wechatRecorded)
-                .put("alipay_recorded", row.alipayRecorded)
-                .put("cash_recorded", row.cashRecorded))
-        }
-        val naturalJson = JSONArray()
-        nextNatural.forEach { row ->
-            naturalJson.put(JSONObject().put("date", row.businessDate)
+        if (after == before) return true
+        val json = JSONArray()
+        after.forEach { row ->
+            json.put(JSONObject().put("date", row.businessDate)
                 .put("store", row.storeId).put("partner", row.partnerId)
                 .put("wechat", row.wechat).put("alipay", row.alipay)
                 .put("cash", row.cash)
@@ -165,12 +148,9 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
                 .put("saved_alipay", row.savedAlipay)
                 .put("saved_cash", row.savedCash))
         }
-        val saved = prefs.edit()
-            .putString("snapshots", snapshotJson.toString())
-            .putString("natural", naturalJson.toString())
-            .commit()
-        if (saved) OvernightReceiptRefresh.changed()
-        return saved
+        val ok = prefs.edit().putString("natural", json.toString()).commit()
+        if (ok) OvernightReceiptRefresh.changed()
+        return ok
     }
 
     fun findSnapshot(date:String,partner:Long): OvernightReceiptSnapshot? =
@@ -217,17 +197,17 @@ internal fun OvernightInlineNumber(
         runCatching { LocalDate.parse(date).plusDays(1) }.getOrNull()
     }
     val refreshVersion = OvernightReceiptRefresh.revision.intValue
-    val snapshot=remember(tick,date,storeId,partnerId,refreshVersion) {
+    val snapshot=remember(tick,date,partnerId,refreshVersion) {
         if (morning!=null && partnerId!=null)
             store.findSnapshot(morning.toString(),partnerId) else null
     }
-    val amount=if(snapshot?.storeId==storeId) snapshot?.amount(channel) else null
+    val amount=snapshot?.amount(channel)
     var open by remember(date,storeId,partnerId,channel) { mutableStateOf(false) }
     var input by remember(date,storeId,partnerId,channel) { mutableStateOf("") }
     var error by remember(date,storeId,partnerId,channel) { mutableStateOf("") }
     Text(displayOvernight(amount),
         modifier=Modifier.fillMaxWidth()
-            .clickable(enabled=storeId!=null && partnerId!=null) {
+            .clickable(enabled=partnerId!=null && (storeId!=null || snapshot!=null)) {
                 error=""
                 input=amount?.let { if(it==0.0) "0" else
                     String.format(Locale.US,"%.2f",it) }.orEmpty()
@@ -237,7 +217,7 @@ internal fun OvernightInlineNumber(
         color=if(amount==null) Color.Gray else Color(0xFF0A9566),
         textAlign=androidx.compose.ui.text.style.TextAlign.Center,
         maxLines=1)
-    if(open && morning!=null && storeId!=null && partnerId!=null) {
+    if(open && morning!=null && partnerId!=null && (storeId!=null || snapshot!=null)) {
         AlertDialog(
             onDismissRequest={open=false},
             title={Text("修改凌晨${when(channel) {"WECHAT"->"微信";"ALIPAY"->"支付宝";else->"现金"}}收款")},
@@ -249,9 +229,6 @@ internal fun OvernightInlineNumber(
                         singleLine=true,
                         label={Text("凌晨金额（元）")},
                         keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal))
-                    if(snapshot!=null && snapshot.storeId!=storeId)
-                        Text("同一收款人在该凌晨已关联其他位置，不能重复计入。",
-                            color=MaterialTheme.colorScheme.error)
                     if(morning.isAfter(LocalDate.now()))
                         Text("需在次日凌晨发生后才能记录。",color=MaterialTheme.colorScheme.error)
                     if(error.isNotBlank())
@@ -269,14 +246,13 @@ internal fun OvernightInlineNumber(
                         error="不能提前登记未来的凌晨收款";return@TextButton
                     }
                     val updated=(snapshot ?: OvernightReceiptSnapshot(
-                        morning.toString(),storeId,partnerId,0.0,0.0,0.0,
+                        morning.toString(),storeId ?: 0L,partnerId,0.0,0.0,0.0,
                         wechatRecorded=false,alipayRecorded=false,cashRecorded=false))
                         .withAmount(channel,money)
                     if(store.saveSnapshot(updated)) {
                         open=false;onChanged()
-                    } else error="写入失败，或该收款人凌晨已经关联其他位置"
-                },enabled=!morning.isAfter(LocalDate.now()) &&
-                    (snapshot==null || snapshot.storeId==storeId)) {Text("保存")}
+                    } else error="保存失败，请检查收款人及金额，或重新同步后再试"
+                },enabled=!morning.isAfter(LocalDate.now())) {Text("保存")}
             },
             dismissButton={TextButton(onClick={open=false}){Text("取消")}}
         )
