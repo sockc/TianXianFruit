@@ -84,4 +84,32 @@ class OvernightReceiptDeletionPolicyTest {
         assertNull(untouched.amount("WECHAT"))
         assertEquals(0.0,zero.amount("WECHAT")!!,0.0)
     }
+    @Test fun twoPositionsShareOneCollectorAndTotalIsDeductedOnlyOnce() {
+        val morning = listOf(
+            OvernightReceiptSnapshot(
+                "2026-11-16", 8L, 5L,
+                wechat = 47.0, alipay = 0.0,
+                wechatRecorded = true, alipayRecorded = true
+            )
+        )
+        val ownerStore = 1L
+        val otherStore = 2L
+        val active = listOf(ownerStore to 5L)
+        val firstOwns = OvernightReceiptAllocationPolicy.ownsAdjustment(
+            "2026-11-16", ownerStore, 5L, emptyList(), active)
+        val secondOwns = OvernightReceiptAllocationPolicy.ownsAdjustment(
+            "2026-11-16", otherStore, 5L, emptyList(), active)
+        assertTrue(firstOwns)
+        assertFalse(secondOwns)
+        val adjustedFirst = OvernightReceiptPolicy.adjustment(
+            NaturalDayReceiptDraft("2026-11-16", ownerStore, 5L, 306.0),
+            morning
+        )!!
+        val secondPositionRaw = 1120.0
+        assertEquals(259.0, adjustedFirst.adjustedWechat, 0.001)
+        assertEquals(1379.0, adjustedFirst.adjustedWechat + secondPositionRaw, 0.001)
+        assertEquals(1426.0 - 47.0,
+            adjustedFirst.adjustedWechat + secondPositionRaw, 0.001)
+    }
+
 }
