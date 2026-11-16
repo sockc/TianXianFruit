@@ -521,7 +521,9 @@ internal object CustomerCloudBridge {
                             // erase this date/collector record.
                             val local=storage.findSnapshot(date,resolvedPartner)
                             val localHash=local?.let {
-                                digest(overnightPayload(it,stableStore,stablePartner).toString())
+                                val localStore=stableRowId(database,"store",it.storeId)
+                                digest(overnightPayload(it,
+                                    localStore.ifBlank { stableStore },stablePartner).toString())
                             }
                             // Keep unsent changes; report CAS conflict rather than
                             // silently overwriting another device's midnight entry.
@@ -562,9 +564,15 @@ internal object CustomerCloudBridge {
                                 knownAck[kind to key]=Ack(remoteHash,version)
                                 continue
                             }
-                            val local=storage.findNatural(date,resolvedStore,resolvedPartner)
+                            // Natural-day provenance has one collector/day key,
+                            // even if their working location later changes.
+                            val local=storage.naturalDrafts().firstOrNull {
+                                it.businessDate==date && it.partnerId==resolvedPartner
+                            }
                             val localHash=local?.let {
-                                digest(naturalPayload(it,stableStore,stablePartner,
+                                val localStore=stableRowId(database,"store",it.storeId)
+                                digest(naturalPayload(it,
+                                    localStore.ifBlank { stableStore },stablePartner,
                                     body.has("deduct_cash")).toString())
                             }
                             if(local!=null && local!=incoming &&
