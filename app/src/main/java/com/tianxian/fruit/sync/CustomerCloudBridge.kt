@@ -754,9 +754,8 @@ internal object CustomerCloudBridge {
                 pullPages++
                 val changes = response.getJSONArray("changes")
                 val next = response.getLong("next_cursor")
-                if (before < 0L || next < before ||
-                    (response.optBoolean("has_more") && next == before) ||
-                    (changes.length() > 0 && next == before)) {
+                if (!CustomerSyncCursorPolicy.progresses(
+                        before, next, changes.length(), response.optBoolean("has_more"))) {
                     throw IllegalStateException(
                         "客流同步游标异常：下载页${page + 1}，当前=$before，下一页=$next，" +
                             "记录=${changes.length()}（本机数据保留）")
