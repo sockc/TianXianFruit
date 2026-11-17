@@ -79,4 +79,13 @@ class OvernightReceiptAuditPolicyTest {
                 it.reason == OvernightReviewReason.SAVED_TOTAL_DIFFERS
             })
     }
+    @Test fun duplicateLegacyMorningsAreFlaggedWithoutChoosingOne() {
+        val entries = listOf(morning(day,47.0),morning(day,65.0))
+        val issues = OvernightReceiptAuditPolicy.inspect(
+            day,listOf(sale(1L,1073.0)),entries,listOf(original()),emptySet())
+        assertTrue(issues.any { it.reason == OvernightReviewReason.DUPLICATE_MORNING })
+        assertTrue(issues.any { it.reason == OvernightReviewReason.SAVED_TOTAL_DIFFERS })
+        assertNull(OvernightReceiptPolicy.adjustment(original(),entries))
+    }
+
 }
