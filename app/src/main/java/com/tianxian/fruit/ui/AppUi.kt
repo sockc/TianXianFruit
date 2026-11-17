@@ -11006,42 +11006,6 @@ private fun SessionScreen(
                 date
             )
         }
-    val overnightAuditRevision = OvernightReceiptRefresh.revision.intValue
-    val overnightAuditIssues = remember(
-        todayRecords, overnightSnapshots, overnightAuditRevision, date
-    ) {
-        val sales = todayRecords.flatMap { saved ->
-            val exactSplits = saved.receiptSplits.filter {
-                it.partnerId > 0L && (it.wechatIncome > 0.005 ||
-                    it.alipayIncome > 0.005 || it.cashIncome > 0.005)
-            }
-            if (exactSplits.isNotEmpty()) {
-                exactSplits.map { split ->
-                    OvernightCollectorSale(saved.storeId, split.partnerId,
-                        split.wechatIncome, split.alipayIncome, split.cashIncome)
-                }
-            } else {
-                listOf(
-                    OvernightCollectorSale(saved.storeId,saved.wechatCollectorId,
-                        saved.wechatIncome,0.0,0.0),
-                    OvernightCollectorSale(saved.storeId,saved.alipayCollectorId,
-                        0.0,saved.alipayIncome,0.0),
-                    OvernightCollectorSale(saved.storeId,saved.cashCollectorId,
-                        0.0,0.0,saved.cashIncome)
-                ).filter { it.partnerId > 0L }
-            }
-        }.groupBy { it.storeId to it.partnerId }.map { (key, parts) ->
-            OvernightCollectorSale(key.first,key.second,
-                parts.sumOf { it.wechat },parts.sumOf { it.alipay },
-                parts.sumOf { it.cash })
-        }
-        OvernightReceiptAuditPolicy.inspect(
-            date, sales, overnightStore.snapshots(),
-            overnightStore.naturalDrafts(), overnightStore.pendingCollectors(date)
-        )
-    }
-    var showOvernightAuditDetail by remember(date) { mutableStateOf(false) }
-
     val hasImportedBusinessPayments =
         remember(
             dataVersion,
@@ -11082,6 +11046,42 @@ private fun SessionScreen(
     val overnightSnapshots = remember(dataVersion, overnightTick, date, currentBook.id) {
         overnightStore.snapshots()
     }
+    val overnightAuditRevision = OvernightReceiptRefresh.revision.intValue
+    val overnightAuditIssues = remember(
+        todayRecords, overnightSnapshots, overnightAuditRevision, date
+    ) {
+        val sales = todayRecords.flatMap { saved ->
+            val exactSplits = saved.receiptSplits.filter {
+                it.partnerId > 0L && (it.wechatIncome > 0.005 ||
+                    it.alipayIncome > 0.005 || it.cashIncome > 0.005)
+            }
+            if (exactSplits.isNotEmpty()) {
+                exactSplits.map { split ->
+                    OvernightCollectorSale(saved.storeId, split.partnerId,
+                        split.wechatIncome, split.alipayIncome, split.cashIncome)
+                }
+            } else {
+                listOf(
+                    OvernightCollectorSale(saved.storeId,saved.wechatCollectorId,
+                        saved.wechatIncome,0.0,0.0),
+                    OvernightCollectorSale(saved.storeId,saved.alipayCollectorId,
+                        0.0,saved.alipayIncome,0.0),
+                    OvernightCollectorSale(saved.storeId,saved.cashCollectorId,
+                        0.0,0.0,saved.cashIncome)
+                ).filter { it.partnerId > 0L }
+            }
+        }.groupBy { it.storeId to it.partnerId }.map { (key, parts) ->
+            OvernightCollectorSale(key.first,key.second,
+                parts.sumOf { it.wechat },parts.sumOf { it.alipay },
+                parts.sumOf { it.cash })
+        }
+        OvernightReceiptAuditPolicy.inspect(
+            date, sales, overnightStore.snapshots(),
+            overnightStore.naturalDrafts(), overnightStore.pendingCollectors(date)
+        )
+    }
+    var showOvernightAuditDetail by remember(date) { mutableStateOf(false) }
+
     // Already saved historic records may contain FINAL/NET values. Do not
     // run midnight formulas on them unless their raw source is known.
     val legacyNetRowIds = remember { mutableStateListOf<Long>() }
