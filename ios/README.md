@@ -1,6 +1,6 @@
 # 天鲜账本 iOS V0.1.0（只读试验版）
 
-此目录是与 Android `app/` **独立** 的 SwiftUI 工程。开发目标是家庭自用（iPhone/iPad，iOS 17+）和 Ad Hoc 签名 IPA。
+此目录是与 Android `app/` **独立** 的 SwiftUI 工程。开发目标是家庭自用（iPhone/iPad，iOS 15+）以及 TrollStore 免开发者证书测试 IPA；Ad Hoc 方案保留备用。
 
 ## 当前完成范围
 
@@ -47,3 +47,19 @@ Bundle ID 暂定 `com.tianxian.fruit.ios`，必须与 Apple 后台 App ID 和描
 ## Android 隔离原则
 
 所有功能代码只放在 `ios/`；CI 仅在 iOS 目录或 iOS 工作流变更时触发。当前分支不修改 `app/`、现有 Android 构建和服务器工具。**尚未合并到 main**：现有 `build-apk.yml` 对每次 main push 均会构建/尝试发布 APK，因此在合并 iOS-only PR 前应另行增加安全的路径过滤，并单独验证不会改变 Android 发布语义。
+
+## 巨魔（TrollStore）测试 IPA：无 Apple 开发者证书
+
+- 工作流：`.github/workflows/build-trollstore-ipa.yml`，在 iOS 功能分支 push 自动构建，也可在工作流进入默认分支后手动触发。
+- macOS + XcodeGen 构建 `generic/platform=iOS` 真机 arm64 App，`CODE_SIGNING_ALLOWED=NO`，使用 Homebrew `ldid -S` **伪签名**，打包成 `Payload/TianXianFruit.app` 的 IPA。
+- 不需要 Apple Developer Program、P12、Provisioning Profile、UDID；该 IPA 不受 Apple 标准安装路径支持，**只供已能正常运行 TrollStore 的兼容设备使用**。
+- 官方兼容范围：iOS 14.0 beta 2～16.6.1、16.7 RC (20H18)、17.0；正常 iOS 16.7.x 和 iOS 17.0.1+ 不支持（基于目前官方 CoreTrust 漏洞）。**本 App 最低版本 iOS 15.0**，因此实际支持交集是 iOS 15.0～16.6.1、16.7 RC、17.0。
+- 下载路径：Actions → `Build TrollStore IPA (no Apple certificate)` → 成功运行 → Artifacts → `TianXianFruit-iOS-v0.1.0-TrollStore` → 解压得到 `.ipa`。
+- 手机端：先确认 TrollStore 可正常运行，在 TrollStore 设置中安装 ldid（如安装器提示），再从“文件”打开 IPA 并分享到 TrollStore 安装。
+- 保持系统沙盒运行，不添加 root/越狱能力或私有特权 entitlement；此 IPA 没有任何业务写入接口。
+- 只在**测试账号及测试账本**验证 iOS 平台登录与设备登记。尚未验证生产服务端接受 iOS，切勿直接认定已可登录生产账本。
+- 对于不兼容 TrollStore 的设备，需使用常规免费账号短期签名或后续 Ad Hoc/TestFlight，不能通过此 IPA 绕过 iOS 签名机制。
+
+### 注意
+
+iOS 的 Apple 付费签名工作流仍保留在 `.github/workflows/build-ipa.yml`，但**无需配置也不会阻碍巨魔 IPA**。不要因为免签名测试而更改 Android 发布工作流或生产服务器。

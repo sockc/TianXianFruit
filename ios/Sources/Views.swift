@@ -21,7 +21,7 @@ private struct LoginView: View {
     @State private var password = ""
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
@@ -71,16 +71,14 @@ private struct DashboardView: View {
     @State private var selection = 0
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     Label("只读模式 · 不会修改云端账本", systemImage: "lock.shield.fill")
                         .font(.footnote)
                         .foregroundStyle(.green)
                     if model.books.isEmpty {
-                        ContentUnavailableView("没有可读取的账本",
-                                               systemImage: "books.vertical",
-                                               description: Text("请确认此账号已获授权"))
+                        EmptyStateView(title: "没有可读取的账本", icon: "books.vertical", detail: "请确认此账号已获授权")
                     } else {
                         Picker("当前账本", selection: Binding(
                             get: { model.selectedBookID ?? "" },
@@ -123,7 +121,7 @@ private struct DashboardView: View {
             }
             .navigationTitle("天鲜账本")
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .navigationBarLeading) {
                     Menu {
                         if let name = model.account?.displayName {
                             Text(name)
@@ -131,7 +129,7 @@ private struct DashboardView: View {
                         Button("退出账号", role: .destructive) { model.signOut() }
                     } label: { Image(systemName: "person.crop.circle") }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         Task { await model.refresh() }
                     } label: {
@@ -180,7 +178,7 @@ private struct DashboardView: View {
     private var salesList: some View {
         LazyVStack(spacing: 10) {
             if model.snapshot.business.isEmpty {
-                ContentUnavailableView("暂无营业记录", systemImage: "chart.bar")
+                EmptyStateView(title: "暂无营业记录", icon: "chart.bar")
             }
             ForEach(Array(model.snapshot.business.prefix(60))) { row in
                 VStack(alignment: .leading, spacing: 6) {
@@ -205,7 +203,7 @@ private struct DashboardView: View {
     private var purchaseList: some View {
         LazyVStack(spacing: 10) {
             if model.snapshot.purchases.isEmpty {
-                ContentUnavailableView("暂无采购记录", systemImage: "basket")
+                EmptyStateView(title: "暂无采购记录", icon: "basket")
             }
             ForEach(Array(model.snapshot.purchases.prefix(60))) { row in
                 HStack {
@@ -221,5 +219,27 @@ private struct DashboardView: View {
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
         }
+    }
+}
+
+private struct EmptyStateView: View {
+    let title: String
+    let icon: String
+    var detail: String? = nil
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.title2)
+                .foregroundStyle(.secondary)
+            Text(title).font(.subheadline.bold())
+            if let detail = detail {
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
     }
 }

@@ -4,14 +4,14 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "15.0"
     TARGETED_DEVICE_FAMILY: "1,2"
     CODE_SIGN_STYLE: Automatic
 targets:
   TianXianFruit:
     type: application
     platform: iOS
-    deploymentTarget: "17.0"
+    deploymentTarget: "15.0"
     sources:
       - path: Sources
     settings:
@@ -24,7 +24,7 @@ targets:
   TianXianFruitTests:
     type: bundle.unit-test
     platform: iOS
-    deploymentTarget: "17.0"
+    deploymentTarget: "15.0"
     sources:
       - path: Tests
     dependencies:
