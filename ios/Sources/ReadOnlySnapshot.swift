@@ -82,6 +82,15 @@ enum BusinessDates {
         return (0..<count).reversed().map { daysAgo($0, from: now) }
     }
 
+    static func parse(_ date: String) -> Date? {
+        let format = DateFormatter()
+        format.calendar = calendar
+        format.timeZone = calendar.timeZone
+        format.locale = Locale(identifier: "en_US_POSIX")
+        format.dateFormat = "yyyy-MM-dd"
+        return format.date(from: date)
+    }
+
     static func daysAgo(_ count: Int, from now: Date = Date()) -> String {
         let day = calendar.date(byAdding: .day, value: -count, to: now) ?? now
         return key(day)

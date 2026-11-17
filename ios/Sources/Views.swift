@@ -91,7 +91,7 @@ private struct DashboardView: View {
             }
             .navigationBarTitle("天鲜账本", displayMode: .inline)
             .navigationBarItems(trailing: Button {
-                Task { await model.refresh() }
+                Task { await model.refresh(); await model.refreshCustomer() }
             } label: {
                 if model.isBusy {
                     ProgressView()
@@ -404,6 +404,17 @@ private struct MorePage: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                Text("经营分析 · 只读").font(.headline)
+                NavigationLink(destination: CustomerInsightsView()) {
+                    Label("客户分析 · 微信/支付宝逐小时客流", systemImage: "person.2")
+                }
+                NavigationLink(destination: FinanceReadOnlyView()) {
+                    Label("资金结算 · 已保存分配与转账", systemImage: "arrow.left.arrow.right")
+                }
+                NavigationLink(destination: BusinessStatsView()) {
+                    Label("经营统计 · 位置与趋势", systemImage: "chart.bar.xaxis")
+                }
+                Divider()
                 Text("账号与同步").font(.headline)
                 VStack(alignment: .leading, spacing: 12) {
                     Label(model.account?.displayName ?? "未登录", systemImage: "person.crop.circle")
@@ -427,9 +438,9 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.1.1 · TrollStore 测试版")
+                Text("版本：iOS V0.1.2 · TrollStore 只读测试版")
                     .font(.caption).foregroundColor(.secondary)
-                Text("不包含凌晨收款、营业修改、账单导入、利润分配或资金结算写入。")
+                Text("不包含凌晨收款、营业修改、账单导入、利润分配或资金结算写入。客户分析只读取服务端已确认的账单数据。")
                     .font(.caption2).foregroundColor(.secondary)
                 Button(role: .destructive) {
                     model.signOut()

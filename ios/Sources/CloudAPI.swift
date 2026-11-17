@@ -40,6 +40,9 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         let permittedGET = path == "/api/v1/auth/me"
             || path == "/api/v1/books"
             || path == "/api/v1/sync/pull"
+            || (path.hasPrefix("/api/v1/books/") && (
+                path.hasSuffix("/customer-analytics/capabilities")
+                || path.hasSuffix("/customer-analytics/changes")))
         let permittedPOST = path == "/api/v1/auth/login"
             || path == "/api/v1/devices/register"
         guard (method == "GET" && permittedGET) || (method == "POST" && permittedPOST),
@@ -101,7 +104,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             "POST", "/api/v1/auth/login", body: [
                 "username": trimmed, "password": password,
                 "device_id": scopedID, "device_name": deviceName,
-                "platform": "ios", "app_version": "0.1.1"
+                "platform": "ios", "app_version": "0.1.2"
             ])
         let auth: LoginResponse = try decode(LoginResponse.self, from: loginData)
         let me = try await account(token: auth.accessToken)
@@ -109,7 +112,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         _ = try await request("POST", "/api/v1/devices/register",
                               token: auth.accessToken, body: [
             "device_id": scopedID, "name": deviceName,
-            "platform": "ios", "app_version": "0.1.1"
+            "platform": "ios", "app_version": "0.1.2"
         ])
         return (auth.accessToken, me)
     }
@@ -125,4 +128,44 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             "GET", "/api/v1/sync/pull", token: token, query: params)
         return try decode(SyncPage.self, from: data)
     }
+    private func customerEndpoint(_ bookID: String) throws -> String {
+        guard !bookID.isEmpty,
+              let safeID = bookID.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
+        else { throw CloudAPIError(status: 0, message: "账本 ID 无效") }
+        return "/api/v1/books/\(safeID)/customer-analytics"
+    }
+
+    func customerCapabilities(token: String, bookID: String) async throws -> CustomerCapabilities {
+        let data = try await request("GET", customerEndpoint(bookID) + "/capabilities", token: token)
+        let capabilities = try decode(CustomerCapabilities.self, from: data)
+        guard capabilities.supported, capabilities.version == 1,
+              capabilities.offers("receipt_pull") else {
+            throw CloudAPIError(status: 0, message: "服务器不支持客户账单读取；未修改已缓存数据")
+        }
+        return capabilities
+    }
+
+    func customerChanges(token: String, bookID: String, since: Int64,
+                         capabilities: CustomerCapabilities) async throws -> CustomerChangePage {
+        guard since >= 0 else {
+            throw CloudAPIError(status: 0, message: "客户同步游标无效")
+        }
+        var query = [
+            URLQueryItem(name: "cursor", value: String(since)),
+            URLQueryItem(name: "limit", value: "200"),
+            URLQueryItem(name: "include_assignments", value: "true")
+        ]
+        for (feature, flag) in [
+            ("bill_collector", "include_collectors"),
+            ("receipt_analysis_state", "include_analysis"),
+            ("analysis_settings", "include_settings"),
+            ("bill_source_links", "include_source_links")
+        ] where capabilities.offers(feature) {
+            query.append(URLQueryItem(name: flag, value: "true"))
+        }
+        let data = try await request("GET", customerEndpoint(bookID) + "/changes",
+                                     token: token, query: query)
+        return try decode(CustomerChangePage.self, from: data)
+    }
+
 }

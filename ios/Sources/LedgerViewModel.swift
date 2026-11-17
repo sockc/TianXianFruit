@@ -20,6 +20,12 @@ final class LedgerViewModel: ObservableObject {
     @Published private(set) var currentCursor: Int64 = 0
     @Published private(set) var isUsingCachedAuthorization = false
     @Published private(set) var cacheAvailable = true
+    @Published private(set) var customerSnapshot = CustomerReadSnapshot()
+    @Published private(set) var customerCursor: Int64 = 0
+    @Published private(set) var customerSyncedAt: Date?
+    @Published private(set) var customerError: String?
+    @Published private(set) var isCustomerBusy = false
+    @Published private(set) var customerAPIAvailable = false
 
     private let api = CloudAPI()
     private var cache: LocalLedgerCache?
@@ -56,11 +62,21 @@ final class LedgerViewModel: ObservableObject {
         snapshot = ReadOnlySnapshot()
         currentCursor = 0
         lastSyncAt = nil
+        customerSnapshot = CustomerReadSnapshot()
+        customerCursor = 0
+        customerSyncedAt = nil
+        customerAPIAvailable = false
+        customerError = nil
         do {
             if let value = try cache?.load(account: account.username, book: bookID) {
                 snapshot = value.snapshot
                 currentCursor = value.cursor
                 lastSyncAt = value.syncedAt
+            }
+            if let customer = try cache?.loadCustomer(account: account.username, book: bookID) {
+                customerSnapshot = customer.snapshot
+                customerCursor = customer.cursor
+                customerSyncedAt = customer.syncedAt
             }
         } catch {
             errorMessage = error.localizedDescription
@@ -86,8 +102,11 @@ final class LedgerViewModel: ObservableObject {
             books = cloudBooks
             isUsingCachedAuthorization = false
             if let first = cloudBooks.first { activateBook(first.id) }
-            Task { await self.refresh() }
+            Task { await self.refresh(); await self.refreshCustomer() }
         } catch let error as CloudAPIError where error.status == 401 || error.status == 403 {
+            if let cached = cachedProfile() {
+                try? cache?.erase(account: cached.account.username)
+            }
             SecureStore.erase("access-token")
             SecureStore.erase("verified-profile")
             reset()
@@ -125,7 +144,7 @@ final class LedgerViewModel: ObservableObject {
             books = cloudBooks
             accessToken = token
             if let first = cloudBooks.first { activateBook(first.id) }
-            Task { await self.refresh() }
+            Task { await self.refresh(); await self.refreshCustomer() }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -137,7 +156,7 @@ final class LedgerViewModel: ObservableObject {
         activateBook(bookID)
         // If an earlier refresh is in progress the user may press refresh
         // again after it finishes; stale-book requests never update the cache.
-        Task { await self.refresh() }
+        Task { await self.refresh(); await self.refreshCustomer() }
     }
 
     func refresh(forceFull: Bool = false) async {
@@ -214,5 +233,65 @@ final class LedgerViewModel: ObservableObject {
         lastSyncAt = nil
         isUsingCachedAuthorization = false
         errorMessage = nil
+        customerSnapshot = CustomerReadSnapshot()
+        customerCursor = 0
+        customerSyncedAt = nil
+        customerError = nil
+        customerAPIAvailable = false
+        isCustomerBusy = false
+    }
+
+    /// Independent customer cursor and database transaction. A 404 or
+    /// missing feature never pretends that the source is synchronized.
+    func refreshCustomer(forceFull: Bool = false) async {
+        guard !isCustomerBusy, let token = accessToken,
+              let book = selectedBookID, let username = account?.username else { return }
+        isCustomerBusy = true
+        customerError = nil
+        defer { isCustomerBusy = false }
+        do {
+            let caps = try await api.customerCapabilities(token: token, bookID: book)
+            let replace = forceFull || customerSyncedAt == nil
+            var candidate = replace ? CustomerReadSnapshot() : customerSnapshot
+            var cursor = replace ? Int64(0) : customerCursor
+            var updates: [CustomerChangeEvent] = []
+            var completed = false
+
+            for _ in 0..<1500 {
+                let page = try await api.customerChanges(token: token, bookID: book,
+                                                          since: cursor, capabilities: caps)
+                guard page.nextCursor >= cursor,
+                      !(page.hasMore && page.nextCursor == cursor),
+                      page.changes.allSatisfy({
+                          !$0.kind.isEmpty && !$0.key.isEmpty && $0.revision >= 0
+                      }) else {
+                    throw CloudAPIError(status: 0, message: "客户事件游标或记录无效；原缓存已保留")
+                }
+                candidate.apply(page.changes)
+                updates.append(contentsOf: page.changes)
+                cursor = page.nextCursor
+                if !page.hasMore { completed = true; break }
+            }
+            guard completed else {
+                throw CloudAPIError(status: 0, message: "客户数据超过安全分页上限；原缓存已保留")
+            }
+            guard self.accessToken == token,
+                  self.selectedBookID == book,
+                  self.account?.username == username else { return }
+
+            let finishedAt = Date()
+            guard let cache else {
+                throw CloudAPIError(status: 0, message: "本机存储不可用，客户游标没有更新")
+            }
+            try cache.commitCustomer(account: username, book: book,
+                                     events: updates, cursor: cursor,
+                                     replace: replace, at: finishedAt)
+            customerSnapshot = candidate
+            customerCursor = cursor
+            customerSyncedAt = finishedAt
+            customerAPIAvailable = true
+        } catch {
+            customerError = error.localizedDescription
+        }
     }
 }

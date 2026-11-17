@@ -1,4 +1,4 @@
-# 天鲜账本 iOS V0.1.1 · 独立只读测试版
+# 天鲜账本 iOS V0.1.2 · 客流、资金、统计只读测试版
 
 支持 iOS 15+（以 iPhone X / iOS 16.6 / TrollStore 作为首要真机验收设备）。
 
@@ -8,7 +8,7 @@
 - 当前 `ios/` 仅是云端事件只读镜像。**不包含** `/api/v1/sync/push`、资金结算、凌晨金额修改、采购/营业新增、客户账单写入等业务 mutation。
 - iOS `POST /api/v1/auth/login` 和 `POST /api/v1/devices/register` 只用于登录与设备登记，使用 `platform=ios`，不修改正式业务账本。
 
-## V0.1.1 已写的功能
+## V0.1.1 已实现的基础功能
 
 - 本地 SQLite3 只读事件缓存：按 **云账号+账本** 隔离，使用 iOS Application Support 和数据保护；保存正式同步事件、行版本、删除墓碑和服务端游标。
 - 首次云端读取 `GET /api/v1/sync/pull?since=0&limit=200`；之后从本地持久化 cursor **增量下载**。只有所有分页完成并且本地 SQL 事务成功，才替换内存视图/提交游标；中途断网不清旧缓存。
@@ -38,12 +38,31 @@
 检查：`.github/workflows/check-ios.yml`（模拟器编译和 Swift unit tests）、`ios/scripts/check_readonly.py`（只读 API 保护）。
 巨魔构建：`.github/workflows/build-trollstore-ipa.yml`（无开发证书，macOS 真机 arm64 构建、`ldid -S`、打包 IPA，上传 Actions Artifacts）。当前不上传公开 GitHub Releases；测试包在对应成功工作流运行的 Artifacts 里取得。
 
-在 GitHub Actions 找到 `Build TrollStore IPA (no Apple certificate)`，展开最新**绿色成功**的任务，在 Artifacts 下载 `TianXianFruit-iOS-v0.1.1-TrollStore` ZIP，解压得到同名 IPA，在 TrollStore 里安装。只支持 TrollStore 可运行的 iOS 设备（iOS 15～16.6.1、16.7 RC、17.0，具体以 TrollStore 官方兼容要求为准）。
+在 GitHub Actions 找到 `Build TrollStore IPA (no Apple certificate)`，展开最新**绿色成功**的任务，在 Artifacts 下载 `TianXianFruit-iOS-v0.1.2-TrollStore` ZIP，解压得到同名 IPA，在 TrollStore 里安装。只支持 TrollStore 可运行的 iOS 设备（iOS 15～16.6.1、16.7 RC、17.0，具体以 TrollStore 官方兼容要求为准）。
 
 保留 `.github/workflows/build-ipa.yml` 作为未来的 Apple Ad Hoc 签名选项，它在公开仓库会拒绝生成带家庭签名信息的公开工件；无需准备证书即可构建巨魔 IPA。
 
-`ios/project.yml` XcodeGen，最低系统 iOS 15，`MARKETING_VERSION=0.1.1`。推荐先将已安装的 V0.1.0 覆盖升级并检查账号和缓存，切勿卸载旧版后立刻测试升级保留行为。
+`ios/project.yml` XcodeGen，最低系统 iOS 15，`MARKETING_VERSION=0.1.2`。推荐先将已安装的 V0.1.0 覆盖升级并检查账号和缓存，切勿卸载旧版后立刻测试升级保留行为。
 
 ## 版本号与发布
 
 iOS 独立版本序列 `0.1.1`，不变更 Android `V1.4.7.129`。现有 Android `main` 推送会触发 APK 发布工作流：合并 iOS PR 前需要增加 iOS-only 路径过滤或另行校验，当前不合并 `main`。
+
+## V0.1.2 新增
+
+- **客户分析独立只读 API**：`GET /api/v1/books/{book_id}/customer-analytics/capabilities` 先核实 `supported=true`、`version=1` 和 `receipt_pull` 后才调用 `/changes`；返回 403/404/不支持时明确展示警告，不用营业额虚构账单数据。
+- **客户事件增量缓存**：新增 `customer_rows/customer_state`，同一账号同一账本独立保存 `kind/key/revision`、删除墓碑及游标；SQL 事务成功后才更新显示，断网/游标异常不会抹掉已确认数据。继承 Android v1.0.22 的 `receipt_analysis_state`、`analysis_settings`、按交易号关联的大额排除逻辑。
+- **微信/支付宝/合并**：按账单 `RECEIPT` 的 `net_amount>0.005` 汇总付款笔数、有效净收款与笔均金额。退款/大额过滤不视为正常客流，无法识别身份时不显示虚构的“新/老顾客人数”。
+- **小时柱状图**：读取 `trade_time` 中的实际小时，未知时间明确保留为未分配小时。按日期、渠道、**可靠稳定 store_sync_id** 位置筛选；缺失位置时显示“未匹配”，绝不把共享收款人所有交易都推算到其中一个摊位。
+- **同位置同星期参考**：至少两个有交易记录的历史同星期日期，缺失日期不补零。不同营业时间、导入范围可能不可比，界面明确标注为辅助参考。
+- **资金只读**：正式同步表 `profit_distribution` 的 `allocated_profit` 与 `settlement_transfer` 的 `amount / settled_amount` 原值，不能结算、修改、清零或确认到账。
+- **经营统计**：近7/30天、位置筛选、营业额/已存利润柱状图，不生成额外资金结算逻辑。
+- **UI**：iPhone X 适配，将客户分析、资金查看与经营统计放在“更多”，不增加底部标签栏数量。
+- **回归测试**：客户同账单去重、大额/人工排除、跨位置未匹配、同星期样本不足、客户缓存游标事务与账本隔离、正式资金字段一致性。
+
+## V0.1.2 安全提醒
+
+- 客流统计**只代表当前可读取的已同步账单**，不能证明微信/支付宝导入覆盖了所有营业日期；“未出现记录”不是“当日零付款”。不上传或更正任何交易。
+- 资金页面是历史持久化快照，`settled_amount` 仅指账本标记金额，非银行到账凭证，不提供资金余额推导或操作。
+- 未取得生产服务器源码，客户 API 的线上权限、部署能力及所有响应类型在 GitHub macOS CI 阶段无法代替真机账号联调。如服务端不支持，则继续展示离线旧缓存（若有）及能力不足提示。
+- 此提交仍仅限独立开发分支；不影响 Android V1.4.7.129 当日结算、APK 工作流、生产后端。
