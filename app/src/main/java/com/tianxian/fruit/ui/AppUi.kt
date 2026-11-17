@@ -11134,6 +11134,10 @@ private fun SessionScreen(
                 row.alipay.toDoubleOrNull() ?: 0.0,
                 row.cash.toDoubleOrNull() ?: 0.0,
                 deductWx,deductAlipay,deductCash=deductCash)
+            if (OvernightReceiptPolicy.hasDuplicateMorning(input,overnightSnapshots)) {
+                return emptyList<ReceiptDraftRow>() to
+                    "凌晨收款存在同日期、同收款人的重复记录，请先核对合并，不能按零金额计算"
+            }
             val adjustment=OvernightReceiptPolicy.adjustment(input,overnightSnapshots)
                 ?: return emptyList<ReceiptDraftRow>() to
                     BusinessWarningDisplayPolicy.OVERNIGHT_OVERDRAW
