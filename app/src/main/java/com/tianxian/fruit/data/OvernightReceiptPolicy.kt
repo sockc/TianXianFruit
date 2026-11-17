@@ -86,7 +86,7 @@ internal object OvernightReceiptPolicy {
     fun canRegister(
         snapshot: OvernightReceiptSnapshot,
         saved: List<OvernightReceiptSnapshot>
-    ): Boolean = snapshot.storeId > 0 && snapshot.partnerId > 0 &&
+    ): Boolean = snapshot.storeId >= 0 && snapshot.partnerId > 0 &&
         runCatching { LocalDate.parse(snapshot.calendarDate) }.isSuccess &&
         listOf(snapshot.wechat, snapshot.alipay, snapshot.cash).all(::validAmount)
 
