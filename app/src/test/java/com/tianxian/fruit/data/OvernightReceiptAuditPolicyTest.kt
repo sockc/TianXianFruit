@@ -35,7 +35,7 @@ class OvernightReceiptAuditPolicyTest {
     }
 
     @Test fun deletingDeductionOwnerLeavesRemainingPositionForManualReview() {
-        val removed = OvernightReceiptDeletionPolicy.clearedNatural(original())
+        val removed = OvernightReceiptDeletionPolicy.clearedNatural(original(), day, 1L)
         val issues = OvernightReceiptAuditPolicy.inspect(
             day, listOf(sale(2L, 300.0)), listOf(morning(day, 47.0)),
             listOf(removed), setOf(5L))
