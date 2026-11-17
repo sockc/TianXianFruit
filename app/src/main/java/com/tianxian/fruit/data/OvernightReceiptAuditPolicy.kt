@@ -13,7 +13,7 @@ internal data class OvernightCollectorSale(
 )
 
 internal enum class OvernightReviewReason {
-    MORNING_CHANGED, SAVED_TOTAL_DIFFERS, DELETED_OWNER, SHARED_COLLECTOR
+    MORNING_CHANGED, SAVED_TOTAL_DIFFERS, DELETED_OWNER, SHARED_COLLECTOR, DUPLICATE_MORNING
 }
 
 internal data class OvernightReviewIssue(
@@ -63,6 +63,14 @@ internal object OvernightReceiptAuditPolicy {
             }
             fun flag(reason: OvernightReviewReason, stores: Set<Long>, detail: String) {
                 result.add(OvernightReviewIssue(date, partner, reason, stores, detail))
+            }
+            val duplicate = mornings.filter {
+                it.partnerId == partner && it.calendarDate in
+                    setOf(date, day.plusDays(1).toString())
+            }.groupingBy { it.calendarDate }.eachCount().values.any { it > 1 }
+            if (duplicate) {
+                flag(OvernightReviewReason.DUPLICATE_MORNING, activeStores,
+                    "同一收款人、同一凌晨日期存在重复记录，请核对合并，暂停自动调整")
             }
             if (partner in pendingCollectors) {
                 flag(OvernightReviewReason.MORNING_CHANGED, activeStores,
