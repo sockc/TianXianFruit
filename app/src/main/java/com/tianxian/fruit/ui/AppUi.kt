@@ -11046,6 +11046,43 @@ private fun SessionScreen(
     val overnightSnapshots = remember(dataVersion, overnightTick, date, currentBook.id) {
         overnightStore.snapshots()
     }
+    val overnightAuditRevision = OvernightReceiptRefresh.revision.intValue
+    val overnightAuditIssues = remember(
+        todayRecords, overnightSnapshots, overnightAuditRevision, date
+    ) {
+        val sales = todayRecords.flatMap { saved ->
+            val exactSplits = saved.receiptSplits.filter {
+                it.partnerId > 0L && (it.wechatIncome > 0.005 ||
+                    it.alipayIncome > 0.005 || it.cashIncome > 0.005)
+            }
+            if (exactSplits.isNotEmpty()) {
+                exactSplits.map { split ->
+                    OvernightCollectorSale(saved.storeId, split.partnerId,
+                        split.wechatIncome, split.alipayIncome, split.cashIncome)
+                }
+            } else {
+                listOf(
+                    OvernightCollectorSale(saved.storeId,saved.wechatCollectorId,
+                        saved.wechatIncome,0.0,0.0),
+                    OvernightCollectorSale(saved.storeId,saved.alipayCollectorId,
+                        0.0,saved.alipayIncome,0.0),
+                    OvernightCollectorSale(saved.storeId,saved.cashCollectorId,
+                        0.0,0.0,saved.cashIncome)
+                ).filter { it.partnerId > 0L }
+            }
+        }.groupBy { it.storeId to it.partnerId }.map { (key, parts) ->
+            OvernightCollectorSale(key.first,key.second,
+                parts.sumOf { it.wechat },parts.sumOf { it.alipay },
+                parts.sumOf { it.cash })
+        }
+        OvernightReceiptAuditPolicy.inspect(
+            date, sales, overnightStore.snapshots(),
+            overnightStore.naturalDrafts(), overnightStore.pendingCollectors(date)
+        )
+    }
+    var showOvernightAuditDetail by remember(date) { mutableStateOf(false) }
+    var pendingOvernightAuditAck by remember(date) { mutableStateOf<Long?>(null) }
+
     // Already saved historic records may contain FINAL/NET values. Do not
     // run midnight formulas on them unless their raw source is known.
     val legacyNetRowIds = remember { mutableStateListOf<Long>() }
@@ -11097,6 +11134,10 @@ private fun SessionScreen(
                 row.alipay.toDoubleOrNull() ?: 0.0,
                 row.cash.toDoubleOrNull() ?: 0.0,
                 deductWx,deductAlipay,deductCash=deductCash)
+            if (OvernightReceiptPolicy.hasDuplicateMorning(input,overnightSnapshots)) {
+                return emptyList<ReceiptDraftRow>() to
+                    "凌晨收款存在同日期、同收款人的重复记录，请先核对合并，不能按零金额计算"
+            }
             val adjustment=OvernightReceiptPolicy.adjustment(input,overnightSnapshots)
                 ?: return emptyList<ReceiptDraftRow>() to
                     BusinessWarningDisplayPolicy.OVERNIGHT_OVERDRAW
@@ -11454,7 +11495,8 @@ private fun SessionScreen(
                     onClick = {
                         val rowId = pendingLegacyOvernightConfirm
                         val pid = pendingRow?.partnerId
-                        if (pid != null && rowId != null) {
+                        if (pid != null && rowId != null &&
+                            collectorOwnsAdjustment(pid)) {
                             deductionChoices[deductionKey(pid)] = Triple(false,false,false)
                             legacyNetRowIds.remove(rowId)
                             message = "已将新增凌晨收款加入待保存营业额；请核对后保存修改"
@@ -11626,6 +11668,8 @@ private fun SessionScreen(
             if(!persisted) {
                 message="营业额已保存，但原始自然日总额草稿保存失败；请勿重复加减凌晨收款"
                 isError=true
+            } else {
+                overnightStore.acknowledgeReview(date, partnerId)
             }
         }
 
@@ -11820,6 +11864,34 @@ private fun SessionScreen(
                         cloudSyncManager = cloudSyncManager,
                         onOpenDetail = onOpenWeather
                     )
+                }
+            }
+        }
+
+        if (overnightAuditIssues.isNotEmpty()) {
+            item {
+                Surface(
+                    color = Color(0xFFFFF2E4),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("凌晨收款待核对 · ${overnightAuditIssues.map { it.partnerId }.distinct().size} 位收款人",
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF986000),
+                            style = MaterialTheme.typography.bodySmall)
+                        overnightAuditIssues.groupBy { it.partnerId }.forEach { (partner, issues) ->
+                            val name = partners.firstOrNull { it.id == partner }?.name
+                                ?: "收款人 #$partner"
+                            Text("$name：${issues.joinToString("；") { it.detail }}",
+                                color = Color(0xFF7F4A00),
+                                style = MaterialTheme.typography.labelSmall)
+                        }
+                        TextButton(onClick = { showOvernightAuditDetail = true }) {
+                            Text("查看受影响的营业记录 ›")
+                        }
+                    }
                 }
             }
         }
@@ -12166,6 +12238,8 @@ private fun SessionScreen(
                     },
                     onOvernightChanged = {
                         overnightTick++
+                        message = "凌晨收款已登记；已保存营业记录如受影响，将显示待核对提示，不会自动改动结算金额"
+                        isError = false
                         if (editingRecordId != null &&
                             row.rowId in legacyNetRowIds &&
                             (row.partnerId?.let(::collectorOwnsAdjustment) == true)) {
@@ -12176,11 +12250,11 @@ private fun SessionScreen(
                     onWechatToggle = {
                         row.partnerId?.let { pid ->
                             val previous=chosenDeduction(pid)
-                            if (row.rowId in legacyNetRowIds) {
-                                pendingLegacyOvernightConfirm = row.rowId
-                            } else if (!collectorOwnsAdjustment(pid)) {
+                            if (!collectorOwnsAdjustment(pid)) {
                                 message = "该收款人的凌晨金额已在另一位置处理，此处只录本位置收款"
                                 isError = false
+                            } else if (row.rowId in legacyNetRowIds) {
+                                pendingLegacyOvernightConfirm = row.rowId
                             } else {
                                 deductionChoices[deductionKey(pid)] = Triple(
                                     !previous.first,previous.second,previous.third)
@@ -12190,11 +12264,11 @@ private fun SessionScreen(
                     onAlipayToggle = {
                         row.partnerId?.let { pid ->
                             val previous=chosenDeduction(pid)
-                            if (row.rowId in legacyNetRowIds) {
-                                pendingLegacyOvernightConfirm = row.rowId
-                            } else if (!collectorOwnsAdjustment(pid)) {
+                            if (!collectorOwnsAdjustment(pid)) {
                                 message = "该收款人的凌晨金额已在另一位置处理，此处只录本位置收款"
                                 isError = false
+                            } else if (row.rowId in legacyNetRowIds) {
+                                pendingLegacyOvernightConfirm = row.rowId
                             } else {
                                 deductionChoices[deductionKey(pid)] = Triple(
                                     previous.first,!previous.second,previous.third)
@@ -12204,11 +12278,11 @@ private fun SessionScreen(
                     onCashToggle = {
                         row.partnerId?.let { pid ->
                             val previous=chosenDeduction(pid)
-                            if (row.rowId in legacyNetRowIds) {
-                                pendingLegacyOvernightConfirm = row.rowId
-                            } else if (!collectorOwnsAdjustment(pid)) {
+                            if (!collectorOwnsAdjustment(pid)) {
                                 message = "该收款人的凌晨金额已在另一位置处理，此处只录本位置收款"
                                 isError = false
+                            } else if (row.rowId in legacyNetRowIds) {
+                                pendingLegacyOvernightConfirm = row.rowId
                             } else {
                                 deductionChoices[deductionKey(pid)] = Triple(
                                     previous.first,previous.second,!previous.third)
@@ -12720,6 +12794,87 @@ private fun SessionScreen(
         }
     }
 
+    if (showOvernightAuditDetail && overnightAuditIssues.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { showOvernightAuditDetail = false },
+            title = { Text("凌晨收款核对") },
+            text = {
+                Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("已保存的营业额不会自动变更。请检查微信、支付宝、现金原始金额以及凌晨扣减是否只计入一次。",
+                        style = MaterialTheme.typography.bodySmall)
+                    overnightAuditIssues.groupBy { it.partnerId }.forEach { (partner, issues) ->
+                        Text(partners.firstOrNull { it.id == partner }?.name ?: "收款人 #$partner",
+                            fontWeight = FontWeight.Bold)
+                        issues.forEach { issue ->
+                            Text("• ${issue.detail}",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                        val relevant = todayRecords.filter { record ->
+                            record.storeId in issues.flatMap { it.relevantStoreIds } &&
+                                (record.receiptSplits.any { it.partnerId == partner } ||
+                                    record.wechatCollectorId == partner ||
+                                    record.alipayCollectorId == partner ||
+                                    record.cashCollectorId == partner)
+                        }
+                        relevant.forEach { record ->
+                            TextButton(onClick = {
+                                showOvernightAuditDetail = false
+                                onRequestLeave {
+                                    protectHistoricalAction(
+                                        record.date,
+                                        "核对 ${record.date} · ${record.storeName} 凌晨收款"
+                                    ) { loadRecord(record) }
+                                }
+                            }) { Text("核对 ${record.storeName} · ${money(record.revenue)}") }
+                        }
+                        if (issues.any { it.reason == OvernightReviewReason.MORNING_CHANGED }) {
+                            TextButton(onClick = {
+                                showOvernightAuditDetail = false
+                                pendingOvernightAuditAck = partner
+                            }) {
+                                Text("已人工核对 · 保留原营业额")
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showOvernightAuditDetail = false }) {
+                    Text("关闭")
+                }
+            }
+        )
+    }
+
+    pendingOvernightAuditAck?.let { partner ->
+        AlertDialog(
+            onDismissRequest = { pendingOvernightAuditAck = null },
+            title = { Text("确认已人工核对？") },
+            text = {
+                Text("此操作只清除本设备的凌晨补录待核对标记，不会修改营业额、利润和结算。若系统检测到实际金额差异、跨位置冲突或原扣减位置已删除，相关风险提示仍会保留。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (overnightStore.acknowledgeReview(date, partner)) {
+                        message = "已确认本设备的凌晨补录提醒，正式营业额及结算未改变"
+                        isError = false
+                        onChanged()
+                    } else {
+                        message = "确认状态保存失败，请重试"
+                        isError = true
+                    }
+                    pendingOvernightAuditAck = null
+                }) { Text("确认已核对") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingOvernightAuditAck = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
     if (addStoreDialog) {
         AddStoreDialog(
             onDismiss = { addStoreDialog = false },
@@ -12739,7 +12894,7 @@ private fun SessionScreen(
         ) {
             if (db.deleteStoreDailyRecord(r.id)) {
                 if (editingRecordId == r.id) clearForm()
-                message = "营业记录已删除；该日需要重新确认利润分配/结算"
+                message = "营业记录已删除；该日需重新核对利润分配/结算，若收款人仍在其他位置营业，也需检查凌晨扣减归属"
                 isError = false
                 onChanged()
             } else {

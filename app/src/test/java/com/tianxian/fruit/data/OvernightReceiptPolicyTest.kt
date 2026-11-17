@@ -106,4 +106,11 @@ class OvernightReceiptPolicyTest {
         assertEquals(2750.0,a.adjustedWechat,0.001)
         assertEquals(2800.0,source.wechat,0.001)
     }
+    @Test fun legacyDuplicateMorningsNeverCountAsConfirmedZero() {
+        val duplicate = listOf(morning("2026-11-15",1,wx=47.0),
+            morning("2026-11-15",2,wx=50.0))
+        assertTrue(OvernightReceiptPolicy.hasDuplicateMorning(day(),duplicate))
+        assertNull(OvernightReceiptPolicy.adjustment(day(),duplicate))
+    }
+
 }

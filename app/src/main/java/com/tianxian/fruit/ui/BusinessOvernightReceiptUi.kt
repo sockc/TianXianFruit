@@ -48,7 +48,7 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
                     alipayRecorded=j.optBoolean("alipay_recorded",true),
                     cashRecorded=j.optBoolean("cash_recorded",false)
                 )
-                if(s.storeId>0 && s.partnerId>0 &&
+                if(s.storeId>=0 && s.partnerId>0 &&
                     listOf(s.wechat,s.alipay,s.cash).all { it.isFinite() && it>=0.0 }) add(s)
             }
         }
@@ -75,7 +75,32 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
         }
     }.getOrElse { emptyList() }
 
+    // Review markers are auxiliary UI metadata. They never alter a saved
+    // business value, and are refreshed independently from ledger settlement.
+    private fun reviewKey(date: String, partner: Long) = "$date|$partner"
+    private fun reviewSet(): MutableSet<String> =
+        prefs.getStringSet("needs_review", emptySet())?.toMutableSet()
+            ?: mutableSetOf()
+
+    fun pendingCollectors(date: String): Set<Long> =
+        reviewSet().mapNotNull { key ->
+            val sep = key.lastIndexOf('|')
+            if (sep > 0 && key.substring(0, sep) == date)
+                key.substring(sep + 1).toLongOrNull() else null
+        }.toSet()
+
+    fun acknowledgeReview(date: String, partner: Long): Boolean {
+        val all = reviewSet()
+        if (!all.remove(reviewKey(date, partner))) return true
+        val ok = prefs.edit().putStringSet("needs_review", all).commit()
+        if (ok) OvernightReceiptRefresh.changed()
+        return ok
+    }
+
     fun saveSnapshot(s: OvernightReceiptSnapshot): Boolean {
+        val old = snapshots().firstOrNull {
+            it.calendarDate == s.calendarDate && it.partnerId == s.partnerId
+        }
         val next=OvernightReceiptPolicy.replace(s,snapshots()) ?: return false
         val a=JSONArray()
         next.forEach { row ->
@@ -86,7 +111,21 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
                 .put("alipay_recorded",row.alipayRecorded)
                 .put("cash_recorded",row.cashRecorded))
         }
-        val saved = prefs.edit().putString("snapshots",a.toString()).commit()
+        val changed = old == null ||
+            old.wechat != s.wechat || old.alipay != s.alipay || old.cash != s.cash ||
+            old.wechatRecorded != s.wechatRecorded ||
+            old.alipayRecorded != s.alipayRecorded ||
+            old.cashRecorded != s.cashRecorded
+        val flags = reviewSet()
+        if (changed) {
+            val morning = runCatching { LocalDate.parse(s.calendarDate) }.getOrNull()
+            if (morning != null) {
+                flags.add(reviewKey(morning.minusDays(1).toString(), s.partnerId))
+                flags.add(reviewKey(morning.toString(), s.partnerId))
+            }
+        }
+        val saved = prefs.edit().putString("snapshots", a.toString())
+            .putStringSet("needs_review", flags).commit()
         if (saved) OvernightReceiptRefresh.changed()
         return saved
     }
@@ -148,7 +187,15 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
                 .put("saved_alipay", row.savedAlipay)
                 .put("saved_cash", row.savedCash))
         }
-        val ok = prefs.edit().putString("natural", json.toString()).commit()
+        val flags = reviewSet()
+        before.filter { row ->
+            row.businessDate == businessDate && row.storeId == storeId &&
+                !OvernightReceiptDeletionPolicy.isClearedNatural(row)
+        }.forEach { row ->
+            flags.add(reviewKey(businessDate, row.partnerId))
+        }
+        val ok = prefs.edit().putString("natural", json.toString())
+            .putStringSet("needs_review", flags).commit()
         if (ok) OvernightReceiptRefresh.changed()
         return ok
     }
@@ -207,7 +254,7 @@ internal fun OvernightInlineNumber(
     var error by remember(date,storeId,partnerId,channel) { mutableStateOf("") }
     Text(displayOvernight(amount),
         modifier=Modifier.fillMaxWidth()
-            .clickable(enabled=partnerId!=null && (storeId!=null || snapshot!=null)) {
+            .clickable(enabled=partnerId!=null) {
                 error=""
                 input=amount?.let { if(it==0.0) "0" else
                     String.format(Locale.US,"%.2f",it) }.orEmpty()
@@ -217,7 +264,7 @@ internal fun OvernightInlineNumber(
         color=if(amount==null) Color.Gray else Color(0xFF0A9566),
         textAlign=androidx.compose.ui.text.style.TextAlign.Center,
         maxLines=1)
-    if(open && morning!=null && partnerId!=null && (storeId!=null || snapshot!=null)) {
+    if(open && morning!=null && partnerId!=null) {
         AlertDialog(
             onDismissRequest={open=false},
             title={Text("修改凌晨${when(channel) {"WECHAT"->"微信";"ALIPAY"->"支付宝";else->"现金"}}收款")},

@@ -86,7 +86,7 @@ internal object OvernightReceiptPolicy {
     fun canRegister(
         snapshot: OvernightReceiptSnapshot,
         saved: List<OvernightReceiptSnapshot>
-    ): Boolean = snapshot.storeId > 0 && snapshot.partnerId > 0 &&
+    ): Boolean = snapshot.storeId >= 0 && snapshot.partnerId > 0 &&
         runCatching { LocalDate.parse(snapshot.calendarDate) }.isSuccess &&
         listOf(snapshot.wechat, snapshot.alipay, snapshot.cash).all(::validAmount)
 
@@ -100,13 +100,32 @@ internal object OvernightReceiptPolicy {
         } + snapshot
     }
 
+    /**
+     * Legacy devices could retain conflicting morning rows for the same
+     * calendar date and collector. Never silently interpret a duplicate
+     * (singleOrNull()==null) as an absent/zero midnight receipt.
+     */
+    fun hasDuplicateMorning(
+        draft: NaturalDayReceiptDraft,
+        saved: List<OvernightReceiptSnapshot>
+    ): Boolean {
+        val day = runCatching { LocalDate.parse(draft.businessDate) }.getOrNull()
+            ?: return false
+        if (draft.partnerId <= 0L) return false
+        val dates = setOf(day.toString(), day.plusDays(1).toString())
+        return saved.filter {
+            it.partnerId == draft.partnerId && it.calendarDate in dates
+        }.groupingBy { it.calendarDate }.eachCount().values.any { it > 1 }
+    }
+
     fun adjustment(
         draft: NaturalDayReceiptDraft,
         saved: List<OvernightReceiptSnapshot>
     ): OvernightReceiptAdjustment? {
         val day = runCatching { LocalDate.parse(draft.businessDate) }.getOrNull() ?: return null
         if (draft.storeId <= 0 || draft.partnerId <= 0 ||
-            listOf(draft.wechat, draft.alipay, draft.cash).any { !validAmount(it) }) return null
+            listOf(draft.wechat, draft.alipay, draft.cash).any { !validAmount(it) } ||
+            hasDuplicateMorning(draft, saved)) return null
         val previous = saved.filter {
             it.calendarDate == day.toString() && it.partnerId == draft.partnerId
         }.singleOrNull()

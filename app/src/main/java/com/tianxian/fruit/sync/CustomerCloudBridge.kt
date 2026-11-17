@@ -296,8 +296,18 @@ internal object CustomerCloudBridge {
         if (results.size < limit && includeOvernight) {
             val local=OvernightReceiptDraftStore(context,bookId)
             val sql=db.readableDatabase
+            // Older customer-analytics servers still require a store_sync_id
+            // field. For a collector-only morning registered without a
+            // selected position, use a stable transport fallback; it does NOT
+            // become the owner of the morning money. If no store exists yet,
+            // keep the local entry until one becomes available for sync.
+            val transportStore = sql.rawQuery(
+                "SELECT sync_id FROM store WHERE sync_id IS NOT NULL AND sync_id!='' " +
+                    "ORDER BY deleted ASC,sort_order ASC,id ASC LIMIT 1", null
+            ).use { c -> if (c.moveToFirst()) c.getString(0).orEmpty() else "" }
             for (snap in local.snapshots()) {
                 val storeSyncId=stableRowId(sql,"store",snap.storeId)
+                    .ifBlank { transportStore }
                 val partnerSyncId=stableRowId(sql,"partner",snap.partnerId)
                 if(storeSyncId.isBlank() || partnerSyncId.isBlank()) continue
                 if(include("OVERNIGHT","${snap.calendarDate}|$partnerSyncId",
@@ -496,9 +506,10 @@ internal object CustomerCloudBridge {
                         if(key!="$date|$stablePartner") continue
                         val resolvedStore=localRowId(database,"store",stableStore)
                         val resolvedPartner=localRowId(database,"partner",stablePartner)
-                        if(resolvedStore<=0L || resolvedPartner<=0L)
+                        if(resolvedPartner<=0L ||
+                            (kind == "NATURAL" && resolvedStore<=0L))
                             throw IllegalStateException(
-                                "跨日数据收款人或位置尚未同步，稍后重试：$date")
+                                "跨日数据收款人或自然日来源位置尚未同步，稍后重试：$date")
                         val storage=OvernightReceiptDraftStore(context,bookId)
                         // A remotely deleted sale must not recover its former
                         // overnight amount from an older customer-API event.
