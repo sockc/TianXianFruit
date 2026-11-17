@@ -15,8 +15,8 @@ final class CustomerReadOnlyTests: XCTestCase {
             ])
     }
 
-    private func event(_ kind: String, _ key: String, _ revision: Int64 = 1,
-                       _ body: [String: JSONValue]) -> CustomerChangeEvent {
+    private func event(_ kind: String, _ key: String, _ body: [String: JSONValue],
+                       _ revision: Int64 = 1) -> CustomerChangeEvent {
         CustomerChangeEvent(kind: kind, key: key, revision: revision, payload: body)
     }
 
@@ -108,7 +108,7 @@ final class CustomerReadOnlyTests: XCTestCase {
         XCTAssertNil(try cache.loadCustomer(account: "owner", book: "other"))
         XCTAssertNil(try cache.loadCustomer(account: "other", book: "one"))
         XCTAssertEqual(try cache.loadCustomer(account: "owner", book: "one")?.cursor, 42)
-        let deleted = event("RECEIPT", "WECHAT|r1", 2, ["deleted": .bool(true)])
+        let deleted = event("RECEIPT", "WECHAT|r1", ["deleted": .bool(true)], 2)
         try cache.commitCustomer(account: "owner", book: "one", events: [deleted],
                                  cursor: 45, replace: false)
         try cache.commitCustomer(account: "owner", book: "one", events: [original],
@@ -126,7 +126,7 @@ final class CustomerReadOnlyTests: XCTestCase {
         let cache = try LocalLedgerCache(url: folder.appendingPathComponent("cache.sqlite"))
         try cache.commitCustomer(account: "a", book: "b", events: [
             receipt("old", date: "2026-11-18")], cursor: 3, replace: true)
-        let bad = event("RECEIPT", "", 1, [:])
+        let bad = event("RECEIPT", "", [:], 1)
         XCTAssertThrowsError(try cache.commitCustomer(account: "a", book: "b",
             events: [receipt("new", date: "2026-11-18"), bad],
             cursor: 5, replace: false))
