@@ -11081,6 +11081,7 @@ private fun SessionScreen(
         )
     }
     var showOvernightAuditDetail by remember(date) { mutableStateOf(false) }
+    var pendingOvernightAuditAck by remember(date) { mutableStateOf<Long?>(null) }
 
     // Already saved historic records may contain FINAL/NET values. Do not
     // run midnight formulas on them unless their raw source is known.
@@ -12823,12 +12824,48 @@ private fun SessionScreen(
                                 }
                             }) { Text("核对 ${record.storeName} · ${money(record.revenue)}") }
                         }
+                        if (issues.any { it.reason == OvernightReviewReason.MORNING_CHANGED }) {
+                            TextButton(onClick = {
+                                showOvernightAuditDetail = false
+                                pendingOvernightAuditAck = partner
+                            }) {
+                                Text("已人工核对 · 保留原营业额")
+                            }
+                        }
                     }
                 }
             },
             confirmButton = {
                 TextButton(onClick = { showOvernightAuditDetail = false }) {
                     Text("关闭")
+                }
+            }
+        )
+    }
+
+    pendingOvernightAuditAck?.let { partner ->
+        AlertDialog(
+            onDismissRequest = { pendingOvernightAuditAck = null },
+            title = { Text("确认已人工核对？") },
+            text = {
+                Text("此操作只清除本设备的凌晨补录待核对标记，不会修改营业额、利润和结算。若系统检测到实际金额差异、跨位置冲突或原扣减位置已删除，相关风险提示仍会保留。")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (overnightStore.acknowledgeReview(date, partner)) {
+                        message = "已确认本设备的凌晨补录提醒，正式营业额及结算未改变"
+                        isError = false
+                        onChanged()
+                    } else {
+                        message = "确认状态保存失败，请重试"
+                        isError = true
+                    }
+                    pendingOvernightAuditAck = null
+                }) { Text("确认已核对") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingOvernightAuditAck = null }) {
+                    Text("取消")
                 }
             }
         )
