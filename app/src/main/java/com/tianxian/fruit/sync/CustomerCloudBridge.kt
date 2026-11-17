@@ -708,7 +708,8 @@ internal object CustomerCloudBridge {
         var pushBatches = 0
         val endpoint = "/api/v1/books/$bookId/customer-analytics"
         // Return no false success on an older server: capabilities is mandatory.
-        val caps = request("GET", "$endpoint/capabilities", null)
+        val caps = runCatching { request("GET", "$endpoint/capabilities", null) }
+            .getOrElse { throw IllegalStateException("客流同步读取服务端能力失败（本机数据保留）：${it.message}", it) }
         if (!caps.optBoolean("supported") || caps.optInt("version") != 1) {
             throw IllegalStateException("服务器尚未支持客流同步 V1")
         }
@@ -740,19 +741,31 @@ internal object CustomerCloudBridge {
         fun pull() {
             for (page in 0 until 400) {
                 val before = serverCursor(database)
-                val response = request("GET", "$endpoint/changes?cursor=$before&limit=200&include_assignments=true" +
-                    (if (supportsCollector) "&include_collectors=true" else "") +
-                    (if (supportsAnalysis) "&include_analysis=true" else "") +
-                    (if (supportsSettings) "&include_settings=true" else "") +
-                    (if (supportsSourceLinks) "&include_source_links=true" else "") +
-                    (if (supportsOvernight) "&include_overnight=true" else ""), null)
+                val response = runCatching {
+                    request("GET", "$endpoint/changes?cursor=$before&limit=200&include_assignments=true" +
+                        (if (supportsCollector) "&include_collectors=true" else "") +
+                        (if (supportsAnalysis) "&include_analysis=true" else "") +
+                        (if (supportsSettings) "&include_settings=true" else "") +
+                        (if (supportsSourceLinks) "&include_source_links=true" else "") +
+                        (if (supportsOvernight) "&include_overnight=true" else ""), null)
+                }.getOrElse {
+                    throw IllegalStateException("客流同步下载失败（页${page + 1}，游标$before；本机数据保留）：${it.message}", it)
+                }
                 pullPages++
                 val changes = response.getJSONArray("changes")
                 val next = response.getLong("next_cursor")
-                if (next < before || (changes.length() > 0 && next == before)) {
-                    throw IllegalStateException("客流同步游标异常")
+                if (before < 0L || next < before ||
+                    (response.optBoolean("has_more") && next == before) ||
+                    (changes.length() > 0 && next == before)) {
+                    throw IllegalStateException(
+                        "客流同步游标异常：下载页${page + 1}，当前=$before，下一页=$next，" +
+                            "记录=${changes.length()}（本机数据保留）")
                 }
-                applyRemote(context, db, bookId, changes, next)
+                runCatching { applyRemote(context, db, bookId, changes, next) }
+                    .getOrElse {
+                        throw IllegalStateException(
+                            "客流同步应用下载数据失败（页${page + 1}，本机事务回滚）：${it.message}", it)
+                    }
                 totalDownload += changes.length()
                 if (!response.optBoolean("has_more")) return
             }
@@ -775,7 +788,11 @@ internal object CustomerCloudBridge {
                 val body = JSONObject().put("items", JSONArray().apply {
                     batch.forEach { put(it.json()) }
                 })
-                val response = request("POST", "$endpoint/push", body)
+                val response = runCatching { request("POST", "$endpoint/push", body) }
+                    .getOrElse {
+                        throw IllegalStateException(
+                            "客流同步上传失败（批次${page + 1}，本机待上传记录保留）：${it.message}", it)
+                    }
                 pushBatches++
                 val confirmed = response.getJSONArray("items")
                 if (confirmed.length() != batch.size) throw IllegalStateException("服务器账单确认笔数异常")
