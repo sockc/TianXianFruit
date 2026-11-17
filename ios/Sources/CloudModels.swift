@@ -64,7 +64,7 @@ struct LoginResponse: Decodable {
     enum CodingKeys: String, CodingKey { case accessToken = "access_token" }
 }
 
-struct Account: Decodable {
+struct Account: Codable {
     let username: String
     let displayName: String
     let systemRole: String?
@@ -75,7 +75,7 @@ struct Account: Decodable {
     }
 }
 
-struct CloudBook: Decodable, Identifiable, Hashable {
+struct CloudBook: Codable, Identifiable, Hashable {
     let id: String
     let name: String
     let role: String
@@ -85,7 +85,7 @@ struct CloudBook: Decodable, Identifiable, Hashable {
     var isAvailable: Bool { deleted != true && purged != true }
 }
 
-struct SyncEvent: Decodable {
+struct SyncEvent: Codable {
     let tableName: String
     let syncId: String
     let rowVersion: Int64
@@ -149,5 +149,25 @@ struct PurchaseOrderRow: Identifiable {
         self.date = date
         buyer = event.payload["buyer_name"]?.text ?? "未指定"
         totalCost = event.payload["total_cost"]?.decimal ?? 0
+    }
+}
+
+struct InventoryRow: Identifiable {
+    let id: String
+    let date: String
+    let name: String
+    let unit: String
+    let remaining: Double
+    let loss: Double
+
+    init?(_ event: SyncEvent) {
+        guard event.tableName == "inventory_snapshot", !event.isDeletion,
+              let date = event.payload["date"]?.text, !date.isEmpty else { return nil }
+        id = event.syncId
+        self.date = date
+        name = event.payload["fruit_name"]?.text ?? "未命名商品"
+        unit = event.payload["unit"]?.text ?? "件"
+        remaining = event.payload["remaining_quantity"]?.decimal ?? 0
+        loss = event.payload["loss_quantity"]?.decimal ?? 0
     }
 }

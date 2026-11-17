@@ -1,65 +1,49 @@
-# 天鲜账本 iOS V0.1.0（只读试验版）
+# 天鲜账本 iOS V0.1.1 · 独立只读测试版
 
-此目录是与 Android `app/` **独立** 的 SwiftUI 工程。开发目标是家庭自用（iPhone/iPad，iOS 15+）以及 TrollStore 免开发者证书测试 IPA；Ad Hoc 方案保留备用。
+支持 iOS 15+（以 iPhone X / iOS 16.6 / TrollStore 作为首要真机验收设备）。
 
-## 当前完成范围
+## 与 Android 的隔离
 
-- 采用现有生产同步 API 的 **读取协议**：登录、当前用户、账本列表、`GET /api/v1/sync/pull`。
-- 登录时为兼容现有设备鉴权，使用 `POST /api/v1/auth/login` 和 `POST /api/v1/devices/register`；仅写入会话/设备登记信息，**无任何业务数据写入接口**。
-- `platform=ios` 和独立设备标识。令牌/设备标识存储在设备 Keychain，密码不落盘。
-- 同步事件依赖服务端稳定 `sync_id`、`row_version`、`next_cursor`；只在全部页完成后替换内存视图，错误时保留此前完整结果。
-- 只读显示云端正式营业记录的 `revenue`、`profit` 及采购订单的 `total_cost`；不执行利润估算、资金结算和库存重算。
-- **没有**本地业务写入队列、`/sync/push`、账单导入、数据更正、凌晨收款编辑、收款删除。客户分析与库存详情等在后续只读阶段扩展。
+- 开发分支 `feature/ios-readonly-v0.1.0`（后续可以重命名）；**不修改 Android 源码、当日结算、现有 APK 工作流、正式服务端**。
+- 当前 `ios/` 仅是云端事件只读镜像。**不包含** `/api/v1/sync/push`、资金结算、凌晨金额修改、采购/营业新增、客户账单写入等业务 mutation。
+- iOS `POST /api/v1/auth/login` 和 `POST /api/v1/devices/register` 只用于登录与设备登记，使用 `platform=ios`，不修改正式业务账本。
 
-## 未验证与风险边界
+## V0.1.1 已写的功能
 
-- 当前 GitHub 仓库没有运行中的 TianXian-Server 服务端源码；`platform=ios`、设备登记和权限是否在生产服务器完全兼容，**必须先使用测试账号和测试账本联调**，不能声称已验证。
-- 当前版本读取快照仅驻留内存；退出进程需重新 GET 全量历史。**不要**将“只读同步成功”理解成已实现离线缓存。
-- 金额为服务器记录的存储值；不计算跨日库存成本、分配、资金轧差，不对统计一致性作生产承诺。
-- iOS 与 Android 共享账本前，应完成数据核对、跨位置/跨午夜冲突回归。不要在此版本加入 `POST /api/v1/sync/push`。
-- iOS 工程在本仓库仅做源码、静态保护与 GitHub macOS CI 校验；尚未在实际 iPhone 上验证。
+- 本地 SQLite3 只读事件缓存：按 **云账号+账本** 隔离，使用 iOS Application Support 和数据保护；保存正式同步事件、行版本、删除墓碑和服务端游标。
+- 首次云端读取 `GET /api/v1/sync/pull?since=0&limit=200`；之后从本地持久化 cursor **增量下载**。只有所有分页完成并且本地 SQL 事务成功，才替换内存视图/提交游标；中途断网不清旧缓存。
+- APP 冷启动时验证原登录账号后恢复本地数据；网络故障时（不是 401/403）使用**上次已获授权**的离线账本数据并标注缓存授权；账号无效会拒绝显示缓存。退出登录删除当前账号的 Keychain 会话和本地缓存。
+- 首页显示今日、近7日、近30日云端已存营业额，今日正式利润，7天分日概览。日期按经营所在 `Asia/Shanghai` 时区。
+- 营业/采购全部历史：近7天、近30天、全部日期切换，按位置或采购人筛选，按经营日分组，同日多位置逐条展示及同日合计；使用懒加载滚动。
+- 库存只读：`inventory_snapshot` 的**最近一次实际盘点日期**及剩余/损耗数量，支持历史查看与商品搜索。未盘点不视为零库存，不跨日推算或合并单位。
+- “更多”包含增量同步和手动完整核对功能。完整核对直至成功才原子替换本地事件，不在网络故障时覆盖旧数据。
+- 账户 Keychain 仅保存 token、独立 device ID、已验证的云账本元信息；不保存密码。
 
-## 本机构建（Mac）
+## 数据定义与限制
 
-需要 Xcode（iOS 17 SDK 或更高）和 XcodeGen：
+直接引用 Android 正式同步表 `store_daily_record` 的 `revenue/profit`，`purchase_order` 的 `total_cost`，`inventory_snapshot` 的 `remaining_quantity/loss_quantity`。不调用 Android 当日结算代码，也不对利润、库存成本进行另一套计算。
 
-```bash
-brew install xcodegen
-cd ios
-xcodegen generate
-xcodebuild -project TianXianFruit.xcodeproj -scheme TianXianFruit \
-  -configuration Debug -destination 'generic/platform=iOS Simulator' \
-  CODE_SIGNING_ALLOWED=NO build
-```
+⚠️ 目前不包含完整的 FastAPI/TianXian-Server 源码。iOS V0.1.0 已由用户在 TrollStore 真机安装并读取成功，但 V0.1.1 的离线/增量/库存功能仍须使用**测试账本**与 Android 对照：同步总额、记录数、删除重传、游标回放、换账本、断网重试。任何差异都不能认定是服务器真实利润变化。
 
-## Ad Hoc IPA
+数据安全边界：
+- 应用退出后本地缓存只恢复**最后一次已经同步成功**的服务器数据，断网时可能滞后；有明确时间标记。
+- 未主动执行完整同步时，若服务器备份导致 cursor 回退，旧本地 cursor 可能不能发现回退，请选择“重新完整核对”。未来需要服务端 server_identity 来自动识别。
+- 大账本的首次全量拉取仍可能较耗时；本版通过增量优化重复打开与后续同步，尚未实现分页落盘增量索引。
+- iOS 本地没有客户账单明细同步，不能从营业总额推算微信/支付宝客流。
+- 若登录授权已被撤销但设备离线，上一次授权过的本地缓存仍可只读查看，联网验证后会清除会话；这不是实时权限授权。
+- 取消账号会删除缓存（服务端账本不会受到影响）。
 
-`.github/workflows/build-ipa.yml` 是手动触发的签名工作流，且**仅允许私有仓库**构建签名工件。当前 `sockc/TianXianFruit` 为公开仓库；不要在公开仓库中添加分发证书/描述文件/签名 Secret 并上传 IPA 工件。
+## 测试及构建
 
-需准备 Apple Developer Program、已登记设备 UDID、Apple Distribution `.p12` + 密码、Ad Hoc Provisioning Profile 和 Team ID；将这些凭据仅放进**私有仓库**的 GitHub Actions Secrets：
+检查：`.github/workflows/check-ios.yml`（模拟器编译和 Swift unit tests）、`ios/scripts/check_readonly.py`（只读 API 保护）。
+巨魔构建：`.github/workflows/build-trollstore-ipa.yml`（无开发证书，macOS 真机 arm64 构建、`ldid -S`、打包 IPA，上传 Actions Artifacts）。当前不上传公开 GitHub Releases；测试包在对应成功工作流运行的 Artifacts 里取得。
 
-- `IOS_P12_BASE64`、`IOS_P12_PASSWORD`
-- `IOS_PROFILE_BASE64`、`IOS_TEAM_ID`
-- `IOS_KEYCHAIN_PASSWORD`
+在 GitHub Actions 找到 `Build TrollStore IPA (no Apple certificate)`，展开最新**绿色成功**的任务，在 Artifacts 下载 `TianXianFruit-iOS-v0.1.1-TrollStore` ZIP，解压得到同名 IPA，在 TrollStore 里安装。只支持 TrollStore 可运行的 iOS 设备（iOS 15～16.6.1、16.7 RC、17.0，具体以 TrollStore 官方兼容要求为准）。
 
-Bundle ID 暂定 `com.tianxian.fruit.ios`，必须与 Apple 后台 App ID 和描述文件完全一致；同一 iOS 版本使用独立的 `ios-v*` 发布标签，绝不沿用 Android `v*`。
+保留 `.github/workflows/build-ipa.yml` 作为未来的 Apple Ad Hoc 签名选项，它在公开仓库会拒绝生成带家庭签名信息的公开工件；无需准备证书即可构建巨魔 IPA。
 
-## Android 隔离原则
+`ios/project.yml` XcodeGen，最低系统 iOS 15，`MARKETING_VERSION=0.1.1`。推荐先将已安装的 V0.1.0 覆盖升级并检查账号和缓存，切勿卸载旧版后立刻测试升级保留行为。
 
-所有功能代码只放在 `ios/`；CI 仅在 iOS 目录或 iOS 工作流变更时触发。当前分支不修改 `app/`、现有 Android 构建和服务器工具。**尚未合并到 main**：现有 `build-apk.yml` 对每次 main push 均会构建/尝试发布 APK，因此在合并 iOS-only PR 前应另行增加安全的路径过滤，并单独验证不会改变 Android 发布语义。
+## 版本号与发布
 
-## 巨魔（TrollStore）测试 IPA：无 Apple 开发者证书
-
-- 工作流：`.github/workflows/build-trollstore-ipa.yml`，在 iOS 功能分支 push 自动构建，也可在工作流进入默认分支后手动触发。
-- macOS + XcodeGen 构建 `generic/platform=iOS` 真机 arm64 App，`CODE_SIGNING_ALLOWED=NO`，使用 Homebrew `ldid -S` **伪签名**，打包成 `Payload/TianXianFruit.app` 的 IPA。
-- 不需要 Apple Developer Program、P12、Provisioning Profile、UDID；该 IPA 不受 Apple 标准安装路径支持，**只供已能正常运行 TrollStore 的兼容设备使用**。
-- 官方兼容范围：iOS 14.0 beta 2～16.6.1、16.7 RC (20H18)、17.0；正常 iOS 16.7.x 和 iOS 17.0.1+ 不支持（基于目前官方 CoreTrust 漏洞）。**本 App 最低版本 iOS 15.0**，因此实际支持交集是 iOS 15.0～16.6.1、16.7 RC、17.0。
-- 下载路径：Actions → `Build TrollStore IPA (no Apple certificate)` → 成功运行 → Artifacts → `TianXianFruit-iOS-v0.1.0-TrollStore` → 解压得到 `.ipa`。
-- 手机端：先确认 TrollStore 可正常运行，在 TrollStore 设置中安装 ldid（如安装器提示），再从“文件”打开 IPA 并分享到 TrollStore 安装。
-- 保持系统沙盒运行，不添加 root/越狱能力或私有特权 entitlement；此 IPA 没有任何业务写入接口。
-- 只在**测试账号及测试账本**验证 iOS 平台登录与设备登记。尚未验证生产服务端接受 iOS，切勿直接认定已可登录生产账本。
-- 对于不兼容 TrollStore 的设备，需使用常规免费账号短期签名或后续 Ad Hoc/TestFlight，不能通过此 IPA 绕过 iOS 签名机制。
-
-### 注意
-
-iOS 的 Apple 付费签名工作流仍保留在 `.github/workflows/build-ipa.yml`，但**无需配置也不会阻碍巨魔 IPA**。不要因为免签名测试而更改 Android 发布工作流或生产服务器。
+iOS 独立版本序列 `0.1.1`，不变更 Android `V1.4.7.129`。现有 Android `main` 推送会触发 APK 发布工作流：合并 iOS PR 前需要增加 iOS-only 路径过滤或另行校验，当前不合并 `main`。

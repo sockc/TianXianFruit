@@ -11,7 +11,7 @@ struct RootView: View {
                 DashboardView()
             }
         }
-        .tint(Color.green)
+        .tint(.green)
     }
 }
 
@@ -26,10 +26,10 @@ private struct LoginView: View {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("天鲜账本").font(.largeTitle.bold())
-                        Text("iOS V0.1.0 · 只读测试版").foregroundStyle(.secondary)
-                        Label("仅查看已有账目，不可录入或修改", systemImage: "lock.shield")
-                            .font(.footnote)
-                    }.padding(.vertical, 12)
+                        Text("iOS V0.1.1 · 只读版").foregroundColor(.secondary)
+                        Label("无营业、采购或结算写入功能", systemImage: "lock.shield")
+                            .font(.footnote).foregroundColor(.green)
+                    }.padding(.vertical, 10)
                 }
                 Section("云端账号") {
                     TextField("账号", text: $username)
@@ -38,8 +38,8 @@ private struct LoginView: View {
                         .autocorrectionDisabled()
                     SecureField("密码", text: $password)
                         .textContentType(.password)
-                    Text("https://sync.830888.xyz")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text("sync.830888.xyz")
+                        .font(.caption).foregroundColor(.secondary)
                 }
                 Section {
                     Button {
@@ -50,176 +50,463 @@ private struct LoginView: View {
                     } label: {
                         HStack {
                             Spacer()
-                            if model.isBusy { ProgressView().padding(.trailing, 8) }
+                            if model.isBusy { ProgressView().padding(.trailing, 6) }
                             Text("登录并读取账本")
                             Spacer()
                         }
                     }
                     .disabled(model.isBusy || username.isEmpty || password.isEmpty)
                 }
-                if let message = model.errorMessage {
-                    Section { Text(message).foregroundStyle(.red) }
+                if let error = model.errorMessage {
+                    Section {
+                        Text(error).font(.footnote).foregroundColor(.red)
+                    }
                 }
             }
             .navigationTitle("登录")
         }
+        .navigationViewStyle(StackNavigationViewStyle())
     }
 }
 
 private struct DashboardView: View {
     @EnvironmentObject private var model: LedgerViewModel
-    @State private var selection = 0
 
     var body: some View {
         NavigationView {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Label("只读模式 · 不会修改云端账本", systemImage: "lock.shield.fill")
-                        .font(.footnote)
-                        .foregroundStyle(.green)
-                    if model.books.isEmpty {
-                        EmptyStateView(title: "没有可读取的账本", icon: "books.vertical", detail: "请确认此账号已获授权")
-                    } else {
-                        Picker("当前账本", selection: Binding(
-                            get: { model.selectedBookID ?? "" },
-                            set: { model.selectBook($0) }
-                        )) {
-                            ForEach(model.books) { book in
-                                Text(book.name).tag(book.id)
-                            }
-                        }
-                        .pickerStyle(.menu)
-
-                        Text("云端已保存的业务数据")
-                            .font(.headline)
-                        if model.lastSyncAt == nil {
-                            Text("尚未读取记录。点击右上角刷新从云端加载。")
-                                .font(.subheadline).foregroundStyle(.secondary)
-                        } else {
-                            metrics
-                            Picker("业务视图", selection: $selection) {
-                                Text("营业").tag(0)
-                                Text("采购").tag(1)
-                            }
-                            .pickerStyle(.segmented)
-
-                            if selection == 0 { salesList } else { purchaseList }
-                        }
-                    }
-                    if let error = model.errorMessage {
-                        Label(error, systemImage: "exclamationmark.triangle")
-                            .font(.footnote).foregroundStyle(.red)
-                    }
-                    if let last = model.lastSyncAt {
-                        Text("读取完成：\(last.formatted(date: .abbreviated, time: .shortened)) · 游标 \(model.currentCursor)")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Text("仅显示正式云端记录中的已存金额，不重新计算库存利润或资金结算。首次完整读取期间不会展示不完整汇总。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                .padding()
-            }
-            .navigationTitle("天鲜账本")
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Menu {
-                        if let name = model.account?.displayName {
-                            Text(name)
-                        }
-                        Button("退出账号", role: .destructive) { model.signOut() }
-                    } label: { Image(systemName: "person.crop.circle") }
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button {
-                        Task { await model.refresh() }
-                    } label: {
-                        if model.isBusy { ProgressView() } else {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                    }
-                    .disabled(model.isBusy || model.selectedBookID == nil)
-                    .accessibilityLabel("从云端刷新只读账本")
+            VStack(spacing: 0) {
+                header
+                TabView {
+                    HomePage()
+                        .tabItem { Label("首页", systemImage: "house") }
+                    BusinessPage()
+                        .tabItem { Label("营业", systemImage: "chart.bar") }
+                    PurchasesPage()
+                        .tabItem { Label("采购", systemImage: "cart") }
+                    InventoryPage()
+                        .tabItem { Label("库存", systemImage: "shippingbox") }
+                    MorePage()
+                        .tabItem { Label("更多", systemImage: "ellipsis.circle") }
                 }
             }
+            .navigationBarTitle("天鲜账本", displayMode: .inline)
+            .navigationBarItems(trailing: Button {
+                Task { await model.refresh() }
+            } label: {
+                if model.isBusy {
+                    ProgressView()
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+            .disabled(model.isBusy || model.selectedBookID == nil)
+            .accessibilityLabel("增量刷新"))
+        }
+        .navigationViewStyle(StackNavigationViewStyle())
+    }
+
+    private var header: some View {
+        VStack(spacing: 6) {
+            HStack {
+                Label("只读", systemImage: "lock.shield.fill")
+                    .font(.caption.bold()).foregroundColor(.green)
+                Spacer()
+                if model.books.count > 1 {
+                    Picker("账本", selection: Binding(
+                        get: { model.selectedBookID ?? "" },
+                        set: { model.selectBook($0) }
+                    )) {
+                        ForEach(model.books) { Text($0.name).tag($0.id) }
+                    }
+                    .pickerStyle(MenuPickerStyle())
+                } else {
+                    Text(model.selectedBook?.name ?? "无可用账本")
+                        .font(.caption.bold()).lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Text(model.isBusy ? "同步中" : (model.isUsingCachedAuthorization ? "离线授权" : "云端账号"))
+                    .font(.caption2).foregroundColor(.secondary)
+            }
+            if let error = model.errorMessage {
+                Text(error).font(.caption2).foregroundColor(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(3)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Color(UIColor.secondarySystemBackground))
+    }
+}
+
+private struct HomePage: View {
+    @EnvironmentObject private var model: LedgerViewModel
+
+    private var today: String { BusinessDates.key(Date()) }
+    private var week: [StoreDailyRow] { model.snapshot.sales(since: BusinessDates.daysAgo(6), until: today) }
+    private var month: [StoreDailyRow] { model.snapshot.sales(since: BusinessDates.daysAgo(29), until: today) }
+    private var daily: [StoreDailyRow] { model.snapshot.sales(since: today, until: today) }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("经营概览")
+                    .font(.title3.bold())
+                if model.lastSyncAt == nil {
+                    EmptyStateView(title: "尚未读取云端账本", icon: "icloud.and.arrow.down",
+                                   detail: "点击右上角刷新；首次成功后可离线查看")
+                } else {
+                    HStack(spacing: 10) {
+                        AmountCard(title: "今日营业额", value: sum(daily, \.revenue), color: .green)
+                        AmountCard(title: "今日已存利润", value: sum(daily, \.profit), color: .primary)
+                    }
+                    HStack(spacing: 10) {
+                        AmountCard(title: "近7天营业", value: sum(week, \.revenue), color: .primary)
+                        AmountCard(title: "近30天营业", value: sum(month, \.revenue), color: .primary)
+                    }
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("最近7天营业表现").font(.headline)
+                        ForEach(BusinessDates.recentDays(7), id: \.self) { day in
+                            let rows = week.filter { $0.date == day }
+                            HStack {
+                                Text(day.dropFirst(5)).font(.caption).frame(width: 46, alignment: .leading)
+                                Text("\(rows.count) 个位置")
+                                    .font(.caption2).foregroundColor(.secondary)
+                                Spacer()
+                                Text(sum(rows, \.revenue).formatted(.currency(code: "CNY")))
+                                    .font(.subheadline.bold()).minimumScaleFactor(0.75)
+                            }
+                            Divider()
+                        }
+                    }
+                    .padding(12)
+                    .background(Color(UIColor.secondarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 12))
+                    if daily.count > 1 {
+                        Text("今日有 \(daily.count) 条位置营业记录，已分别计入合计。")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    Text("营业额、利润直接来自 Android 已保存的正式营业记录；无新增结算或预估计算。")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+                SyncFooter()
+            }
+            .padding(12)
+        }
+    }
+}
+
+private struct BusinessPage: View {
+    @EnvironmentObject private var model: LedgerViewModel
+    @State private var period = "近30天"
+    @State private var position = ""
+    @State private var searchText = ""
+
+    private var rows: [StoreDailyRow] {
+        model.snapshot.business.filter { row in
+            (period == "全部" || row.date >= BusinessDates.daysAgo(period == "近7天" ? 6 : 29)) &&
+            (position.isEmpty || row.storeName == position) &&
+            (searchText.isEmpty || row.storeName.localizedCaseInsensitiveContains(searchText) ||
+             row.date.contains(searchText))
         }
     }
 
-    private var metrics: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                metric("累计营业额", model.snapshot.totalRevenue)
-                metric("已存利润", model.snapshot.totalProfit)
-            }
-            HStack {
-                metric("采购单总额", model.snapshot.totalPurchases)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("记录数").foregroundStyle(.secondary).font(.caption)
-                    Text("\(model.snapshot.business.count) 条营业")
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    Picker("日期", selection: $period) {
+                        Text("近7天").tag("近7天")
+                        Text("近30天").tag("近30天")
+                        Text("全部").tag("全部")
+                    }.pickerStyle(SegmentedPickerStyle())
+                    Picker("位置", selection: $position) {
+                        Text("全部位置").tag("")
+                        ForEach(model.snapshot.locations, id: \.self) { Text($0).tag($0) }
+                    }.pickerStyle(MenuPickerStyle())
+                }
+                SearchField(placeholder: "搜索日期或位置", text: $searchText)
+                HStack {
+                    Text("营业记录 · \(rows.count) 条").font(.headline)
+                    Spacer()
+                    Text(sum(rows, \.revenue).formatted(.currency(code: "CNY")))
                         .font(.subheadline.bold())
-                    Text("\(model.snapshot.purchases.count) 条采购")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                if rows.isEmpty {
+                    EmptyStateView(title: "此范围没有营业记录", icon: "chart.bar")
+                }
+                ForEach(DayRows<StoreDailyRow>.grouping(rows, date: { $0.date }), id: \.date) { day in
+                    VStack(alignment: .leading, spacing: 9) {
+                        HStack {
+                            Text(day.date).font(.subheadline.bold())
+                            Spacer()
+                            Text("合计 \(sum(day.rows, \.revenue).formatted(.currency(code: "CNY")))")
+                                .font(.caption.bold())
+                        }
+                        ForEach(day.rows) { row in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(row.storeName).font(.subheadline)
+                                    Text("已存利润：\(row.profit.formatted(.currency(code: "CNY")))")
+                                        .font(.caption).foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Text(row.revenue.formatted(.currency(code: "CNY")))
+                                    .font(.subheadline.bold())
+                            }
+                            Divider()
+                        }
+                    }
+                    .padding(12)
+                    .background(Color(UIColor.secondarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 12))
+                }
+                SyncFooter()
             }
+            .padding(12)
+        }
+    }
+}
+
+private struct PurchasesPage: View {
+    @EnvironmentObject private var model: LedgerViewModel
+    @State private var period = "近30天"
+    @State private var buyer = ""
+    @State private var searchText = ""
+
+    private var rows: [PurchaseOrderRow] {
+        model.snapshot.purchases.filter { row in
+            (period == "全部" || row.date >= BusinessDates.daysAgo(period == "近7天" ? 6 : 29)) &&
+            (buyer.isEmpty || row.buyer == buyer) &&
+            (searchText.isEmpty || row.buyer.localizedCaseInsensitiveContains(searchText) ||
+             row.date.contains(searchText))
         }
     }
 
-    private func metric(_ title: String, _ amount: Double) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title).foregroundStyle(.secondary).font(.caption)
-            Text(amount.formatted(.currency(code: "CNY")))
-                .font(.headline)
-                .minimumScaleFactor(0.6)
-                .lineLimit(1)
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    Picker("日期", selection: $period) {
+                        Text("近7天").tag("近7天")
+                        Text("近30天").tag("近30天")
+                        Text("全部").tag("全部")
+                    }.pickerStyle(SegmentedPickerStyle())
+                    Picker("采购人", selection: $buyer) {
+                        Text("全部采购人").tag("")
+                        ForEach(model.snapshot.buyers, id: \.self) { Text($0).tag($0) }
+                    }.pickerStyle(MenuPickerStyle())
+                }
+                SearchField(placeholder: "搜索日期或采购人", text: $searchText)
+                HStack {
+                    Text("采购订单 · \(rows.count) 条").font(.headline)
+                    Spacer()
+                    Text(sum(rows, \.totalCost).formatted(.currency(code: "CNY")))
+                        .font(.subheadline.bold())
+                }
+                if rows.isEmpty {
+                    EmptyStateView(title: "此范围没有采购记录", icon: "cart")
+                }
+                ForEach(DayRows<PurchaseOrderRow>.grouping(rows, date: { $0.date }), id: \.date) { day in
+                    VStack(alignment: .leading, spacing: 9) {
+                        HStack {
+                            Text(day.date).font(.subheadline.bold())
+                            Spacer()
+                            Text("合计 \(sum(day.rows, \.totalCost).formatted(.currency(code: "CNY")))")
+                                .font(.caption.bold())
+                        }
+                        ForEach(day.rows) { row in
+                            HStack {
+                                Text(row.buyer).font(.subheadline)
+                                Spacer()
+                                Text(row.totalCost.formatted(.currency(code: "CNY")))
+                                    .font(.subheadline.bold())
+                            }
+                            Divider()
+                        }
+                    }
+                    .padding(12)
+                    .background(Color(UIColor.secondarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 12))
+                }
+                Text("这里展示采购订单保存金额；不把待采购计划计入已采购成本。")
+                    .font(.caption2).foregroundColor(.secondary)
+                SyncFooter()
+            }
+            .padding(12)
+        }
+    }
+}
+
+private struct InventoryPage: View {
+    @EnvironmentObject private var model: LedgerViewModel
+    @State private var showHistory = false
+    @State private var searchText = ""
+
+    private var rows: [InventoryRow] {
+        (showHistory ? model.snapshot.inventory : model.snapshot.latestInventory)
+            .filter { searchText.isEmpty || $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("库存盘点 · 只读").font(.headline)
+                    Spacer()
+                    Toggle("历史", isOn: $showHistory).labelsHidden()
+                    Text("全部日期").font(.caption)
+                }
+                if let day = model.snapshot.latestInventoryDate {
+                    Text("最近一次云端盘点：\(day)")
+                        .font(.caption).foregroundColor(.secondary)
+                } else {
+                    Text("云端没有同步的库存盘点")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                SearchField(placeholder: "查找商品", text: $searchText)
+                if rows.isEmpty {
+                    EmptyStateView(title: "没有可展示的库存快照", icon: "shippingbox")
+                }
+                LazyVStack(spacing: 9) {
+                    ForEach(rows) { row in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(row.name).font(.subheadline.bold())
+                                Text("\(row.date) · 单位：\(row.unit)")
+                                    .font(.caption2).foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            VStack(alignment: .trailing, spacing: 4) {
+                                Text("剩余 \(row.remaining.formatted()) \(row.unit)")
+                                    .font(.subheadline)
+                                Text("损耗 \(row.loss.formatted()) \(row.unit)")
+                                    .font(.caption).foregroundColor(.secondary)
+                            }
+                        }
+                        .padding(12)
+                        .background(Color(UIColor.secondarySystemGroupedBackground),
+                                    in: RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                Text("此处仅展示已保存的库存盘点数量和损耗。未同步或未盘点的商品不能推断为零库存；不进行跨日成本反算。")
+                    .font(.caption2).foregroundColor(.secondary)
+                SyncFooter()
+            }
+            .padding(12)
+        }
+    }
+}
+
+private struct MorePage: View {
+    @EnvironmentObject private var model: LedgerViewModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("账号与同步").font(.headline)
+                VStack(alignment: .leading, spacing: 12) {
+                    Label(model.account?.displayName ?? "未登录", systemImage: "person.crop.circle")
+                    Text("同步游标：\(model.currentCursor)")
+                        .font(.caption).foregroundColor(.secondary)
+                    Text(model.lastSyncAt.map { "上次成功：\($0.formatted(date: .abbreviated, time: .shortened))" } ?? "尚未成功同步")
+                        .font(.caption).foregroundColor(.secondary)
+                    Text(model.cacheAvailable ? "本地只读缓存已启用" : "本地缓存不可用")
+                        .font(.caption).foregroundColor(model.cacheAvailable ? .green : .red)
+                    if model.isUsingCachedAuthorization {
+                        Text("离线展示来自上次已验证账号权限，联网后需重新核验。")
+                            .font(.caption).foregroundColor(.orange)
+                    }
+                    Button("增量同步") { Task { await model.refresh() } }
+                        .disabled(model.isBusy || model.selectedBookID == nil)
+                    Button("重新完整核对云端记录") { Task { await model.refresh(forceFull: true) } }
+                        .disabled(model.isBusy || model.selectedBookID == nil)
+                    Text("完整核对不会先清空缓存，只有全部下载成功才替换数据。")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+                .padding(12)
+                .background(Color(UIColor.secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: 12))
+                Text("版本：iOS V0.1.1 · TrollStore 测试版")
+                    .font(.caption).foregroundColor(.secondary)
+                Text("不包含凌晨收款、营业修改、账单导入、利润分配或资金结算写入。")
+                    .font(.caption2).foregroundColor(.secondary)
+                Button(role: .destructive) {
+                    model.signOut()
+                } label: {
+                    Label("退出登录并清除此账号的本地缓存", systemImage: "rectangle.portrait.and.arrow.right")
+                }
+                .disabled(model.isBusy)
+                SyncFooter()
+            }
+            .padding(12)
+        }
+    }
+}
+
+private struct AmountCard: View {
+    let title: String
+    let value: Double
+    let color: Color
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.caption).foregroundColor(.secondary)
+            Text(value.formatted(.currency(code: "CNY")))
+                .font(.headline.bold()).foregroundColor(color)
+                .minimumScaleFactor(0.65).lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color(UIColor.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 12))
     }
+}
 
-    private var salesList: some View {
-        LazyVStack(spacing: 10) {
-            if model.snapshot.business.isEmpty {
-                EmptyStateView(title: "暂无营业记录", icon: "chart.bar")
-            }
-            ForEach(Array(model.snapshot.business.prefix(60))) { row in
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(row.storeName).font(.subheadline.bold())
-                        Spacer()
-                        Text(row.date).foregroundStyle(.secondary).font(.caption)
-                    }
-                    HStack {
-                        Text("营业 \(row.revenue.formatted(.currency(code: "CNY")))")
-                        Spacer()
-                        Text("利润 \(row.profit.formatted(.currency(code: "CNY")))")
-                    }
-                    .font(.footnote)
-                }
-                .padding(12)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-            }
+private struct SearchField: View {
+    let placeholder: String
+    @Binding var text: String
+    var body: some View {
+        HStack {
+            Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+            TextField(placeholder, text: $text)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+        }
+        .padding(9)
+        .background(Color(UIColor.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 9))
+    }
+}
+
+private struct SyncFooter: View {
+    @EnvironmentObject private var model: LedgerViewModel
+    var body: some View {
+        HStack {
+            Image(systemName: "lock.shield")
+            Text(model.lastSyncAt.map {
+                "读取于 \($0.formatted(date: .abbreviated, time: .shortened))"
+            } ?? "等待首次同步")
+            Spacer()
+            Text("只读")
+        }
+        .font(.caption2).foregroundColor(.secondary)
+        .padding(.vertical, 8)
+    }
+}
+
+private struct DayRows<Row> {
+    let date: String
+    let rows: [Row]
+    static func grouping(_ rows: [Row], date: (Row) -> String) -> [DayRows<Row>] {
+        let grouped = Dictionary(grouping: rows, by: date)
+        return grouped.keys.sorted(by: >).map { key in
+            DayRows(date: key, rows: grouped[key] ?? [])
         }
     }
+}
 
-    private var purchaseList: some View {
-        LazyVStack(spacing: 10) {
-            if model.snapshot.purchases.isEmpty {
-                EmptyStateView(title: "暂无采购记录", icon: "basket")
-            }
-            ForEach(Array(model.snapshot.purchases.prefix(60))) { row in
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text(row.buyer).font(.subheadline.bold())
-                        Text(row.date).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Text(row.totalCost.formatted(.currency(code: "CNY")))
-                        .font(.subheadline)
-                }
-                .padding(12)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-            }
-        }
-    }
+private func sum<T>(_ rows: [T], _ keyPath: KeyPath<T, Double>) -> Double {
+    rows.reduce(0) { $0 + $1[keyPath: keyPath] }
 }
 
 private struct EmptyStateView: View {
@@ -229,14 +516,10 @@ private struct EmptyStateView: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundStyle(.secondary)
+            Image(systemName: icon).font(.title2).foregroundColor(.secondary)
             Text(title).font(.subheadline.bold())
             if let detail = detail {
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(detail).font(.caption).foregroundColor(.secondary)
             }
         }
         .frame(maxWidth: .infinity)
