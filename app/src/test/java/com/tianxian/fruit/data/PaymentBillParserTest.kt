@@ -111,12 +111,12 @@ class PaymentBillParserTest {
 
     @Test
     fun alipayRepeatedExportUsesStableReceiptKeysIndependentOfRowOrder() {
-        val heading = "支付宝交易明细\\n交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,交易状态,交易订单号"
+        val heading = "支付宝交易明细\n交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,交易状态,交易订单号"
         val first = "2026-11-11 18:00:00,收入,买家A,***01,经营码交易,收入,25.50,交易成功,ali-stable-a"
         val second = "2026-11-11 19:00:00,收入,买家B,***02,收钱码收款,收入,12.00,交易成功,ali-stable-b"
         fun parse(rows: List<String>) = PaymentBillParser.parse(
             "支付宝交易明细.csv",
-            (heading + "\\n" + rows.joinToString("\\n")).toByteArray(Charset.forName("GB18030"))
+            (heading + "\n" + rows.joinToString("\n")).toByteArray(Charset.forName("GB18030"))
         )
         val original = parse(listOf(first, second))
         val reordered = parse(listOf(second, first))
