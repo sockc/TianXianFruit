@@ -48,7 +48,7 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
                     alipayRecorded=j.optBoolean("alipay_recorded",true),
                     cashRecorded=j.optBoolean("cash_recorded",false)
                 )
-                if(s.storeId>0 && s.partnerId>0 &&
+                if(s.storeId>=0 && s.partnerId>0 &&
                     listOf(s.wechat,s.alipay,s.cash).all { it.isFinite() && it>=0.0 }) add(s)
             }
         }
@@ -254,7 +254,7 @@ internal fun OvernightInlineNumber(
     var error by remember(date,storeId,partnerId,channel) { mutableStateOf("") }
     Text(displayOvernight(amount),
         modifier=Modifier.fillMaxWidth()
-            .clickable(enabled=partnerId!=null && (storeId!=null || snapshot!=null)) {
+            .clickable(enabled=partnerId!=null) {
                 error=""
                 input=amount?.let { if(it==0.0) "0" else
                     String.format(Locale.US,"%.2f",it) }.orEmpty()
@@ -264,7 +264,7 @@ internal fun OvernightInlineNumber(
         color=if(amount==null) Color.Gray else Color(0xFF0A9566),
         textAlign=androidx.compose.ui.text.style.TextAlign.Center,
         maxLines=1)
-    if(open && morning!=null && partnerId!=null && (storeId!=null || snapshot!=null)) {
+    if(open && morning!=null && partnerId!=null) {
         AlertDialog(
             onDismissRequest={open=false},
             title={Text("修改凌晨${when(channel) {"WECHAT"->"微信";"ALIPAY"->"支付宝";else->"现金"}}收款")},
