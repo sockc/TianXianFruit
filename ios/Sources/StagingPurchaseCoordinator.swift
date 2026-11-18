@@ -50,7 +50,7 @@ final class StagingPurchaseCoordinator: ObservableObject {
         }
     }
 
-    func connect(endpoint: String, username: String, password: String,
+    func connect(username: String, password: String,
                  repeatedBookID: String, acknowledged: Bool) async {
         guard !busy else { return }
         busy = true
@@ -62,17 +62,18 @@ final class StagingPurchaseCoordinator: ObservableObject {
                 throw StagingSafetyError.wrongSourceBook
             }
             guard book.name.hasPrefix(TestWritePolicy.prefix),
-                  ["OWNER", "SUPERADMIN", "EDITOR"].contains(book.role) else {
+                  ["OWNER", "EDITOR"].contains(book.role) else {
                 throw StagingSafetyError.inaccessibleBook
             }
-            let client = try StagingPurchaseAPI(endpoint: endpoint)
+            let client = try StagingPurchaseAPI(
+                endpoint: StagingPurchasePolicy.productionURL)
             let session = try await client.login(username: username, password: password,
                                                   sourceBook: book)
             api = client
             auth = session
             connected = true
-            stageName = session.host + " · 独立实例 " + session.proof.instanceID
-            message = "已验证独立测试服务端、账本 ID 和角色。上传仍需要单独点击确认。"
+            stageName = "正式服务器 / 专用测试账本：" + session.book.name
+            message = "已验证专用账号仅能看到当前测试账本，上传仍需逐笔确认。此项客户端检查不能替代服务器账本权限校验。"
             refreshLocal()
         } catch {
             connected = false
@@ -92,9 +93,8 @@ final class StagingPurchaseCoordinator: ObservableObject {
         return (api, auth, book, storage)
     }
 
-    /// Freeze all server-specific local numeric ID references before first
-    /// upload. If the staging ledger is not a verified copy of the test book,
-    /// preparation fails without changing any cloud data.
+    /// Resolve buyer/fruit IDs from the same account-scoped test book before
+    /// the first upload. The production book is never selected by inference.
     func prepare(draftID: String) async {
         guard !busy else { return }
         busy = true
@@ -106,6 +106,13 @@ final class StagingPurchaseCoordinator: ObservableObject {
                 message = "此草稿已有固定上传意图；不能生成第二组订单 ID"
                 return
             }
+            // Pilot guard: one single order+item pair for this test book.
+            // Never silently prepare the second order while the first is
+            // still being validated against Android.
+            guard try storage.stagingJobs(account: sourceAccount, book: book.id).isEmpty else {
+                throw StagingSafetyError.needsReview(
+                    "当前测试账本已存在首笔采购验证任务。请先核对 Android；此版仅允许试写一笔")
+            }
             guard let draft = try storage.load(account: sourceAccount,
                                                 book: book.id).first(where: { $0.id == draftID }) else {
                 throw StagingSafetyError.invalidDraft
@@ -114,7 +121,7 @@ final class StagingPurchaseCoordinator: ObservableObject {
             let stageRows = try await api.pullAll(auth)
             let job = try StagingPayloadBuilder.prepare(
                 draft, sourceBook: book, stageBook: auth.book,
-                stageHost: auth.host, proof: auth.proof,
+                stageHost: auth.host, scope: auth.scope,
                 username: auth.username, deviceID: auth.deviceID,
                 available: stageRows)
             try storage.saveStagingJob(job)
@@ -129,7 +136,7 @@ final class StagingPurchaseCoordinator: ObservableObject {
                                auth: StagingSession) throws {
         guard job.bookID == auth.book.id,
               job.stageHost == auth.host,
-              job.stageInstanceID == auth.proof.instanceID,
+              job.stageInstanceID == auth.scope.instanceID,
               job.stageUsername.lowercased() == auth.username.lowercased(),
               job.deviceID == auth.deviceID,
               job.sourceAccount.lowercased() == sourceAccount.lowercased(),
@@ -206,7 +213,7 @@ final class StagingPurchaseCoordinator: ObservableObject {
                 _ = try transition(job, to: .complete,
                                    "订单和商品明细已由隔离服务端回读确认",
                                    in: storage)
-                message = "隔离测试服务端已确认订单与明细；请在连接同一测试服务端的 Android 上核对。"
+                message = "正式服务器测试账本已确认订单与明细；请在连接同一测试服务端的 Android 上核对。"
             } catch {
                 _ = try transition(job, to: .needsReview,
                                    "明细可能已写入：" + error.localizedDescription,
@@ -230,7 +237,7 @@ final class StagingPurchaseCoordinator: ObservableObject {
                 throw StagingSafetyError.invalidDraft
             }
             guard job.stageHost == auth.host,
-                  job.stageInstanceID == auth.proof.instanceID,
+                  job.stageInstanceID == auth.scope.instanceID,
                   job.bookID == book.id else {
                 throw StagingSafetyError.unsafeEndpoint
             }

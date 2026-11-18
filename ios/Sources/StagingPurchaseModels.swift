@@ -1,29 +1,18 @@
 import Foundation
 import CryptoKit
 
-/// Explicit contract: staging server must expose a protected readiness proof
-/// at GET /api/v1/ios-test/attestation. A DNS alias, a test ledger *name*
-/// or a different URL alone is not evidence of database isolation.
-struct StagingProof: Decodable {
-    let deploymentScope: String
-    let isolatedFromProduction: Bool
-    let iosPurchaseWriteEnabled: Bool
+/// Locally constructed after the server returns EXACTLY one accessible book.
+/// This is NOT a database-isolation attestation; server authorization remains
+/// responsible for enforcing book_id and ownership on every pushed event.
+struct ScopedAccountEvidence {
     let instanceID: String
-    let allowedBookIDs: [String]
-
-    enum CodingKeys: String, CodingKey {
-        case deploymentScope = "deployment_scope"
-        case isolatedFromProduction = "isolated_from_production"
-        case iosPurchaseWriteEnabled = "ios_purchase_write_enabled"
-        case instanceID = "instance_id"
-        case allowedBookIDs = "allowed_book_ids"
-    }
+    let bookID: String
 }
 
 enum StagingSafetyError: LocalizedError {
     case unsafeEndpoint
-    case missingProof
-    case notIsolated
+    case multipleBookAccess
+    case privilegedAccount
     case inaccessibleBook
     case wrongSourceBook
     case staleReferences
@@ -34,11 +23,11 @@ enum StagingSafetyError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsafeEndpoint:
-            return "测试服务器必须为独立 HTTPS 域名，不能是正式生产域名或本机地址"
-        case .missingProof:
-            return "测试服务器未提供独立环境证明；已拒绝上传"
-        case .notIsolated:
-            return "服务器未声明独立测试部署及采购写入白名单，已拒绝上传"
+            return "仅允许使用 https://sync.830888.xyz 上的独立测试账本"
+        case .multipleBookAccess:
+            return "专用测试账号必须只能看到一个 iOS_TEST_ 账本，已拒绝上传"
+        case .privilegedAccount:
+            return "禁止管理员或超级用户账号进行采购写入测试；请使用测试账本专用账号"
         case .inaccessibleBook:
             return "测试服务端没有当前账本的采购编辑权限"
         case .wrongSourceBook:
@@ -56,36 +45,45 @@ enum StagingSafetyError: LocalizedError {
 }
 
 enum StagingPurchasePolicy {
-    static let forbiddenHost = "sync.830888.xyz"
+    static let productionURL = "https://sync.830888.xyz"
+    static let productionHost = "sync.830888.xyz"
 
+    /// Exactly one canonical host; no arbitrary URL, IP or reverse proxy.
     static func validateURL(_ raw: String) throws -> URL {
-        guard let parts = URLComponents(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
-              parts.scheme?.lowercased() == "https", let host = parts.host?.lowercased(),
-              !host.isEmpty, host != forbiddenHost,
-              host != "830888.xyz", host != "localhost",
-              !host.hasSuffix(".localhost"), !host.hasSuffix(".local"),
-              !host.hasSuffix(".internal"), !host.contains(":"),
-              !host.allSatisfy({ $0.isNumber || $0 == "." }),
+        guard let parts = URLComponents(
+                  string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+              parts.scheme?.lowercased() == "https",
+              parts.host?.lowercased() == productionHost,
               parts.port == nil || parts.port == 443,
               parts.user == nil, parts.password == nil,
               (parts.path == "" || parts.path == "/"),
               parts.query == nil, parts.fragment == nil,
-              let url = parts.url else { throw StagingSafetyError.unsafeEndpoint }
+              let url = URL(string: productionURL) else {
+            throw StagingSafetyError.unsafeEndpoint
+        }
         return url
     }
 
-    static func requireProof(_ proof: StagingProof, book: CloudBook) throws {
-        guard proof.deploymentScope == "isolated_test",
-              proof.isolatedFromProduction,
-              proof.iosPurchaseWriteEnabled,
-              !proof.instanceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              proof.allowedBookIDs.contains(book.id) else {
-            throw StagingSafetyError.notIsolated
+    /// Client-side precondition, not proof of server DB isolation.
+    /// Only a dedicated non-admin account with one visible test book can send.
+    static func requireBookScope(books: [CloudBook], account: Account,
+                                 sourceBook: CloudBook) throws -> ScopedAccountEvidence {
+        let role = (account.systemRole ?? "").uppercased()
+        guard role == "USER" else {
+            throw StagingSafetyError.privilegedAccount
         }
-        guard book.isAvailable, book.name.hasPrefix(TestWritePolicy.prefix),
-              ["OWNER", "SUPERADMIN"].contains(book.role) else {
+        guard books.count == 1, let book = books.first else {
+            throw StagingSafetyError.multipleBookAccess
+        }
+        guard book.id == sourceBook.id, book.name == sourceBook.name,
+              book.isAvailable, book.name.hasPrefix(TestWritePolicy.prefix),
+              book.role == "OWNER" || book.role == "EDITOR",
+              book.id.count >= 8 else {
             throw StagingSafetyError.inaccessibleBook
         }
+        return ScopedAccountEvidence(
+            instanceID: "production-scoped-testbook:" + book.id,
+            bookID: book.id)
     }
 
     static func requireMatchingDraft(_ draft: TestDraft, sourceBook: CloudBook,
@@ -94,6 +92,7 @@ enum StagingPurchasePolicy {
         try TestWritePolicy.validate(draft, book: sourceBook)
         guard draft.bookID == stageBook.id,
               sourceBook.id == stageBook.id,
+              stageBook.name == sourceBook.name,
               stageBook.name.hasPrefix(TestWritePolicy.prefix) else {
             throw StagingSafetyError.wrongSourceBook
         }
@@ -174,12 +173,16 @@ enum StagingPayloadBuilder {
 
     static func prepare(_ draft: TestDraft,
                         sourceBook: CloudBook, stageBook: CloudBook,
-                        stageHost: String, proof: StagingProof, username: String,
+                        stageHost: String, scope: ScopedAccountEvidence, username: String,
                         deviceID: String, available: [SyncEvent],
                         now: Date = Date()) throws -> StagingPurchaseJob {
         try StagingPurchasePolicy.requireMatchingDraft(draft, sourceBook: sourceBook,
                                                        stageBook: stageBook)
-        try StagingPurchasePolicy.requireProof(proof, book: stageBook)
+        guard scope.bookID == stageBook.id,
+              scope.instanceID == "production-scoped-testbook:" + stageBook.id,
+              stageHost == StagingPurchasePolicy.productionURL else {
+            throw StagingSafetyError.unsafeEndpoint
+        }
         guard !deviceID.isEmpty, !username.isEmpty else {
             throw StagingSafetyError.invalidDraft
         }
@@ -233,12 +236,12 @@ enum StagingPayloadBuilder {
 
         return StagingPurchaseJob(
             id: draft.id, sourceAccount: draft.account, bookID: stageBook.id,
-            stageHost: stageHost, stageInstanceID: proof.instanceID,
+            stageHost: stageHost, stageInstanceID: scope.instanceID,
             stageUsername: username, deviceID: deviceID,
             orderSyncID: orderSync, itemSyncID: itemSync,
             orderRemoteID: orderID, itemRemoteID: itemID,
             orderPayload: order, itemPayload: item, createdAt: now,
-            state: .ready, lastMessage: "已验证隔离测试账本和商品关联，等待用户确认上传")
+            state: .ready, lastMessage: "已验证专用账号和测试账本商品关联，等待首次小额上传确认")
     }
 
     static func event(_ job: StagingPurchaseJob, item: Bool) -> SyncEvent {

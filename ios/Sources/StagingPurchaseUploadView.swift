@@ -2,11 +2,10 @@ import SwiftUI
 
 /// Real network pushes are exclusively enabled here, not in regular business,
 /// purchase, customer, settlement or overnight pages. The test backend must
-/// attest isolated storage BEFORE it receives staging credentials.
+/// limit business writes to the selected test book using a dedicated account.
 struct StagingPurchaseUploadView: View {
     @EnvironmentObject private var model: LedgerViewModel
     @StateObject private var coordinator = StagingPurchaseCoordinator()
-    @State private var endpoint = ""
     @State private var stageUsername = ""
     @State private var stagePassword = ""
     @State private var typedBookID = ""
@@ -17,10 +16,10 @@ struct StagingPurchaseUploadView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 13) {
-                Label("V0.2.1 · 采购真实同步测试", systemImage: "shield.lefthalf.filled")
+                Label("V0.2.2 · 单服务器测试账本采购验证", systemImage: "shield.lefthalf.filled")
                     .font(.headline)
                     .foregroundColor(.orange)
-                Text("只向经过隔离证明的测试服务端提交采购订单和商品明细。正式服务器 sync.830888.xyz 被硬性禁止。营业、利润和结算始终只读。")
+                Text("只对 sync.830888.xyz 中明确指定的 iOS_TEST_ 测试账本试写一笔采购订单及明细。必须使用只拥有该账本权限的专用账号；正式账本、营业和资金结算仍然不可写。")
                     .font(.caption).foregroundColor(.secondary)
 
                 if let book = model.selectedBook {
@@ -37,12 +36,13 @@ struct StagingPurchaseUploadView: View {
                     }
                 }
 
-                DisclosureGroup("独立测试环境必须满足的条件", isExpanded: $stageInfoExpanded) {
+                DisclosureGroup("测试前的权限与安全检查", isExpanded: $stageInfoExpanded) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("① 独立 HTTPS 域名和独立数据库，不是生产域名的代理。")
-                        Text("② 公开 GET /api/v1/ios-test/attestation 返回隔离环境证明。")
-                        Text("③ 与草稿匹配的测试账本 ID、商品/采购人 sync_id 及可编辑角色。")
-                        Text("④ 测试 Android 必须连接相同的独立服务器，不要用正式 Android 账号回读。")
+                        Text("① 仅使用正式同步域名 sync.830888.xyz，不需要独立服务器。")
+                        Text("② 为测试账本建立专用账号，不能是管理员、超级用户或拥有其他账本的账号。")
+                        Text("③ 客户端再次核对完整账本 ID、名称、权限和商品/采购人的同步 ID。")
+                        Text("④ 首次只允许试写一笔采购；回到 Android 的同一测试账本逐项核对。")
+                        Text("⑤ 只靠客户端不能保证服务器的跨账本隔离；须确认服务端按 token 和 book_id 授权。")
                     }
                     .font(.caption).foregroundColor(.secondary)
                     .padding(.top, 5)
@@ -51,22 +51,20 @@ struct StagingPurchaseUploadView: View {
 
                 if !coordinator.connected {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("连接独立测试服务器").font(.headline)
-                        TextField("例如 https://staging.example.com", text: $endpoint)
+                        Text("连接正式服务器中的独立测试账本").font(.headline)
+                        Text(StagingPurchasePolicy.productionURL)
+                            .font(.caption).foregroundColor(.secondary)
+                        TextField("仅有该账本权限的测试账号", text: $stageUsername)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
-                            .keyboardType(.URL)
-                            .font(.subheadline)
-                        TextField("仅测试服务器账号", text: $stageUsername)
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        SecureField("仅测试服务器密码", text: $stagePassword)
+                        SecureField("测试账号密码", text: $stagePassword)
                         TextField("再次输入完整测试账本 ID", text: $typedBookID)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        Toggle("我确认服务端、数据库与生产环境完全隔离", isOn: $acknowledged)
+                        Toggle("我确认此账号只能访问上述测试账本，已核对账本 ID", isOn: $acknowledged)
                             .font(.caption)
                         Button {
                             Task {
                                 await coordinator.connect(
-                                    endpoint: endpoint, username: stageUsername,
+                                    username: stageUsername,
                                     password: stagePassword, repeatedBookID: typedBookID,
                                     acknowledged: acknowledged)
                                 stagePassword = ""
@@ -75,15 +73,15 @@ struct StagingPurchaseUploadView: View {
                             if coordinator.busy {
                                 ProgressView().frame(maxWidth: .infinity)
                             } else {
-                                Label("验证测试环境并登录", systemImage: "checkmark.shield")
+                                Label("验证专用账号和测试账本", systemImage: "checkmark.shield")
                                     .frame(maxWidth: .infinity)
                             }
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(coordinator.busy || !acknowledged ||
                                   model.selectedBook?.id != typedBookID ||
-                                  endpoint.isEmpty || stageUsername.isEmpty || stagePassword.isEmpty)
-                        Text("先核验服务端隔离证明，再发送测试账号密码。若测试服务端还没有证明接口，将停留在锁定状态，不发送采购数据。")
+                                  stageUsername.isEmpty || stagePassword.isEmpty)
+                        Text("登录后会检查账号可见账本是否只有这一个。若权限过高或能看到正式账本，立即拒绝上传。")
                             .font(.caption2).foregroundColor(.secondary)
                     }
                     .padding(12)
@@ -134,7 +132,7 @@ struct StagingPurchaseUploadView: View {
                         if let current {
                             Text(current.lastMessage).font(.caption2)
                                 .foregroundColor(.secondary)
-                            Text("测试服务端：" + current.stageHost)
+                            Text("同步服务器：" + current.stageHost)
                                 .font(.caption2).foregroundColor(.secondary)
                                 .lineLimit(2)
                         }
@@ -169,20 +167,20 @@ struct StagingPurchaseUploadView: View {
                     .background(Color(UIColor.secondarySystemGroupedBackground),
                                 in: RoundedRectangle(cornerRadius: 12))
                 }
-                Text("本页任何上传都需要先连接独立测试环境，再核验采购人/商品，最后对每一条草稿单独确认。测试服务器没有隔离证明时上传功能不可用。")
+                Text("第一次只允许提交一笔采购订单和明细。若出现网络超时或冲突，禁止自动重发；先检查远端记录。测试后核对 Android 同一测试账本。")
                     .font(.caption2).foregroundColor(.secondary)
             }
             .padding(12)
         }
-        .navigationBarTitle("隔离测试采购同步", displayMode: .inline)
+        .navigationBarTitle("测试账本采购同步", displayMode: .inline)
         .alert(item: Binding(
             get: { confirmUploadID.map { PendingUpload(id: $0) } },
             set: { confirmUploadID = $0?.id }
         )) { selection in
             Alert(
-                title: Text("仅上传到独立测试服务器"),
-                message: Text("将提交一笔采购订单及其商品明细，不会写入正式服务器。服务器响应不确定时需要人工核对，绝不自动重传。"),
-                primaryButton: .destructive(Text("确认测试上传")) {
+                title: Text("向正式服务器的测试账本试写一笔"),
+                message: Text("此操作会向 sync.830888.xyz 的独立测试账本写入真实记录。请确认账号只有此账本权限。若响应不确定需人工核对，绝不自动重传。"),
+                primaryButton: .destructive(Text("确认试写一笔")) {
                     confirmUploadID = nil
                     Task { await coordinator.upload(draftID: selection.id) }
                 },

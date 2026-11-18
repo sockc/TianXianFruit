@@ -1,4 +1,4 @@
-name: Check iOS isolated staging purchase sync
+name: Check iOS test-book purchase sync
 
 on:
   pull_request:

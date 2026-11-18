@@ -6,7 +6,7 @@ struct StagingSession {
     let username: String
     let deviceID: String
     let book: CloudBook
-    let proof: StagingProof
+    let scope: ScopedAccountEvidence
     let host: String
 }
 
@@ -44,8 +44,8 @@ struct StageSyncAck: Decodable {
     }
 }
 
-/// Separate ephemeral staging credentials. Production CloudAPI credentials
-/// and cookies never enter this class. The production URL is forbidden.
+/// Dedicated one-book account on the fixed official backend. Never use
+/// credentials from the general CloudAPI Keychain session, cookies or redirects.
 final class StagingPurchaseAPI: NSObject, URLSessionTaskDelegate {
     let base: URL
     private lazy var session: URLSession = {
@@ -73,7 +73,7 @@ final class StagingPurchaseAPI: NSObject, URLSessionTaskDelegate {
     private func send(_ method: String, _ path: String, token: String? = nil,
                       query: [URLQueryItem] = [],
                       payload: Data? = nil) async throws -> Data {
-        let getAllowed = ["/api/v1/ios-test/attestation", "/api/v1/auth/me",
+        let getAllowed = ["/api/v1/auth/me",
                           "/api/v1/books", "/api/v1/sync/pull"]
         let postAllowed = ["/api/v1/auth/login", "/api/v1/devices/register",
                            "/api/v1/sync/push"]
@@ -108,7 +108,7 @@ final class StagingPurchaseAPI: NSObject, URLSessionTaskDelegate {
         }
         guard (200...299).contains(http.statusCode) else {
             throw StagingSafetyError.unexpectedResponse(
-                "HTTP " + String(http.statusCode) + "，请在隔离测试服务端检查日志")
+                "HTTP " + String(http.statusCode) + "，请核对测试账本权限及服务器日志")
         }
         return data
     }
@@ -120,24 +120,14 @@ final class StagingPurchaseAPI: NSObject, URLSessionTaskDelegate {
         return try JSONDecoder().decode(type, from: data)
     }
 
-    /// Public attestation is REQUIRED before stage account credentials
-    /// are sent. Endpoint absence -> fail closed (no credentials, no write).
-    func attestation() async throws -> StagingProof {
-        do {
-            return try await get(StagingProof.self, path: "/api/v1/ios-test/attestation")
-        } catch {
-            throw StagingSafetyError.missingProof
-        }
-    }
-
+    /// The production service requires a dedicated account with only one
+    /// visible test book. We do NOT claim this is server-side authorization.
     func login(username: String, password: String,
                sourceBook: CloudBook) async throws -> StagingSession {
-        let proof = try await attestation()
-        guard proof.deploymentScope == "isolated_test",
-              proof.isolatedFromProduction, proof.iosPurchaseWriteEnabled,
-              proof.allowedBookIDs.contains(sourceBook.id),
-              !proof.instanceID.isEmpty else {
-            throw StagingSafetyError.notIsolated
+        guard sourceBook.isAvailable,
+              sourceBook.name.hasPrefix(TestWritePolicy.prefix),
+              sourceBook.role == "OWNER" || sourceBook.role == "EDITOR" else {
+            throw StagingSafetyError.inaccessibleBook
         }
         let normalized = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty, !password.isEmpty else {
@@ -167,7 +157,7 @@ final class StagingPurchaseAPI: NSObject, URLSessionTaskDelegate {
             "POST", "/api/v1/auth/login",
             payload: JSONEncoder().encode(LoginPayload(
                 username: normalized, password: password, deviceID: deviceID,
-                deviceName: "天鲜 iOS 隔离测试", platform: "ios", appVersion: "0.2.1")))
+                deviceName: "天鲜 iOS 测试账本", platform: "ios", appVersion: "0.2.2")))
         let auth = try JSONDecoder().decode(LoginResponse.self, from: authBytes)
         let account = try await get(Account.self, path: "/api/v1/auth/me",
                                     token: auth.accessToken)
@@ -176,13 +166,9 @@ final class StagingPurchaseAPI: NSObject, URLSessionTaskDelegate {
         }
         let books = try await get([CloudBook].self, path: "/api/v1/books",
                                   token: auth.accessToken)
-        guard let book = books.first(where: { $0.id == sourceBook.id }) else {
-            throw StagingSafetyError.wrongSourceBook
-        }
-        try StagingPurchasePolicy.requireProof(proof, book: book)
-        guard book.name == sourceBook.name else {
-            throw StagingSafetyError.wrongSourceBook
-        }
+        let scope = try StagingPurchasePolicy.requireBookScope(
+            books: books, account: account, sourceBook: sourceBook)
+        let book = books[0]
         struct DeviceRegistration: Encodable {
             let deviceID: String
             let name: String
@@ -197,28 +183,33 @@ final class StagingPurchaseAPI: NSObject, URLSessionTaskDelegate {
         _ = try await send("POST", "/api/v1/devices/register",
                            token: auth.accessToken,
                            payload: JSONEncoder().encode(DeviceRegistration(
-                             deviceID: deviceID, name: "天鲜 iOS 隔离测试",
-                             platform: "ios", appVersion: "0.2.1")))
+                             deviceID: deviceID, name: "天鲜 iOS 测试账本",
+                             platform: "ios", appVersion: "0.2.2")))
         return StagingSession(token: auth.accessToken, username: account.username,
                               deviceID: deviceID, book: book,
-                              proof: proof, host: base.absoluteString)
+                              scope: scope, host: base.absoluteString)
     }
 
     func validateSession(_ session: StagingSession) async throws {
-        guard session.host == base.absoluteString else {
+        guard session.host == base.absoluteString,
+              session.scope.bookID == session.book.id,
+              session.scope.instanceID == "production-scoped-testbook:" + session.book.id else {
             throw StagingSafetyError.unsafeEndpoint
         }
-        let newProof = try await attestation()
-        try StagingPurchasePolicy.requireProof(newProof, book: session.book)
-        guard newProof.instanceID == session.proof.instanceID else {
-            throw StagingSafetyError.notIsolated
+        // Re-check permissions and visibility before each actual push.
+        // If another book becomes visible, immediately disable test writing.
+        let current = try await get(Account.self, path: "/api/v1/auth/me",
+                                    token: session.token)
+        guard current.username.lowercased() == session.username.lowercased() else {
+            throw StagingSafetyError.inaccessibleBook
         }
         let books = try await get([CloudBook].self, path: "/api/v1/books",
                                   token: session.token)
-        guard let book = books.first(where: { $0.id == session.book.id }) else {
+        let scope = try StagingPurchasePolicy.requireBookScope(
+            books: books, account: current, sourceBook: session.book)
+        guard scope.instanceID == session.scope.instanceID else {
             throw StagingSafetyError.inaccessibleBook
         }
-        try StagingPurchasePolicy.requireProof(newProof, book: book)
     }
 
     func pullAll(_ auth: StagingSession) async throws -> [SyncEvent] {

@@ -1,9 +1,0 @@
-{
-  "deployment_scope": "isolated_test",
-  "isolated_from_production": true,
-  "ios_purchase_write_enabled": true,
-  "instance_id": "staging-instance-REPLACE_WITH_REAL_UNIQUE_ID",
-  "allowed_book_ids": [
-    "REPLACE_WITH_TEST_BOOK_UUID"
-  ]
-}

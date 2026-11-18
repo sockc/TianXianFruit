@@ -1,12 +1,6 @@
-# iOS staging-server attestation contract
+# 旧版隔离服务器方案：已废弃
 
-This is a **required server feature**, not an endpoint present in the current GitHub Android/iOS repo.
+V0.2.1 曾要求另建测试服务器及 `GET /api/v1/ios-test/attestation`。
+从 **V0.2.2** 起，此项要求**不再适用**；旧示例 JSON 仅供历史参考，**请不要部署到正式服务器**。
 
-Only the separately deployed HTTPS staging server may serve this response from:
-`GET /api/v1/ios-test/attestation`.
-
-Do not copy these values into the production server. A `true` value is a claim about independently provisioned databases, storage, signing keys, and strict server-side write authorization—not a toggle to bypass an iOS guard.
-
-Replace the placeholder instance ID and test book UUID with actual values. Require `OWNER` or `SUPERADMIN` for the test book, and restrict `/api/v1/sync/push` server-side to `purchase_order`/`purchase_item` UPSERT on allowlisted IDs. Reject other books, other business tables, and DELETE. Never reverse proxy to `sync.830888.xyz`.
-
-The iOS client verifies this JSON before sending staging credentials and again before each push. It also checks test book ID/name, permissions, order/child readback and immutable local upload identity. No real test backend has been provisioned by this PR.
+当前方案见 [iOS README](../README.md)：使用同一个 `https://sync.830888.xyz`，独立的 `iOS_TEST_` 账本和只访问该账本的非管理员测试账号。客户端不声称服务器物理隔离，也不能替代服务端授权和真实采购数据验证。

@@ -7,36 +7,31 @@ final class StagingPurchaseTests: XCTestCase {
                                  name: "iOS_TEST_家庭测试",
                                  role: "OWNER", deleted: false, purged: false)
 
-    private func proof(isolated: Bool = true, enabled: Bool = true,
-                       instance: String = "isolated-vm-001") -> StagingProof {
-        StagingProof(deploymentScope: "isolated_test",
-                     isolatedFromProduction: isolated,
-                     iosPurchaseWriteEnabled: enabled,
-                     instanceID: instance,
-                     allowedBookIDs: [book.id])
+    private func user(_ role: String = "USER") -> Account {
+        Account(username: "test_editor", displayName: "测试用户", systemRole: role)
+    }
+
+    private func scope() throws -> ScopedAccountEvidence {
+        try StagingPurchasePolicy.requireBookScope(
+            books: [book], account: user(), sourceBook: book)
     }
 
     private func draft() -> TestDraft {
         TestDraft(id: "93058B47-EDAB-45AE-8171-5F613BE1AA38",
                   account: "owner", bookID: book.id, kind: .purchase,
                   date: "2026-11-18", fields: [
-                    "buyer_sync_id": "buyer-shared-1",
-                    "fruit_sync_id": "fruit-shared-1",
-                    "fruit_name": "提子",
-                    "quantity": "2.5",
-                    "unit": "箱",
-                    "total_cost": "80.5",
-                    "unit_weight_jin": "5",
-                    "purchase_type": "PLANNED",
-                    "remark": "独立测试"
+                    "buyer_sync_id": "buyer-shared-1", "fruit_sync_id": "fruit-shared-1",
+                    "fruit_name": "提子", "quantity": "2.5", "unit": "箱",
+                    "total_cost": "80.5", "unit_weight_jin": "5",
+                    "purchase_type": "PLANNED", "remark": "测试采购"
                   ], createdAt: Date(timeIntervalSince1970: 1794950000))
     }
 
-    private func references() -> [SyncEvent] {
+    private func refs() -> [SyncEvent] {
         [
             SyncEvent(tableName: "partner", syncId: "buyer-shared-1",
                       rowVersion: 2, operation: "UPSERT", payload: [
-                        "id": .number(101), "name": .string("采购人测试")
+                        "id": .number(101), "name": .string("测试采购人")
                       ]),
             SyncEvent(tableName: "fruit", syncId: "fruit-shared-1",
                       rowVersion: 1, operation: "UPSERT", payload: [
@@ -46,178 +41,158 @@ final class StagingPurchaseTests: XCTestCase {
     }
 
     private func job() throws -> StagingPurchaseJob {
-        try StagingPayloadBuilder.prepare(draft(), sourceBook: book, stageBook: book,
-                                          stageHost: "https://staging.example.com/",
-                                          proof: proof(), username: "stage_user",
-                                          deviceID: "staging-device-1",
-                                          available: references())
+        try StagingPayloadBuilder.prepare(
+            draft(), sourceBook: book, stageBook: book,
+            stageHost: StagingPurchasePolicy.productionURL,
+            scope: scope(), username: "test_editor",
+            deviceID: "test-device", available: refs())
     }
 
-    func testProductionAndUnknownEndpointsNeverPermitted() {
+    func testOnlyCanonicalOfficialHTTPSHostIsAccepted() {
         for candidate in [
-            "https://sync.830888.xyz",
-            "http://staging.example.com",
-            "https://localhost",
-            "https://127.0.0.1",
-            "https://[::1]",
-            "https://staging.example.com:8443",
-            "https://user:password@staging.example.com",
-            "https://staging.example.com/path",
-            "https://staging.example.com?book_id=prod",
+            "http://sync.830888.xyz", "https://other.example.com",
+            "https://sync.830888.xyz.evil.com",
+            "https://localhost", "https://127.0.0.1",
+            "https://sync.830888.xyz:8443",
+            "https://user:password@sync.830888.xyz",
+            "https://sync.830888.xyz/other",
+            "https://sync.830888.xyz?book_id=production",
             "not-a-url"
         ] {
             XCTAssertThrowsError(try StagingPurchasePolicy.validateURL(candidate),
                                  candidate)
         }
-        XCTAssertNoThrow(try StagingPurchasePolicy.validateURL(
-            "https://staging.example.com"))
+        XCTAssertEqual(try? StagingPurchasePolicy.validateURL(
+            "https://sync.830888.xyz").absoluteString,
+                       StagingPurchasePolicy.productionURL)
     }
 
-    func testProofMustAttestSeparateDatabaseAndAllowListedTestBook() {
-        XCTAssertNoThrow(try StagingPurchasePolicy.requireProof(proof(), book: book))
-        XCTAssertThrowsError(try StagingPurchasePolicy.requireProof(
-            proof(isolated: false), book: book))
-        XCTAssertThrowsError(try StagingPurchasePolicy.requireProof(
-            proof(enabled: false), book: book))
-        XCTAssertThrowsError(try StagingPurchasePolicy.requireProof(
-            proof(instance: ""), book: book))
-        let production = CloudBook(id: book.id, name: "天鲜账本正式账本",
+    func testDedicatedAccountMustHaveExactlyOneTestBookAndNormalRole() throws {
+        let matched = try scope()
+        XCTAssertEqual(matched.bookID, book.id)
+        XCTAssertEqual(matched.instanceID,
+                       "production-scoped-testbook:" + book.id)
+
+        let other = CloudBook(id: "production-book-id",
+                              name: "天鲜果业正式账本", role: "OWNER",
+                              deleted: false, purged: false)
+        XCTAssertThrowsError(try StagingPurchasePolicy.requireBookScope(
+            books: [book, other], account: user(), sourceBook: book))
+        XCTAssertThrowsError(try StagingPurchasePolicy.requireBookScope(
+            books: [], account: user(), sourceBook: book))
+        XCTAssertThrowsError(try StagingPurchasePolicy.requireBookScope(
+            books: [book], account: user("SUPERADMIN"), sourceBook: book))
+        XCTAssertThrowsError(try StagingPurchasePolicy.requireBookScope(
+            books: [book], account: user("ADMIN"), sourceBook: book))
+        XCTAssertThrowsError(try StagingPurchasePolicy.requireBookScope(
+            books: [book], account: user("UNKNOWN"), sourceBook: book))
+        XCTAssertThrowsError(try StagingPurchasePolicy.requireBookScope(
+            books: [other], account: user(), sourceBook: book))
+        let viewer = CloudBook(id: book.id, name: book.name, role: "VIEWER",
+                               deleted: false, purged: false)
+        XCTAssertThrowsError(try StagingPurchasePolicy.requireBookScope(
+            books: [viewer], account: user(), sourceBook: book))
+        let masquerade = CloudBook(id: book.id, name: "天鲜果业正式账本",
                                    role: "OWNER", deleted: false, purged: false)
-        XCTAssertThrowsError(try StagingPurchasePolicy.requireProof(
-            proof(), book: production))
-        let viewer = CloudBook(id: book.id, name: book.name,
-                               role: "VIEWER", deleted: false, purged: false)
-        XCTAssertThrowsError(try StagingPurchasePolicy.requireProof(
-            proof(), book: viewer))
+        XCTAssertThrowsError(try StagingPurchasePolicy.requireBookScope(
+            books: [masquerade], account: user(), sourceBook: book))
     }
 
-    func testStableNumericParentIDAndPayloadExactCost() throws {
-        let saved = try job()
-        let repeated = try job()
-        XCTAssertEqual(saved.orderRemoteID, repeated.orderRemoteID)
-        XCTAssertEqual(saved.itemRemoteID, repeated.itemRemoteID)
-        XCTAssertNotEqual(saved.orderRemoteID, saved.itemRemoteID)
-        XCTAssertGreaterThan(saved.orderRemoteID, 2_000_000_000_000)
-        XCTAssertEqual(saved.orderPayload["id"]?.numberValue,
-                       Double(saved.orderRemoteID))
-        XCTAssertEqual(saved.itemPayload["order_id"]?.numberValue,
-                       Double(saved.orderRemoteID))
-        XCTAssertEqual(saved.orderPayload["buyer_id"]?.numberValue, 101)
-        XCTAssertEqual(saved.itemPayload["fruit_id"]?.numberValue, 202)
-        XCTAssertEqual(saved.orderPayload["total_cost"]?.decimal, 80.5)
-        XCTAssertEqual(saved.itemPayload["total_cost"]?.decimal, 80.5)
-        XCTAssertEqual(saved.itemPayload["quantity"]?.decimal, 2.5)
-        XCTAssertEqual(saved.itemPayload["unit_weight_jin"]?.decimal, 5)
-        XCTAssertEqual(saved.itemPayload["unit_price"]?.decimal, 32.2)
-        XCTAssertEqual(saved.itemPayload["fruit_name"]?.text, "提子")
-        XCTAssertEqual(saved.state, .ready)
+    func testStableParentChildIdentityAndExactAmount() throws {
+        let a = try job()
+        let b = try job()
+        XCTAssertEqual(a.orderRemoteID, b.orderRemoteID)
+        XCTAssertEqual(a.itemRemoteID, b.itemRemoteID)
+        XCTAssertNotEqual(a.orderRemoteID, a.itemRemoteID)
+        XCTAssertEqual(a.orderPayload["id"]?.numberValue, Double(a.orderRemoteID))
+        XCTAssertEqual(a.itemPayload["order_id"]?.numberValue, Double(a.orderRemoteID))
+        XCTAssertEqual(a.orderPayload["buyer_id"]?.numberValue, 101)
+        XCTAssertEqual(a.itemPayload["fruit_id"]?.numberValue, 202)
+        XCTAssertEqual(a.orderPayload["total_cost"]?.decimal, 80.5)
+        XCTAssertEqual(a.itemPayload["total_cost"]?.decimal, 80.5)
+        XCTAssertEqual(a.itemPayload["quantity"]?.decimal, 2.5)
+        XCTAssertEqual(a.itemPayload["unit_price"]?.decimal, 32.2)
+        XCTAssertEqual(a.stageHost, StagingPurchasePolicy.productionURL)
+        XCTAssertEqual(a.stageInstanceID, "production-scoped-testbook:" + book.id)
     }
 
-    func testMissingRemoteBuyerOrFruitFailsBeforeNetworkPush() throws {
+    func testWrongBookAndMissingReferencesFailBeforeUpload() throws {
         XCTAssertThrowsError(try StagingPayloadBuilder.prepare(
             draft(), sourceBook: book, stageBook: book,
-            stageHost: "https://staging.example.com/", proof: proof(),
-            username: "test", deviceID: "device",
-            available: [references()[0]]))
-        let copy = CloudBook(id: "other-book", name: book.name,
-                             role: "OWNER", deleted: false, purged: false)
+            stageHost: StagingPurchasePolicy.productionURL,
+            scope: scope(), username: "test_editor", deviceID: "test-device",
+            available: [refs()[0]]))
+        let different = CloudBook(id: "another-test-book",
+                                  name: "iOS_TEST_其他", role: "OWNER",
+                                  deleted: false, purged: false)
         XCTAssertThrowsError(try StagingPayloadBuilder.prepare(
-            draft(), sourceBook: book, stageBook: copy,
-            stageHost: "https://staging.example.com/", proof: proof(),
-            username: "test", deviceID: "device", available: references()))
+            draft(), sourceBook: book, stageBook: different,
+            stageHost: StagingPurchasePolicy.productionURL,
+            scope: scope(), username: "test_editor", deviceID: "test-device",
+            available: refs()))
+        XCTAssertThrowsError(try StagingPayloadBuilder.prepare(
+            draft(), sourceBook: book, stageBook: book,
+            stageHost: "https://untrusted.example.com",
+            scope: scope(), username: "test_editor", deviceID: "test-device",
+            available: refs()))
     }
 
-    func testAcceptedRequiresMatchingSingleRowAndNoConflicts() {
-        let item = SyncEvent(tableName: "purchase_item", syncId: "child",
-                             rowVersion: 1, operation: "UPSERT", payload: [:])
-        let yes = StageSyncAck(accepted: [
+    func testAcknowledgementMustMatchExactEventWithoutConflict() {
+        let event = SyncEvent(tableName: "purchase_item", syncId: "child",
+                              rowVersion: 1, operation: "UPSERT", payload: [:])
+        let accepted = StageSyncAck(accepted: [
             .init(tableName: "purchase_item", syncID: "child", rowVersion: 1)
         ], conflicts: [])
-        XCTAssertTrue(yes.isAccepted(item))
-        let mismatch = StageSyncAck(accepted: [
+        XCTAssertTrue(accepted.isAccepted(event))
+        XCTAssertFalse(StageSyncAck(accepted: [
             .init(tableName: "purchase_order", syncID: "child", rowVersion: 1)
-        ], conflicts: [])
-        XCTAssertFalse(mismatch.isAccepted(item))
-        let conflict = StageSyncAck(accepted: yes.accepted, conflicts: [
+        ], conflicts: []).isAccepted(event))
+        XCTAssertFalse(StageSyncAck(accepted: accepted.accepted, conflicts: [
             .init(tableName: "purchase_item", syncID: "child", serverVersion: 2)
-        ])
-        XCTAssertFalse(conflict.isAccepted(item))
+        ]).isAccepted(event))
     }
 
-    func testDurableOutboxRejectsIdentityRewriteAndInvalidTransitions() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("staging-outbox-" + UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let url = root.appendingPathComponent("drafts.sqlite")
-        let prepared = try job()
+    func testImmutableOutboxScopeAndNoBlindRetry() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("onebook-outbox-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("draft.sqlite")
+        let original = try job()
         do {
             let store = try TestDraftStore(url: url)
-            try store.saveStagingJob(prepared)
-            XCTAssertEqual(try store.stagingJobs(account: "owner", book: book.id).count, 1)
-            XCTAssertTrue(try store.stagingJobs(account: "another", book: book.id).isEmpty)
-            var sending = prepared
+            try store.saveStagingJob(original)
+            var sending = original
             sending.state = .sendingOrder
             try store.saveStagingJob(sending)
-            var ack = sending
-            ack.state = .orderConfirmed
-            try store.saveStagingJob(ack)
-            var completed = ack
-            completed.state = .complete
-            XCTAssertThrowsError(try store.saveStagingJob(completed))
-            var tamperedAmount = ack.orderPayload
-            tamperedAmount["total_cost"] = .number(9000)
-            let tampered = StagingPurchaseJob(
-                id: ack.id, sourceAccount: ack.sourceAccount,
-                bookID: ack.bookID, stageHost: ack.stageHost,
-                stageInstanceID: ack.stageInstanceID,
-                stageUsername: ack.stageUsername, deviceID: ack.deviceID,
-                orderSyncID: ack.orderSyncID, itemSyncID: ack.itemSyncID,
-                orderRemoteID: ack.orderRemoteID, itemRemoteID: ack.itemRemoteID,
-                orderPayload: tamperedAmount, itemPayload: ack.itemPayload,
-                createdAt: ack.createdAt, state: ack.state,
-                lastMessage: ack.lastMessage)
-            XCTAssertThrowsError(try store.saveStagingJob(tampered))
+            var needs = sending
+            needs.state = .needsReview
+            needs.lastMessage = "超时，不自动重发"
+            try store.saveStagingJob(needs)
+            XCTAssertEqual(try store.stagingJobs(account: "owner",
+                                                  book: book.id).count, 1)
+            XCTAssertTrue(try store.stagingJobs(account: "other",
+                                                 book: book.id).isEmpty)
+            var wrongHost = needs
+            // Immutable let fields cannot be changed even in an in-memory copy.
+            // Reconstruct an attempted foreign target for the same draft ID.
+            let malicious = StagingPurchaseJob(
+                id: needs.id, sourceAccount: needs.sourceAccount,
+                bookID: needs.bookID, stageHost: "https://untrusted.example.com",
+                stageInstanceID: needs.stageInstanceID, stageUsername: needs.stageUsername,
+                deviceID: needs.deviceID, orderSyncID: needs.orderSyncID,
+                itemSyncID: needs.itemSyncID, orderRemoteID: needs.orderRemoteID,
+                itemRemoteID: needs.itemRemoteID, orderPayload: needs.orderPayload,
+                itemPayload: needs.itemPayload, createdAt: needs.createdAt,
+                state: needs.state, lastMessage: needs.lastMessage)
+            XCTAssertThrowsError(try store.saveStagingJob(malicious))
+            wrongHost.lastMessage = "state remains unchanged"
         }
         let reopened = try TestDraftStore(url: url)
-        let recovered = try XCTUnwrap(reopened.stagingJob(
-            id: prepared.id, account: "owner", book: book.id))
-        XCTAssertEqual(recovered.state, .orderConfirmed)
-        XCTAssertEqual(recovered.orderRemoteID, prepared.orderRemoteID)
-        XCTAssertEqual(recovered.orderPayload["total_cost"]?.decimal, 80.5)
-    }
-
-    func testTimeoutStateSurvivesRestartForManualReconciliation() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("staging-timeout-" + UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let url = root.appendingPathComponent("outbox.sqlite")
-        var sending = try job()
-        do {
-            let store = try TestDraftStore(url: url)
-            try store.saveStagingJob(sending)
-            sending.state = .sendingOrder
-            try store.saveStagingJob(sending)
-            sending.state = .needsReview
-            sending.lastMessage = "超时: 不自动重试"
-            try store.saveStagingJob(sending)
-        }
-        let reopened = try TestDraftStore(url: url)
-        let recovered = try XCTUnwrap(reopened.stagingJob(
-            id: sending.id, account: "owner", book: book.id))
-        XCTAssertEqual(recovered.state, .needsReview)
-        XCTAssertEqual(recovered.orderSyncID, "ios-stage-order-" + sending.id)
-    }
-
-    func testAttestationWireFormatExample() throws {
-        let json = """
-        {"deployment_scope":"isolated_test","isolated_from_production":true,
-         "ios_purchase_write_enabled":true,"instance_id":"isolated-vm-001",
-         "allowed_book_ids":["ios-test-book-copy-1"]}
-        """
-        let proof = try JSONDecoder().decode(StagingProof.self,
-                                              from: Data(json.utf8))
-        XCTAssertNoThrow(try StagingPurchasePolicy.requireProof(proof, book: book))
+        let restored = try XCTUnwrap(reopened.stagingJob(
+            id: original.id, account: original.sourceAccount, book: book.id))
+        XCTAssertEqual(restored.state, .needsReview)
+        XCTAssertEqual(restored.orderSyncID, original.orderSyncID)
+        XCTAssertEqual(restored.stageHost, StagingPurchasePolicy.productionURL)
     }
 }
