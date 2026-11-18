@@ -64,7 +64,7 @@ final class PurchaseReadbackAuditTests: XCTestCase {
         XCTAssertTrue(result.orderVerified)
         XCTAssertTrue(result.itemVerified)
         XCTAssertFalse(result.remappedOrderID)
-        XCTAssertTrue(result.headline.contains("待 Android"))
+        XCTAssertTrue(result.headline.contains("Android"))
         XCTAssertTrue(result.issues.isEmpty)
     }
 

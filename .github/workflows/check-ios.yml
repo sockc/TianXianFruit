@@ -1,4 +1,4 @@
-name: Check iOS V0.2.6 multi-item local drafting
+name: Check iOS V0.2.7 simplified test-book multi-item sync
 
 on:
   pull_request:

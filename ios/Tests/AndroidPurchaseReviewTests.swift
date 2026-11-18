@@ -147,11 +147,11 @@ final class AndroidPurchaseReviewTests: XCTestCase {
             evidence, job: job, audit: audit(job, orderID: 99123)))
     }
 
-    func testLegacySingleTapConfirmationCannotUnlockNextOrder() throws {
+    func testManualChecklistIsOptionalAfterCloudVerification() throws {
         var job = try job()
         job.androidCheckedAt = Date()
         let current = audit(job)
-        XCTAssertThrowsError(try StagingPurchasePolicy.authorizeNextOrder(
+        XCTAssertNoThrow(try StagingPurchasePolicy.authorizeNextOrder(
             existing: [job], audits: [job.id: current],
             bookID: book.id, username: job.stageUsername))
         let evidence = try AndroidPurchaseReviewPolicy.confirm(

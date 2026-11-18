@@ -76,8 +76,6 @@ private struct PurchaseEditRequest: Identifiable {
 struct TestWriteLabView: View {
     @EnvironmentObject private var model: LedgerViewModel
     @StateObject private var draftManager = TestDraftManager()
-    @State private var acknowledged = false
-    @State private var typedBookID = ""
     @State private var draftKind: TestDraftKind = .business
     @State private var purchaseEditRequest: PurchaseEditRequest?
     @State private var entryDate = Date()
@@ -111,17 +109,14 @@ struct TestWriteLabView: View {
             book.name.hasPrefix(TestWritePolicy.prefix) &&
             ["OWNER", "SUPERADMIN", "EDITOR"].contains(book.role)
     }
-    private var unlocked: Bool {
-        guard acknowledged, let book else { return false }
-        return (try? TestWritePolicy.authorize(book: book, typedID: typedBookID)) != nil
-    }
+    private var unlocked: Bool { accessibleTestBook }
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
-                Label("V0.2.6 · 多商品采购草稿", systemImage: "lock.shield")
+                Label("V0.2.7 · 测试账本采购", systemImage: "lock.shield")
                     .font(.headline).foregroundColor(.orange)
-                Text("多商品采购可在本机编辑、复制和核对金额；现有单商品测试同步入口不变。正式账本及财务结算仍只读。")
+                Text("测试账本内可以录入和编辑多商品采购；进入“采购同步”可一键提交测试订单。正式账本、营业与结算仍只读。")
                     .font(.caption).foregroundColor(.secondary)
 
                 if let book {
@@ -134,12 +129,9 @@ struct TestWriteLabView: View {
                             Text("已锁定：请先在 Android/管理端创建独立账本，名称以 iOS_TEST_ 开头，并使用该账本的可编辑账号登录。当前正式账本绝不启用录入预演。")
                                 .font(.caption).foregroundColor(.orange)
                         } else {
-                            TextField("手动输入完整测试账本 ID 才能解锁", text: $typedBookID)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                                .font(.caption)
-                            Toggle("我确认这是独立测试账本，不含正式营业记录", isOn: $acknowledged)
-                                .font(.caption)
+                            Label("已自动识别测试账本，无需再次输入 ID",
+                                  systemImage: "checkmark.shield")
+                                .font(.caption).foregroundColor(.green)
                         }
                     }
                     .padding(12)
@@ -247,7 +239,7 @@ struct TestWriteLabView: View {
                     }
                 }
                 Divider()
-                Text("多商品草稿不进入测试同步队列。正式账本、营业、利润和资金结算继续锁定；现有单商品测试上传按原规则逐笔确认。")
+                Text("本页负责本机草稿。进入“采购同步”后，测试账号通过服务端权限核验才允许上传；正式账本、营业、利润和结算写入仍锁定。")
                     .font(.caption2).foregroundColor(.secondary)
             }
             .padding(12)
@@ -265,8 +257,6 @@ struct TestWriteLabView: View {
         }
         .onAppear(perform: reload)
         .onChange(of: model.selectedBookID) { _ in
-            typedBookID = ""
-            acknowledged = false
             purchaseEditRequest = nil
             reload()
         }

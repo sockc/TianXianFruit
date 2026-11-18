@@ -196,6 +196,7 @@ final class TestDraftStore {
                   previous.itemRemoteID == job.itemRemoteID,
                   previous.orderPayload == job.orderPayload,
                   previous.itemPayload == job.itemPayload,
+                  (previous.extraItems ?? []) == (job.extraItems ?? []),
                   previous.createdAt == job.createdAt else {
                 throw TestDraftStoreError.invalid
             }
@@ -208,6 +209,14 @@ final class TestDraftStore {
                 .complete: [.complete]
             ]
             guard allowed[previous.state]?.contains(job.state) == true else {
+                throw TestDraftStoreError.invalid
+            }
+            let originalStarted = previous.startedItemIDs ?? []
+            let updatedStarted = job.startedItemIDs ?? []
+            guard updatedStarted.starts(with: originalStarted),
+                  Set(updatedStarted).count == updatedStarted.count,
+                  Set(updatedStarted).isSubset(of: Set(
+                      [job.itemSyncID] + (job.extraItems ?? []).map(\.syncID))) else {
                 throw TestDraftStoreError.invalid
             }
             if previous.androidCheckedAt != nil &&
@@ -254,6 +263,15 @@ final class TestDraftStore {
         if job.state == .sendingItem &&
            (job.childParentID == nil || job.itemRequestStarted != true) {
             throw TestDraftStoreError.invalid
+        }
+        if let started = job.startedItemIDs {
+            let valid = [job.itemSyncID] + (job.extraItems ?? []).map(\.syncID)
+            guard Set(started).count == started.count,
+                  valid.starts(with: started),
+                  (job.state != .sendingItem || !started.isEmpty),
+                  started.isEmpty || job.childParentID != nil else {
+                throw TestDraftStoreError.invalid
+            }
         }
         let stmt = try prepare("""
             INSERT INTO isolated_staging_jobs

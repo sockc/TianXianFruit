@@ -120,6 +120,40 @@ final class StagingPurchaseAPI: NSObject, URLSessionTaskDelegate {
         return try JSONDecoder().decode(type, from: data)
     }
 
+    private func testDeviceID(for username: String) throws -> String {
+        let local = try SecureStore.deviceIdentifier()
+        let identity = Data((local + "|" + base.absoluteString + "|" +
+                             username.lowercased()).utf8)
+        return SHA256.hash(data: identity).map {
+            String(format: "%02x", $0)
+        }.joined()
+    }
+
+    /// Resume the previously verified, test-book-specific token. Never use
+    /// the normal application's access token, or cached permissions alone.
+    func resume(_ saved: RememberedTestSession,
+                sourceBook: CloudBook) async throws -> StagingSession {
+        guard saved.bookID == sourceBook.id,
+              sourceBook.isAvailable,
+              sourceBook.name.hasPrefix(TestWritePolicy.prefix),
+              !saved.token.isEmpty, !saved.username.isEmpty else {
+            throw StagingSafetyError.inaccessibleBook
+        }
+        let account = try await get(Account.self, path: "/api/v1/auth/me",
+                                    token: saved.token)
+        guard account.username.lowercased() == saved.username.lowercased() else {
+            throw StagingSafetyError.inaccessibleBook
+        }
+        let books = try await get([CloudBook].self, path: "/api/v1/books",
+                                  token: saved.token)
+        let scope = try StagingPurchasePolicy.requireBookScope(
+            books: books, account: account, sourceBook: sourceBook)
+        return StagingSession(token: saved.token, username: account.username,
+                              deviceID: try testDeviceID(for: account.username),
+                              book: books[0], scope: scope,
+                              host: base.absoluteString)
+    }
+
     /// The production service requires a dedicated account with only one
     /// visible test book. We do NOT claim this is server-side authorization.
     func login(username: String, password: String,
@@ -133,12 +167,7 @@ final class StagingPurchaseAPI: NSObject, URLSessionTaskDelegate {
         guard !normalized.isEmpty, !password.isEmpty else {
             throw StagingSafetyError.unexpectedResponse("请输入测试服务器独立账号密码")
         }
-        let local = try SecureStore.deviceIdentifier()
-        let identity = Data((local + "|" + base.absoluteString + "|" +
-                             normalized.lowercased()).utf8)
-        let deviceID = SHA256.hash(data: identity).map {
-            String(format: "%02x", $0)
-        }.joined()
+        let deviceID = try testDeviceID(for: normalized)
         struct LoginPayload: Encodable {
             let username: String
             let password: String
@@ -157,7 +186,7 @@ final class StagingPurchaseAPI: NSObject, URLSessionTaskDelegate {
             "POST", "/api/v1/auth/login",
             payload: JSONEncoder().encode(LoginPayload(
                 username: normalized, password: password, deviceID: deviceID,
-                deviceName: "天鲜 iOS 测试账本", platform: "ios", appVersion: "0.2.2")))
+                deviceName: "天鲜 iOS 测试账本", platform: "ios", appVersion: "0.2.7")))
         let auth = try JSONDecoder().decode(LoginResponse.self, from: authBytes)
         let account = try await get(Account.self, path: "/api/v1/auth/me",
                                     token: auth.accessToken)
@@ -184,7 +213,7 @@ final class StagingPurchaseAPI: NSObject, URLSessionTaskDelegate {
                            token: auth.accessToken,
                            payload: JSONEncoder().encode(DeviceRegistration(
                              deviceID: deviceID, name: "天鲜 iOS 测试账本",
-                             platform: "ios", appVersion: "0.2.2")))
+                             platform: "ios", appVersion: "0.2.7")))
         return StagingSession(token: auth.accessToken, username: account.username,
                               deviceID: deviceID, book: book,
                               scope: scope, host: base.absoluteString)

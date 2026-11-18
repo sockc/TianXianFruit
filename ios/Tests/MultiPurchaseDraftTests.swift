@@ -124,13 +124,13 @@ final class MultiPurchaseDraftTests: XCTestCase {
         XCTAssertFalse(TestWritePolicy.cloudSubmissionIsAllowed(loaded))
     }
 
-    func testMultiItemDraftCannotBeSentByLegacySingleItemUploader() throws {
-        let multi = try draft(three())
+    func testMultiItemUploadNeedsCompleteServerFruitAndBuyerReferences() throws {
+        let purchase = try draft(three())
         let scope = ScopedAccountEvidence(
             instanceID: "production-scoped-testbook:" + book.id,
             bookID: book.id)
         XCTAssertThrowsError(try StagingPayloadBuilder.prepare(
-            multi, sourceBook: book, stageBook: book,
+            purchase, sourceBook: book, stageBook: book,
             stageHost: StagingPurchasePolicy.productionURL,
             scope: scope, username: "test_user", deviceID: "test_phone",
             available: []))

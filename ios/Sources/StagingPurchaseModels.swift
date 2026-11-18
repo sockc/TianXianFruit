@@ -98,18 +98,12 @@ enum StagingPurchasePolicy {
         }
     }
 
-    /// Controlled expansion: at most three one-item orders per device-local
-    /// test-book queue. Every earlier order must be cloud-verified and
-    /// independently acknowledged by the user after Android inspection.
-    static let pilotOrderLimit = 3
-
+    /// Normal test-book operation: a fresh cloud readback must validate
+    /// EVERY prior upload. No arbitrary three-order cap or human checklist.
+    /// Unsafe/unfinished orders remain blocked until reconciled.
     static func authorizeNextOrder(existing: [StagingPurchaseJob],
                                    audits: [String: PurchaseReadbackAudit],
                                    bookID: String, username: String) throws {
-        guard existing.count < pilotOrderLimit else {
-            throw StagingSafetyError.needsReview(
-                "此设备测试账本已达到三笔采购验证上限；暂不开放更多上传")
-        }
         for job in existing {
             guard job.bookID == bookID,
                   job.stageHost == productionURL,
@@ -117,11 +111,9 @@ enum StagingPurchasePolicy {
                   job.stageUsername.lowercased() == username.lowercased(),
                   job.state == .complete,
                   let audit = audits[job.id], audit.complete,
-                  audit.bookID == bookID,
-                  AndroidPurchaseReviewPolicy.isCurrent(
-                      job.androidReview, job: job, audit: audit) else {
+                  audit.bookID == bookID else {
                 throw StagingSafetyError.needsReview(
-                    "上一笔采购必须重新完成云端核对并在 Android 人工验收后，才可准备下一笔")
+                    "测试账本有未完成或异常采购，请先只读核对该笔订单后再提交新单")
             }
         }
     }
@@ -159,6 +151,12 @@ enum StagingUploadState: String, Codable, Hashable {
 
 /// Immutable identity & payload after staging. Never dynamically overwrite
 /// remote IDs or rebuild a different financial amount on retry.
+struct StagingPurchaseExtraItem: Codable, Equatable {
+    let syncID: String
+    let localID: Int64
+    let payload: [String: JSONValue]
+}
+
 struct StagingPurchaseJob: Codable, Identifiable {
     let id: String
     let sourceAccount: String
@@ -187,6 +185,11 @@ struct StagingPurchaseJob: Codable, Identifiable {
     /// Structured manual observation rather than a blind confirmation tap.
     /// Older V0.2.4 jobs decode with nil and require one-time reinspection.
     var androidReview: AndroidPurchaseReviewEvidence? = nil
+    /// Extra children of one multi-line order; nil for all existing jobs.
+    var extraItems: [StagingPurchaseExtraItem]? = nil
+    /// Once an item ID appears here it can NEVER be removed or reordered.
+    /// Nil for legacy single-item jobs.
+    var startedItemIDs: [String]? = nil
 }
 
 struct StageBookReference {
@@ -215,12 +218,12 @@ enum StagingPayloadBuilder {
                         stageHost: String, scope: ScopedAccountEvidence, username: String,
                         deviceID: String, available: [SyncEvent],
                         now: Date = Date()) throws -> StagingPurchaseJob {
-        // V0.2.6 multi-line drafts have no approved /sync/push item batch
-        // contract. Fail CLOSED, even for a draft containing just one line,
-        // until the server/Android parent-child remapping is validated.
-        guard draft.purchaseItems == nil else {
-            throw TestWriteError.insufficientSchema(
-                "多商品草稿仅限本机编辑；尚未开放云端整单上传，不能只取第一种商品")
+        if draft.purchaseItems != nil {
+            return try prepareMulti(draft, sourceBook: sourceBook,
+                                    stageBook: stageBook, stageHost: stageHost,
+                                    scope: scope, username: username,
+                                    deviceID: deviceID, available: available,
+                                    now: now)
         }
         try StagingPurchasePolicy.requireMatchingDraft(draft, sourceBook: sourceBook,
                                                        stageBook: stageBook)
@@ -288,6 +291,110 @@ enum StagingPayloadBuilder {
             orderRemoteID: orderID, itemRemoteID: itemID,
             orderPayload: order, itemPayload: item, createdAt: now,
             state: .ready, lastMessage: "已验证专用账号和测试账本商品关联，等待首次小额上传确认")
+    }
+
+    /// Each child has its own immutable remote sync identity and original
+    /// line amount. Only the canonical order_id is replaced on send.
+    static func itemEvents(_ job: StagingPurchaseJob) -> [SyncEvent] {
+        var items = [event(job, item: true)]
+        for extra in job.extraItems ?? [] {
+            var payload = extra.payload
+            if let parent = job.childParentID {
+                payload["order_id"] = .number(Double(parent))
+            }
+            items.append(SyncEvent(tableName: "purchase_item",
+                                   syncId: extra.syncID, rowVersion: 1,
+                                   operation: "UPSERT", payload: payload))
+        }
+        return items
+    }
+
+    private static func prepareMulti(
+        _ draft: TestDraft, sourceBook: CloudBook,
+        stageBook: CloudBook, stageHost: String,
+        scope: ScopedAccountEvidence, username: String,
+        deviceID: String, available: [SyncEvent],
+        now: Date) throws -> StagingPurchaseJob {
+        try StagingPurchasePolicy.requireMatchingDraft(
+            draft, sourceBook: sourceBook, stageBook: stageBook)
+        guard scope.bookID == stageBook.id,
+              scope.instanceID == "production-scoped-testbook:" + stageBook.id,
+              stageHost == StagingPurchasePolicy.productionURL,
+              !deviceID.isEmpty, !username.isEmpty,
+              let lines = draft.purchaseItems,
+              !lines.isEmpty else { throw StagingSafetyError.invalidDraft }
+        let total = try PurchaseDraftPolicy.total(lines)
+        let buyer = try reference(
+            table: "partner", syncID: draft.fields["buyer_sync_id"] ?? "",
+            events: available)
+        let orderID = StagingPurchasePolicy.numericID(
+            draft.id, suffix: "order")
+        let orderSync = "ios-stage-order-" + draft.id
+        let ms = Int64(now.timeIntervalSince1970 * 1000)
+        let common: [String: JSONValue] = [
+            "deleted": .number(0), "sync_status": .number(0),
+            "created_at": .number(Double(ms)),
+            "updated_at": .number(Double(ms)),
+            "row_version": .number(1), "modified_by": .string(deviceID)
+        ]
+        var order = common
+        order["id"] = .number(Double(orderID))
+        order["date"] = .string(draft.date)
+        order["buyer_id"] = .number(Double(buyer.numericID))
+        order["buyer_name"] = .string(buyer.name)
+        order["store_id"] = .number(0)
+        order["store_name"] = .string("共用货品")
+        order["total_cost"] = .number(
+            NSDecimalNumber(decimal: total).doubleValue)
+        order["remark"] = .string(draft.fields["remark"] ?? "")
+        order["status"] = .number(0)
+        order["sync_id"] = .string(orderSync)
+
+        var children: [StagingPurchaseExtraItem] = []
+        for line in lines {
+            let fruit = try reference(table: "fruit",
+                                      syncID: line.fruitSyncID,
+                                      events: available)
+            let lineID = StagingPurchasePolicy.numericID(
+                draft.id, suffix: "item|" + line.id)
+            let lineSync = "ios-stage-item-" + draft.id + "-" + line.id
+            let qty = try PurchaseDraftPolicy.quantity(line.quantity)
+            let price = try PurchaseDraftPolicy.unitPrice(line.unitPrice)
+            let weight = try PurchaseDraftPolicy.unitWeight(line.unitWeightJin)
+            let subtotal = try PurchaseDraftPolicy.subtotal(line)
+            var payload = common
+            payload["id"] = .number(Double(lineID))
+            payload["order_id"] = .number(Double(orderID))
+            payload["fruit_id"] = .number(Double(fruit.numericID))
+            payload["fruit_name"] = .string(fruit.name)
+            payload["unit"] = .string(line.unit)
+            payload["quantity"] = .number(
+                NSDecimalNumber(decimal: qty).doubleValue)
+            payload["unit_price"] = .number(
+                NSDecimalNumber(decimal: price).doubleValue)
+            payload["unit_weight_jin"] = .number(
+                NSDecimalNumber(decimal: weight).doubleValue)
+            payload["total_cost"] = .number(
+                NSDecimalNumber(decimal: subtotal).doubleValue)
+            payload["sync_id"] = .string(lineSync)
+            children.append(StagingPurchaseExtraItem(
+                syncID: lineSync, localID: lineID, payload: payload))
+        }
+        guard let first = children.first else {
+            throw StagingSafetyError.invalidDraft
+        }
+        return StagingPurchaseJob(
+            id: draft.id, sourceAccount: draft.account,
+            bookID: stageBook.id, stageHost: stageHost,
+            stageInstanceID: scope.instanceID,
+            stageUsername: username, deviceID: deviceID,
+            orderSyncID: orderSync, itemSyncID: first.syncID,
+            orderRemoteID: orderID, itemRemoteID: first.localID,
+            orderPayload: order, itemPayload: first.payload,
+            createdAt: now, state: .ready,
+            lastMessage: "已校验测试账本与 " + String(lines.count) +
+                         " 条商品，等待提交",
+            extraItems: Array(children.dropFirst()), startedItemIDs: [])
     }
 
     static func event(_ job: StagingPurchaseJob, item: Bool) -> SyncEvent {

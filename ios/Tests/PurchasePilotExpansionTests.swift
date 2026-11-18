@@ -130,7 +130,7 @@ final class PurchasePilotExpansionTests: XCTestCase {
         XCTAssertNoThrow(try db.saveStagingJob(current))
     }
 
-    func testSecondAndThirdNeedPriorCloudAndAndroidChecks() throws {
+    func testUnlimitedCompletedTestOrdersNeedFreshCloudChecksOnly() throws {
         let first = try completed(try job("pilot-first"))
         let second = try completed(try job("pilot-second"))
         let third = try completed(try job("pilot-third"))
@@ -150,16 +150,16 @@ final class PurchasePilotExpansionTests: XCTestCase {
             second.id: matchingAudit(second),
             third.id: matchingAudit(third)
         ]
-        XCTAssertThrowsError(try StagingPurchasePolicy.authorizeNextOrder(
+        XCTAssertNoThrow(try StagingPurchasePolicy.authorizeNextOrder(
             existing: [first, second, third], audits: three,
             bookID: testBook.id, username: "one_book_user"))
     }
 
-    func testCannotOpenNextIfPriorHasNotBeenCheckedOnAndroid() throws {
+    func testAndroidManualChecklistIsNoLongerMandatory() throws {
         var first = try completed(try job("not-confirmed"))
         first.androidCheckedAt = nil
         first.androidReview = nil
-        XCTAssertThrowsError(try StagingPurchasePolicy.authorizeNextOrder(
+        XCTAssertNoThrow(try StagingPurchasePolicy.authorizeNextOrder(
             existing: [first], audits: [first.id: matchingAudit(first)],
             bookID: testBook.id, username: "one_book_user"))
     }
