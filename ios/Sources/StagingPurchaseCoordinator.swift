@@ -230,7 +230,7 @@ final class StagingPurchaseCoordinator: ObservableObject {
             if job.state == .ready {
                 // A duplicate server record is never an invitation to push
                 // another version. Preserve a reviewable local state.
-                if audit.orderPresent || audit.itemPresent {
+                if audit.hasRemoteHistory {
                     job = try transition(job, to: .needsReview,
                         "已有同一 sync_id 的远端记录，已停止重复写入", in: storage)
                     throw StagingSafetyError.needsReview(job.lastMessage)
@@ -393,8 +393,7 @@ final class StagingPurchaseCoordinator: ObservableObject {
                 job = try transition(job, to: .orderConfirmed,
                                      "父订单已回读并冻结真实数字 ID，可人工确认上传明细",
                                      in: storage)
-            } else if job.state == .ready &&
-                      !audit.orderPresent && !audit.itemPresent {
+            } else if job.state == .ready && !audit.hasRemoteHistory {
                 message = "草稿尚未上传；云端回读未找到记录"
                 return
             } else if job.state != .complete && job.state != .needsReview {

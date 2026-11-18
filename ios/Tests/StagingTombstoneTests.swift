@@ -78,6 +78,7 @@ final class StagingTombstoneTests: XCTestCase {
         XCTAssertFalse(audit.orderVerified)
         XCTAssertTrue(audit.issues.contains { $0.id == "order.deleted" })
         XCTAssertTrue(audit.headline.contains("已删除"))
+        XCTAssertTrue(audit.hasRemoteHistory)
     }
 
     func testCloudAuditRecognizesDeletedChildAndRejectsResume() throws {
@@ -94,5 +95,6 @@ final class StagingTombstoneTests: XCTestCase {
         XCTAssertFalse(audit.itemVerified)
         XCTAssertTrue(audit.issues.contains { $0.id == "item.deleted" })
         XCTAssertFalse(audit.complete)
+        XCTAssertTrue(audit.hasRemoteHistory)
     }
 }

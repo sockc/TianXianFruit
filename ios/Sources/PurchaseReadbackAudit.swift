@@ -26,6 +26,12 @@ struct PurchaseReadbackAudit {
     let issues: [Issue]
 
     var complete: Bool { orderVerified && itemVerified && issues.isEmpty }
+    /// A tombstone still reserves the remote sync identity, even when the
+    /// materialized record is no longer active. Never blindly push over it.
+    var hasRemoteHistory: Bool {
+        orderPresent || itemPresent ||
+        issues.contains { $0.id == "order.deleted" || $0.id == "item.deleted" }
+    }
     var remappedOrderID: Bool {
         guard let serverOrderID else { return false }
         return orderVerified && serverOrderID != submittedOrderID
