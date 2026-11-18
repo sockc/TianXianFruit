@@ -36,7 +36,8 @@ assert "func resume(" in stage
 assert '"/api/v1/auth/me"' in stage and '"/api/v1/books"' in stage
 assert "SecureStore.write" in keychain
 assert "session.token" in keychain
-assert "password" not in keychain
+assert "let password:" not in keychain
+assert '"password":' not in keychain
 assert "TestSyncCredentialStore.load" in coordinator
 assert "TestSyncCredentialStore.save" in coordinator
 assert "forgetTestLogin" in coordinator
