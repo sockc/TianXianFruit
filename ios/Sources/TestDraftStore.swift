@@ -105,12 +105,20 @@ final class TestDraftStore {
         guard !draft.id.isEmpty, !draft.bookID.isEmpty, !draft.account.isEmpty else {
             throw TestDraftStoreError.invalid
         }
+        // Once a draft has an upload intent, its financial fields and
+        // identity are frozen. Edits/duplicates must use a NEW draft ID.
+        guard try stagingJob(id: draft.id, account: draft.account,
+                             book: draft.bookID) == nil else {
+            throw TestDraftStoreError.lockedForUpload
+        }
         let data = try JSONEncoder().encode(draft)
         let statement = try prepare("""
             INSERT INTO test_preview_drafts(id,account,book_id,kind,date,json,created_at_ms)
             VALUES (?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
-              json=excluded.json
+              json=excluded.json,
+              kind=excluded.kind,
+              date=excluded.date
             WHERE account=excluded.account AND book_id=excluded.book_id
         """)
         defer { sqlite3_finalize(statement) }
@@ -155,6 +163,9 @@ final class TestDraftStore {
     }
 
     func delete(id: String, account: String, book: String) throws {
+        guard try stagingJob(id: id, account: account, book: book) == nil else {
+            throw TestDraftStoreError.lockedForUpload
+        }
         let statement = try prepare("""
             DELETE FROM test_preview_drafts WHERE id=? AND account=? AND book_id=?
         """)
@@ -313,11 +324,14 @@ final class TestDraftStore {
 
 enum TestDraftStoreError: LocalizedError {
     case invalid
+    case lockedForUpload
     case sql(String)
 
     var errorDescription: String? {
         switch self {
         case .invalid: return "测试草稿数据无效，没有写入或读取其他账本的数据"
+        case .lockedForUpload:
+            return "该草稿已有关联的云端采购任务，禁止修改或删除；可以复制为新的本机草稿"
         case .sql(let value): return "测试草稿本地存储失败：" + value
         }
     }

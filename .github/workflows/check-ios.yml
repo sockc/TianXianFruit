@@ -1,4 +1,4 @@
-name: Check iOS V0.2.5 Android purchase evidence
+name: Check iOS V0.2.6 multi-item local drafting
 
 on:
   pull_request:

@@ -17,7 +17,7 @@ struct StagingPurchaseUploadView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 13) {
-                Label("V0.2.5 · 采购云端与 Android 数据逐项验收", systemImage: "shield.lefthalf.filled")
+                Label("V0.2.6 · 采购云端与 Android 数据逐项验收", systemImage: "shield.lefthalf.filled")
                     .font(.headline)
                     .foregroundColor(.orange)
                 Text("仅对 sync.830888.xyz 中明确指定的 iOS_TEST_ 测试账本分阶段试写最多三笔单商品采购。必须使用只拥有该账本权限的专用账号；正式账本、营业和资金结算仍然不可写。")
@@ -111,6 +111,8 @@ struct StagingPurchaseUploadView: View {
                 }
 
                 Text("已录入的本机采购草稿").font(.headline)
+                Text("多商品草稿仅支持本机录入、编辑和金额核对；单商品旧版草稿仍可走三笔测试同步")
+                    .font(.caption).foregroundColor(.secondary)
                 Text("本账本已准备 " + String(coordinator.jobs.count) +
                      " / 3 笔；每笔都必须先通过云端和 Android 人工核对，才能准备下一笔")
                     .font(.caption).foregroundColor(.secondary)
@@ -136,7 +138,9 @@ struct StagingPurchaseUploadView: View {
                                     coordinator.audits[draft.id]?.complete != false
                                     ? .green : .orange)
                         }
-                        Text(current?.state.title ?? "未准备上传")
+                        Text(current?.state.title ??
+                             (draft.purchaseItems == nil ?
+                              "单商品待准备" : "多商品本机草稿 · 尚未开放整单云端提交"))
                             .font(.caption2).foregroundColor(.secondary)
                         if let linkedID = current?.childParentID {
                             Text("商品明细使用云端父订单 ID：" + String(linkedID))
@@ -205,7 +209,11 @@ struct StagingPurchaseUploadView: View {
                                 .font(.caption).foregroundColor(.orange)
                         }
                         if coordinator.connected {
-                            if current == nil {
+                            if current == nil && draft.purchaseItems != nil {
+                                Label("多商品采购仅限本机草稿，暂不可上传",
+                                      systemImage: "lock.fill")
+                                    .font(.caption).foregroundColor(.orange)
+                            } else if current == nil {
                                 Button("① 核验上一单并准备本笔采购") {
                                     Task { await coordinator.prepare(draftID: draft.id) }
                                 }

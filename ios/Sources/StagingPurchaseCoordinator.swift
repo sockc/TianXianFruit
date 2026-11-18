@@ -132,6 +132,10 @@ final class StagingPurchaseCoordinator: ObservableObject {
                                                 book: book.id).first(where: { $0.id == draftID }) else {
                 throw StagingSafetyError.invalidDraft
             }
+            guard draft.purchaseItems == nil else {
+                throw TestWriteError.insufficientSchema(
+                    "多商品采购本版仅保存本机草稿，尚未开放测试账本整单提交")
+            }
             try await api.validateSession(auth)
             try requireCurrent(generation)
             let stageRows = try await api.pullAll(auth)

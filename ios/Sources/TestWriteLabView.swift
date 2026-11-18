@@ -3,6 +3,7 @@ import SwiftUI
 @MainActor
 private final class TestDraftManager: ObservableObject {
     @Published var drafts: [TestDraft] = []
+    @Published var lockedDraftIDs: Set<String> = []
     @Published var message: String?
     private let storage: TestDraftStore?
 
@@ -13,20 +14,44 @@ private final class TestDraftManager: ObservableObject {
 
     func reload(account: String?, book: String?) {
         drafts = []
+        lockedDraftIDs = []
         guard let account, let book, let storage else { return }
-        do { drafts = try storage.load(account: account, book: book) }
+        do {
+            drafts = try storage.load(account: account, book: book)
+            lockedDraftIDs = Set(try storage.stagingJobs(
+                account: account, book: book).map(\.id))
+        }
         catch { message = error.localizedDescription }
     }
 
-    func save(_ draft: TestDraft, book: CloudBook) {
-        guard let storage else { message = "本机草稿数据库不可用"; return }
+    @discardableResult
+    func save(_ draft: TestDraft, book: CloudBook) -> Bool {
+        guard let storage else {
+            message = "本机草稿数据库不可用"
+            return false
+        }
         do {
             try TestWritePolicy.validate(draft, book: book)
             try storage.save(draft)
-            drafts = try storage.load(account: draft.account, book: draft.bookID)
-            message = "仅保存到这台 iPhone · 未上传任何云端账目"
+            reload(account: draft.account, book: draft.bookID)
+            message = "草稿仅保存在这台 iPhone，未发送到云端"
+            return true
         } catch {
             message = error.localizedDescription
+            return false
+        }
+    }
+
+    func duplicate(_ draft: TestDraft, book: CloudBook) {
+        guard draft.kind == .purchase else { return }
+        let lines = draft.purchaseItems?.map { $0.duplicated() }
+        let newDraft = TestDraft(
+            id: UUID().uuidString, account: draft.account, bookID: draft.bookID,
+            kind: .purchase, date: draft.date,
+            fields: draft.fields, createdAt: Date(),
+            purchaseItems: lines)
+        if save(newDraft, book: book) {
+            message = "已复制为新的本机草稿，原订单与云端上传状态不受影响"
         }
     }
 
@@ -34,12 +59,17 @@ private final class TestDraftManager: ObservableObject {
         guard let storage else { return }
         do {
             try storage.delete(id: draft.id, account: draft.account, book: draft.bookID)
-            drafts = try storage.load(account: draft.account, book: draft.bookID)
+            reload(account: draft.account, book: draft.bookID)
             message = "已删除本机测试草稿，不影响云端营业或采购"
         } catch {
             message = error.localizedDescription
         }
     }
+}
+
+private struct PurchaseEditRequest: Identifiable {
+    let id = UUID().uuidString
+    let draft: TestDraft?
 }
 
 /// Local-only, isolated form rehearsal. Never sends any network mutation.
@@ -49,6 +79,7 @@ struct TestWriteLabView: View {
     @State private var acknowledged = false
     @State private var typedBookID = ""
     @State private var draftKind: TestDraftKind = .business
+    @State private var purchaseEditRequest: PurchaseEditRequest?
     @State private var entryDate = Date()
 
     @State private var storeSyncID = ""
@@ -88,9 +119,9 @@ struct TestWriteLabView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
-                Label("V0.2.0 · 本机写入预演", systemImage: "lock.shield")
+                Label("V0.2.6 · 多商品采购草稿", systemImage: "lock.shield")
                     .font(.headline).foregroundColor(.orange)
-                Text("此版本仅保存测试草稿到这台 iPhone。云端营业、采购、凌晨收款与资金结算仍然完全只读。")
+                Text("多商品采购可在本机编辑、复制和核对金额；现有单商品测试同步入口不变。正式账本及财务结算仍只读。")
                     .font(.caption).foregroundColor(.secondary)
 
                 if let book {
@@ -132,6 +163,14 @@ struct TestWriteLabView: View {
                     if draftKind == .business {
                         businessForm
                     } else {
+                        Button {
+                            purchaseEditRequest = PurchaseEditRequest(draft: nil)
+                        } label: {
+                            Label("新建多商品采购单（推荐）",
+                                  systemImage: "cart.badge.plus")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
                         purchaseForm
                     }
                     Button {
@@ -162,14 +201,44 @@ struct TestWriteLabView: View {
                                 Text(draft.kind.title + " · " + draft.date)
                                     .font(.subheadline.bold())
                                 Text(draft.summary).font(.caption)
-                                Text("未上传云端").font(.caption2).foregroundColor(.orange)
+                                if draftManager.lockedDraftIDs.contains(draft.id) {
+                                    Text("已绑定云端上传任务 · 不可修改或删除")
+                                        .font(.caption2).foregroundColor(.orange)
+                                } else if draft.purchaseItems != nil {
+                                    Text("多商品本机草稿 · 暂不支持云端上传")
+                                        .font(.caption2).foregroundColor(.secondary)
+                                } else {
+                                    Text("本机草稿 · 尚无云端任务")
+                                        .font(.caption2).foregroundColor(.secondary)
+                                }
                             }
                             Spacer()
+                            if draft.kind == .purchase {
+                                VStack(spacing: 9) {
+                                    Button {
+                                        purchaseEditRequest = PurchaseEditRequest(
+                                            draft: draft)
+                                    } label: {
+                                        Image(systemName: "pencil")
+                                    }
+                                    .disabled(draftManager.lockedDraftIDs.contains(draft.id))
+                                    .accessibilityLabel("编辑采购草稿")
+                                    Button {
+                                        if let book {
+                                            draftManager.duplicate(draft, book: book)
+                                        }
+                                    } label: {
+                                        Image(systemName: "doc.on.doc")
+                                    }
+                                    .accessibilityLabel("复制为新草稿")
+                                }
+                            }
                             Button(role: .destructive) {
                                 draftManager.delete(draft)
                             } label: {
                                 Image(systemName: "trash")
                             }
+                            .disabled(draftManager.lockedDraftIDs.contains(draft.id))
                             .accessibilityLabel("删除本机草稿")
                         }
                         .padding(11)
@@ -178,16 +247,27 @@ struct TestWriteLabView: View {
                     }
                 }
                 Divider()
-                Text("何时才能真正写入？必须先验证 Android 资金结算口径、采购父子 ID 跨设备映射、账号权限及服务端冲突策略，再由单独版本明确开放测试账本 /sync/push。本版没有任何业务提交入口或自动重试上传功能。")
+                Text("多商品草稿不进入测试同步队列。正式账本、营业、利润和资金结算继续锁定；现有单商品测试上传按原规则逐笔确认。")
                     .font(.caption2).foregroundColor(.secondary)
             }
             .padding(12)
         }
         .navigationBarTitle("写入测试实验室", displayMode: .inline)
+        .sheet(item: $purchaseEditRequest) { request in
+            MultiPurchaseEditorView(original: request.draft) { draft in
+                guard let book = model.selectedBook, unlocked else {
+                    draftManager.message = "测试账本尚未解锁"
+                    return false
+                }
+                return draftManager.save(draft, book: book)
+            }
+            .environmentObject(model)
+        }
         .onAppear(perform: reload)
         .onChange(of: model.selectedBookID) { _ in
             typedBookID = ""
             acknowledged = false
+            purchaseEditRequest = nil
             reload()
         }
     }
@@ -222,7 +302,7 @@ struct TestWriteLabView: View {
 
     private var purchaseForm: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("采购录入草稿（单个商品）").font(.subheadline.bold())
+            Text("旧版单商品快捷录入").font(.subheadline.bold())
             Picker("采购人", selection: $buyerSyncID) {
                 Text("请选择已同步采购人").tag("")
                 ForEach(model.snapshot.testPartners) { item in

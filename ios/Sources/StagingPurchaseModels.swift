@@ -215,6 +215,13 @@ enum StagingPayloadBuilder {
                         stageHost: String, scope: ScopedAccountEvidence, username: String,
                         deviceID: String, available: [SyncEvent],
                         now: Date = Date()) throws -> StagingPurchaseJob {
+        // V0.2.6 multi-line drafts have no approved /sync/push item batch
+        // contract. Fail CLOSED, even for a draft containing just one line,
+        // until the server/Android parent-child remapping is validated.
+        guard draft.purchaseItems == nil else {
+            throw TestWriteError.insufficientSchema(
+                "多商品草稿仅限本机编辑；尚未开放云端整单上传，不能只取第一种商品")
+        }
         try StagingPurchasePolicy.requireMatchingDraft(draft, sourceBook: sourceBook,
                                                        stageBook: stageBook)
         guard scope.bookID == stageBook.id,

@@ -20,8 +20,11 @@ struct TestDraft: Codable, Identifiable, Equatable {
     let bookID: String
     let kind: TestDraftKind
     let date: String
-    let fields: [String: String]
+    var fields: [String: String]
     let createdAt: Date
+    /// Optional by design: V0.2.5 single-item drafts remain readable without
+    /// modifying their stored JSON or upload identity.
+    var purchaseItems: [PurchaseDraftLine]? = nil
 
     var summary: String {
         switch kind {
@@ -29,6 +32,11 @@ struct TestDraft: Codable, Identifiable, Equatable {
             let name = fields["store_name"] ?? "未知位置"
             return "\(name) · 微信 \(fields["wechat"] ?? "0") · 支付宝 \(fields["alipay"] ?? "0") · 现金 \(fields["cash"] ?? "0")"
         case .purchase:
+            if let purchaseItems {
+                let total = (try? PurchaseDraftPolicy.total(purchaseItems)) ?? 0
+                return "\(purchaseItems.count) 种商品 · 合计 ¥" +
+                    PurchaseDraftPolicy.display(total)
+            }
             let name = fields["fruit_name"] ?? "商品"
             return "\(name) · \(fields["quantity"] ?? "0") \(fields["unit"] ?? "") · \(fields["total_cost"] ?? "0") 元"
         }
@@ -122,6 +130,23 @@ enum TestWritePolicy {
             // Only a draft: collector/split, costs and authoritative profit
             // are still required before a real business mutation could exist.
         case .purchase:
+            if let lines = draft.purchaseItems {
+                guard !(draft.fields["buyer_sync_id"] ?? "").isEmpty else {
+                    throw TestWriteError.missingData("采购人")
+                }
+                guard ["PLANNED", "TEMPORARY"].contains(
+                    draft.fields["purchase_type"] ?? "") else {
+                    throw TestWriteError.missingData("采购类型")
+                }
+                let sum = try PurchaseDraftPolicy.total(lines)
+                let recorded = try money(
+                    draft.fields["total_cost"] ?? "", label: "采购合计")
+                guard abs(NSDecimalNumber(decimal: sum).doubleValue - recorded)
+                        < 0.001 else {
+                    throw TestWriteError.invalidNumber("商品小计之和与整单金额不符")
+                }
+                return
+            }
             guard !(draft.fields["buyer_sync_id"] ?? "").isEmpty,
                   !(draft.fields["fruit_sync_id"] ?? "").isEmpty,
                   !(draft.fields["fruit_name"] ?? "").isEmpty else {
