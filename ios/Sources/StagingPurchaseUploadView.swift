@@ -123,9 +123,13 @@ struct StagingPurchaseUploadView: View {
                                 Text(draft.summary).font(.caption)
                             }
                             Spacer()
-                            Image(systemName: current?.state == .complete ?
+                            Image(systemName: current?.state == .complete &&
+                                  coordinator.audits[draft.id]?.complete != false ?
                                   "checkmark.circle.fill" : "doc.badge.clock")
-                                .foregroundColor(current?.state == .complete ? .green : .orange)
+                                .foregroundColor(
+                                    current?.state == .complete &&
+                                    coordinator.audits[draft.id]?.complete != false
+                                    ? .green : .orange)
                         }
                         Text(current?.state.title ?? "未准备上传")
                             .font(.caption2).foregroundColor(.secondary)
@@ -184,8 +188,13 @@ struct StagingPurchaseUploadView: View {
                                 .disabled(coordinator.busy)
                                 .foregroundColor(.orange)
                             } else if current?.state == .complete {
-                                Text("服务器回读已确认；Android 设备核对仍需人工完成")
-                                    .font(.caption).foregroundColor(.green)
+                                if coordinator.audits[draft.id]?.complete == false {
+                                    Text("此前确认的云端记录现有差异，不能继续视为核对通过")
+                                        .font(.caption).foregroundColor(.orange)
+                                } else {
+                                    Text("上次服务器回读确认；请刷新核对，Android 需人工验收")
+                                        .font(.caption).foregroundColor(.green)
+                                }
                             } else if current?.state == .needsReview ||
                                       current?.state == .sendingOrder ||
                                       current?.state == .sendingItem {
