@@ -148,6 +148,8 @@ struct StagingPurchaseJob: Codable, Identifiable {
     let createdAt: Date
     var state: StagingUploadState
     var lastMessage: String
+    /// Human confirmation only; never treated as an Android API acknowledgement.
+    var androidCheckedAt: Date? = nil
 }
 
 struct StageBookReference {

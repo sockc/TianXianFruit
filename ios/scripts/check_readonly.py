@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V0.2.2: only the dedicated one-book purchase client may write businesses."""
+"""V0.2.3: only the dedicated one-book purchase client may write businesses."""
 from pathlib import Path
 root = Path(__file__).resolve().parents[1] / "Sources"
 swift = {path.name: path.read_text(encoding="utf-8") for path in root.glob("*.swift")}
@@ -34,9 +34,13 @@ assert '"GET", "/api/v1/ios-test/attestation"' not in stage
 assert 'async' in coordinator
 assert "stagingJobs(account: sourceAccount" in coordinator
 assert "to: .sendingOrder" in coordinator and "to: .sendingItem" in coordinator
-assert "api.verify(" in coordinator
+assert "api.readback(" in coordinator
 assert "needsReview" in coordinator
 assert "TestDraftStore" in swift["TestWriteLabView.swift"]
 assert 'return false' in swift["TestWriteModels.swift"] # drafts still cannot push themselves
 assert "确认试写一笔" in ui
+assert "confirmAndroidReview" in ui
+assert "PurchaseReadbackAudit.swift" in swift
+assert "PurchaseReadbackPolicy.audit" in swift["StagingPurchaseAPI.swift"]
+assert "readback" in coordinator
 print("V0.2.2 PASS: fixed official host, dedicated one-book test writer, no ordinary app writes.")

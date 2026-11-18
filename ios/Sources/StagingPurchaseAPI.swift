@@ -259,27 +259,17 @@ final class StagingPurchaseAPI: NSObject, URLSessionTaskDelegate {
         return try JSONDecoder().decode(StageSyncAck.self, from: data)
     }
 
-    func verify(_ event: SyncEvent, auth: StagingSession) async throws -> Bool {
-        let events = try await pullAll(auth)
-        guard let found = events.first(where: {
-            $0.tableName == event.tableName && $0.syncId == event.syncId
-        }) else { return false }
-        guard !found.isDeletion, found.rowVersion >= event.rowVersion else { return false }
-        // Receipt from server must contain at least all financial business
-        // values and the canonical parent numeric ID. An ACK alone is not enough.
-        let fields = event.tableName == "purchase_order"
-            ? ["id", "date", "buyer_id", "total_cost", "sync_id"]
-            : ["id", "order_id", "fruit_id", "quantity", "total_cost", "sync_id"]
-        return fields.allSatisfy { field in
-            let left = event.payload[field]
-            let right = found.payload[field]
-            if let left, let right {
-                if let a = left.numberValue, let b = right.numberValue {
-                    return abs(a - b) < 0.0001
-                }
-                return left == right
-            }
-            return false
+    /// Confirm only from a complete account-scoped GET /sync/pull response.
+    /// The canonical server numeric parent ID may legitimately be remapped.
+    func readback(_ job: StagingPurchaseJob,
+                  auth: StagingSession) async throws -> PurchaseReadbackAudit {
+        guard job.bookID == auth.book.id,
+              job.stageHost == auth.host,
+              job.stageInstanceID == auth.scope.instanceID else {
+            throw StagingSafetyError.wrongSourceBook
         }
+        try await validateSession(auth)
+        let events = try await pullAll(auth)
+        return PurchaseReadbackPolicy.audit(job, events: events)
     }
 }

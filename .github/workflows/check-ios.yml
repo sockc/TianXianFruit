@@ -1,4 +1,4 @@
-name: Check iOS test-book purchase sync
+name: Check iOS V0.2.3 purchase reconciliation
 
 on:
   pull_request:

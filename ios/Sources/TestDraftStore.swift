@@ -189,9 +189,9 @@ final class TestDraftStore {
                 throw TestDraftStoreError.invalid
             }
             let allowed: [StagingUploadState: Set<StagingUploadState>] = [
-                .ready: [.ready, .sendingOrder],
-                .sendingOrder: [.sendingOrder, .orderConfirmed, .needsReview],
-                .orderConfirmed: [.orderConfirmed, .sendingItem],
+                .ready: [.ready, .sendingOrder, .needsReview],
+                .sendingOrder: [.sendingOrder, .orderConfirmed, .complete, .needsReview],
+                .orderConfirmed: [.orderConfirmed, .sendingItem, .complete, .needsReview],
                 .sendingItem: [.sendingItem, .complete, .needsReview, .orderConfirmed],
                 .needsReview: [.needsReview, .orderConfirmed, .complete],
                 .complete: [.complete]
@@ -199,6 +199,13 @@ final class TestDraftStore {
             guard allowed[previous.state]?.contains(job.state) == true else {
                 throw TestDraftStoreError.invalid
             }
+            if previous.androidCheckedAt != nil &&
+               previous.androidCheckedAt != job.androidCheckedAt {
+                throw TestDraftStoreError.invalid
+            }
+        }
+        guard job.androidCheckedAt == nil || job.state == .complete else {
+            throw TestDraftStoreError.invalid
         }
         let stmt = try prepare("""
             INSERT INTO isolated_staging_jobs

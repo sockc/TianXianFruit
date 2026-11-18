@@ -11,6 +11,7 @@ final class StagingPurchaseCoordinator: ObservableObject {
     @Published private(set) var stageName = ""
     @Published private(set) var jobs: [StagingPurchaseJob] = []
     @Published private(set) var drafts: [TestDraft] = []
+    @Published private(set) var audits: [String: PurchaseReadbackAudit] = [:]
 
     private let storage: TestDraftStore?
     private var api: StagingPurchaseAPI?
@@ -40,6 +41,7 @@ final class StagingPurchaseCoordinator: ObservableObject {
         api = nil
         auth = nil
         stageName = ""
+        audits = [:]
         sourceAccount = account ?? ""
         sourceBook = book
         refreshLocal()
@@ -172,9 +174,9 @@ final class StagingPurchaseCoordinator: ObservableObject {
         return updated
     }
 
-    /// Two sequential pushes with a durable state transition before EACH
-    /// request. A timeout never causes an automatic retry; only explicit
-    /// remote readback can resolve an uncertain result.
+    /// All actual network mutations require a foreground button click.
+    /// Before the FIRST request, read the current remote state to avoid
+    /// blindly replaying an order already accepted by the server.
     func upload(draftID: String) async {
         guard !busy else { return }
         let generation = sessionGeneration
@@ -182,8 +184,8 @@ final class StagingPurchaseCoordinator: ObservableObject {
         defer { busy = false }
         do {
             let (api, auth, book, storage) = try verified()
-            guard var job = try storage.stagingJob(id: draftID,
-                account: sourceAccount, book: book.id) else {
+            guard var job = try storage.stagingJob(
+                id: draftID, account: sourceAccount, book: book.id) else {
                 throw StagingSafetyError.invalidDraft
             }
             try verifyBinding(job, auth: auth)
@@ -192,66 +194,116 @@ final class StagingPurchaseCoordinator: ObservableObject {
             }
             try await api.validateSession(auth)
             try requireCurrent(generation)
+            var audit = try await api.readback(job, auth: auth)
+            try requireCurrent(generation)
+            audits[draftID] = audit
 
             if job.state == .ready {
-                let event = StagingPayloadBuilder.event(job, item: false)
+                // A duplicate server record is never an invitation to push
+                // another version. Preserve a reviewable local state.
+                if audit.orderPresent || audit.itemPresent {
+                    job = try transition(job, to: .needsReview,
+                        "已有同一 sync_id 的远端记录，已停止重复写入", in: storage)
+                    throw StagingSafetyError.needsReview(job.lastMessage)
+                }
+                let orderEvent = StagingPayloadBuilder.event(job, item: false)
                 job = try transition(job, to: .sendingOrder,
-                                     "订单网络请求发出前已落盘", in: storage)
+                                     "父订单发送前持久化状态", in: storage)
                 do {
                     try requireCurrent(generation)
-                    let response = try await api.pushSingle(event, auth: auth)
+                    let response = try await api.pushSingle(orderEvent, auth: auth)
                     try requireCurrent(generation)
-                    guard response.isAccepted(event),
-                          try await api.verify(event, auth: auth) else {
-                        throw StagingSafetyError.needsReview("采购订单确认或回读失败")
+                    guard response.isAccepted(orderEvent) else {
+                        throw StagingSafetyError.needsReview(
+                            "服务端未按订单 sync_id 确认当前版本")
                     }
+                    audit = try await api.readback(job, auth: auth)
                     try requireCurrent(generation)
+                    audits[draftID] = audit
+                    guard audit.orderVerified, !audit.itemPresent else {
+                        throw StagingSafetyError.needsReview(audit.headline)
+                    }
+                    if audit.remappedOrderID {
+                        throw StagingSafetyError.needsReview(
+                            "服务端已重映射订单数字 ID，未发送仍指向旧 ID 的商品明细")
+                    }
                     job = try transition(job, to: .orderConfirmed,
-                                         "服务端已接受订单并回读匹配", in: storage)
+                                         "服务端订单已匹配；等待商品明细确认",
+                                         in: storage)
                 } catch {
+                    try requireCurrent(generation)
                     _ = try transition(job, to: .needsReview,
-                                       "订单可能已写入：" + error.localizedDescription,
+                                       "订单结果待核对：" + error.localizedDescription,
                                        in: storage)
                     throw error
                 }
+            } else {
+                if audit.complete {
+                    _ = try transition(job, to: .complete,
+                                       "云端已回读确认，无需重复上传",
+                                       in: storage)
+                    message = "订单及明细已在测试账本中，未发送重复请求"
+                    return
+                }
+                guard audit.orderVerified, !audit.itemPresent,
+                      !audit.remappedOrderID else {
+                    _ = try transition(job, to: .needsReview,
+                                       "父订单或商品明细回读异常，禁止再次提交",
+                                       in: storage)
+                    throw StagingSafetyError.needsReview(audit.headline)
+                }
+            }
+
+            // One last read after the order was confirmed, before sending
+            // the child. Refuse to use a stale parent numeric ID.
+            audit = try await api.readback(job, auth: auth)
+            try requireCurrent(generation)
+            audits[draftID] = audit
+            guard audit.orderVerified, !audit.itemPresent,
+                  !audit.remappedOrderID else {
+                _ = try transition(job, to: .needsReview,
+                                   "商品明细尚未发送：父订单或远端关联有变化",
+                                   in: storage)
+                throw StagingSafetyError.needsReview(audit.headline)
             }
 
             let itemEvent = StagingPayloadBuilder.event(job, item: true)
-            // Staging server must already have the canonical parent row
-            // before the purchase_item refers to its remote numeric ID.
-            try requireCurrent(generation)
-            guard try await api.verify(StagingPayloadBuilder.event(job, item: false),
-                                       auth: auth) else {
-                throw StagingSafetyError.needsReview("采购订单未能回读，请先人工核对")
-            }
-            try requireCurrent(generation)
             job = try transition(job, to: .sendingItem,
-                                 "明细请求发出前已落盘", in: storage)
+                                 "子商品明细发送前持久化状态", in: storage)
             do {
                 try requireCurrent(generation)
                 let response = try await api.pushSingle(itemEvent, auth: auth)
                 try requireCurrent(generation)
-                guard response.isAccepted(itemEvent),
-                      try await api.verify(itemEvent, auth: auth) else {
-                    throw StagingSafetyError.needsReview("商品明细确认或回读失败")
+                guard response.isAccepted(itemEvent) else {
+                    throw StagingSafetyError.needsReview(
+                        "服务端未按商品明细 sync_id 确认当前版本")
                 }
+                audit = try await api.readback(job, auth: auth)
                 try requireCurrent(generation)
+                audits[draftID] = audit
+                guard audit.complete else {
+                    throw StagingSafetyError.needsReview(audit.headline)
+                }
                 _ = try transition(job, to: .complete,
-                                   "订单和商品明细已由测试账本回读确认",
+                                   "云端订单、商品、金额及父子 ID 已核对",
                                    in: storage)
-                message = "正式服务器测试账本已确认订单与明细；请在同一测试账本的 Android 上核对。"
+                message = "服务器测试账本已确认。请在 Android 同账本核对后手动记录验收。"
             } catch {
+                try requireCurrent(generation)
                 _ = try transition(job, to: .needsReview,
-                                   "明细可能已写入：" + error.localizedDescription,
+                                   "商品明细结果待核对：" + error.localizedDescription,
                                    in: storage)
                 throw error
             }
         } catch {
-            message = error.localizedDescription
-            refreshLocal()
+            if generation == sessionGeneration {
+                message = error.localizedDescription
+                refreshLocal()
+            }
         }
     }
 
+    /// Read-only audit: safe to repeat. Does NOT retry any pending push.
     func checkServer(draftID: String) async {
         guard !busy else { return }
         let generation = sessionGeneration
@@ -259,8 +311,8 @@ final class StagingPurchaseCoordinator: ObservableObject {
         defer { busy = false }
         do {
             let (api, auth, book, storage) = try verified()
-            guard var job = try storage.stagingJob(id: draftID,
-                account: sourceAccount, book: book.id) else {
+            guard var job = try storage.stagingJob(
+                id: draftID, account: sourceAccount, book: book.id) else {
                 throw StagingSafetyError.invalidDraft
             }
             guard job.stageHost == auth.host,
@@ -270,26 +322,67 @@ final class StagingPurchaseCoordinator: ObservableObject {
             }
             try await api.validateSession(auth)
             try requireCurrent(generation)
-            let order = try await api.verify(StagingPayloadBuilder.event(job, item: false),
-                                             auth: auth)
-            let item = try await api.verify(StagingPayloadBuilder.event(job, item: true),
-                                            auth: auth)
+            let audit = try await api.readback(job, auth: auth)
             try requireCurrent(generation)
-            if order && item {
-                job = try transition(job, to: .complete,
-                                     "重新回读确认订单和明细", in: storage)
-            } else if order && !item && job.state != .complete && job.state != .ready {
-                job = try transition(job, to: .orderConfirmed,
-                                     "仅订单已回读；明细未确认可继续手动提交",
-                                     in: storage)
-            } else {
-                if job.state != .needsReview {
+            audits[draftID] = audit
+
+            if audit.complete {
+                if job.state == .ready {
                     job = try transition(job, to: .needsReview,
-                                         "测试服务器未确认完整的父子记录",
+                        "请求前已存在完整云端记录，请先确认来源", in: storage)
+                    message = "远端存在同一同步 ID 的记录，已停止写入"
+                    return
+                }
+                if job.state != .complete {
+                    job = try transition(job, to: .complete,
+                                         "订单和明细已从服务器完整回读确认",
                                          in: storage)
                 }
+            } else if audit.orderVerified && !audit.itemPresent &&
+                      !audit.remappedOrderID &&
+                      job.state != .complete && job.state != .ready {
+                job = try transition(job, to: .orderConfirmed,
+                                     "仅父订单存在，可人工确认继续明细上传",
+                                     in: storage)
+            } else if job.state == .ready &&
+                      !audit.orderPresent && !audit.itemPresent {
+                message = "草稿尚未上传；云端回读未找到记录"
+                return
+            } else if job.state != .complete && job.state != .needsReview {
+                job = try transition(job, to: .needsReview,
+                                     "云端核对不一致，需人工处理",
+                                     in: storage)
             }
-            message = job.lastMessage
+            message = audit.headline
+        } catch {
+            if generation == sessionGeneration {
+                message = error.localizedDescription
+            }
+        }
+    }
+
+    /// An Android check is recorded only as a *manual* user attestation.
+    /// It is never portrayed as automatic Android device acknowledgement.
+    func confirmAndroidReview(draftID: String) {
+        do {
+            let (_, _, book, storage) = try verified()
+            guard let audit = audits[draftID], audit.complete,
+                  audit.bookID == book.id,
+                  var job = try storage.stagingJob(
+                      id: draftID, account: sourceAccount, book: book.id),
+                  job.state == .complete else {
+                throw StagingSafetyError.needsReview(
+                    "请先在本页完成最新云端核对，并确认 Android 已读取")
+            }
+            if job.androidCheckedAt != nil {
+                message = "已保存 Android 人工核对记录"
+                return
+            }
+            job.androidCheckedAt = Date()
+            job.lastMessage = "用户已手动确认 Android 同账本采购数据一致（非自动确认）"
+            try storage.saveStagingJob(job)
+            refreshLocal()
+            message = "已记下 Android 人工验收结果，不影响服务器任何记录"
         } catch {
             message = error.localizedDescription
         }

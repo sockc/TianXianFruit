@@ -16,7 +16,7 @@ struct StagingPurchaseUploadView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 13) {
-                Label("V0.2.2 · 单服务器测试账本采购验证", systemImage: "shield.lefthalf.filled")
+                Label("V0.2.3 · 首单云端与 Android 对账", systemImage: "shield.lefthalf.filled")
                     .font(.headline)
                     .foregroundColor(.orange)
                 Text("只对 sync.830888.xyz 中明确指定的 iOS_TEST_ 测试账本试写一笔采购订单及明细。必须使用只拥有该账本权限的专用账号；正式账本、营业和资金结算仍然不可写。")
@@ -136,6 +136,39 @@ struct StagingPurchaseUploadView: View {
                                 .font(.caption2).foregroundColor(.secondary)
                                 .lineLimit(2)
                         }
+                        if let audit = coordinator.audits[draft.id] {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Label(audit.headline, systemImage:
+                                      audit.complete ? "checkmark.shield" :
+                                      "exclamationmark.triangle")
+                                    .font(.caption.bold())
+                                    .foregroundColor(audit.complete ? .green : .orange)
+                                Text("云端父订单：" + (audit.orderVerified ? "核对通过" : "尚未核对") +
+                                     " · 商品明细：" + (audit.itemVerified ? "核对通过" : "尚未核对"))
+                                    .font(.caption2).foregroundColor(.secondary)
+                                if let remoteID = audit.serverOrderID {
+                                    Text("云端订单数字 ID：" + String(remoteID))
+                                        .font(.caption2).foregroundColor(.secondary)
+                                }
+                                if audit.remappedOrderID {
+                                    Text("检测到服务端数字 ID 重映射；未校验明细关联前不会自动继续上传")
+                                        .font(.caption2).foregroundColor(.orange)
+                                }
+                                ForEach(audit.issues) { issue in
+                                    Text("• " + issue.description)
+                                        .font(.caption2)
+                                        .foregroundColor(.orange)
+                                }
+                                Text("云端回读时间：" + audit.checkedAt.formatted(
+                                    date: .abbreviated, time: .shortened))
+                                    .font(.caption2).foregroundColor(.secondary)
+                            }
+                        }
+                        if let checked = current?.androidCheckedAt {
+                            Text("Android 人工核对已记录：" + checked.formatted(
+                                date: .abbreviated, time: .shortened))
+                                .font(.caption).foregroundColor(.green)
+                        }
                         if coordinator.connected {
                             if current == nil {
                                 Button("① 核验采购人/商品并准备订单") {
@@ -150,16 +183,29 @@ struct StagingPurchaseUploadView: View {
                                 }
                                 .disabled(coordinator.busy)
                                 .foregroundColor(.orange)
+                            } else if current?.state == .complete {
+                                Text("服务器回读已确认；Android 设备核对仍需人工完成")
+                                    .font(.caption).foregroundColor(.green)
                             } else if current?.state == .needsReview ||
                                       current?.state == .sendingOrder ||
                                       current?.state == .sendingItem {
-                                Button("检查服务器是否已经接收，绝不自动重传") {
+                                Text("未确认结果不会自动重新发送，请先核对远端")
+                                    .font(.caption).foregroundColor(.orange)
+                            }
+                            if current != nil {
+                                Button("刷新云端对账（仅查询，不提交）") {
                                     Task { await coordinator.checkServer(draftID: draft.id) }
                                 }
                                 .disabled(coordinator.busy)
-                            } else if current?.state == .complete {
-                                Text("已由测试服务器回读确认，等待 Android 测试客户端读取核对")
-                                    .font(.caption).foregroundColor(.green)
+                            }
+                            if current?.state == .complete,
+                               coordinator.audits[draft.id]?.complete == true,
+                               current?.androidCheckedAt == nil {
+                                Button("我已在 Android 同一测试账本核对金额、数量和明细") {
+                                    coordinator.confirmAndroidReview(draftID: draft.id)
+                                }
+                                .font(.caption)
+                                .disabled(coordinator.busy)
                             }
                         }
                     }
@@ -167,12 +213,12 @@ struct StagingPurchaseUploadView: View {
                     .background(Color(UIColor.secondarySystemGroupedBackground),
                                 in: RoundedRectangle(cornerRadius: 12))
                 }
-                Text("第一次只允许提交一笔采购订单和明细。若出现网络超时或冲突，禁止自动重发；先检查远端记录。测试后核对 Android 同一测试账本。")
+                Text("仅测试账本首笔采购。云端回读不等于 Android 已同步；手动验收必须再用 Android 同账本检查采购人、商品、数量、总价和订单明细。服务器无记录不代表写入失败，遇到超时不要盲目重发。")
                     .font(.caption2).foregroundColor(.secondary)
             }
             .padding(12)
         }
-        .navigationBarTitle("测试账本采购同步", displayMode: .inline)
+        .navigationBarTitle("采购同步与对账", displayMode: .inline)
         .alert(item: Binding(
             get: { confirmUploadID.map { PendingUpload(id: $0) } },
             set: { confirmUploadID = $0?.id }
