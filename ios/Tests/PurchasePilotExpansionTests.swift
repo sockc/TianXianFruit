@@ -34,12 +34,20 @@ final class PurchasePilotExpansionTests: XCTestCase {
             available: refs)
     }
 
-    private func completed(_ job: StagingPurchaseJob) -> StagingPurchaseJob {
+    private func completed(_ job: StagingPurchaseJob) throws -> StagingPurchaseJob {
         var copy = job
         copy.state = .complete
         copy.childParentID = job.orderRemoteID
         copy.itemRequestStarted = true
-        copy.androidCheckedAt = Date(timeIntervalSince1970: 1795051200)
+        let audit = matchingAudit(copy)
+        let observed = AndroidPurchaseObservation(
+            date: "2026-11-19", buyerName: "测试采购人",
+            fruitName: "红提", unit: "箱", quantity: "2.5", totalCost: "80")
+        let evidence = try AndroidPurchaseReviewPolicy.confirm(
+            job: copy, audit: audit, observation: observed,
+            now: audit.checkedAt.addingTimeInterval(3))
+        copy.androidReview = evidence
+        copy.androidCheckedAt = evidence.checkedAt
         return copy
     }
 
@@ -123,9 +131,9 @@ final class PurchasePilotExpansionTests: XCTestCase {
     }
 
     func testSecondAndThirdNeedPriorCloudAndAndroidChecks() throws {
-        let first = completed(try job("pilot-first"))
-        let second = completed(try job("pilot-second"))
-        let third = completed(try job("pilot-third"))
+        let first = try completed(try job("pilot-first"))
+        let second = try completed(try job("pilot-second"))
+        let third = try completed(try job("pilot-third"))
         let one = [first.id: matchingAudit(first)]
         XCTAssertNoThrow(try StagingPurchasePolicy.authorizeNextOrder(
             existing: [first], audits: one, bookID: testBook.id,
@@ -148,15 +156,16 @@ final class PurchasePilotExpansionTests: XCTestCase {
     }
 
     func testCannotOpenNextIfPriorHasNotBeenCheckedOnAndroid() throws {
-        var first = completed(try job("not-confirmed"))
+        var first = try completed(try job("not-confirmed"))
         first.androidCheckedAt = nil
+        first.androidReview = nil
         XCTAssertThrowsError(try StagingPurchasePolicy.authorizeNextOrder(
             existing: [first], audits: [first.id: matchingAudit(first)],
             bookID: testBook.id, username: "one_book_user"))
     }
 
     func testCannotOpenNextIfRemoteRecordHasChangedOrMissing() throws {
-        let first = completed(try job("wrong-total"))
+        let first = try completed(try job("wrong-total"))
         var order = first.orderPayload
         order["total_cost"] = .number(999)
         let badAudit = PurchaseReadbackPolicy.audit(first, events: [
@@ -174,7 +183,7 @@ final class PurchasePilotExpansionTests: XCTestCase {
     }
 
     func testCannotMixAccountsOrAnotherBookForNextOrder() throws {
-        let first = completed(try job("wrong-account"))
+        let first = try completed(try job("wrong-account"))
         let audits = [first.id: matchingAudit(first)]
         XCTAssertThrowsError(try StagingPurchasePolicy.authorizeNextOrder(
             existing: [first], audits: audits, bookID: testBook.id,
@@ -192,11 +201,13 @@ final class PurchasePilotExpansionTests: XCTestCase {
         dictionary.removeValue(forKey: "childParentID")
         dictionary.removeValue(forKey: "itemRequestStarted")
         dictionary.removeValue(forKey: "androidCheckedAt")
+        dictionary.removeValue(forKey: "androidReview")
         let decoded = try JSONDecoder().decode(StagingPurchaseJob.self,
             from: JSONSerialization.data(withJSONObject: dictionary))
         XCTAssertNil(decoded.childParentID)
         XCTAssertNil(decoded.itemRequestStarted)
         XCTAssertNil(decoded.androidCheckedAt)
+        XCTAssertNil(decoded.androidReview)
         XCTAssertEqual(decoded.orderSyncID, old.orderSyncID)
     }
 }

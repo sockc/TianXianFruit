@@ -11,12 +11,13 @@ struct StagingPurchaseUploadView: View {
     @State private var typedBookID = ""
     @State private var acknowledged = false
     @State private var confirmUploadID: String?
+    @State private var androidReviewTarget: PendingUpload?
     @State private var stageInfoExpanded = false
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 13) {
-                Label("V0.2.4 · 小批量采购跨设备试运行", systemImage: "shield.lefthalf.filled")
+                Label("V0.2.5 · 采购云端与 Android 数据逐项验收", systemImage: "shield.lefthalf.filled")
                     .font(.headline)
                     .foregroundColor(.orange)
                 Text("仅对 sync.830888.xyz 中明确指定的 iOS_TEST_ 测试账本分阶段试写最多三笔单商品采购。必须使用只拥有该账本权限的专用账号；正式账本、营业和资金结算仍然不可写。")
@@ -41,7 +42,7 @@ struct StagingPurchaseUploadView: View {
                         Text("① 仅使用正式同步域名 sync.830888.xyz，不需要独立服务器。")
                         Text("② 为测试账本建立专用账号，不能是管理员、超级用户或拥有其他账本的账号。")
                         Text("③ 客户端再次核对完整账本 ID、名称、权限和商品/采购人的同步 ID。")
-                        Text("④ 首次只允许试写一笔采购；回到 Android 的同一测试账本逐项核对。")
+                        Text("④ 逐笔试写最多三笔，必须在 Android 手动输入六项数据验收，不能只点确认。")
                         Text("⑤ 只靠客户端不能保证服务器的跨账本隔离；须确认服务端按 token 和 book_id 授权。")
                     }
                     .font(.caption).foregroundColor(.secondary)
@@ -98,6 +99,7 @@ struct StagingPurchaseUploadView: View {
                         acknowledged = false
                         typedBookID = ""
                         confirmUploadID = nil
+                        androidReviewTarget = nil
                     }
                     .font(.caption)
                 }
@@ -180,10 +182,27 @@ struct StagingPurchaseUploadView: View {
                                     .font(.caption2).foregroundColor(.secondary)
                             }
                         }
-                        if let checked = current?.androidCheckedAt {
-                            Text("Android 人工核对已记录：" + checked.formatted(
-                                date: .abbreviated, time: .shortened))
-                                .font(.caption).foregroundColor(.green)
+                        if let current, let evidence = current.androidReview {
+                            if let audit = coordinator.audits[draft.id] {
+                                if AndroidPurchaseReviewPolicy.isCurrent(
+                                    evidence, job: current, audit: audit) {
+                                    Label("Android 六项验收已核对 · " +
+                                          evidence.checkedAt.formatted(
+                                              date: .abbreviated, time: .shortened),
+                                          systemImage: "checkmark.seal")
+                                        .font(.caption).foregroundColor(.green)
+                                } else {
+                                    Label("Android 验收对应的云端指纹已变化；禁止解锁下一笔",
+                                          systemImage: "exclamationmark.triangle")
+                                        .font(.caption).foregroundColor(.orange)
+                                }
+                            } else {
+                                Text("已保存 Android 六项验收，请刷新云端确认仍一致")
+                                    .font(.caption).foregroundColor(.secondary)
+                            }
+                        } else if current?.androidCheckedAt != nil {
+                            Text("旧版 Android 确认已保留，但缺少六项数据；需重新核对才能准备下一单")
+                                .font(.caption).foregroundColor(.orange)
                         }
                         if coordinator.connected {
                             if current == nil {
@@ -221,9 +240,9 @@ struct StagingPurchaseUploadView: View {
                             }
                             if current?.state == .complete,
                                coordinator.audits[draft.id]?.complete == true,
-                               current?.androidCheckedAt == nil {
-                                Button("我已在 Android 同一测试账本核对金额、数量和明细") {
-                                    coordinator.confirmAndroidReview(draftID: draft.id)
+                               current?.androidReview == nil {
+                                Button("填写 Android 实际六项数据并验收") {
+                                    androidReviewTarget = PendingUpload(id: draft.id)
                                 }
                                 .font(.caption)
                                 .disabled(coordinator.busy)
@@ -239,7 +258,7 @@ struct StagingPurchaseUploadView: View {
             }
             .padding(12)
         }
-        .navigationBarTitle("采购小批量同步", displayMode: .inline)
+        .navigationBarTitle("采购数据逐项验收", displayMode: .inline)
         .alert(item: Binding(
             get: { confirmUploadID.map { PendingUpload(id: $0) } },
             set: { confirmUploadID = $0?.id }
@@ -255,6 +274,18 @@ struct StagingPurchaseUploadView: View {
                     confirmUploadID = nil
                 })
         }
+        .sheet(item: $androidReviewTarget) { target in
+            if let job = coordinator.jobs.first(where: { $0.id == target.id }),
+               let audit = coordinator.audits[target.id], audit.complete {
+                AndroidPurchaseReviewSheet(job: job, audit: audit) { observation in
+                    coordinator.confirmAndroidReview(
+                        draftID: target.id, observation: observation)
+                }
+            } else {
+                Text("请重新进行云端核对后再填写 Android 数据")
+                    .padding()
+            }
+        }
         .onAppear {
             coordinator.open(account: model.account?.username,
                              book: model.selectedBook)
@@ -266,6 +297,7 @@ struct StagingPurchaseUploadView: View {
             acknowledged = false
             stagePassword = ""
             confirmUploadID = nil
+            androidReviewTarget = nil
         }
     }
 }

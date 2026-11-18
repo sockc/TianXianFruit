@@ -409,30 +409,46 @@ final class StagingPurchaseCoordinator: ObservableObject {
         }
     }
 
-    /// An Android check is recorded only as a *manual* user attestation.
-    /// It is never portrayed as automatic Android device acknowledgement.
-    func confirmAndroidReview(draftID: String) {
+    /// Requires six independently typed Android values, a fresh verified
+    /// cloud readback and an immutable local observation/fingerprint.
+    /// This is still MANUAL evidence, not an Android device API response.
+    @discardableResult
+    func confirmAndroidReview(draftID: String,
+                              observation: AndroidPurchaseObservation) -> Bool {
+        guard !busy else {
+            message = "正在核对云端数据，请完成后再确认 Android"
+            return false
+        }
         do {
-            let (_, _, book, storage) = try verified()
+            let (_, auth, book, storage) = try verified()
             guard let audit = audits[draftID], audit.complete,
                   audit.bookID == book.id,
                   var job = try storage.stagingJob(
                       id: draftID, account: sourceAccount, book: book.id),
-                  job.state == .complete else {
+                  job.state == .complete,
+                  job.stageHost == auth.host,
+                  job.stageInstanceID == auth.scope.instanceID,
+                  job.stageUsername.lowercased() == auth.username.lowercased() else {
                 throw StagingSafetyError.needsReview(
-                    "请先在本页完成最新云端核对，并确认 Android 已读取")
+                    "请先刷新同一测试账本云端核对，再填写 Android 实际读到的数据")
             }
-            if job.androidCheckedAt != nil {
-                message = "已保存 Android 人工核对记录"
-                return
+            guard job.androidReview == nil else {
+                throw AndroidPurchaseReviewError.alreadyConfirmed
             }
-            job.androidCheckedAt = Date()
-            job.lastMessage = "用户已手动确认 Android 同账本采购数据一致（非自动确认）"
+            let evidence = try AndroidPurchaseReviewPolicy.confirm(
+                job: job, audit: audit, observation: observation)
+            job.androidReview = evidence
+            if job.androidCheckedAt == nil {
+                job.androidCheckedAt = evidence.checkedAt
+            }
+            job.lastMessage = "用户已录入 Android 六项数据且与当前云端核对一致（本机人工记录）"
             try storage.saveStagingJob(job)
             refreshLocal()
-            message = "已记下 Android 人工验收结果，不影响服务器任何记录"
+            message = "Android 六项人工核对已保存；不代表系统自动连接 Android"
+            return true
         } catch {
             message = error.localizedDescription
+            return false
         }
     }
 }

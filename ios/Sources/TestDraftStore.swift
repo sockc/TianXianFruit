@@ -203,6 +203,16 @@ final class TestDraftStore {
                previous.androidCheckedAt != job.androidCheckedAt {
                 throw TestDraftStoreError.invalid
             }
+            // Once recorded, the Android observations and the cloud
+            // fingerprint are immutable, including across logout/restart.
+            if let earlier = previous.androidReview,
+               earlier != job.androidReview {
+                throw TestDraftStoreError.invalid
+            }
+            if previous.androidReview == nil, job.androidReview != nil,
+               previous.state != .complete {
+                throw TestDraftStoreError.invalid
+            }
             // The canonical parent link may be set ONCE after verified
             // server readback, before the child request is sent. No rewriting
             // a frozen association on retries or after a conflict.
@@ -220,6 +230,10 @@ final class TestDraftStore {
             }
         }
         guard job.androidCheckedAt == nil || job.state == .complete else {
+            throw TestDraftStoreError.invalid
+        }
+        guard job.androidReview == nil ||
+              (job.state == .complete && job.androidCheckedAt != nil) else {
             throw TestDraftStoreError.invalid
         }
         if let canonical = job.childParentID,

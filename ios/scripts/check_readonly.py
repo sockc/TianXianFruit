@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V0.2.4: only the dedicated one-book purchase client may write businesses."""
+"""V0.2.5: only the dedicated one-book purchase client may write businesses."""
 from pathlib import Path
 root = Path(__file__).resolve().parents[1] / "Sources"
 swift = {path.name: path.read_text(encoding="utf-8") for path in root.glob("*.swift")}
@@ -51,7 +51,14 @@ assert "job.childParentID == canonical" in coordinator
 assert "previous.childParentID" in swift["TestDraftStore.swift"]
 assert "itemRequestStarted" in swift["TestDraftStore.swift"]
 assert "androidCheckedAt" in swift["TestDraftStore.swift"]
+assert "AndroidPurchaseReview.swift" in swift
+assert "AndroidPurchaseReviewSheet.swift" in swift
+assert "androidReview" in policy
+assert "AndroidPurchaseReviewPolicy.isCurrent" in policy
+assert "AndroidPurchaseReviewPolicy.confirm" in coordinator
+assert "cloudFingerprint" in swift["AndroidPurchaseReview.swift"]
+assert "androidReview" in swift["TestDraftStore.swift"]
 assert "StagingSyncMaterializer.latest(all)" in stage
 assert "orderDeleted" in swift["PurchaseReadbackAudit.swift"]
 assert "itemDeleted" in swift["PurchaseReadbackAudit.swift"]
-print("V0.2.4 PASS: fixed HTTPS test-book scope, durable child mapping, tombstones and readback gates.")
+print("V0.2.5 PASS: fixed HTTPS test-book scope, durable child mapping, tombstones and readback gates.")

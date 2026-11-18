@@ -1,4 +1,4 @@
-name: Check iOS V0.2.4 purchase pilot expansion
+name: Check iOS V0.2.5 Android purchase evidence
 
 on:
   pull_request:

@@ -22,6 +22,8 @@ struct PurchaseReadbackAudit {
     let itemVerified: Bool
     let serverOrderID: Int64?
     let serverItemID: Int64?
+    let serverOrderVersion: Int64?
+    let serverItemVersion: Int64?
     let submittedOrderID: Int64
     let issues: [Issue]
 
@@ -156,6 +158,8 @@ enum PurchaseReadbackPolicy {
                         orderPresent: parent != nil, itemPresent: true,
                         orderVerified: false, itemVerified: false,
                         serverOrderID: nil, serverItemID: serverItemID,
+                        serverOrderVersion: parent?.rowVersion,
+                        serverItemVersion: child?.rowVersion,
                         submittedOrderID: job.orderRemoteID,
                         issues: issues)
                 }
@@ -182,6 +186,8 @@ enum PurchaseReadbackPolicy {
             orderPresent: parent != nil, itemPresent: child != nil,
             orderVerified: parentOK, itemVerified: childOK,
             serverOrderID: serverOrderID, serverItemID: serverItemID,
+            serverOrderVersion: parent?.rowVersion,
+            serverItemVersion: child?.rowVersion,
             submittedOrderID: job.orderRemoteID, issues: issues)
     }
 }

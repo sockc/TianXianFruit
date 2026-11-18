@@ -115,9 +115,11 @@ enum StagingPurchasePolicy {
                   job.stageHost == productionURL,
                   job.stageInstanceID == "production-scoped-testbook:" + bookID,
                   job.stageUsername.lowercased() == username.lowercased(),
-                  job.state == .complete, job.androidCheckedAt != nil,
+                  job.state == .complete,
                   let audit = audits[job.id], audit.complete,
-                  audit.bookID == bookID else {
+                  audit.bookID == bookID,
+                  AndroidPurchaseReviewPolicy.isCurrent(
+                      job.androidReview, job: job, audit: audit) else {
                 throw StagingSafetyError.needsReview(
                     "上一笔采购必须重新完成云端核对并在 Android 人工验收后，才可准备下一笔")
             }
@@ -182,6 +184,9 @@ struct StagingPurchaseJob: Codable, Identifiable {
     /// Irreversible marker: a child network request may have reached the
     /// server. Missing readback after timeout is not proof of non-delivery.
     var itemRequestStarted: Bool? = nil
+    /// Structured manual observation rather than a blind confirmation tap.
+    /// Older V0.2.4 jobs decode with nil and require one-time reinspection.
+    var androidReview: AndroidPurchaseReviewEvidence? = nil
 }
 
 struct StageBookReference {
