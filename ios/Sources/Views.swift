@@ -26,7 +26,7 @@ private struct LoginView: View {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("天鲜账本").font(.largeTitle.bold())
-                        Text("iOS V0.2.0 · 草稿预演").foregroundColor(.secondary)
+                        Text("iOS V0.2.1 · 草稿预演").foregroundColor(.secondary)
                         Label("无营业、采购或结算写入功能", systemImage: "lock.shield")
                             .font(.footnote).foregroundColor(.green)
                     }.padding(.vertical, 10)
@@ -441,6 +441,9 @@ private struct MorePage: View {
                 NavigationLink(destination: TestWriteLabView()) {
                     Label("写入测试实验室 · 仅本机草稿", systemImage: "square.and.pencil")
                 }
+                NavigationLink(destination: StagingPurchaseUploadView()) {
+                    Label("隔离测试采购同步 · 仅测试服务器", systemImage: "arrow.up.doc")
+                }
                 Divider()
                 Text("账号与同步").font(.headline)
                 VStack(alignment: .leading, spacing: 12) {
@@ -465,9 +468,9 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.2.0 · TrollStore 本机草稿预演版")
+                Text("版本：iOS V0.2.1 · TrollStore 本机草稿预演版")
                     .font(.caption).foregroundColor(.secondary)
-                Text("云端仍然只读。本机仅允许在 iOS_TEST_ 账本中预演营业与采购录入；不提交到服务器，不影响 Android 当日结算。")
+                Text("正式云端仍只读。仅经隔离证明的测试服务端允许采购上传；营业写入和所有结算仍锁定。")
                     .font(.caption2).foregroundColor(.secondary)
                 Button(role: .destructive) {
                     model.signOut()

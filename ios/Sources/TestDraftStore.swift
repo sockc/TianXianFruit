@@ -47,6 +47,18 @@ final class TestDraftStore {
         )
         """)
         try exec("CREATE INDEX IF NOT EXISTS idx_test_drafts_scope ON test_preview_drafts(account,book_id,created_at_ms)")
+        try exec("""
+        CREATE TABLE IF NOT EXISTS isolated_staging_jobs (
+          id TEXT PRIMARY KEY,
+          source_account TEXT NOT NULL,
+          book_id TEXT NOT NULL,
+          stage_host TEXT NOT NULL,
+          state TEXT NOT NULL,
+          payload BLOB NOT NULL,
+          created_at_ms INTEGER NOT NULL
+        )
+        """)
+        try exec("CREATE INDEX IF NOT EXISTS idx_staging_jobs_scope ON isolated_staging_jobs(source_account,book_id)")
     }
 
     deinit { if database != nil { sqlite3_close(database) } }
@@ -151,6 +163,107 @@ final class TestDraftStore {
         bind(normalized(account), at: 2, to: statement)
         bind(book, at: 3, to: statement)
         try step(statement)
+    }
+
+    /// Exactly one immutable staging upload intent per local draft.
+    /// The payload/host cannot be changed after preparation, even on retry.
+    func saveStagingJob(_ job: StagingPurchaseJob) throws {
+        guard !job.id.isEmpty, !job.bookID.isEmpty, !job.sourceAccount.isEmpty,
+              job.stageHost.hasPrefix("https://"),
+              !job.stageInstanceID.isEmpty else { throw TestDraftStoreError.invalid }
+        if let previous = try stagingJob(id: job.id, account: job.sourceAccount,
+                                         book: job.bookID) {
+            guard previous.id == job.id,
+                  previous.stageHost == job.stageHost,
+                  previous.stageInstanceID == job.stageInstanceID,
+                  previous.stageUsername == job.stageUsername,
+                  previous.bookID == job.bookID,
+                  previous.deviceID == job.deviceID,
+                  previous.orderSyncID == job.orderSyncID,
+                  previous.itemSyncID == job.itemSyncID,
+                  previous.orderRemoteID == job.orderRemoteID,
+                  previous.itemRemoteID == job.itemRemoteID,
+                  previous.orderPayload == job.orderPayload,
+                  previous.itemPayload == job.itemPayload,
+                  previous.createdAt == job.createdAt else {
+                throw TestDraftStoreError.invalid
+            }
+            let allowed: [StagingUploadState: Set<StagingUploadState>] = [
+                .ready: [.ready, .sendingOrder],
+                .sendingOrder: [.sendingOrder, .orderConfirmed, .needsReview],
+                .orderConfirmed: [.orderConfirmed, .sendingItem],
+                .sendingItem: [.sendingItem, .complete, .needsReview, .orderConfirmed],
+                .needsReview: [.needsReview, .orderConfirmed, .complete],
+                .complete: [.complete]
+            ]
+            guard allowed[previous.state]?.contains(job.state) == true else {
+                throw TestDraftStoreError.invalid
+            }
+        }
+        let stmt = try prepare("""
+            INSERT INTO isolated_staging_jobs
+            (id,source_account,book_id,stage_host,state,payload,created_at_ms)
+            VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+                payload=excluded.payload,
+                state=excluded.state
+            WHERE source_account=excluded.source_account AND
+                  book_id=excluded.book_id AND stage_host=excluded.stage_host
+        """)
+        defer { sqlite3_finalize(stmt) }
+        bind(job.id, at: 1, to: stmt)
+        bind(normalized(job.sourceAccount), at: 2, to: stmt)
+        bind(job.bookID, at: 3, to: stmt)
+        bind(job.stageHost, at: 4, to: stmt)
+        bind(job.state.rawValue, at: 5, to: stmt)
+        bind(try JSONEncoder().encode(job), at: 6, to: stmt)
+        sqlite3_bind_int64(stmt, 7,
+                           Int64(job.createdAt.timeIntervalSince1970 * 1000))
+        try step(stmt)
+    }
+
+    func stagingJob(id: String, account: String,
+                    book: String) throws -> StagingPurchaseJob? {
+        let stmt = try prepare("""
+            SELECT payload FROM isolated_staging_jobs
+            WHERE id=? AND source_account=? AND book_id=?
+        """)
+        defer { sqlite3_finalize(stmt) }
+        bind(id, at: 1, to: stmt)
+        bind(normalized(account), at: 2, to: stmt)
+        bind(book, at: 3, to: stmt)
+        guard sqlite3_step(stmt) == SQLITE_ROW,
+              let bytes = sqlite3_column_blob(stmt, 0) else { return nil }
+        let count = Int(sqlite3_column_bytes(stmt, 0))
+        let value = try JSONDecoder().decode(
+            StagingPurchaseJob.self, from: Data(bytes: bytes, count: count))
+        guard normalized(value.sourceAccount) == normalized(account),
+              value.bookID == book, value.id == id else {
+            throw TestDraftStoreError.invalid
+        }
+        return value
+    }
+
+    func stagingJobs(account: String, book: String) throws -> [StagingPurchaseJob] {
+        let stmt = try prepare("""
+            SELECT id FROM isolated_staging_jobs
+            WHERE source_account=? AND book_id=? ORDER BY created_at_ms DESC
+        """)
+        defer { sqlite3_finalize(stmt) }
+        bind(normalized(account), at: 1, to: stmt)
+        bind(book, at: 2, to: stmt)
+        var ids: [String] = []
+        var status = sqlite3_step(stmt)
+        while status == SQLITE_ROW {
+            if let name = sqlite3_column_text(stmt, 0) {
+                ids.append(String(cString: name))
+            }
+            status = sqlite3_step(stmt)
+        }
+        guard status == SQLITE_DONE else {
+            throw TestDraftStoreError.sql(String(cString: sqlite3_errmsg(database)))
+        }
+        return try ids.compactMap { try stagingJob(id: $0, account: account, book: book) }
     }
 }
 

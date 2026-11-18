@@ -1,44 +1,65 @@
-# 天鲜账本 iOS V0.2.0 — 录入预演（不是云端写入版）
+# 天鲜账本 iOS V0.2.1 · 隔离测试采购同步
 
-适用于 iOS 15+；优先 iPhone X / iOS 16.6 / TrollStore。无需 Apple 开发者证书。
+适用 **iPhone X / iOS 16.6 / TrollStore**，最低 iOS 15。iOS bundle ID 不变，build 6。
 
-## 为什么先做写入预演
+## 本版范围
 
-对照 Android `CloudSyncManager.kt`、`AppDatabase.kt` 后发现：
+- **正式服务器 `https://sync.830888.xyz` 仍只能读取数据。** 原 `CloudAPI.swift` 无业务修改 API。iOS 仅在`更多 → 隔离测试采购同步`中由人工确认，才使用新的独立 `StagingPurchaseAPI` 发送采购订单及明细。
+- 保留 V0.2.0 本机独立采购、营业草稿。营业、凌晨收款、资金结算、客户账单以及正式云端任何业务表**仍不允许写入**。
+- 使用另行输入的测试 HTTPS URL 和**独立测试账号密码**登录；不使用、复制或传递生产账号的 Keychain token/password。测试登录状态只在本页内存中保存。
+- 测试服务器必须先返回 `GET /api/v1/ios-test/attestation` 证明，与生产数据库隔离，逐账本 allowlist 启用 iOS 采购写入。无此接口、返回错误、不支持 staging 或 ID 不匹配时 fail-closed。**仅把正式账本改名 `iOS_TEST_` 不会获得上传权限。**
+- 对应云端测试账本名称必须以 `iOS_TEST_` 开头，`OWNER/SUPERADMIN`；测试服务端账本 **ID、名称** 必须与草稿来源测试账本一致。这通常要求通过测试环境完整恢复/克隆测试账本，不能仅创建一个同名但不同 ID 的新账本。
+- 首先从测试服务端 **GET** 正式同步记录，按稳定 `sync_id` 确认真实采购人和商品及其测试环境数字 ID。测试快照中找不到的引用绝不强行上传。
+- 在 SQLite3 **单独持久化每笔上传意图**（地址、实例 ID、账号、账本 ID、生成的订单/明细 `sync_id`、数值 ID、冻结 payload、状态）。不可把同一草稿换成另一个服务端重新推送。
+- 一笔采购仅包含 `purchase_order` 和 `purchase_item`。先 `POST /api/v1/sync/push` 一个订单，验证 `accepted/conflicts`，再从测试环境 `sync/pull` 完整回读；确认订单后才上传明细并回读。所有出网状态**先落盘再请求**。
+- 请求超时/冲突时不自动重复上传。进入`结果不确定`，通过按钮人工回读同一服务端的同一 `sync_id`；仅在服务端确认订单后继续发送缺少的明细。原本机草稿始终保留。
+- 测试未验证：**Android 端端到端回读、业务利润与结算一致性、服务端父子记录 ID remap 在多种碰撞场景下的稳定性。** 本版只提供隔离测试的可控写入链路，不声称已在你的测试服务器实际上传成功。
 
-- Android `POST /api/v1/sync/push` 使用 `book_id/device_id/changes`、`table_name/sync_id/row_version/operation/payload`；服务端返回 `accepted/conflicts`。iOS 登录能读取，但服务器完整写入实现**不在本仓库**，不能据此认定跨平台写入已通过。
-- 营业记录必须同步多个收款人、分摊、库存、采购和 `profit`，还涉及凌晨收款跨自然日、资金结算的稳定逻辑。iOS 不能凭 `微信+支付宝+现金` 反算或者覆盖 Android 利润。
-- 采购至少关联 `purchase_order` 与 `purchase_item`，跨设备本地自增 ID 不相同，Android 通过远端父子 ID map 修复映射。未经服务器/Android 端到端验证，直接上传可能产生无主采购明细。
+## 测试服务器必须先部署
 
-**因此 V0.2.0 不发送任何真实业务写入。** 这是开发阶段的第一步：对独立测试账本录入并保存**本机草稿**，后续版本经测试账本端到端写入及冲突回归后，再决定是否启用正式云端 POST。不能把本版草稿称为“已录入正式营业额/采购额”。
+本仓库只有 Android/iOS 客户端源码，**没有可审查的正式服务端源代码，也没有已配置并通过隔离证明的在线测试服务器**。因此本提交不能部署服务端或声称已完成真实跨设备验证。
 
-## V0.2.0 完成范围
+部署人员需在**非生产数据库和非生产服务实例**创建隔离的 HTTPS 测试环境，独立账户、数据、token signing keys、对象存储和备份。Android 测试客户端也必须连接相同测试环境；Android 正式客户端继续只访问生产环境。
 
-1. **严格测试账本门禁**：只在账本名称以 `iOS_TEST_` 开头、账号角色为 `OWNER/SUPERADMIN/EDITOR` 的情况下，用户手动输入该账本**完整 ID**，并勾选确认，才解锁预演。真正的正式账本完全不开放写入界面。解锁只在当前页面内有效。
-2. **营业草稿**：按日期和已同步的位置录入微信、支付宝、现金、对应收款人、支出和付款人、开收摊估值、当日采购金额（核对用），不计算利润。
-3. **采购草稿**：按日期、采购人和商品稳定 `sync_id`，输入数量、单位、总价、每件重量、计划/临时采购类型与备注，当前一单一个商品用于先验证关联模型。
-4. **数据校验**：禁止负数、非法金额、超过两位小数的人民币、缺少收款人或稳定 ID、缺少日期/单位。零收款渠道可以不指定收款人。
-5. **本机 SQLite3 草稿持久化**：数据保存于 `Application Support/TestWriteLab/local-only-drafts.sqlite`，使用 iOS 文件保护，按账号+账本隔离，关闭 APP/断网后仍可恢复。退出登录后不再显示其他账号草稿，重新以原账号登录可以继续预演；删除单条草稿仅删除本机条目。草稿数据库独立于主云端缓存、同步游标和 Android 账本。
-6. **自动检查**：静态脚本禁止 `/api/v1/sync/push`、客户账单 push、恢复/清空和管理员数据 mutation。GitHub macOS 编译/单元测试覆盖账本门禁、负数、缺失收款人、跨账号账本隔离、断电重开本地草稿、删除不影响云端。
-7. **现有 V0.1.3 功能保留**：只读营业采购库存、客户/资金分析、增量/离线缓存、天气提醒、PDF/PNG 导出以及 iPhone X 小屏优化。
+新测试环境提供公开的：
 
-## 在 iPhone X 测试
+`GET https://<独立测试域名>/api/v1/ios-test/attestation`
 
-- 先在 Android 或管理端**创建一个完全独立的测试账本**，名称严格如 `iOS_TEST_家庭开发测试`（不是把正式账本改名！）。
-- 先在该账本准备测试摊位、测试合伙人和测试商品，通过云端同步至 iOS；不要将正式营业数据复制为测试业务。
-- 覆盖安装 V0.2.0 IPA，登录，切换到测试账本，点“更多 → 写入测试实验室”；粘贴账本完整 ID，勾选确认。
-- 保存营业和采购草稿。切换账本、重启、断网测试本地恢复，并确认 Android 与服务器**没有出现这些草稿记录**。
-- 在正式账本进入该页面应始终看到锁定提示。核验正式账本的客户、资金、凌晨收款和经营统计丝毫未被改变。
+样本见 `ios/staging-contract/attestation.example.json`。只有当环境实际隔离且其测试库允许该账本写入时，才应返回：
+- `deployment_scope = isolated_test`
+- `isolated_from_production = true`
+- `ios_purchase_write_enabled = true`
+- `instance_id` 为稳定唯一实例标识（不要与生产共用）
+- `allowed_book_ids` 仅含此批次明确准许写入的测试账本 ID
 
-## 下载
+该接口**应由独立服务环境配置和实际数据绑定保证**，不能在生产服务里硬编码这份示例 JSON，不能让它透传、代理或访问生产数据库。由测试服务端负责实施**服务端** allowlist、独立账号和权限校验、业务类型限制。客户端证明校验只是第二层保护。
 
-Actions → `Build TrollStore IPA (no Apple certificate)` → 最新成功的任务 → Artifacts → `TianXianFruit-iOS-v0.2.0-TrollStore`。解压 ZIP 用 TrollStore 覆盖安装。
-iOS `com.tianxian.fruit.ios` bundle ID 不变，版本 0.2.0，build 5，最低系统 15.0。
-本 PR #63 保持 Draft 不合并 Android 主分支，避免 iOS-only 提交触发 Android APK 重新发布。
+测试服务器还需兼容现行协议：
+- `POST /api/v1/auth/login`、`GET /api/v1/auth/me`、`POST /api/v1/devices/register`、`GET /api/v1/books`。
+- `GET /api/v1/sync/pull?book_id=...&since=0&limit=200`：包含版本号、稳定 sync ID 与原始记录。
+- `POST /api/v1/sync/push`：Android 的 `book_id/device_id/changes` JSON，返回 `accepted` 和 `conflicts`。
+- 只有`purchase_order`/`purchase_item` 的 `UPSERT` 在白名单中允许。服务器应拒绝任何非测试账本写入，跨设备 ID 映射要按 Android 逻辑核查。
 
-## 下阶段云端写入的必要前置验收
+## iPhone 测试流程
 
-- 一套可丢弃、可恢复备份的**隔离测试服务端/测试账本**，以及可审查的服务端接收/冲突规则。
-- 营业和采购的服务端接收契约、跨设备稳定 sync_id + 本地 numeric id remap、写入权限、服务端 ack、网络超时后的幂等重试、Android 端可准确读取且不污染结算。
-- 收款人多位置、午夜、删除和利润分配回归测试全部通过，再考虑单独开放真实测试写入。
-- 任何生产财务表修改都必须独立审查与明确授权，本版本没有生产业务写入。
+1. **先备份** V0.2.0 已录入的本机草稿；不要卸载旧版。通过 TrollStore **覆盖安装** V0.2.1。
+2. 在隔离服务器准备`iOS_TEST_` 名称、与草稿完全一致 ID 的独立账本，同步相同`sync_id` 的测试采购人/商品。
+3. 在 iPhone 中切换到该账本，进入`更多 → 隔离测试采购同步`，填入独立测试 URL、测试账号密码、完整账本 ID，主动确认隔离。
+4. 服务器无 attestation 或返回不符时，**应当看到拒绝提示**，不会触碰生产账本，这是预期的安全结果。
+5. 若隔离证明成功，先点击某笔草稿“核验并准备”，检查冻结的测试数据，再独立确认上传。
+6. 登录**连接同一隔离服务器**的 Android 测试端，核对采购单、采购人、商品、数量、总价、单位、`order_id` 映射、云端原始记录，以及是否影响利润分配。出现差异就停止下一笔写入。
+7. 模拟断网、延时、重复点击和部分接受。测试 iOS 应保留本机草稿与`结果待核对`状态，并禁止自动重传。
+8. 完成后再次查看正式 Android 账本，金额和凌晨收款/当日结算必须完全不变。
+
+## 构建与版本
+
+GitHub Actions → `Build TrollStore IPA (no Apple certificate)` → Artifacts → `TianXianFruit-iOS-v0.2.1-TrollStore`，解压 ZIP，用 TrollStore 安装。
+
+iOS 仅在独立开发分支 PR #63，未合并 main；**不改 Android 当日结算 UI/逻辑、生产服务器或现有 APK 发布工作流。**
+
+## 目前限制
+
+- 如果你还没有独立 HTTPS 服务器、对应测试库和 attestation 接口，**无法进行真实采购上传**。这不是客户端错误，也不能绕过安全校验直写生产环境。
+- 临时无法建立 staging 服务时，V0.2.0 本机草稿仍可继续录入、离线保存。V0.2.1 仅在隔离测试环境配置完成后才可发送。
+- 这版只验证父子两记录的跨设备回读；没有完整 purchase_activity、批量采购、库存结转、同步后利润/结算重算或真实营业写入。以上需要基于测试服务端结果单独验证。
+- 文件包含业务金额，不上传至公开 Releases 或分享测试账本内的私人数据。

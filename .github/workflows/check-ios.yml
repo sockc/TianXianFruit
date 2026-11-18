@@ -1,4 +1,4 @@
-name: Check iOS business-write isolation
+name: Check iOS isolated staging purchase sync
 
 on:
   pull_request:
@@ -25,7 +25,7 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - name: Guard business write isolation
+      - name: Guard staging-write isolation
         run: python3 ios/scripts/check_readonly.py
       - name: Install XcodeGen
         run: brew install xcodegen
