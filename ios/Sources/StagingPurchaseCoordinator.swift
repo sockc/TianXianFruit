@@ -17,6 +17,14 @@ final class StagingPurchaseCoordinator: ObservableObject {
     private var auth: StagingSession?
     private var sourceAccount = ""
     private var sourceBook: CloudBook?
+    private var sessionGeneration = 0
+
+    private func requireCurrent(_ generation: Int) throws {
+        guard generation == sessionGeneration else {
+            throw StagingSafetyError.needsReview(
+                "账本或账号已切换，停止继续提交，请人工核对远端记录")
+        }
+    }
 
     init() {
         do { storage = try TestDraftStore() }
@@ -27,6 +35,7 @@ final class StagingPurchaseCoordinator: ObservableObject {
     }
 
     func open(account: String?, book: CloudBook?) {
+        sessionGeneration += 1
         connected = false
         api = nil
         auth = nil
@@ -53,6 +62,7 @@ final class StagingPurchaseCoordinator: ObservableObject {
     func connect(username: String, password: String,
                  repeatedBookID: String, acknowledged: Bool) async {
         guard !busy else { return }
+        let generation = sessionGeneration
         busy = true
         defer { busy = false }
         do {
@@ -62,13 +72,14 @@ final class StagingPurchaseCoordinator: ObservableObject {
                 throw StagingSafetyError.wrongSourceBook
             }
             guard book.name.hasPrefix(TestWritePolicy.prefix),
-                  ["OWNER", "EDITOR"].contains(book.role) else {
+                  ["OWNER", "SUPERADMIN", "EDITOR"].contains(book.role) else {
                 throw StagingSafetyError.inaccessibleBook
             }
             let client = try StagingPurchaseAPI(
                 endpoint: StagingPurchasePolicy.productionURL)
             let session = try await client.login(username: username, password: password,
                                                   sourceBook: book)
+            try requireCurrent(generation)
             api = client
             auth = session
             connected = true
@@ -76,10 +87,12 @@ final class StagingPurchaseCoordinator: ObservableObject {
             message = "已验证专用账号仅能看到当前测试账本，上传仍需逐笔确认。此项客户端检查不能替代服务器账本权限校验。"
             refreshLocal()
         } catch {
-            connected = false
-            api = nil
-            auth = nil
-            message = error.localizedDescription
+            if generation == sessionGeneration {
+                connected = false
+                api = nil
+                auth = nil
+                message = error.localizedDescription
+            }
         }
     }
 
@@ -97,6 +110,7 @@ final class StagingPurchaseCoordinator: ObservableObject {
     /// the first upload. The production book is never selected by inference.
     func prepare(draftID: String) async {
         guard !busy else { return }
+        let generation = sessionGeneration
         busy = true
         defer { busy = false }
         do {
@@ -118,7 +132,9 @@ final class StagingPurchaseCoordinator: ObservableObject {
                 throw StagingSafetyError.invalidDraft
             }
             try await api.validateSession(auth)
+            try requireCurrent(generation)
             let stageRows = try await api.pullAll(auth)
+            try requireCurrent(generation)
             let job = try StagingPayloadBuilder.prepare(
                 draft, sourceBook: book, stageBook: auth.book,
                 stageHost: auth.host, scope: auth.scope,
@@ -161,6 +177,7 @@ final class StagingPurchaseCoordinator: ObservableObject {
     /// remote readback can resolve an uncertain result.
     func upload(draftID: String) async {
         guard !busy else { return }
+        let generation = sessionGeneration
         busy = true
         defer { busy = false }
         do {
@@ -174,17 +191,21 @@ final class StagingPurchaseCoordinator: ObservableObject {
                 throw StagingSafetyError.needsReview(job.state.title)
             }
             try await api.validateSession(auth)
+            try requireCurrent(generation)
 
             if job.state == .ready {
                 let event = StagingPayloadBuilder.event(job, item: false)
                 job = try transition(job, to: .sendingOrder,
                                      "订单网络请求发出前已落盘", in: storage)
                 do {
+                    try requireCurrent(generation)
                     let response = try await api.pushSingle(event, auth: auth)
+                    try requireCurrent(generation)
                     guard response.isAccepted(event),
                           try await api.verify(event, auth: auth) else {
                         throw StagingSafetyError.needsReview("采购订单确认或回读失败")
                     }
+                    try requireCurrent(generation)
                     job = try transition(job, to: .orderConfirmed,
                                          "服务端已接受订单并回读匹配", in: storage)
                 } catch {
@@ -198,22 +219,27 @@ final class StagingPurchaseCoordinator: ObservableObject {
             let itemEvent = StagingPayloadBuilder.event(job, item: true)
             // Staging server must already have the canonical parent row
             // before the purchase_item refers to its remote numeric ID.
+            try requireCurrent(generation)
             guard try await api.verify(StagingPayloadBuilder.event(job, item: false),
                                        auth: auth) else {
                 throw StagingSafetyError.needsReview("采购订单未能回读，请先人工核对")
             }
+            try requireCurrent(generation)
             job = try transition(job, to: .sendingItem,
                                  "明细请求发出前已落盘", in: storage)
             do {
+                try requireCurrent(generation)
                 let response = try await api.pushSingle(itemEvent, auth: auth)
+                try requireCurrent(generation)
                 guard response.isAccepted(itemEvent),
                       try await api.verify(itemEvent, auth: auth) else {
                     throw StagingSafetyError.needsReview("商品明细确认或回读失败")
                 }
+                try requireCurrent(generation)
                 _ = try transition(job, to: .complete,
-                                   "订单和商品明细已由隔离服务端回读确认",
+                                   "订单和商品明细已由测试账本回读确认",
                                    in: storage)
-                message = "正式服务器测试账本已确认订单与明细；请在连接同一测试服务端的 Android 上核对。"
+                message = "正式服务器测试账本已确认订单与明细；请在同一测试账本的 Android 上核对。"
             } catch {
                 _ = try transition(job, to: .needsReview,
                                    "明细可能已写入：" + error.localizedDescription,
@@ -228,6 +254,7 @@ final class StagingPurchaseCoordinator: ObservableObject {
 
     func checkServer(draftID: String) async {
         guard !busy else { return }
+        let generation = sessionGeneration
         busy = true
         defer { busy = false }
         do {
@@ -242,10 +269,12 @@ final class StagingPurchaseCoordinator: ObservableObject {
                 throw StagingSafetyError.unsafeEndpoint
             }
             try await api.validateSession(auth)
+            try requireCurrent(generation)
             let order = try await api.verify(StagingPayloadBuilder.event(job, item: false),
                                              auth: auth)
             let item = try await api.verify(StagingPayloadBuilder.event(job, item: true),
                                             auth: auth)
+            try requireCurrent(generation)
             if order && item {
                 job = try transition(job, to: .complete,
                                      "重新回读确认订单和明细", in: storage)
