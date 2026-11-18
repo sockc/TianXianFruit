@@ -165,9 +165,19 @@ final class StagingPurchaseTests: XCTestCase {
             var completed = ack
             completed.state = .complete
             XCTAssertThrowsError(try store.saveStagingJob(completed))
-            var mutating = ack
-            mutating.orderPayload["total_cost"] = .number(9000)
-            XCTAssertThrowsError(try store.saveStagingJob(mutating))
+            var tamperedAmount = ack.orderPayload
+            tamperedAmount["total_cost"] = .number(9000)
+            let tampered = StagingPurchaseJob(
+                id: ack.id, sourceAccount: ack.sourceAccount,
+                bookID: ack.bookID, stageHost: ack.stageHost,
+                stageInstanceID: ack.stageInstanceID,
+                stageUsername: ack.stageUsername, deviceID: ack.deviceID,
+                orderSyncID: ack.orderSyncID, itemSyncID: ack.itemSyncID,
+                orderRemoteID: ack.orderRemoteID, itemRemoteID: ack.itemRemoteID,
+                orderPayload: tamperedAmount, itemPayload: ack.itemPayload,
+                createdAt: ack.createdAt, state: ack.state,
+                lastMessage: ack.lastMessage)
+            XCTAssertThrowsError(try store.saveStagingJob(tampered))
         }
         let reopened = try TestDraftStore(url: url)
         let recovered = try XCTUnwrap(reopened.stagingJob(
