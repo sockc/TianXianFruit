@@ -159,7 +159,7 @@ enum PurchaseReadbackPolicy {
                         orderVerified: false, itemVerified: false,
                         serverOrderID: nil, serverItemID: serverItemID,
                         serverOrderVersion: parent?.rowVersion,
-                        serverItemVersion: child?.rowVersion,
+                        serverItemVersion: child.rowVersion,
                         submittedOrderID: job.orderRemoteID,
                         issues: issues)
                 }
