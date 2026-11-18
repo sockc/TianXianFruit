@@ -40,6 +40,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         let permittedGET = path == "/api/v1/auth/me"
             || path == "/api/v1/books"
             || path == "/api/v1/sync/pull"
+            || path == "/api/v1/weather/overview"
             || (path.hasPrefix("/api/v1/books/") && (
                 path.hasSuffix("/customer-analytics/capabilities")
                 || path.hasSuffix("/customer-analytics/changes")))
@@ -104,7 +105,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             "POST", "/api/v1/auth/login", body: [
                 "username": trimmed, "password": password,
                 "device_id": scopedID, "device_name": deviceName,
-                "platform": "ios", "app_version": "0.1.2"
+                "platform": "ios", "app_version": "0.1.3"
             ])
         let auth: LoginResponse = try decode(LoginResponse.self, from: loginData)
         let me = try await account(token: auth.accessToken)
@@ -112,7 +113,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         _ = try await request("POST", "/api/v1/devices/register",
                               token: auth.accessToken, body: [
             "device_id": scopedID, "name": deviceName,
-            "platform": "ios", "app_version": "0.1.2"
+            "platform": "ios", "app_version": "0.1.3"
         ])
         return (auth.accessToken, me)
     }
@@ -166,6 +167,28 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         let data = try await request("GET", customerEndpoint(bookID) + "/changes",
                                      token: token, query: query)
         return try decode(CustomerChangePage.self, from: data)
+    }
+
+    /// Same existing read-only weather overview endpoint as Android.
+    /// We never store forecasts in the cloud or send coordinates to third parties.
+    func weatherForecast(token: String, bookID: String,
+                         latitude: Double, longitude: Double,
+                         date: String) async throws -> WeatherForecastResponse {
+        guard !bookID.isEmpty, BusinessDates.parse(date) != nil,
+              latitude.isFinite && longitude.isFinite,
+              (-90...90).contains(latitude), (-180...180).contains(longitude),
+              latitude != 0, longitude != 0 else {
+            throw CloudAPIError(status: 0, message: "天气位置坐标或日期无效")
+        }
+        let data = try await request("GET", "/api/v1/weather/overview",
+                                     token: token, query: [
+            URLQueryItem(name: "book_id", value: bookID),
+            URLQueryItem(name: "lat", value: String(latitude)),
+            URLQueryItem(name: "lon", value: String(longitude)),
+            URLQueryItem(name: "date", value: date),
+            URLQueryItem(name: "hours", value: "120")
+        ])
+        return try decode(WeatherForecastResponse.self, from: data)
     }
 
 }

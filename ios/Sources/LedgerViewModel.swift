@@ -26,6 +26,11 @@ final class LedgerViewModel: ObservableObject {
     @Published private(set) var customerError: String?
     @Published private(set) var isCustomerBusy = false
     @Published private(set) var customerAPIAvailable = false
+    @Published private(set) var weatherOverview: WeatherForecastResponse?
+    @Published private(set) var selectedWeatherStoreID = ""
+    @Published private(set) var weatherCheckedAt: Date?
+    @Published private(set) var weatherError: String?
+    @Published private(set) var weatherBusy = false
 
     private let api = CloudAPI()
     private var cache: LocalLedgerCache?
@@ -41,6 +46,56 @@ final class LedgerViewModel: ObservableObject {
     }
 
     var selectedBook: CloudBook? { books.first(where: { $0.id == selectedBookID }) }
+
+    var selectedWeatherLocation: WeatherLocation? {
+        snapshot.weatherLocations.first { $0.id == selectedWeatherStoreID }
+    }
+
+    var weatherRisks: [WeatherBusinessRisk] {
+        guard let overview = weatherOverview else { return [] }
+        return WeatherWeekPolicy.risks(overview.daily, today: BusinessDates.key(Date()))
+    }
+
+    var weatherHeadline: String? { WeatherWeekPolicy.headline(weatherRisks) }
+
+    func chooseWeatherLocation(_ storeID: String) {
+        guard snapshot.weatherLocations.contains(where: { $0.id == storeID }) else { return }
+        if selectedWeatherStoreID == storeID { return }
+        selectedWeatherStoreID = storeID
+        weatherOverview = nil
+        weatherCheckedAt = nil
+        weatherError = nil
+        Task { await refreshWeather() }
+    }
+
+    /// Forecasts are intentionally ephemeral: NEVER persisted in SQLite,
+    /// and NEVER pushed to the production server.
+    func refreshWeather(force: Bool = false) async {
+        guard !weatherBusy, let token = accessToken,
+              let book = selectedBookID,
+              let location = selectedWeatherLocation else { return }
+        if !force, let at = weatherCheckedAt,
+           weatherOverview != nil, Date().timeIntervalSince(at) < 30 * 60 { return }
+        weatherBusy = true
+        weatherError = nil
+        defer { weatherBusy = false }
+        do {
+            let response = try await api.weatherForecast(
+                token: token, bookID: book,
+                latitude: location.latitude, longitude: location.longitude,
+                date: BusinessDates.key(Date()))
+            guard self.accessToken == token, self.selectedBookID == book,
+                  self.selectedWeatherStoreID == location.id else { return }
+            guard !response.daily.isEmpty else {
+                throw CloudAPIError(status: 0, message: "天气服务暂未提供未来7日预报")
+            }
+            weatherOverview = response
+            weatherCheckedAt = Date()
+        } catch {
+            weatherError = error.localizedDescription
+        }
+    }
+
 
     private func saveProfile(_ profile: VerifiedProfile) throws {
         let bytes = try JSONEncoder().encode(profile)
@@ -67,6 +122,10 @@ final class LedgerViewModel: ObservableObject {
         customerSyncedAt = nil
         customerAPIAvailable = false
         customerError = nil
+        weatherOverview = nil
+        weatherCheckedAt = nil
+        weatherError = nil
+        selectedWeatherStoreID = ""
         do {
             if let value = try cache?.load(account: account.username, book: bookID) {
                 snapshot = value.snapshot
@@ -78,6 +137,7 @@ final class LedgerViewModel: ObservableObject {
                 customerCursor = customer.cursor
                 customerSyncedAt = customer.syncedAt
             }
+            selectedWeatherStoreID = snapshot.weatherLocations.first?.id ?? ""
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -202,9 +262,15 @@ final class LedgerViewModel: ObservableObject {
                 errorMessage = "本地存储不可用，本次数据仅显示在内存中"
             }
             snapshot = candidate
+            if !snapshot.weatherLocations.contains(where: { $0.id == selectedWeatherStoreID }) {
+                selectedWeatherStoreID = snapshot.weatherLocations.first?.id ?? ""
+                weatherOverview = nil
+                weatherCheckedAt = nil
+            }
             currentCursor = nextCursor
             lastSyncAt = updated
             isUsingCachedAuthorization = false
+            Task { await self.refreshWeather() }
         } catch {
             // Never advance in-memory cursor or replace the prior snapshot on
             // partial download, invalid event, failed SQL transaction or 401.
@@ -213,6 +279,7 @@ final class LedgerViewModel: ObservableObject {
     }
 
     func signOut() {
+        WeatherNotificationScheduler.clear()
         let username = account?.username
         SecureStore.erase("access-token")
         SecureStore.erase("verified-profile")
@@ -239,6 +306,11 @@ final class LedgerViewModel: ObservableObject {
         customerError = nil
         customerAPIAvailable = false
         isCustomerBusy = false
+        weatherOverview = nil
+        selectedWeatherStoreID = ""
+        weatherCheckedAt = nil
+        weatherError = nil
+        weatherBusy = false
     }
 
     /// Independent customer cursor and database transaction. A 404 or

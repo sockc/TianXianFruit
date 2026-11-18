@@ -26,7 +26,7 @@ private struct LoginView: View {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("天鲜账本").font(.largeTitle.bold())
-                        Text("iOS V0.1.1 · 只读版").foregroundColor(.secondary)
+                        Text("iOS V0.1.3 · 只读版").foregroundColor(.secondary)
                         Label("无营业、采购或结算写入功能", systemImage: "lock.shield")
                             .font(.footnote).foregroundColor(.green)
                     }.padding(.vertical, 10)
@@ -152,6 +152,7 @@ private struct HomePage: View {
             VStack(alignment: .leading, spacing: 14) {
                 Text("经营概览")
                     .font(.title3.bold())
+                WeatherHomeSummary()
                 if model.lastSyncAt == nil {
                     EmptyStateView(title: "尚未读取云端账本", icon: "icloud.and.arrow.down",
                                    detail: "点击右上角刷新；首次成功后可离线查看")
@@ -201,6 +202,7 @@ private struct BusinessPage: View {
     @State private var period = "近30天"
     @State private var position = ""
     @State private var searchText = ""
+    @State private var visibleDays = 14
 
     private var rows: [StoreDailyRow] {
         model.snapshot.business.filter { row in
@@ -235,7 +237,7 @@ private struct BusinessPage: View {
                 if rows.isEmpty {
                     EmptyStateView(title: "此范围没有营业记录", icon: "chart.bar")
                 }
-                ForEach(DayRows<StoreDailyRow>.grouping(rows, date: { $0.date }), id: \.date) { day in
+                ForEach(Array(DayRows<StoreDailyRow>.grouping(rows, date: { $0.date }).prefix(visibleDays)), id: \.date) { day in
                     VStack(alignment: .leading, spacing: 9) {
                         HStack {
                             Text(day.date).font(.subheadline.bold())
@@ -261,6 +263,11 @@ private struct BusinessPage: View {
                     .background(Color(UIColor.secondarySystemGroupedBackground),
                                 in: RoundedRectangle(cornerRadius: 12))
                 }
+                if DayRows<StoreDailyRow>.grouping(rows, date: { $0.date }).count > visibleDays {
+                    Button("加载更早营业记录") { visibleDays += 14 }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                }
                 SyncFooter()
             }
             .padding(12)
@@ -273,6 +280,7 @@ private struct PurchasesPage: View {
     @State private var period = "近30天"
     @State private var buyer = ""
     @State private var searchText = ""
+    @State private var visibleDays = 14
 
     private var rows: [PurchaseOrderRow] {
         model.snapshot.purchases.filter { row in
@@ -307,7 +315,7 @@ private struct PurchasesPage: View {
                 if rows.isEmpty {
                     EmptyStateView(title: "此范围没有采购记录", icon: "cart")
                 }
-                ForEach(DayRows<PurchaseOrderRow>.grouping(rows, date: { $0.date }), id: \.date) { day in
+                ForEach(Array(DayRows<PurchaseOrderRow>.grouping(rows, date: { $0.date }).prefix(visibleDays)), id: \.date) { day in
                     VStack(alignment: .leading, spacing: 9) {
                         HStack {
                             Text(day.date).font(.subheadline.bold())
@@ -331,6 +339,11 @@ private struct PurchasesPage: View {
                 }
                 Text("这里展示采购订单保存金额；不把待采购计划计入已采购成本。")
                     .font(.caption2).foregroundColor(.secondary)
+                if DayRows<PurchaseOrderRow>.grouping(rows, date: { $0.date }).count > visibleDays {
+                    Button("加载更早采购记录") { visibleDays += 14 }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                }
                 SyncFooter()
             }
             .padding(12)
@@ -342,6 +355,7 @@ private struct InventoryPage: View {
     @EnvironmentObject private var model: LedgerViewModel
     @State private var showHistory = false
     @State private var searchText = ""
+    @State private var visibleRows = 80
 
     private var rows: [InventoryRow] {
         (showHistory ? model.snapshot.inventory : model.snapshot.latestInventory)
@@ -369,7 +383,7 @@ private struct InventoryPage: View {
                     EmptyStateView(title: "没有可展示的库存快照", icon: "shippingbox")
                 }
                 LazyVStack(spacing: 9) {
-                    ForEach(rows) { row in
+                    ForEach(Array(rows.prefix(visibleRows))) { row in
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(row.name).font(.subheadline.bold())
@@ -391,6 +405,10 @@ private struct InventoryPage: View {
                 }
                 Text("此处仅展示已保存的库存盘点数量和损耗。未同步或未盘点的商品不能推断为零库存；不进行跨日成本反算。")
                     .font(.caption2).foregroundColor(.secondary)
+                if rows.count > visibleRows {
+                    Button("加载更多库存盘点") { visibleRows += 80 }
+                        .frame(maxWidth: .infinity)
+                }
                 SyncFooter()
             }
             .padding(12)
@@ -413,6 +431,12 @@ private struct MorePage: View {
                 }
                 NavigationLink(destination: BusinessStatsView()) {
                     Label("经营统计 · 位置与趋势", systemImage: "chart.bar.xaxis")
+                }
+                NavigationLink(destination: WeatherAlertsView()) {
+                    Label("未来7天天气 · 下雨与降温提醒", systemImage: "cloud.rain")
+                }
+                NavigationLink(destination: OperatingReportView()) {
+                    Label("导出经营报表 · PDF / 图片", systemImage: "square.and.arrow.up")
                 }
                 Divider()
                 Text("账号与同步").font(.headline)
@@ -438,7 +462,7 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.1.2 · TrollStore 只读测试版")
+                Text("版本：iOS V0.1.3 · TrollStore 只读测试版")
                     .font(.caption).foregroundColor(.secondary)
                 Text("不包含凌晨收款、营业修改、账单导入、利润分配或资金结算写入。客户分析只读取服务端已确认的账单数据。")
                     .font(.caption2).foregroundColor(.secondary)

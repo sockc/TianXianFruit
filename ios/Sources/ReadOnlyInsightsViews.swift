@@ -201,6 +201,8 @@ struct FinanceReadOnlyView: View {
     @EnvironmentObject private var model: LedgerViewModel
     @State private var period = "近30天"
     @State private var selectedPartner = ""
+    @State private var visibleProfits = 60
+    @State private var visibleTransfers = 60
 
     private var startDate: String {
         period == "全部" ? "0000-00-00" : BusinessDates.daysAgo(period == "近7天" ? 6 : 29)
@@ -243,7 +245,7 @@ struct FinanceReadOnlyView: View {
                                   detail: "不根据营业额自行生成利润分配。", icon: "chart.pie")
                 }
                 LazyVStack(spacing: 7) {
-                    ForEach(Array(profits.prefix(120))) { item in
+                    ForEach(Array(profits.prefix(visibleProfits))) { item in
                         HStack {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(item.partner).font(.subheadline.bold())
@@ -257,13 +259,17 @@ struct FinanceReadOnlyView: View {
                                     in: RoundedRectangle(cornerRadius: 10))
                     }
                 }
+                if profits.count > visibleProfits {
+                    Button("加载更多利润分配") { visibleProfits += 60 }
+                        .frame(maxWidth: .infinity)
+                }
                 Text("云端已保存的资金转账方案").font(.headline)
                 if transfers.isEmpty {
                     EmptyInsights(title: "没有已同步的转账记录",
                                   detail: "不推断应转账金额或已结清状态。", icon: "arrow.left.arrow.right")
                 }
                 LazyVStack(spacing: 7) {
-                    ForEach(Array(transfers.prefix(120))) { item in
+                    ForEach(Array(transfers.prefix(visibleTransfers))) { item in
                         VStack(alignment: .leading, spacing: 5) {
                             Text(item.date + "  ·  " + item.from + " → " + item.to)
                                 .font(.subheadline.bold()).lineLimit(2)
@@ -278,6 +284,10 @@ struct FinanceReadOnlyView: View {
                         .background(Color(UIColor.secondarySystemGroupedBackground),
                                     in: RoundedRectangle(cornerRadius: 10))
                     }
+                }
+                if transfers.count > visibleTransfers {
+                    Button("加载更多转账记录") { visibleTransfers += 60 }
+                        .frame(maxWidth: .infinity)
                 }
                 Text("只显示正式同步表中的已保存利润分配和转账方案。不得将“已登记结算”视作银行实际到账证明。本页不能修改、删除或确认任何结算。")
                     .font(.caption2).foregroundColor(.secondary)
