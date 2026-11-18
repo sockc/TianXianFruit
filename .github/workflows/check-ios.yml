@@ -1,4 +1,4 @@
-name: Check iOS V0.2.3 purchase reconciliation
+name: Check iOS V0.2.4 purchase pilot expansion
 
 on:
   pull_request:

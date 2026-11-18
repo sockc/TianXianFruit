@@ -98,6 +98,32 @@ enum StagingPurchasePolicy {
         }
     }
 
+    /// Controlled expansion: at most three one-item orders per device-local
+    /// test-book queue. Every earlier order must be cloud-verified and
+    /// independently acknowledged by the user after Android inspection.
+    static let pilotOrderLimit = 3
+
+    static func authorizeNextOrder(existing: [StagingPurchaseJob],
+                                   audits: [String: PurchaseReadbackAudit],
+                                   bookID: String, username: String) throws {
+        guard existing.count < pilotOrderLimit else {
+            throw StagingSafetyError.needsReview(
+                "此设备测试账本已达到三笔采购验证上限；暂不开放更多上传")
+        }
+        for job in existing {
+            guard job.bookID == bookID,
+                  job.stageHost == productionURL,
+                  job.stageInstanceID == "production-scoped-testbook:" + bookID,
+                  job.stageUsername.lowercased() == username.lowercased(),
+                  job.state == .complete, job.androidCheckedAt != nil,
+                  let audit = audits[job.id], audit.complete,
+                  audit.bookID == bookID else {
+                throw StagingSafetyError.needsReview(
+                    "上一笔采购必须重新完成云端核对并在 Android 人工验收后，才可准备下一笔")
+            }
+        }
+    }
+
     /// Use deterministic, signed-Int64-safe remote numeric IDs from the
     /// immutable local draft UUID. Both parent and child retain these IDs
     /// across timeout/crash. The parent ID is copied to purchase_item.order_id.
@@ -150,6 +176,12 @@ struct StagingPurchaseJob: Codable, Identifiable {
     var lastMessage: String
     /// Human confirmation only; never treated as an Android API acknowledgement.
     var androidCheckedAt: Date? = nil
+    /// Server's canonical parent numeric ID, frozen BEFORE the first child
+    /// upload. Nil in V0.2.2/V0.2.3 jobs, which still decode unchanged.
+    var childParentID: Int64? = nil
+    /// Irreversible marker: a child network request may have reached the
+    /// server. Missing readback after timeout is not proof of non-delivery.
+    var itemRequestStarted: Bool? = nil
 }
 
 struct StageBookReference {
@@ -247,9 +279,12 @@ enum StagingPayloadBuilder {
     }
 
     static func event(_ job: StagingPurchaseJob, item: Bool) -> SyncEvent {
-        SyncEvent(tableName: item ? "purchase_item" : "purchase_order",
-                  syncId: item ? job.itemSyncID : job.orderSyncID,
-                  rowVersion: 1, operation: "UPSERT",
-                  payload: item ? job.itemPayload : job.orderPayload)
+        var payload = item ? job.itemPayload : job.orderPayload
+        if item, let canonicalID = job.childParentID {
+            payload["order_id"] = .number(Double(canonicalID))
+        }
+        return SyncEvent(tableName: item ? "purchase_item" : "purchase_order",
+                         syncId: item ? job.itemSyncID : job.orderSyncID,
+                         rowVersion: 1, operation: "UPSERT", payload: payload)
     }
 }

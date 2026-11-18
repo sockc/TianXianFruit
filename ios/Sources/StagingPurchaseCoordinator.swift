@@ -122,12 +122,11 @@ final class StagingPurchaseCoordinator: ObservableObject {
                 message = "此草稿已有固定上传意图；不能生成第二组订单 ID"
                 return
             }
-            // Pilot guard: one single order+item pair for this test book.
-            // Never silently prepare the second order while the first is
-            // still being validated against Android.
-            guard try storage.stagingJobs(account: sourceAccount, book: book.id).isEmpty else {
+            let previousJobs = try storage.stagingJobs(
+                account: sourceAccount, book: book.id)
+            guard previousJobs.count < StagingPurchasePolicy.pilotOrderLimit else {
                 throw StagingSafetyError.needsReview(
-                    "当前测试账本已存在首笔采购验证任务。请先核对 Android；此版仅允许试写一笔")
+                    "此测试账本最多允许准备三笔采购，继续扩容需另行验收")
             }
             guard let draft = try storage.load(account: sourceAccount,
                                                 book: book.id).first(where: { $0.id == draftID }) else {
@@ -137,6 +136,36 @@ final class StagingPurchaseCoordinator: ObservableObject {
             try requireCurrent(generation)
             let stageRows = try await api.pullAll(auth)
             try requireCurrent(generation)
+
+            // Prior orders must remain correct on the SAME server. A local
+            // Android checkbox alone never authorizes the next purchase.
+            var priorAudits: [String: PurchaseReadbackAudit] = [:]
+            for previous in previousJobs {
+                guard previous.stageHost == auth.host,
+                      previous.stageInstanceID == auth.scope.instanceID,
+                      previous.stageUsername.lowercased() == auth.username.lowercased(),
+                      previous.bookID == book.id else {
+                    throw StagingSafetyError.wrongSourceBook
+                }
+                let audit = PurchaseReadbackPolicy.audit(previous, events: stageRows)
+                priorAudits[previous.id] = audit
+                audits[previous.id] = audit
+            }
+            try StagingPurchasePolicy.authorizeNextOrder(
+                existing: previousJobs, audits: priorAudits, bookID: book.id,
+                username: auth.username)
+            // Another phone's pilot sync IDs in this book cannot be counted
+            // as one of this device's already-validated orders.
+            let known = Set(previousJobs.map(\.orderSyncID))
+            let foreign = stageRows.contains { event in
+                event.tableName == "purchase_order" && !event.isDeletion &&
+                event.syncId.hasPrefix("ios-stage-order-") &&
+                !known.contains(event.syncId)
+            }
+            guard !foreign else {
+                throw StagingSafetyError.needsReview(
+                    "测试账本存在另一设备的 iOS 采购单；需先核对，禁止并行试写")
+            }
             let job = try StagingPayloadBuilder.prepare(
                 draft, sourceBook: book, stageBook: auth.book,
                 stageHost: auth.host, scope: auth.scope,
@@ -223,10 +252,12 @@ final class StagingPurchaseCoordinator: ObservableObject {
                     guard audit.orderVerified, !audit.itemPresent else {
                         throw StagingSafetyError.needsReview(audit.headline)
                     }
-                    if audit.remappedOrderID {
-                        throw StagingSafetyError.needsReview(
-                            "服务端已重映射订单数字 ID，未发送仍指向旧 ID 的商品明细")
+                    guard let canonical = audit.serverOrderID, canonical > 0 else {
+                        throw StagingSafetyError.needsReview("云端订单缺少有效数字 ID")
                     }
+                    // Freeze the server-authoritative parent ID in SQLite
+                    // BEFORE any child request is allowed to begin.
+                    job.childParentID = canonical
                     job = try transition(job, to: .orderConfirmed,
                                          "服务端订单已匹配；等待商品明细确认",
                                          in: storage)
@@ -246,11 +277,19 @@ final class StagingPurchaseCoordinator: ObservableObject {
                     return
                 }
                 guard audit.orderVerified, !audit.itemPresent,
-                      !audit.remappedOrderID else {
+                      let canonical = audit.serverOrderID, canonical > 0,
+                      job.itemRequestStarted != true,
+                      job.childParentID == nil || job.childParentID == canonical else {
                     _ = try transition(job, to: .needsReview,
                                        "父订单或商品明细回读异常，禁止再次提交",
                                        in: storage)
                     throw StagingSafetyError.needsReview(audit.headline)
+                }
+                if job.childParentID == nil {
+                    job.childParentID = canonical
+                    // Legacy V0.2.3 job without a saved canonical parent.
+                    try storage.saveStagingJob(job)
+                    refreshLocal()
                 }
             }
 
@@ -260,7 +299,8 @@ final class StagingPurchaseCoordinator: ObservableObject {
             try requireCurrent(generation)
             audits[draftID] = audit
             guard audit.orderVerified, !audit.itemPresent,
-                  !audit.remappedOrderID else {
+                  let canonical = audit.serverOrderID, canonical > 0,
+                  job.childParentID == canonical, job.itemRequestStarted != true else {
                 _ = try transition(job, to: .needsReview,
                                    "商品明细尚未发送：父订单或远端关联有变化",
                                    in: storage)
@@ -268,6 +308,9 @@ final class StagingPurchaseCoordinator: ObservableObject {
             }
 
             let itemEvent = StagingPayloadBuilder.event(job, item: true)
+            // This irreversible marker prevents an uncertain timed-out
+            // child upload from silently being retried after reconnect.
+            job.itemRequestStarted = true
             job = try transition(job, to: .sendingItem,
                                  "子商品明细发送前持久化状态", in: storage)
             do {
@@ -339,10 +382,16 @@ final class StagingPurchaseCoordinator: ObservableObject {
                                          in: storage)
                 }
             } else if audit.orderVerified && !audit.itemPresent &&
-                      !audit.remappedOrderID &&
-                      job.state != .complete && job.state != .ready {
+                      job.itemRequestStarted != true &&
+                      job.state != .sendingItem &&
+                      job.state != .complete && job.state != .ready,
+                      let canonical = audit.serverOrderID,
+                      job.childParentID == nil || job.childParentID == canonical {
+                if job.childParentID == nil {
+                    job.childParentID = canonical
+                }
                 job = try transition(job, to: .orderConfirmed,
-                                     "仅父订单存在，可人工确认继续明细上传",
+                                     "父订单已回读并冻结真实数字 ID，可人工确认上传明细",
                                      in: storage)
             } else if job.state == .ready &&
                       !audit.orderPresent && !audit.itemPresent {

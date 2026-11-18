@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V0.2.3: only the dedicated one-book purchase client may write businesses."""
+"""V0.2.4: only the dedicated one-book purchase client may write businesses."""
 from pathlib import Path
 root = Path(__file__).resolve().parents[1] / "Sources"
 swift = {path.name: path.read_text(encoding="utf-8") for path in root.glob("*.swift")}
@@ -43,4 +43,12 @@ assert "confirmAndroidReview" in ui
 assert "PurchaseReadbackAudit.swift" in swift
 assert "PurchaseReadbackPolicy.audit" in swift["StagingPurchaseAPI.swift"]
 assert "readback" in coordinator
+assert "pilotOrderLimit = 3" in policy
+assert "authorizeNextOrder(" in coordinator
+assert "itemRequestStarted = true" in coordinator
+assert "childParentID = canonical" in coordinator
+assert "job.childParentID == canonical" in coordinator
+assert "previous.childParentID" in swift["TestDraftStore.swift"]
+assert "itemRequestStarted" in swift["TestDraftStore.swift"]
+assert "androidCheckedAt" in swift["TestDraftStore.swift"]
 print("V0.2.2 PASS: fixed official host, dedicated one-book test writer, no ordinary app writes.")

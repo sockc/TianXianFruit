@@ -16,10 +16,10 @@ struct StagingPurchaseUploadView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 13) {
-                Label("V0.2.3 · 首单云端与 Android 对账", systemImage: "shield.lefthalf.filled")
+                Label("V0.2.4 · 小批量采购跨设备试运行", systemImage: "shield.lefthalf.filled")
                     .font(.headline)
                     .foregroundColor(.orange)
-                Text("只对 sync.830888.xyz 中明确指定的 iOS_TEST_ 测试账本试写一笔采购订单及明细。必须使用只拥有该账本权限的专用账号；正式账本、营业和资金结算仍然不可写。")
+                Text("仅对 sync.830888.xyz 中明确指定的 iOS_TEST_ 测试账本分阶段试写最多三笔单商品采购。必须使用只拥有该账本权限的专用账号；正式账本、营业和资金结算仍然不可写。")
                     .font(.caption).foregroundColor(.secondary)
 
                 if let book = model.selectedBook {
@@ -109,6 +109,9 @@ struct StagingPurchaseUploadView: View {
                 }
 
                 Text("已录入的本机采购草稿").font(.headline)
+                Text("本账本已准备 " + String(coordinator.jobs.count) +
+                     " / 3 笔；每笔都必须先通过云端和 Android 人工核对，才能准备下一笔")
+                    .font(.caption).foregroundColor(.secondary)
                 if coordinator.drafts.isEmpty {
                     Text("此测试账本暂无采购草稿。请先返回“写入测试实验室”录入并保存。")
                         .font(.caption).foregroundColor(.secondary)
@@ -133,6 +136,15 @@ struct StagingPurchaseUploadView: View {
                         }
                         Text(current?.state.title ?? "未准备上传")
                             .font(.caption2).foregroundColor(.secondary)
+                        if let linkedID = current?.childParentID {
+                            Text("商品明细使用云端父订单 ID：" + String(linkedID))
+                                .font(.caption2).foregroundColor(.secondary)
+                        }
+                        if current?.itemRequestStarted == true &&
+                           current?.state != .complete {
+                            Text("商品明细请求可能已发出；必须核对服务器，不允许盲目重传")
+                                .font(.caption2).foregroundColor(.orange)
+                        }
                         if let current {
                             Text(current.lastMessage).font(.caption2)
                                 .foregroundColor(.secondary)
@@ -175,7 +187,7 @@ struct StagingPurchaseUploadView: View {
                         }
                         if coordinator.connected {
                             if current == nil {
-                                Button("① 核验采购人/商品并准备订单") {
+                                Button("① 核验上一单并准备本笔采购") {
                                     Task { await coordinator.prepare(draftID: draft.id) }
                                 }
                                 .disabled(coordinator.busy)
@@ -222,12 +234,12 @@ struct StagingPurchaseUploadView: View {
                     .background(Color(UIColor.secondarySystemGroupedBackground),
                                 in: RoundedRectangle(cornerRadius: 12))
                 }
-                Text("仅测试账本首笔采购。云端回读不等于 Android 已同步；手动验收必须再用 Android 同账本检查采购人、商品、数量、总价和订单明细。服务器无记录不代表写入失败，遇到超时不要盲目重发。")
+                Text("仅限测试账本的前三笔单商品采购。上一单须先经过云端核对和 Android 人工验收，之后才允许准备下一单。服务器改变父订单数字 ID 时，会先冻结实际云端 ID，再发送商品明细。")
                     .font(.caption2).foregroundColor(.secondary)
             }
             .padding(12)
         }
-        .navigationBarTitle("采购同步与对账", displayMode: .inline)
+        .navigationBarTitle("采购小批量同步", displayMode: .inline)
         .alert(item: Binding(
             get: { confirmUploadID.map { PendingUpload(id: $0) } },
             set: { confirmUploadID = $0?.id }

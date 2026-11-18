@@ -174,6 +174,8 @@ final class PurchaseReadbackAuditTests: XCTestCase {
             try storage.saveStagingJob(pending)
             pending.state = .orderConfirmed
             try storage.saveStagingJob(pending)
+            pending.childParentID = pending.orderRemoteID
+            pending.itemRequestStarted = true
             pending.state = .sendingItem
             try storage.saveStagingJob(pending)
             pending.state = .complete

@@ -203,8 +203,31 @@ final class TestDraftStore {
                previous.androidCheckedAt != job.androidCheckedAt {
                 throw TestDraftStoreError.invalid
             }
+            // The canonical parent link may be set ONCE after verified
+            // server readback, before the child request is sent. No rewriting
+            // a frozen association on retries or after a conflict.
+            if let previousID = previous.childParentID,
+               previousID != job.childParentID {
+                throw TestDraftStoreError.invalid
+            }
+            if previous.itemRequestStarted == true &&
+               job.itemRequestStarted != true {
+                throw TestDraftStoreError.invalid
+            }
+            if previous.childParentID == nil, job.childParentID != nil,
+               ![.sendingOrder, .orderConfirmed, .needsReview].contains(previous.state) {
+                throw TestDraftStoreError.invalid
+            }
         }
         guard job.androidCheckedAt == nil || job.state == .complete else {
+            throw TestDraftStoreError.invalid
+        }
+        if let canonical = job.childParentID,
+           canonical <= 0 || canonical > 9_007_199_254_740_991 {
+            throw TestDraftStoreError.invalid
+        }
+        if job.state == .sendingItem &&
+           (job.childParentID == nil || job.itemRequestStarted != true) {
             throw TestDraftStoreError.invalid
         }
         let stmt = try prepare("""
