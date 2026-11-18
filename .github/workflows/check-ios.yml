@@ -1,4 +1,4 @@
-name: Check iOS read-only app
+name: Check iOS business-write isolation
 
 on:
   pull_request:
@@ -25,7 +25,7 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - name: Guard read-only API
+      - name: Guard business write isolation
         run: python3 ios/scripts/check_readonly.py
       - name: Install XcodeGen
         run: brew install xcodegen

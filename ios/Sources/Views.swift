@@ -26,7 +26,7 @@ private struct LoginView: View {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("天鲜账本").font(.largeTitle.bold())
-                        Text("iOS V0.1.3 · 只读版").foregroundColor(.secondary)
+                        Text("iOS V0.2.0 · 草稿预演").foregroundColor(.secondary)
                         Label("无营业、采购或结算写入功能", systemImage: "lock.shield")
                             .font(.footnote).foregroundColor(.green)
                     }.padding(.vertical, 10)
@@ -438,6 +438,9 @@ private struct MorePage: View {
                 NavigationLink(destination: OperatingReportView()) {
                     Label("导出经营报表 · PDF / 图片", systemImage: "square.and.arrow.up")
                 }
+                NavigationLink(destination: TestWriteLabView()) {
+                    Label("写入测试实验室 · 仅本机草稿", systemImage: "square.and.pencil")
+                }
                 Divider()
                 Text("账号与同步").font(.headline)
                 VStack(alignment: .leading, spacing: 12) {
@@ -462,9 +465,9 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.1.3 · TrollStore 只读测试版")
+                Text("版本：iOS V0.2.0 · TrollStore 本机草稿预演版")
                     .font(.caption).foregroundColor(.secondary)
-                Text("不包含凌晨收款、营业修改、账单导入、利润分配或资金结算写入。客户分析只读取服务端已确认的账单数据。")
+                Text("云端仍然只读。本机仅允许在 iOS_TEST_ 账本中预演营业与采购录入；不提交到服务器，不影响 Android 当日结算。")
                     .font(.caption2).foregroundColor(.secondary)
                 Button(role: .destructive) {
                     model.signOut()
