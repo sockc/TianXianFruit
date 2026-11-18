@@ -233,11 +233,9 @@ final class StagingPurchaseAPI: NSObject, URLSessionTaskDelegate {
         guard complete else {
             throw StagingSafetyError.unexpectedResponse("测试账本记录过多，停止上传")
         }
-        // Staging book only. Revisions/tombstones must be applied before
-        // we trust numeric IDs or infer that an upload arrived remotely.
-        var state = ReadOnlySnapshot()
-        state.apply(all)
-        return Array(state.records.values)
+        // Retain latest tombstones: removing them would allow an old buyer
+        // or fruit UPSERT to be mistaken for an active reference.
+        return StagingSyncMaterializer.latest(all)
     }
 
     func pushSingle(_ event: SyncEvent, auth: StagingSession) async throws -> StageSyncAck {

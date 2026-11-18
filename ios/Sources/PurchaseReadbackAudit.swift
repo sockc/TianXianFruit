@@ -32,6 +32,9 @@ struct PurchaseReadbackAudit {
     }
     var headline: String {
         if complete { return "云端订单及明细一致 · 待 Android 设备核对" }
+        if issues.contains(where: { $0.id.hasSuffix(".deleted") }) {
+            return "云端记录已删除，禁止继续上传并请人工检查"
+        }
         if !orderPresent && !itemPresent { return "云端尚未回读到两条记录（不代表上传失败）" }
         if orderVerified && !itemPresent { return "云端已确认订单，商品明细尚未回读" }
         return "发现未确认项目，请检查详情，不要盲目重复上传"
@@ -44,14 +47,23 @@ struct PurchaseReadbackAudit {
 enum PurchaseReadbackPolicy {
     static func audit(_ job: StagingPurchaseJob, events: [SyncEvent],
                       now: Date = Date()) -> PurchaseReadbackAudit {
+        let latestEvents = StagingSyncMaterializer.latest(events)
         var snapshot = ReadOnlySnapshot()
-        snapshot.apply(events)
+        snapshot.apply(latestEvents)
         let records = Array(snapshot.records.values)
         let parent = records.first {
             $0.tableName == "purchase_order" && $0.syncId == job.orderSyncID
         }
         let child = records.first {
             $0.tableName == "purchase_item" && $0.syncId == job.itemSyncID
+        }
+        let orderDeleted = latestEvents.contains {
+            $0.tableName == "purchase_order" &&
+            $0.syncId == job.orderSyncID && $0.isDeletion
+        }
+        let itemDeleted = latestEvents.contains {
+            $0.tableName == "purchase_item" &&
+            $0.syncId == job.itemSyncID && $0.isDeletion
         }
         var issues: [PurchaseReadbackAudit.Issue] = []
         func fail(_ field: String, _ detail: String) {
@@ -108,6 +120,8 @@ enum PurchaseReadbackPolicy {
                 ], prefix: "order")
                 parentOK = issues.isEmpty
             }
+        } else if orderDeleted {
+            fail("order.deleted", "采购订单已被服务端删除")
         } else {
             fail("order.missing", "未找到订单 sync_id，不能据此断定服务器未接收")
         }
@@ -152,6 +166,8 @@ enum PurchaseReadbackPolicy {
                 }
                 childOK = parentOK && issues.count == beforeChild
             }
+        } else if itemDeleted {
+            fail("item.deleted", "采购商品明细已被服务端删除")
         } else {
             fail("item.missing", "未找到商品明细 sync_id，不能据此断定上传失败")
         }

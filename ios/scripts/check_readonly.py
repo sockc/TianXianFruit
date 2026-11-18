@@ -51,4 +51,7 @@ assert "job.childParentID == canonical" in coordinator
 assert "previous.childParentID" in swift["TestDraftStore.swift"]
 assert "itemRequestStarted" in swift["TestDraftStore.swift"]
 assert "androidCheckedAt" in swift["TestDraftStore.swift"]
-print("V0.2.2 PASS: fixed official host, dedicated one-book test writer, no ordinary app writes.")
+assert "StagingSyncMaterializer.latest(all)" in stage
+assert "orderDeleted" in swift["PurchaseReadbackAudit.swift"]
+assert "itemDeleted" in swift["PurchaseReadbackAudit.swift"]
+print("V0.2.4 PASS: fixed HTTPS test-book scope, durable child mapping, tombstones and readback gates.")
