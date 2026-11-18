@@ -164,7 +164,7 @@ final class PurchasePilotExpansionTests: XCTestCase {
             bookID: testBook.id, username: "one_book_user"))
     }
 
-    func testCannotOpenNextIfRemoteRecordHasChangedOrMissing() throws {
+    func testFinishedOrderMayBeEditedOnAndroidWithoutBlockingNewPurchase() throws {
         let first = try completed(try job("wrong-total"))
         var order = first.orderPayload
         order["total_cost"] = .number(999)
@@ -174,11 +174,19 @@ final class PurchasePilotExpansionTests: XCTestCase {
             StagingPayloadBuilder.event(first, item: true)
         ])
         XCTAssertFalse(badAudit.complete)
-        XCTAssertThrowsError(try StagingPurchasePolicy.authorizeNextOrder(
+        XCTAssertNoThrow(try StagingPurchasePolicy.authorizeNextOrder(
             existing: [first], audits: [first.id: badAudit],
             bookID: testBook.id, username: "one_book_user"))
-        XCTAssertThrowsError(try StagingPurchasePolicy.authorizeNextOrder(
+        XCTAssertNoThrow(try StagingPurchasePolicy.authorizeNextOrder(
             existing: [first], audits: [:],
+            bookID: testBook.id, username: "one_book_user"))
+    }
+
+    func testIncompleteOlderOrderBlocksNewSubmission() throws {
+        var pending = try job("pending-upload")
+        pending.state = .needsReview
+        XCTAssertThrowsError(try StagingPurchasePolicy.authorizeNextOrder(
+            existing: [pending], audits: [:],
             bookID: testBook.id, username: "one_book_user"))
     }
 

@@ -177,22 +177,11 @@ final class StagingPurchaseCoordinator: ObservableObject {
             let stageRows = try await api.pullAll(auth)
             try requireCurrent(generation)
 
-            // Prior orders must remain correct on the SAME server. A local
-            // Android checkbox alone never authorizes the next purchase.
-            var priorAudits: [String: PurchaseReadbackAudit] = [:]
-            for previous in previousJobs {
-                guard previous.stageHost == auth.host,
-                      previous.stageInstanceID == auth.scope.instanceID,
-                      previous.stageUsername.lowercased() == auth.username.lowercased(),
-                      previous.bookID == book.id else {
-                    throw StagingSafetyError.wrongSourceBook
-                }
-                let audit = PurchaseReadbackPolicy.audit(previous, events: stageRows)
-                priorAudits[previous.id] = audit
-                audits[previous.id] = audit
-            }
+            // An already completed Android/iOS order can subsequently be
+            // edited on Android. Do NOT compare every old amount on each
+            // new order: only unresolved local uploads require attention.
             try StagingPurchasePolicy.authorizeNextOrder(
-                existing: previousJobs, audits: priorAudits, bookID: book.id,
+                existing: previousJobs, audits: [:], bookID: book.id,
                 username: auth.username)
             let job = try StagingPayloadBuilder.prepare(
                 draft, sourceBook: book, stageBook: auth.book,

@@ -98,9 +98,10 @@ enum StagingPurchasePolicy {
         }
     }
 
-    /// Normal test-book operation: a fresh cloud readback must validate
-    /// EVERY prior upload. No arbitrary three-order cap or human checklist.
-    /// Unsafe/unfinished orders remain blocked until reconciled.
+    /// Do not re-test every historical finished purchase before adding a new
+    /// one: Android may legitimately edit old data. Only unresolved local
+    /// uploads block new writes; every new order still checks live token,
+    /// exact book scope, current buyer and fruit references.
     static func authorizeNextOrder(existing: [StagingPurchaseJob],
                                    audits: [String: PurchaseReadbackAudit],
                                    bookID: String, username: String) throws {
@@ -109,9 +110,7 @@ enum StagingPurchasePolicy {
                   job.stageHost == productionURL,
                   job.stageInstanceID == "production-scoped-testbook:" + bookID,
                   job.stageUsername.lowercased() == username.lowercased(),
-                  job.state == .complete,
-                  let audit = audits[job.id], audit.complete,
-                  audit.bookID == bookID else {
+                  job.state == .complete else {
                 throw StagingSafetyError.needsReview(
                     "测试账本有未完成或异常采购，请先只读核对该笔订单后再提交新单")
             }
