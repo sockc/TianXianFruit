@@ -129,6 +129,26 @@ class PaymentBillParserTest {
     }
 
     @Test
+    fun alipayExplicitTransferCannotBecomeMerchantReceiptViaRemark() {
+        val csv = """
+            支付宝交易明细
+            交易时间,交易类型,交易对方,商品说明,备注,收/支,金额,交易状态,交易订单号
+            2026-11-20 18:00:00,转账,朋友A,朋友转账,经营收款,收入,500.00,交易成功,ali-transfer-memo
+            2026-11-20 18:02:00,红包,朋友B,红包,二维码收款,收入,20.00,交易成功,ali-redpacket-memo
+            2026-11-20 18:03:00,经营收款,顾客C,经营码交易,水果,收入,35.00,交易成功,ali-business-true
+        """.trimIndent()
+        val result = PaymentBillParser.parse(
+            "支付宝交易明细.csv", csv.toByteArray(Charset.forName("GB18030"))
+        )
+        assertEquals(PaymentBillPlatform.ALIPAY, result.platform)
+        assertEquals(3, result.totalRows)
+        assertEquals(1, result.acceptedRows)
+        assertEquals(2, result.ignoredRows)
+        assertEquals("ali-business-true", result.transactions.single().transactionRef)
+        assertEquals(35.0, result.transactions.single().netAmount, 0.001)
+    }
+
+    @Test
     fun alipayGb18030BusinessReceiptUsesStableBuyerIdentity() {
         val text =
             """
