@@ -431,8 +431,8 @@ internal fun CustomerAnalysisContent(
     }
     // Batch coverage builds aggregate counts over imported transactions.
     // Never run this database query on the Compose/UI thread when opening
-    // the records or settings tab; keep the previous immutable snapshot until
-    // the IO refresh finishes.
+    // the records or settings tab. An empty batch list is shown while
+    // the background refresh runs, without blocking scrolling.
     val importBatches by produceState<List<PaymentImportBatchRecord>>(
         initialValue = emptyList(), db, dataVersion, showSettings, tab
     ) {
