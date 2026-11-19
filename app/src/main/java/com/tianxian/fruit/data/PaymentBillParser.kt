@@ -348,9 +348,9 @@ internal object PaymentBillParser {
         // not QR merchant receipts, even if the memo mentions "经营收款".
         // Keep this check restricted to the transaction-type column: real
         // merchant-code payments can legitimately contain arbitrary remarks.
-        val explicitNonMerchantType = listOf(
-            "转账", "红包", "提现", "充值", "余额宝转入", "余额宝转出"
-        ).any { token -> type.trim().contains(token) }
+        val explicitNonMerchantType = platform == PaymentBillPlatform.ALIPAY &&
+            listOf("转账", "红包", "提现", "充值", "余额宝转入", "余额宝转出")
+                .any { token -> type.trim().contains(token) }
         if (explicitNonMerchantType) return null
 
         val strictReceipt =
