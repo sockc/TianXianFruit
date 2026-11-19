@@ -429,9 +429,15 @@ internal fun CustomerAnalysisContent(
             runCatching { LocalDate.parse(it.date) }.getOrNull()
         }.filter { it in calendarBusinessDates }.toSet()
     }
-    val importBatches = remember(dataVersion, showSettings, tab) {
-        if (showSettings || tab == CustomerAnalysisTab.RECORDS) {
-            db.getPaymentImportBatches(200)
+    // Batch coverage builds aggregate counts over imported transactions.
+    // Never run this database query on the Compose/UI thread when opening
+    // the records or settings tab; keep the previous immutable snapshot until
+    // the IO refresh finishes.
+    val importBatches by produceState<List<PaymentImportBatchRecord>>(
+        initialValue = emptyList(), db, dataVersion, showSettings, tab
+    ) {
+        value = if (showSettings || tab == CustomerAnalysisTab.RECORDS) {
+            withContext(Dispatchers.IO) { db.getPaymentImportBatches(200) }
         } else emptyList()
     }
 
