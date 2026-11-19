@@ -698,7 +698,25 @@ internal object CustomerCloudBridge {
         val pullPages: Int,
         val existingBatchMetadata: Int = 0
     )
+    /**
+     * Preserve the last successful sync timestamp on failure, but expose a
+     * durable, bounded failure reason until the next successful sync.
+     * Never acknowledge pending records or advance the cursor here.
+     */
     fun sync(
+        context: Context, db: AppDatabase, bookId: String, identity: String,
+        canWrite: Boolean,
+        request: (String, String, JSONObject?) -> JSONObject
+    ): Result = try {
+        syncInternal(context, db, bookId, identity, canWrite, request)
+    } catch (failure: Exception) {
+        val detail = failure.message.orEmpty().ifBlank { "未知错误" }.take(240)
+        context.getSharedPreferences("customer_cloud_sync_status_v1", Context.MODE_PRIVATE)
+            .edit().putString("error_$bookId", "同步失败：$detail").apply()
+        throw failure
+    }
+
+    private fun syncInternal(
         context: Context, db: AppDatabase, bookId: String, identity: String,
         canWrite: Boolean,
         request: (String, String, JSONObject?) -> JSONObject
