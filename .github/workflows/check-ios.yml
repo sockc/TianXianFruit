@@ -1,4 +1,4 @@
-name: Check iOS V0.4.8 purchase/business atomic persistence
+name: Check iOS V0.4.9 business edit access and sync
 
 on:
   pull_request:
