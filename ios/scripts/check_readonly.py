@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V0.3.1: only the dedicated test transport may submit guarded edits."""
+"""V0.3.2: one-pull TEST audit must never submit or mutate financial records."""
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1] / "Sources"
@@ -131,4 +131,30 @@ assert "BusinessEditCloudReview" in swift["TestBusinessEditView.swift"]
 assert "not Android" in business_review or "not proof" in business_review
 assert (root.parent / "Tests" / "PurchaseRemarkEditTests.swift").exists()
 assert (root.parent / "Tests" / "BusinessEditCloudReviewTests.swift").exists()
-print("V0.3.1 PASS: official books read-only; guarded remark edit and cross-device cloud audit.")
+audit_policy = swift["TestSyncAuditPolicy.swift"]
+audit_coordinator = swift["TestSyncAuditCoordinator.swift"]
+audit_view = swift["TestSyncAuditView.swift"]
+assert "TestSyncAuditPolicy.audit" in audit_coordinator
+assert "transport.pullAll(session)" in audit_coordinator
+assert "transport.validateSession(session)" in audit_coordinator
+assert "TestSyncCredentialStore.load" in audit_coordinator
+assert "book.name.hasPrefix(TestWritePolicy.prefix)" in audit_coordinator
+assert "businessJobs" in audit_coordinator
+assert "businessEditJobs" in audit_coordinator
+assert "stagingJobs" in audit_coordinator
+assert "purchaseRemarkJobs" in audit_coordinator
+assert "BusinessUploadPolicy.verified" in audit_policy
+assert "TestBusinessEditPolicy.confirmed" in audit_policy
+assert "PurchaseReadbackPolicy.audit" in audit_policy
+assert "PurchaseRemarkEditPolicy.confirmed" in audit_policy
+assert "StagingSyncMaterializer.latest" in audit_policy
+assert "TestSyncAuditView()" in swift["Views.swift"]
+assert "coordinator.refresh()" in audit_view
+assert "api.pushSingle" not in audit_coordinator
+assert "pushSingle" not in audit_policy
+assert "saveBusinessJob" not in audit_coordinator
+assert "saveBusinessEditJob" not in audit_coordinator
+assert "savePurchaseRemarkJob" not in audit_coordinator
+assert "saveStagingJob" not in audit_coordinator
+assert (root.parent / "Tests" / "TestSyncAuditTests.swift").exists()
+print("V0.3.2 PASS: official read-only, scoped test audit without financial writes or retry.")
