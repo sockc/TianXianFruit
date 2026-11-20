@@ -1,4 +1,4 @@
-name: Check iOS V0.3.2 unified test sync readback
+name: Check iOS V0.3.3 explicit multi-collector business editing
 
 on:
   pull_request:
