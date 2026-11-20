@@ -72,6 +72,7 @@ import com.tianxian.fruit.sync.LedgerManager
 import com.tianxian.fruit.sync.CloudApiException
 import com.tianxian.fruit.sync.CloudAuditInfo
 import com.tianxian.fruit.sync.CloudBookInfo
+import com.tianxian.fruit.sync.LedgerManagementAccessPolicy
 import com.tianxian.fruit.sync.CloudSyncManager
 import com.tianxian.fruit.sync.WeatherAlert
 import com.tianxian.fruit.sync.WeatherClient
@@ -188,8 +189,8 @@ private fun homeQuickActionAllowed(
             currentBook.permission == "OWNER" || systemRole == "SUPERADMIN"
         HomeQuickAction.STORES,
         HomeQuickAction.FRUITS -> allowed(BookPermissions.BASIC_EDIT)
-        HomeQuickAction.BOOKS ->
-            systemRole == "SUPERADMIN"
+        // The manager opens a scoped list; it does not grant owner permissions.
+        HomeQuickAction.BOOKS -> true
         HomeQuickAction.SYSTEM_ADMIN,
         HomeQuickAction.CLOUD_BOOKS -> systemRole == "SUPERADMIN"
         HomeQuickAction.SECURITY,
@@ -6076,6 +6077,7 @@ private fun HomeScreen(
                             }
                         ) {
                             books
+                                .filter { it.permission != "REVOKED" }
                                 .sortedWith(
                                     compareByDescending<
                                         LedgerBook
@@ -6172,25 +6174,15 @@ private fun HomeScreen(
                                     )
                                 }
 
-                            if (
-                                systemRole ==
-                                "SUPERADMIN"
-                            ) {
-                                HorizontalDivider()
-
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            "⚙ 账本管理"
-                                        )
-                                    },
-                                    onClick = {
-                                        bookMenuExpanded =
-                                            false
-                                        onBookManage()
-                                    }
-                                )
-                            }
+                            // Any account may open its own scoped ledger list.
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("⚙ 账本管理") },
+                                onClick = {
+                                    bookMenuExpanded = false
+                                    onBookManage()
+                                }
+                            )
                         }
                     }
 
@@ -16007,45 +15999,24 @@ private fun MoreScreen(
                     }
                 }
 
-                if (
-                    systemRole == "SUPERADMIN" ||
-                    currentBook.permission == "OWNER"
-                ) {
-                    item {
-                        SettingsSection(
-                            "账本与数据"
+                item {
+                    SettingsSection("账本与数据") {
+                        // An ordinary user can inspect and switch authorized
+                        // ledgers, while owner-only management stays gated.
+                        SettingsRow(
+                            "📚",
+                            if (systemRole == "SUPERADMIN") "账本与协作" else "账本管理",
+                            trailing = if (systemRole == "SUPERADMIN")
+                                "账本 · 云端 · 成员" else "查看 · 切换 · 下载"
                         ) {
-                            var hasPrevious = false
-
-                            if (
-                                systemRole ==
-                                "SUPERADMIN"
-                            ) {
-                                SettingsRow(
-                                    "☁️",
-                                    "账本与协作",
-                                    trailing = "账本 · 云端 · 成员"
-                                ) {
-                                    sub =
-                                        MorePage.BOOK_COLLAB
-                                }
-                                hasPrevious = true
-                            }
-
-                            if (
-                                currentBook.permission ==
-                                "OWNER" ||
-                                systemRole ==
-                                "SUPERADMIN"
-                            ) {
-                                if (hasPrevious) SettingsDivider()
-                                SettingsRow(
-                                    "💾",
-                                    "数据备份"
-                                ) {
-                                    sub =
-                                        MorePage.BACKUP
-                                }
+                            sub = if (systemRole == "SUPERADMIN")
+                                MorePage.BOOK_COLLAB else MorePage.BOOKS
+                        }
+                        if (currentBook.permission == "OWNER" ||
+                            systemRole == "SUPERADMIN") {
+                            SettingsDivider()
+                            SettingsRow("💾", "数据备份") {
+                                sub = MorePage.BACKUP
                             }
                         }
                     }
@@ -19455,14 +19426,16 @@ private fun LedgerManagementContent(
         mutableStateOf(false)
     }
 
-    val manageableCloudBooks = remember(cloudBooks, cloudSession?.systemRole) {
-        if (cloudSession?.systemRole == "SUPERADMIN") cloudBooks
-        else cloudBooks.filter { it.role == "OWNER" }
+    // /api/v1/books is already account-scoped on the server. Show the
+    // allowed EDITOR/VIEWER ledgers without elevating their privileges.
+    val manageableCloudBooks = remember(cloudBooks) {
+        LedgerManagementAccessPolicy.visibleCloudBooks(cloudBooks)
     }
 
     val manageableLocalBooks = remember(books, cloudSession?.systemRole) {
-        if (cloudSession?.systemRole == "SUPERADMIN") books
-        else books.filter { it.permission == "OWNER" }
+        LedgerManagementAccessPolicy.visibleLocalBooks(
+            books, cloudSession?.systemRole.orEmpty()
+        )
     }
 
     var cloudBusy by remember {
@@ -20361,7 +20334,8 @@ private fun LedgerManagementContent(
                             }
                         }
 
-                        if (info.role == "OWNER" || info.role == "SUPERADMIN") {
+                        if (LedgerManagementAccessPolicy.canManageCloudBook(
+                                info, cloudSession?.systemRole.orEmpty())) {
                             Row(
                                 Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -20398,7 +20372,8 @@ private fun LedgerManagementContent(
             }
         }
 
-        if (cloudSession != null) {
+        if (cloudSession != null && LedgerManagementAccessPolicy.canOpenCloudTrash(
+                manageableCloudBooks, cloudSession.systemRole)) {
             item {
                 OutlinedButton(
                     onClick = {
