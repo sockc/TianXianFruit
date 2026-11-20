@@ -707,13 +707,18 @@ internal object CustomerCloudBridge {
         context: Context, db: AppDatabase, bookId: String, identity: String,
         canWrite: Boolean,
         request: (String, String, JSONObject?) -> JSONObject
-    ): Result = try {
-        syncInternal(context, db, bookId, identity, canWrite, request)
-    } catch (failure: Exception) {
-        val detail = failure.message.orEmpty().ifBlank { "未知错误" }.take(240)
-        context.getSharedPreferences("customer_cloud_sync_status_v1", Context.MODE_PRIVATE)
-            .edit().putString("error_$bookId", "同步失败：$detail").apply()
-        throw failure
+    ): Result = CustomerSyncSerialPolicy.forBook(bookId) {
+        // Keep failure-status updates inside the same ledger lock; otherwise a
+        // second successful sync could clear its error before the first
+        // failing caller writes an obsolete failure message.
+        try {
+            syncInternal(context, db, bookId, identity, canWrite, request)
+        } catch (failure: Exception) {
+            val detail = failure.message.orEmpty().ifBlank { "未知错误" }.take(240)
+            context.getSharedPreferences("customer_cloud_sync_status_v1", Context.MODE_PRIVATE)
+                .edit().putString("error_$bookId", "同步失败：$detail").apply()
+            throw failure
+        }
     }
 
     private fun syncInternal(
