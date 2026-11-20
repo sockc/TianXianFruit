@@ -324,12 +324,18 @@ private struct PurchasesPage: View {
                                 .font(.caption.bold())
                         }
                         ForEach(day.rows) { row in
-                            HStack {
-                                Text(row.buyer).font(.subheadline)
-                                Spacer()
-                                Text(row.totalCost.formatted(.currency(code: "CNY")))
-                                    .font(.subheadline.bold())
+                            NavigationLink(destination: PurchaseCloudDetailView(
+                                order: row, bookID: model.selectedBookID ?? "")) {
+                                HStack {
+                                    Text(row.buyer).font(.subheadline)
+                                    Spacer()
+                                    Text(row.totalCost.formatted(.currency(code: "CNY")))
+                                        .font(.subheadline.bold())
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption).foregroundColor(.secondary)
+                                }
                             }
+                            .buttonStyle(.plain)
                             Divider()
                         }
                     }
@@ -337,7 +343,7 @@ private struct PurchasesPage: View {
                     .background(Color(UIColor.secondarySystemGroupedBackground),
                                 in: RoundedRectangle(cornerRadius: 12))
                 }
-                Text("这里展示采购订单保存金额；不把待采购计划计入已采购成本。")
+                Text("点击采购单查看云端商品明细与金额核对；只读已保存采购，不把待采购计划计入成本。")
                     .font(.caption2).foregroundColor(.secondary)
                 if DayRows<PurchaseOrderRow>.grouping(rows, date: { $0.date }).count > visibleDays {
                     Button("加载更早采购记录") { visibleDays += 14 }
@@ -468,7 +474,7 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.2.7 · TrollStore 本机草稿预演版")
+                Text("版本：iOS V0.2.8 · TrollStore 测试采购同步版")
                     .font(.caption).foregroundColor(.secondary)
                 Text("正式云端仍只读。仅经隔离证明的测试服务端允许采购上传；营业写入和所有结算仍锁定。")
                     .font(.caption2).foregroundColor(.secondary)
