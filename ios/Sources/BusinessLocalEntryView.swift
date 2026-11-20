@@ -289,7 +289,7 @@ struct BusinessLocalEntryView: View {
                             Label("提交正式营业", systemImage: "arrow.up.circle")
                         }
                         .disabled(!editingAllowed || !saved || submitting ||
-                                  model.businessCommitCapabilities?.allowsWrite != true)
+                                  (!model.businessTestBookAllowed || model.businessCommitCapabilities?.allowsWrite != true))
                     }
                     if submitting { ProgressView("正在核对营业事务…") }
                     if let commitMessage {
