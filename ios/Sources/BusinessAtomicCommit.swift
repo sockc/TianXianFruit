@@ -68,6 +68,10 @@ struct BusinessCommitProposal: Codable, Equatable {
     let alipay: String
     let cash: String
     let totalRevenue: String
+    let expense: String
+    let openingStockValue: String
+    let stockLeftValue: String
+    let profit: String
     let payloadHash: String
 
     enum CodingKeys: String, CodingKey {
@@ -83,6 +87,9 @@ struct BusinessCommitProposal: Codable, Equatable {
         case actualEndTime = "actual_end_time"
         case wechat, alipay, cash
         case totalRevenue = "total_revenue"
+        case expense, profit
+        case openingStockValue = "opening_stock_value"
+        case stockLeftValue = "stock_left_value"
         case payloadHash = "payload_hash"
     }
 }
@@ -183,7 +190,16 @@ enum BusinessCommitPolicy {
                 alipay: money(try BusinessCollectorDraftPolicy.cents(line.alipay, label: "支付宝")),
                 cash: money(try BusinessCollectorDraftPolicy.cents(line.cash, label: "现金")))
         }
+        guard let expenseText = draft.expense, !expenseText.isEmpty,
+              let openingText = draft.openingStock, !openingText.isEmpty,
+              let closingText = draft.closingStock, !closingText.isEmpty else {
+            throw BusinessAtomicError.invalidDraft
+        }
+        let expenseCents = try BusinessCollectorDraftPolicy.cents(expenseText, label: "支出")
+        let openingCents = try BusinessCollectorDraftPolicy.cents(openingText, label: "开摊库存")
+        let closingCents = try BusinessCollectorDraftPolicy.cents(closingText, label: "收摊库存")
         let total = totals.wechat + totals.alipay + totals.cash
+        let profitCents = total + closingCents - openingCents - expenseCents
         guard total > 0 else { throw BusinessAtomicError.invalidDraft }
         struct Canonical: Encodable {
             let protocolVersion: Int
@@ -200,6 +216,10 @@ enum BusinessCommitPolicy {
             let alipay: String
             let cash: String
             let totalRevenue: String
+            let expense: String
+            let openingStockValue: String
+            let stockLeftValue: String
+            let profit: String
             enum CodingKeys: String, CodingKey {
                 case protocolVersion = "protocol_version"
                 case bookID = "book_id"
@@ -213,6 +233,9 @@ enum BusinessCommitPolicy {
                 case actualEndTime = "actual_end_time"
                 case wechat, alipay, cash
                 case totalRevenue = "total_revenue"
+                case expense, profit
+                case openingStockValue = "opening_stock_value"
+                case stockLeftValue = "stock_left_value"
             }
         }
         let normalized = Canonical(protocolVersion: 1, bookID: book.id,
@@ -222,7 +245,9 @@ enum BusinessCommitPolicy {
             collectors: collectors, actualStartTime: draft.startTime,
             actualEndTime: draft.endTime, wechat: money(totals.wechat),
             alipay: money(totals.alipay), cash: money(totals.cash),
-            totalRevenue: money(total))
+            totalRevenue: money(total), expense: money(expenseCents),
+            openingStockValue: money(openingCents),
+            stockLeftValue: money(closingCents), profit: money(profitCents))
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let digest = SHA256.hash(data: try encoder.encode(normalized))
@@ -234,7 +259,11 @@ enum BusinessCommitPolicy {
             actualStartTime: normalized.actualStartTime,
             actualEndTime: normalized.actualEndTime, wechat: normalized.wechat,
             alipay: normalized.alipay, cash: normalized.cash,
-            totalRevenue: normalized.totalRevenue, payloadHash: digest)
+            totalRevenue: normalized.totalRevenue,
+            expense: normalized.expense,
+            openingStockValue: normalized.openingStockValue,
+            stockLeftValue: normalized.stockLeftValue,
+            profit: normalized.profit, payloadHash: digest)
     }
 
     /// Android stores collector allocations inside the single
@@ -259,7 +288,11 @@ enum BusinessCommitPolicy {
             ("revenue", proposal.totalRevenue),
             ("wechat_income", proposal.wechat),
             ("alipay_income", proposal.alipay),
-            ("cash_income", proposal.cash)
+            ("cash_income", proposal.cash),
+            ("expense", proposal.expense),
+            ("opening_stock_value", proposal.openingStockValue),
+            ("stock_left_value", proposal.stockLeftValue),
+            ("profit", proposal.profit)
         ] {
             guard moneyMatches(payload[key]?.decimal, expected) else { return false }
         }
