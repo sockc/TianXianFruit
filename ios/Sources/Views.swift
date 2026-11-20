@@ -26,7 +26,7 @@ private struct LoginView: View {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("天鲜账本").font(.largeTitle.bold())
-                        Text("iOS V0.4.0 · 采购主页面").foregroundColor(.secondary)
+                        Text("iOS V0.4.1 · 采购云端核对").foregroundColor(.secondary)
                         Label("采购本机录入已开放，云端财务修改暂未开放", systemImage: "lock.shield")
                             .font(.footnote).foregroundColor(.green)
                     }.padding(.vertical, 10)
@@ -490,9 +490,9 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.4.0 · 安卓风格采购主页面")
+                Text("版本：iOS V0.4.1 · 采购防重核对与历史进价")
                     .font(.caption).foregroundColor(.secondary)
-                Text("采购页面按安卓的待采购、已完成采购和采购人分组展示；正式账号支持本机采购录入。正式云端修改和资金结算暂未开放。")
+                Text("采购支持云端订单防重核对和历史有效进价参考；本机录入仍未提交正式云端，资金结算保持锁定。")
                     .font(.caption2).foregroundColor(.secondary)
                 Button(role: .destructive) {
                     model.signOut()
