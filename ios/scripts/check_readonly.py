@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V0.3.2: one-pull TEST audit must never submit or mutate financial records."""
+"""V0.3.3: explicit TEST collector splits must not invalidate settled financial records."""
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1] / "Sources"
@@ -157,4 +157,20 @@ assert "saveBusinessEditJob" not in audit_coordinator
 assert "savePurchaseRemarkJob" not in audit_coordinator
 assert "saveStagingJob" not in audit_coordinator
 assert (root.parent / "Tests" / "TestSyncAuditTests.swift").exists()
-print("V0.3.2 PASS: official read-only, scoped test audit without financial writes or retry.")
+assert "TestBusinessSplitInput" in edit_policy
+assert "hasDerivedSettlement" in edit_policy
+assert "profit_distribution" in edit_policy
+assert "daily_cash_settlement" in edit_policy
+assert "settlement_transfer" in edit_policy
+assert "profit_settlement_batch" in edit_policy
+assert "values.splits" in edit_policy
+assert "splitsChanged" in edit_policy
+assert "sourceWechat == oldAmounts" in edit_policy
+assert "rowVersion + 1" in edit_policy
+assert "multiCollector" in edit_ui
+assert "splitRows" in edit_ui
+assert "previouslySettled" in edit_ui
+assert "pendingUploads" in editor
+assert "api.pushSingle(sending.proposed" in editor
+assert "api.validateSession(auth)" in editor
+print("V0.3.3 PASS: TEST-only explicit collector editing; settled-day guard; one-shot outbox; official read-only.")
