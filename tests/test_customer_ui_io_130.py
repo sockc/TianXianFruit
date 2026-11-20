@@ -12,6 +12,13 @@ class CustomerUiIORegression(unittest.TestCase):
         self.assertIn("withContext(Dispatchers.IO) { db.getPaymentImportBatches(200) }", UI)
         self.assertNotIn("val importBatches = remember(dataVersion, showSettings, tab)", UI)
 
+    def test_single_day_reconciliation_reuses_io_loaded_business_history(self):
+        self.assertIn("dailyHistory.filter { it.date == dayAnchor.toString() }", UI)
+        self.assertNotIn(
+            "db.getDailyRecordsBetween(dayAnchor.toString(), dayAnchor.toString())",
+            UI
+        )
+
     def test_customer_snapshot_stays_on_background_dispatcher(self):
         self.assertIn("value = withContext(Dispatchers.IO)", UI)
         self.assertIn("db.getCustomerPayments(), sessions", UI)
