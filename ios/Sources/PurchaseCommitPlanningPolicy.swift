@@ -166,7 +166,12 @@ enum PurchaseCommitPlanningPolicy {
                     $0.payload["id"]?.decimal ==
                         items[0].payload["plan_id"]?.decimal
                 }
-                guard plans.count == 1, plans[0].rowVersion > 0 else {
+                guard plans.count == 1, plans[0].rowVersion > 0,
+                      let planID = plans[0].payload["id"]?.decimal,
+                      records.filter({
+                          !$0.isDeletion && $0.tableName == "purchase_plan" &&
+                          $0.payload["id"]?.decimal == planID
+                      }).count == 1 else {
                     throw PurchaseCommitPlanningError.stalePlan
                 }
                 versions.append(PurchaseExpectedVersion(
