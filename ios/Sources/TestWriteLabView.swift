@@ -117,7 +117,7 @@ struct TestWriteLabView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
-                Label("V0.2.9 · 测试账本营业与采购", systemImage: "lock.shield")
+                Label("V0.3.1 · 测试账本营业与采购", systemImage: "lock.shield")
                     .font(.headline).foregroundColor(.orange)
                 Text("测试账本可录入营业及多商品采购草稿，之后从对应同步页面提交；正式账本始终只读。")
                     .font(.caption).foregroundColor(.secondary)
