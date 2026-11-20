@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V0.3.4: per-person TEST uploads use resolved collectors, not settlement writes."""
+"""V0.4.0: real-account purchase entry is scoped local-only; cloud remains read-only."""
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1] / "Sources"
@@ -191,4 +191,33 @@ assert "TestBusinessUploadModels.swift" in str(root / "TestBusinessUploadModels.
 assert (root.parent / "Tests" / "BusinessCollectorDraftTests.swift").exists()
 assert "api.pushSingle" not in business_form
 assert "pushSingle" not in business_drafts
-print("V0.3.4 PASS: official books read-only; per-person source validation, clock checks, one-shot TEST upload.")
+workspace = swift["PurchaseWorkspaceView.swift"]
+editor = swift["PurchaseWorkspaceEditorView.swift"]
+workspace_models = swift["PurchaseWorkspaceModels.swift"]
+workspace_store = swift["PurchaseWorkspaceStore.swift"]
+views = swift["Views.swift"]
+assert "PurchaseWorkspaceView()" in views
+assert "PurchasesHistoryView" in views
+assert "purchase_plan_item" in workspace_models
+assert "purchase_collaboration" in workspace_models
+assert "purchase_plan" in workspace_models
+assert "purchase_order" in workspace_models
+assert "Set(planning.completed.map" not in workspace_models or "completedFruits" in workspace_models
+assert "PurchaseWorkspaceDraft" in workspace_models
+assert "PurchaseWorkspaceDraftPolicy.authorized" in editor
+assert "selectedBookID == bookID" in editor
+assert "model.account?.username.lowercased()" in editor
+assert "purchase_workspace_draft" in workspace_store
+assert "account=? AND book_id=?" in workspace_store
+assert "book_id=excluded" not in workspace_store
+assert "SELECT payload FROM purchase_workspace_draft" in workspace_store
+assert "INSERT INTO purchase_workspace_draft" in workspace_store
+assert "purchase_plan_item" not in workspace_store
+assert "api.pushSingle" not in workspace_store
+assert "pushSingle" not in workspace
+assert "/sync/push" not in workspace
+assert "pushSingle" not in editor
+assert "StagingPurchaseAPI" not in workspace
+assert "purchase_workspace_draft" not in regular
+assert (root.parent / "Tests" / "PurchaseWorkspaceTests.swift").exists()
+print("V0.4.0 PASS: Android plan cloud reads; isolated formal-account local purchase drafts; no production push.")
