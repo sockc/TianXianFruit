@@ -186,4 +186,131 @@ final class TestBusinessEditTests: XCTestCase {
         try store.saveBusinessEditJob(job)
         XCTAssertThrowsError(try store.saveBusinessEditJob(retry))
     }
+    private func splitValues(_ rows: [TestBusinessSplitInput],
+                             wechat: String = "100",
+                             alipay: String = "60",
+                             cash: String = "40") -> TestBusinessEditValues {
+        TestBusinessEditValues(wechat: wechat, alipay: alipay,
+                               cash: cash, expense: "20",
+                               opening: "80", closing: "30", splits: rows)
+    }
+
+    func testPerPersonMultiCollectorEditsBothWechatReceiversWithoutGuessing() throws {
+        let originalSplits = [
+            TestBusinessReceiptSplit(partnerID: 11, partnerName: "甲",
+                amount: 90, wechatIncome: 50, alipayIncome: 0,
+                cashIncome: 40),
+            TestBusinessReceiptSplit(partnerID: 12, partnerName: "乙",
+                amount: 110, wechatIncome: 50, alipayIncome: 60,
+                cashIncome: 0)
+        ]
+        let base = try record(splits: originalSplits)
+        let rows = [
+            TestBusinessSplitInput(partnerID: 11, partnerName: "甲",
+                wechat: "70", alipay: "0", cash: "40"),
+            TestBusinessSplitInput(partnerID: 12, partnerName: "乙",
+                wechat: "50", alipay: "60", cash: "0")
+        ]
+        let job = try prepare(base, values: splitValues(
+            rows, wechat: "120"))
+        XCTAssertEqual(job.proposed.payload["revenue"]?.decimal, 220)
+        XCTAssertEqual(job.proposed.payload["profit"]?.decimal, 150)
+        XCTAssertEqual(job.proposed.payload["cash_collector_id"],
+                       base.payload["cash_collector_id"])
+        let json = try XCTUnwrap(job.proposed.payload["receipt_splits_json"]?.text)
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let parts = try JSONDecoder().decode(
+            [TestBusinessReceiptSplit].self, from: data)
+        XCTAssertEqual(parts.map(\.partnerID), [11, 12])
+        XCTAssertEqual(parts[0].wechatIncome, 70)
+        XCTAssertEqual(parts[1].wechatIncome, 50)
+        XCTAssertTrue(TestBusinessEditPolicy.confirmed(
+            job, events: [job.proposed]))
+    }
+
+    func testPerPersonReallocationWithSameTotalsIsARealEdit() throws {
+        let base = try record(splits: [
+            TestBusinessReceiptSplit(partnerID: 11, partnerName: "甲",
+                amount: 90, wechatIncome: 50, alipayIncome: 0,
+                cashIncome: 40),
+            TestBusinessReceiptSplit(partnerID: 12, partnerName: "乙",
+                amount: 110, wechatIncome: 50, alipayIncome: 60,
+                cashIncome: 0)
+        ])
+        let rows = [
+            TestBusinessSplitInput(partnerID: 11, partnerName: "甲",
+                wechat: "60", alipay: "0", cash: "40"),
+            TestBusinessSplitInput(partnerID: 12, partnerName: "乙",
+                wechat: "40", alipay: "60", cash: "0")
+        ]
+        let job = try prepare(base, values: splitValues(rows))
+        XCTAssertEqual(job.proposed.payload["revenue"]?.decimal, 200)
+        XCTAssertEqual(job.proposed.payload["profit"]?.decimal, 130)
+        XCTAssertNotEqual(job.original.payload["receipt_splits_json"],
+                          job.proposed.payload["receipt_splits_json"])
+    }
+
+    func testUnknownOrRemovedCollectorAndZeroedCollectorAreRejected() throws {
+        let base = try record()
+        let originalRows = TestBusinessSplitInput.from(base)
+        XCTAssertEqual(originalRows.count, 2)
+        XCTAssertThrowsError(try prepare(base, values: splitValues(
+            Array(originalRows.prefix(1)), wechat: "100")))
+        var renamed = originalRows
+        renamed[0] = TestBusinessSplitInput(
+            partnerID: 11, partnerName: "冒名收款",
+            wechat: "100", alipay: "0", cash: "40")
+        XCTAssertThrowsError(try prepare(base, values: splitValues(renamed)))
+        var zeroed = originalRows
+        zeroed[0] = TestBusinessSplitInput(
+            partnerID: 11, partnerName: "甲",
+            wechat: "0", alipay: "0", cash: "0")
+        XCTAssertThrowsError(try prepare(base, values: splitValues(
+            zeroed, wechat: "0", cash: "0")))
+    }
+
+    func testCorruptedOriginalCollectorTotalsAreRejectedBeforeMutation() throws {
+        let base = try record()
+        var fields = base.payload
+        fields["wechat_income"] = .number(99)
+        let corrupted = SyncEvent(
+            tableName: base.tableName, syncId: base.syncId,
+            rowVersion: base.rowVersion,
+            operation: base.operation, payload: fields)
+        XCTAssertThrowsError(try prepare(corrupted))
+        let explicit = splitValues(TestBusinessSplitInput.from(corrupted))
+        XCTAssertThrowsError(try prepare(corrupted, values: explicit))
+    }
+
+    func testSettledDateBlockedForProfitAndActualTransfers() throws {
+        let base = try record()
+        let distribution = SyncEvent(
+            tableName: "profit_distribution", syncId: "dist-1",
+            rowVersion: 1, operation: "UPSERT",
+            payload: ["date": .string("2026-11-20")])
+        XCTAssertTrue(TestBusinessEditPolicy.hasDerivedSettlement(
+            date: "2026-11-20", events: [base, distribution]))
+        XCTAssertThrowsError(try prepare(base, events: [base, distribution]))
+
+        let transfer = SyncEvent(
+            tableName: "settlement_transfer", syncId: "transfer-1",
+            rowVersion: 2, operation: "UPSERT",
+            payload: [
+                "date": .string("2026-11-22"),
+                "range_start_date": .string("2026-11-18"),
+                "range_end_date": .string("2026-11-21"),
+                "settled_amount": .number(20)
+            ])
+        XCTAssertThrowsError(try prepare(base, events: [base, transfer]))
+        let job = try prepare(base)
+        XCTAssertFalse(TestBusinessEditPolicy.unchanged(
+            job, events: [base, transfer]))
+
+        // A historic settlement tombstone still requires manual review.
+        let deleted = SyncEvent(tableName: "daily_cash_settlement",
+            syncId: "old-cash-1", rowVersion: 2, operation: "DELETE",
+            payload: ["date": .string("2026-11-20"), "deleted": .number(1)])
+        XCTAssertThrowsError(try prepare(base, events: [base, deleted]))
+    }
+
 }
