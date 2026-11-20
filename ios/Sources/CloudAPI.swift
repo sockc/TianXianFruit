@@ -44,6 +44,8 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             || path == "/api/v1/sync/pull"
             || path == "/api/v1/weather/overview"
             || path == "/api/v1/purchases/capabilities"
+            || path == "/api/v1/business/capabilities"
+            || path.hasPrefix("/api/v1/business/operations/")
             || path.hasPrefix("/api/v1/purchases/operations/")
             || (path.hasPrefix("/api/v1/books/") && (
                 path.hasSuffix("/customer-analytics/capabilities")
@@ -51,6 +53,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         let permittedPOST = path == "/api/v1/auth/login"
             || path == "/api/v1/devices/register"
             || path == "/api/v1/purchases/commit"
+            || path == "/api/v1/business/commit"
         guard (method == "GET" && permittedGET) || (method == "POST" && permittedPOST),
               let base = URL(string: root + path),
               var parts = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
@@ -154,6 +157,51 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         }
     }
 
+    func businessCapabilities(token: String, bookID: String)
+        async throws -> BusinessCommitCapabilities {
+        guard UUID(uuidString: bookID) != nil else { throw BusinessAtomicError.scope }
+        let data = try await request("GET", "/api/v1/business/capabilities",
+            token: token, query: [URLQueryItem(name: "book_id", value: bookID)])
+        return try decode(BusinessCommitCapabilities.self, from: data)
+    }
+
+    func businessCommit(token: String, proposal: BusinessCommitProposal)
+        async throws -> BusinessCommitReceipt {
+        guard UUID(uuidString: proposal.bookID) != nil,
+              UUID(uuidString: proposal.operationID) != nil else {
+            throw BusinessAtomicError.scope
+        }
+        let source = try JSONEncoder().encode(proposal)
+        guard var object = try JSONSerialization.jsonObject(with: source)
+                as? [String: Any] else { throw BusinessAtomicError.invalidDraft }
+        object["device_id"] = try Self.scopedDeviceID(proposal.account)
+        let body = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        let data = try await request("POST", "/api/v1/business/commit",
+            token: token, jsonBody: body)
+        let receipt = try decode(BusinessCommitReceipt.self, from: data)
+        guard receipt.matches(proposal) else { throw BusinessAtomicError.badReceipt }
+        return receipt
+    }
+
+    func businessOperation(token: String, proposal: BusinessCommitProposal)
+        async throws -> BusinessCommitReceipt? {
+        guard let operationID = UUID(uuidString: proposal.operationID),
+              UUID(uuidString: proposal.bookID) != nil else {
+            throw BusinessAtomicError.scope
+        }
+        do {
+            let data = try await request("GET",
+                "/api/v1/business/operations/" + operationID.uuidString.lowercased(),
+                token: token, query: [
+                    URLQueryItem(name: "book_id", value: proposal.bookID)])
+            let receipt = try decode(BusinessCommitReceipt.self, from: data)
+            guard receipt.matches(proposal) else { throw BusinessAtomicError.badReceipt }
+            return receipt
+        } catch let error as CloudAPIError where error.status == 404 {
+            return nil
+        }
+    }
+
     func account(token: String) async throws -> Account {
         let data = try await request("GET", "/api/v1/auth/me", token: token)
         return try decode(Account.self, from: data)
@@ -176,7 +224,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             "POST", "/api/v1/auth/login", body: [
                 "username": trimmed, "password": password,
                 "device_id": scopedID, "device_name": deviceName,
-                "platform": "ios", "app_version": "0.4.3"
+                "platform": "ios", "app_version": "0.4.6"
             ])
         let auth: LoginResponse = try decode(LoginResponse.self, from: loginData)
         let me = try await account(token: auth.accessToken)
@@ -184,7 +232,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         _ = try await request("POST", "/api/v1/devices/register",
                               token: auth.accessToken, body: [
             "device_id": scopedID, "name": deviceName,
-            "platform": "ios", "app_version": "0.4.3"
+            "platform": "ios", "app_version": "0.4.6"
         ])
         return (auth.accessToken, me)
     }
