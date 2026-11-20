@@ -271,6 +271,31 @@ enum TestBusinessEditPolicy {
             }
             result[field] = c
         }
+        // Before any edit, prove the cloud's original collector detail
+        // balances every channel and each row's declared sum. Never
+        // "repair" corrupt or partially synced collector data by guessing.
+        var sourceWechat: Int64 = 0
+        var sourceAlipay: Int64 = 0
+        var sourceCash: Int64 = 0
+        for item in beforeSplits {
+            guard let w = cents(item.wechatIncome),
+                  let a = cents(item.alipayIncome),
+                  let c = cents(item.cashIncome),
+                  let stated = cents(item.amount),
+                  stated == w + a + c, stated > 0 else {
+                throw StagingSafetyError.needsReview(
+                    "原有收款人明细金额不完整或合计错误，拒绝覆盖")
+            }
+            sourceWechat += w
+            sourceAlipay += a
+            sourceCash += c
+        }
+        guard sourceWechat == oldAmounts["wechat_income"],
+              sourceAlipay == oldAmounts["alipay_income"],
+              sourceCash == oldAmounts["cash_income"] else {
+            throw StagingSafetyError.needsReview(
+                "原有各渠道金额与收款人明细不一致，请先在安卓核对")
+        }
         func apply(_ key: String, desired: Int64,
                    get: (TestBusinessReceiptSplit) -> Double,
                    set: (inout TestBusinessReceiptSplit, Double) -> Void) throws {
