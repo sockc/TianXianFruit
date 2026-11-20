@@ -144,7 +144,11 @@ enum PurchaseImportPolicy {
             $0.tableName == "partner" && $0.syncId == buyerSyncID
         }
         guard buyers.count == 1,
-              let buyerID = numericID(buyers[0].payload["id"]) else {
+              let buyerID = numericID(buyers[0].payload["id"]),
+              source.filter({
+                  $0.tableName == "partner" &&
+                  numericID($0.payload["id"]) == buyerID
+              }).count == 1 else {
             return []
         }
         let plans = source.filter {
