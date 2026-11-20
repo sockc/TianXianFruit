@@ -282,6 +282,36 @@ final class TestBusinessEditTests: XCTestCase {
         XCTAssertThrowsError(try prepare(corrupted, values: explicit))
     }
 
+    func testExistingProfitMismatchAndDuplicatePartnerIDCannotBeOverwritten() throws {
+        let base = try record()
+        var wrongProfit = base.payload
+        wrongProfit["profit"] = .number(5)
+        let corrupt = SyncEvent(tableName: base.tableName,
+            syncId: base.syncId, rowVersion: base.rowVersion,
+            operation: "UPSERT", payload: wrongProfit)
+        XCTAssertThrowsError(try prepare(corrupt))
+
+        let duplicated = try record(splits: [
+            TestBusinessReceiptSplit(partnerID: 11, partnerName: "甲",
+                amount: 140, wechatIncome: 100, alipayIncome: 0,
+                cashIncome: 40),
+            TestBusinessReceiptSplit(partnerID: 11, partnerName: "重复身份",
+                amount: 60, wechatIncome: 0, alipayIncome: 60,
+                cashIncome: 0)
+        ])
+        XCTAssertThrowsError(try prepare(duplicated))
+    }
+
+    func testUnknownSettlementTombstoneDateFailsClosed() throws {
+        let base = try record()
+        let tombstone = SyncEvent(
+            tableName: "daily_cash_settlement",
+            syncId: "redacted-tombstone-1",
+            rowVersion: 3, operation: "DELETE",
+            payload: ["deleted": .number(1)])
+        XCTAssertThrowsError(try prepare(base, events: [base, tombstone]))
+    }
+
     func testSettledDateBlockedForProfitAndActualTransfers() throws {
         let base = try record()
         let distribution = SyncEvent(
