@@ -237,36 +237,74 @@ enum BusinessCommitPolicy {
             totalRevenue: normalized.totalRevenue, payloadHash: digest)
     }
 
-    /// Fail closed unless a server round trip returns the exact parent AND
-    /// each collector row. Never infer individual collectors from the total.
+    /// Android stores collector allocations inside the single
+    /// store_daily_record.receipt_splits_json field (not a separate table).
+    /// Verify each split against its unique, active partner numeric ID.
     static func readback(_ proposal: BusinessCommitProposal,
-                         receipt: BusinessCommitReceipt, records: [SyncEvent]) -> Bool {
-        guard receipt.matches(proposal) else { return false }
+                         receipt: BusinessCommitReceipt,
+                         records: [SyncEvent]) -> Bool {
+        guard receipt.matches(proposal),
+              receipt.collectorSyncIDs == proposal.collectors.map(\.partnerSyncID)
+        else { return false }
         let parent = records.filter {
             $0.tableName == "store_daily_record" && !$0.isDeletion &&
             $0.syncId == receipt.recordSyncID &&
             $0.payload["date"]?.text == proposal.date &&
+            $0.payload["store_sync_id"]?.text == proposal.storeSyncID &&
             $0.payload["store_name"]?.text == proposal.storeName
         }
-        guard parent.count == 1,
-              abs((parent[0].payload["revenue"]?.decimal ?? -1) -
-                  (Double(proposal.totalRevenue) ?? -2)) < 0.005 else { return false }
-        let details = receipt.collectorSyncIDs.compactMap { id in
-            records.first { $0.tableName == "store_daily_collector" &&
-                !$0.isDeletion && $0.syncId == id }
+        guard parent.count == 1 else { return false }
+        let payload = parent[0].payload
+        for (key, expected) in [
+            ("revenue", proposal.totalRevenue),
+            ("wechat_income", proposal.wechat),
+            ("alipay_income", proposal.alipay),
+            ("cash_income", proposal.cash)
+        ] {
+            guard moneyMatches(payload[key]?.decimal, expected) else { return false }
         }
-        guard details.count == proposal.collectors.count else { return false }
-        for (index, detail) in details.enumerated() {
-            let expected = proposal.collectors[index]
-            guard detail.payload["partner_sync_id"]?.text == expected.partnerSyncID,
-                  abs((detail.payload["wechat"]?.decimal ?? -1) -
-                      (Double(expected.wechat) ?? -2)) < 0.005,
-                  abs((detail.payload["alipay"]?.decimal ?? -1) -
-                      (Double(expected.alipay) ?? -2)) < 0.005,
-                  abs((detail.payload["cash"]?.decimal ?? -1) -
-                      (Double(expected.cash) ?? -2)) < 0.005 else { return false }
+        guard payload["actual_start_time"]?.text == proposal.actualStartTime,
+              payload["actual_end_time"]?.text == proposal.actualEndTime,
+              let raw = payload["receipt_splits_json"]?.text,
+              let data = raw.data(using: .utf8),
+              let splits = (try? JSONSerialization.jsonObject(with: data))
+                    as? [[String: Any]],
+              splits.count == proposal.collectors.count
+        else { return false }
+        let partnerRows = records.filter {
+            $0.tableName == "partner" && !$0.isDeletion
+        }
+        for (index, requested) in proposal.collectors.enumerated() {
+            let partners = partnerRows.filter {
+                $0.syncId == requested.partnerSyncID
+            }
+            guard partners.count == 1,
+                  let numeric = partners[0].payload["id"]?.decimal,
+                  numeric.isFinite, numeric > 0,
+                  numeric.rounded() == numeric else { return false }
+            let split = splits[index]
+            guard let partnerID = split["partner_id"] as? NSNumber,
+                  partnerID.doubleValue == numeric,
+                  moneyMatches(split["wechat_income"] as? Double,
+                               requested.wechat),
+                  moneyMatches(split["alipay_income"] as? Double,
+                               requested.alipay),
+                  moneyMatches(split["cash_income"] as? Double,
+                               requested.cash),
+                  let a = Double(requested.wechat),
+                  let b = Double(requested.alipay),
+                  let c = Double(requested.cash),
+                  moneyMatches(split["amount"] as? Double,
+                               String(format: "%.2f", a+b+c))
+            else { return false }
         }
         return true
+    }
+
+    private static func moneyMatches(_ actual: Double?, _ expected: String) -> Bool {
+        guard let actual, let wanted = Double(expected),
+              actual.isFinite, wanted.isFinite else { return false }
+        return abs(actual - wanted) < 0.005
     }
 }
 
