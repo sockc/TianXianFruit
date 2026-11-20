@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V0.3.0: official books read-only; guarded test-book corrections only."""
+"""V0.3.1: only the dedicated test transport may submit guarded edits."""
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1] / "Sources"
@@ -105,4 +105,30 @@ assert "isolated_business_edit_jobs" in outbox
 assert "coordinator.submit" in edit_ui
 assert "coordinator.inspect" in edit_ui
 assert (root.parent / "Tests" / "TestBusinessEditTests.swift").exists()
-print("V0.3.0 PASS: official books read-only; TEST corrections use version checks and one-shot outbox.")
+remark = swift["PurchaseRemarkEditPolicy.swift"]
+remark_upload = swift["PurchaseRemarkEditCoordinator.swift"]
+remark_ui = swift["PurchaseRemarkEditView.swift"]
+purchase_details = swift["PurchaseCloudDetailView.swift"]
+business_review = swift["BusinessEditCloudReview.swift"]
+assert "PurchaseRemarkEditPolicy.prepare" in remark_upload
+assert "PurchaseRemarkEditPolicy.unchanged" in remark_upload
+assert "PurchaseRemarkEditPolicy.confirmed" in remark_upload
+assert "api.pushSingle(sending.proposed" in remark_upload
+assert "try store.savePurchaseRemarkJob(sending)" in remark_upload
+assert "api.validateSession(auth)" in remark_upload
+assert "TestSyncCredentialStore.load" in remark_upload
+assert "book.name.hasPrefix(TestWritePolicy.prefix)" in remark_upload
+assert "receipt_splits_json" not in remark
+assert "purchase_order" in remark and "purchase_item" in remark
+assert "attachedChildren" in remark and "childrenEqual" in remark
+assert "original.rowVersion + 1" in remark
+assert "isolated_purchase_remark_jobs" in outbox
+assert "cancelUnsentRemark" in outbox
+assert "coordinator.submit" in remark_ui
+assert "coordinator.inspect" in remark_ui
+assert "PurchaseRemarkEditView" in purchase_details
+assert "BusinessEditCloudReview" in swift["TestBusinessEditView.swift"]
+assert "not Android" in business_review or "not proof" in business_review
+assert (root.parent / "Tests" / "PurchaseRemarkEditTests.swift").exists()
+assert (root.parent / "Tests" / "BusinessEditCloudReviewTests.swift").exists()
+print("V0.3.1 PASS: official books read-only; guarded remark edit and cross-device cloud audit.")
