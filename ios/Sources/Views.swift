@@ -26,8 +26,8 @@ private struct LoginView: View {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("天鲜账本").font(.largeTitle.bold())
-                        Text("iOS V0.4.3 · 采购事务提交与回读").foregroundColor(.secondary)
-                        Label("采购本机录入已开放，云端财务修改暂未开放", systemImage: "lock.shield")
+                        Text("iOS V0.4.9 · 营业历史与安全更正").foregroundColor(.secondary)
+                        Label("测试账本可录入及更正营业；正式账本编辑尚未开放", systemImage: "lock.shield")
                             .font(.footnote).foregroundColor(.green)
                     }.padding(.vertical, 10)
                 }
@@ -108,7 +108,7 @@ private struct DashboardView: View {
     private var header: some View {
         VStack(spacing: 6) {
             HStack {
-                Label("云端只读", systemImage: "lock.shield.fill")
+                Label(model.businessTestBookAllowed ? "测试账本" : "正式账本只读", systemImage: "lock.shield.fill")
                     .font(.caption.bold()).foregroundColor(.green)
                 Spacer()
                 if model.books.count > 1 {
