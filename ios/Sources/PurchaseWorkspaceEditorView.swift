@@ -172,6 +172,7 @@ struct PurchaseWorkspaceEditorView: View {
 }
 
 private struct PurchaseWorkspaceLineCard: View {
+    @EnvironmentObject private var model: LedgerViewModel
     @Binding var line: PurchaseDraftLine
     let fruits: [TestLookup]
     let canDelete: Bool
@@ -179,6 +180,13 @@ private struct PurchaseWorkspaceLineCard: View {
 
     private var subtotal: Decimal? {
         try? PurchaseDraftPolicy.subtotal(line)
+    }
+
+    private var lastPrice: PurchaseLastPrice? {
+        guard !line.fruitSyncID.isEmpty else { return nil }
+        return PurchaseLastPricePolicy.latest(
+            fruitSyncID: line.fruitSyncID, unit: line.unit,
+            records: Array(model.snapshot.records.values))
     }
 
     var body: some View {
@@ -207,6 +215,21 @@ private struct PurchaseWorkspaceLineCard: View {
             HStack(spacing: 10) {
                 input("数量", value: $line.quantity)
                 input("单价（元）", value: $line.unitPrice)
+            }
+            if let lastPrice {
+                HStack(spacing: 7) {
+                    Text("历史有效进价 ¥" +
+                         String(format: "%.2f", lastPrice.price) +
+                         "/" + lastPrice.unit + " · " + lastPrice.date)
+                        .font(.caption2).foregroundColor(.secondary)
+                    Spacer(minLength: 0)
+                    Button("填入") {
+                        // Never auto-overwrite a user's real input.
+                        line.unitPrice = String(
+                            format: "%.2f", lastPrice.price)
+                    }
+                    .font(.caption2)
+                }
             }
             HStack(spacing: 10) {
                 input("单位", value: $line.unit, numeric: false)
