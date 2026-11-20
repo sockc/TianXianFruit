@@ -103,12 +103,22 @@ final class LedgerViewModel: ObservableObject {
     }
 
 
+    /// V1.0.27 server only accepts business commits to iOS_TEST_ books.
+    /// The server is authoritative; this client guard prevents misleading UI.
+    var businessTestBookAllowed: Bool {
+        selectedBook?.name.hasPrefix("iOS_TEST_") == true
+    }
+
     func refreshBusinessCommitCapabilities() async {
         businessCommitCapabilities = nil
         businessCommitError = nil
         guard let user = account, let token = accessToken,
               let book = selectedBookID, !isUsingCachedAuthorization else {
             businessCommitError = "账号尚未通过在线授权，正式营业上传不可用"
+            return
+        }
+        guard businessTestBookAllowed else {
+            businessCommitError = "当前版本只允许 iOS_TEST_ 测试账本上传营业；正式账本保持只读"
             return
         }
         do {
@@ -128,7 +138,7 @@ final class LedgerViewModel: ObservableObject {
               let user = account, let book = selectedBook, let token = accessToken,
               !isUsingCachedAuthorization,
               user.username.lowercased() == proposal.account.lowercased(),
-              book.id == proposal.bookID,
+              book.id == proposal.bookID, book.name.hasPrefix("iOS_TEST_"),
               PurchaseWorkspaceDraftPolicy.authorized(book: book, account: user)
         else { throw BusinessAtomicError.scope }
         isBusinessCommitBusy = true
