@@ -59,6 +59,7 @@ struct BusinessLocalEntryView: View {
     @State private var errorText: String?
     @State private var saved = false
     @State private var attempt: BusinessCommitAttempt?
+    @State private var canResumeOriginal = false
     @State private var commitMessage: String?
     @State private var submitting = false
 
@@ -101,6 +102,8 @@ struct BusinessLocalEntryView: View {
             closingStock = ""
         }
         saved = false
+        canResumeOriginal = false
+        commitMessage = nil
         errorText = nil
         loadAttempt()
     }
@@ -113,6 +116,7 @@ struct BusinessLocalEntryView: View {
             attempt = try BusinessCommitOutbox().load(
                 id: id, account: account, bookID: bookID)
         } catch {
+            attempt = nil // Fail closed instead of retaining a stale attempt.
             commitMessage = "上传保护记录不可读取，禁止写入：" + error.localizedDescription
         }
     }
@@ -182,9 +186,32 @@ struct BusinessLocalEntryView: View {
         defer { submitting = false; loadAttempt() }
         do {
             let result = try await BusinessFormalSubmit.recover(model, attempt: saved)
+            canResumeOriginal = false
+            attempt = result
+            commitMessage = result.label
+        } catch BusinessAtomicError.missingResult {
+            // A 404 is not success and does not authorize a fresh operation.
+            // The user may explicitly resume the identical immutable request.
+            canResumeOriginal = true
+            commitMessage = "服务器没有原操作结果。可以继续同一操作编号；不会创建新提交编号。"
+        } catch {
+            canResumeOriginal = false
+            commitMessage = error.localizedDescription
+        }
+    }
+
+    private func resumeOriginal() async {
+        guard !submitting, canResumeOriginal, let stored = attempt,
+              model.businessTestBookAllowed else { return }
+        submitting = true
+        defer { submitting = false; loadAttempt() }
+        do {
+            let result = try await BusinessFormalSubmit.resumeOriginal(model, attempt: stored)
+            canResumeOriginal = false
             attempt = result
             commitMessage = result.label
         } catch {
+            // Keep the immutable outbox even after a timeout or server rejection.
             commitMessage = error.localizedDescription
         }
     }
@@ -268,7 +295,7 @@ struct BusinessLocalEntryView: View {
                     }
                     .disabled(!editingAllowed || storeID.isEmpty || attempt != nil || submitting)
                     if saved {
-                        Label("本机草稿已保存，未提交云端", systemImage: "checkmark.circle")
+                        Label(attempt == nil ? "本机草稿已保存，未提交云端" : "本机草稿已保存（云端状态见下方）", systemImage: "checkmark.circle")
                             .foregroundColor(.green)
                     }
                     if let errorText {
@@ -282,6 +309,25 @@ struct BusinessLocalEntryView: View {
                             Label("查询原操作（不再次提交）", systemImage: "shield.lefthalf.filled")
                         }
                         .disabled(submitting)
+                        if canResumeOriginal &&
+                           (attempt.phase == .unknown || attempt.phase == .prepared) {
+                            Button {
+                                Task { await resumeOriginal() }
+                            } label: {
+                                Label("继续原操作（同一编号，不另建账）",
+                                      systemImage: "arrow.clockwise.circle")
+                            }
+                            .disabled(submitting || !model.businessTestBookAllowed ||
+                                      model.businessCommitCapabilities?.allowsWrite != true)
+                            Text("仅 iOS_TEST_ 测试账本可使用。服务器需开启营业写入；相同操作编号及金额由服务端幂等保护。")
+                                .font(.caption2).foregroundColor(.secondary)
+                        }
+                        if model.businessCommitCapabilities?.allowsWrite != true {
+                            Button("刷新服务器写入权限") {
+                                Task { await model.refreshBusinessCommitCapabilities() }
+                            }
+                            .disabled(submitting)
+                        }
                     } else {
                         Button {
                             Task { await commitDraft() }
