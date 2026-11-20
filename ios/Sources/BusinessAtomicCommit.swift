@@ -249,7 +249,7 @@ enum BusinessCommitPolicy {
             openingStockValue: money(openingCents),
             stockLeftValue: money(closingCents), profit: money(profitCents))
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let digest = SHA256.hash(data: try encoder.encode(normalized))
             .map { String(format: "%02x", $0) }.joined()
         return BusinessCommitProposal(protocolVersion: 1, bookID: book.id,
