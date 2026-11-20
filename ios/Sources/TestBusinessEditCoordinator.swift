@@ -131,6 +131,14 @@ final class TestBusinessEditCoordinator: ObservableObject {
             // request is missing a verified cloud outcome.
             let previous = try store.businessEditJobs(
                 account: account, book: book.id)
+            let pendingUploads = try store.businessJobs(
+                account: account, book: book.id)
+            guard !pendingUploads.contains(where: {
+                $0.syncID == original.syncId && $0.state != .complete
+            }) else {
+                throw StagingSafetyError.needsReview(
+                    "该日位置营业新增仍有未确认的上传任务；先核对，避免覆盖")
+            }
             guard !previous.contains(where: {
                 $0.original.syncId == original.syncId &&
                 $0.state != .complete
