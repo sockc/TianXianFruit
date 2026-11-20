@@ -1,6 +1,6 @@
-# iOS 正式采购事务写入接口契约（V0.4.2）
+# iOS 正式采购事务写入接口契约（V0.4.3）
 
-**状态：接口设计、客户端规范化事务提案及计划版本检查已提交；正式服务端尚未实现或接通此接口。** 这不是服务器已部署说明。当前仓库不包含生产同步服务的完整后端源码。iOS 的 `PurchaseCloudReconcilePolicy` 只做只读云端对账，不会发送采购变更。
+**状态：接口设计、客户端规范化事务提案及计划版本检查已提交；V1.0.25 服务端独立源码升级包已生成，但尚未部署到现网；默认功能关闭。** 这不是服务器已部署说明。当前仓库不包含生产同步服务的完整后端源码。iOS 的 `PurchaseCloudReconcilePolicy` 只做只读云端对账，不会发送采购变更。
 
 ## 为什么不能直接调用旧 `/api/v1/sync/push`
 
@@ -37,9 +37,20 @@
 
 **安卓现有当日结算计算逻辑、字段、UI、转账规则均不应因这个接口而改变。**
 
-## V0.4.2 客户端现有对接代码
+## V0.4.3 客户端现有对接代码
 
 - `PurchaseCommitPlanningPolicy.prepare` 可从真实账号的本机采购草稿与当前云端快照，生成含 `protocol_version=1`、`book_id`、`draft_id`、`buyer_sync_id`、`date`、`purchase_type`、`operation`、每条商品精确到分金额、`expected_versions` 与 `payload_hash` 的规范化请求提案。
 - 来源为当天待采购计划时需验证计划仍待完成、商品/单位匹配、原计划和协作记录身份唯一且版本有效；只创建独立采购时不伪造计划关联。混合有/无计划来源必须拆单。
 - 原计划商品的 `sourcePlanItemSyncID` 从安卓同步计划导入并保存到本机草稿（旧版 JSON 缺失字段仍可解码），修改商品或单位后会清除来源，防止把错误商品误标为已完成。
-- 此代码只准备提案，**尚未建立正式写入网络调用或发送接口，也不向云端注册幂等请求**。新接口的部署、权限、强制幂等、实际数据库事务及异常回读仍是阻塞条件；绝对不得将客户端 `payload_hash` 视为服务器事务证明。
+- V0.4.3 已新增在服务端明确开启功能且版本匹配时的专用 POST /api/v1/purchases/commit，请求前将不可变提案保存到本机操作表；网络状态未知时仅查询原 operation_id，绝不自动重复 POST。新接口的部署、权限、强制幂等、实际数据库事务及异常回读仍是阻塞条件；绝对不得将客户端 `payload_hash` 视为服务器事务证明。
+
+## V0.4.3 服务端实现状态
+
+独立交付的 TianXian-Server V1.0.25 FULL/PATCH（基于资料库 V1.0.24）已包含：
+
+- GET /api/v1/purchases/capabilities（原子写入能力明示）
+- POST /api/v1/purchases/commit（采购主单、商品明细、采购活动、可选计划/协作、审计及同步事件统一 SQL 事务；账本+草稿 UUID 幂等记录）
+- GET /api/v1/purchases/operations/{operation_id}（登录账号、同账本只读恢复）
+- 默认 TIANXIAN_PURCHASE_COMMIT_ENABLED=false；改动未部署正式服务器。独立 SQLite/SQLAlchemy 事务合同测试通过，但生产 PostgreSQL 行锁并发与安卓实机互通仍需在正式启用前核验。
+
+iOS 只允许服务器功能标识、版本、atomic 和 idempotency 能力全部匹配后发送显式确认的请求。收到回执后必须云端 full pull 核对订单主单及全部明细，否则保持待核对状态。Android 当日结算算法、转账及 UI 不变。
