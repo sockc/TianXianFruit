@@ -916,7 +916,11 @@ internal object CustomerCloudBridge {
                 throw IllegalStateException("待同步客流记录较多，已分批上传，仍有未确认记录")
             }
         }
-        pull()
+        // The first pull already fetched the current server cursor. Only
+        // locally submitted batches can require a second read-after-write.
+        // Avoid one redundant HTTP round-trip for the common no-op/read-only
+        // sync case; the next invocation still catches concurrent changes.
+        if (CustomerSyncPullPolicy.needsPostUploadPull(pushBatches)) pull()
         val status = context.getSharedPreferences("customer_cloud_sync_status_v1", Context.MODE_PRIVATE)
         val unsyncedCollector = !supportsCollector &&
             db.getCustomerBillCollectorAssignments().isNotEmpty()
