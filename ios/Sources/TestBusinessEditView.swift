@@ -9,6 +9,13 @@ struct TestBusinessEditView: View {
     @State private var password = ""
     @State private var showSafety = false
 
+    /// When opened from a business-history row, show only that cloud record.
+    let focusRecordSyncID: String?
+
+    init(focusRecordSyncID: String? = nil) {
+        self.focusRecordSyncID = focusRecordSyncID
+    }
+
     private var testBook: CloudBook? {
         guard let book = model.selectedBook, book.isAvailable,
               book.name.hasPrefix(TestWritePolicy.prefix) else { return nil }
@@ -17,7 +24,8 @@ struct TestBusinessEditView: View {
 
     private var records: [SyncEvent] {
         model.snapshot.records.values.filter {
-            $0.tableName == "store_daily_record" && !$0.isDeletion
+            $0.tableName == "store_daily_record" && !$0.isDeletion &&
+            (focusRecordSyncID == nil || $0.syncId == focusRecordSyncID)
         }.sorted {
             let first = $0.payload["date"]?.text ?? ""
             let second = $1.payload["date"]?.text ?? ""
@@ -28,7 +36,7 @@ struct TestBusinessEditView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 13) {
-                Label("V0.3.4 · 测试营业更正", systemImage: "pencil.circle")
+                Label("测试账本 · 营业更正", systemImage: "pencil.circle")
                     .font(.headline)
                 Text("仅测试账本：可按原收款人分别更正微信、支付宝、现金金额。已发生结算的日期禁止更正；日期、位置和收款人身份不变。")
                     .font(.caption).foregroundColor(.secondary)
@@ -78,7 +86,7 @@ struct TestBusinessEditView: View {
                 }
 
                 HStack {
-                    Text("已同步营业记录").font(.headline)
+                    Text(focusRecordSyncID == nil ? "已同步营业记录" : "本次选择的营业记录").font(.headline)
                     Spacer()
                     Button {
                         Task { await model.refresh() }
@@ -90,7 +98,7 @@ struct TestBusinessEditView: View {
                 }
                 if testBook != nil {
                     if records.isEmpty {
-                        Text("测试账本暂无已同步营业记录")
+                        Text("所选记录不存在或已变更，请回到营业历史刷新")
                             .font(.caption).foregroundColor(.secondary)
                     }
                     ForEach(records, id: \.syncId) { record in
