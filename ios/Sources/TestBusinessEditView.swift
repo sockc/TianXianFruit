@@ -28,7 +28,7 @@ struct TestBusinessEditView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 13) {
-                Label("V0.3.0 · 测试营业更正", systemImage: "pencil.circle")
+                Label("V0.3.1 · 测试营业更正", systemImage: "pencil.circle")
                     .font(.headline)
                 Text("只修改测试账本一条已同步营业的金额，不修改位置、日期、收款人或客户数据。云端版本已变化时禁止覆盖；每次编辑至多发送一次。")
                     .font(.caption).foregroundColor(.secondary)
