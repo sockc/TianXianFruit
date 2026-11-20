@@ -16110,14 +16110,29 @@ class AppDatabase(
     fun getCustomerCollectorByReceiptId(): Map<Long, String> {
         val candidates = linkedMapOf<Long, MutableSet<String>>()
         readableDatabase.rawQuery("""
-            SELECT p.id AS receipt_id, COALESCE(a.partner_sync_id,'') AS partner_sync_id
+            -- Only collector-assigned receipt/source links are needed.
+            -- Joining ALL historical receipts (including unassigned files)
+            -- on every customer page open made the UI snapshot expensive.
+            SELECT p.id AS receipt_id, a.partner_sync_id AS partner_sync_id
+            FROM customer_bill_collector_assignment a
+            JOIN customer_payment_source_link l
+              ON l.platform=a.platform AND l.file_hash=a.file_hash
+            JOIN customer_payment_transaction p
+              ON p.platform=l.platform AND p.dedupe_key=l.dedupe_key
+            WHERE a.partner_sync_id<>''
+            UNION ALL
+            -- Legacy receipts without source links keep their original
+            -- import-batch attribution; do not infer it for linked receipts.
+            SELECT p.id AS receipt_id, a.partner_sync_id AS partner_sync_id
             FROM customer_payment_transaction p
-            LEFT JOIN customer_payment_source_link l
-              ON l.platform=p.platform AND l.dedupe_key=p.dedupe_key
-            LEFT JOIN payment_import_batch b ON b.id=p.source_batch_id
-            LEFT JOIN customer_bill_collector_assignment a
-              ON a.platform=p.platform
-             AND a.file_hash=COALESCE(l.file_hash,b.file_hash)
+            JOIN payment_import_batch b ON b.id=p.source_batch_id
+            JOIN customer_bill_collector_assignment a
+              ON a.platform=p.platform AND a.file_hash=b.file_hash
+            WHERE a.partner_sync_id<>''
+              AND NOT EXISTS (
+                  SELECT 1 FROM customer_payment_source_link l
+                  WHERE l.platform=p.platform AND l.dedupe_key=p.dedupe_key
+              )
         """.trimIndent(), null).use { c ->
             while (c.moveToNext()) {
                 val set = candidates.getOrPut(c.long("receipt_id")) { linkedSetOf() }
