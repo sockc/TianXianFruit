@@ -204,6 +204,7 @@ private struct BusinessPage: View {
     @State private var position = ""
     @State private var searchText = ""
     @State private var visibleDays = 14
+    @State private var showLocalEntry = false
 
     private var selectedKey: String { BusinessDates.key(selectedDate) }
     private var startingKey: String {
@@ -275,7 +276,16 @@ private struct BusinessPage: View {
                     Text("共 \(rows.count) 条位置记录")
                         .font(.caption).foregroundColor(.secondary)
                 }
-                SearchField(placeholder: "搜索日期或位置", text: $searchText)
+                HStack {
+                    SearchField(placeholder: "搜索日期或位置", text: $searchText)
+                    Button {
+                        showLocalEntry = true
+                    } label: {
+                        Label("录入", systemImage: "square.and.pencil")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.selectedBookID == nil)
+                }
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("营业额").foregroundColor(.secondary)
@@ -337,6 +347,10 @@ private struct BusinessPage: View {
                 SyncFooter()
             }
             .padding(12)
+        }
+        .sheet(isPresented: $showLocalEntry) {
+            BusinessLocalEntryView(date: selectedDate)
+                .environmentObject(model)
         }
     }
 }
