@@ -92,17 +92,23 @@ internal object CustomerCollectorStoreAttribution {
         // Index completed selling windows once. Re-checking the entire
         // sessions list for each receipt makes large imported bills expensive.
         val sessionsByStoreAndDate = sessions.groupBy { it.date to it.storeId }
-        fun sessionFor(record: StoreDailyRecord): CustomerTrafficSession =
-            sessionsByStoreAndDate[record.date to record.storeId]?.firstOrNull()
-                ?: CustomerTrafficSession(
-                    record.date, record.storeId, record.storeName,
-                    record.actualStartTime.ifBlank { "16:00" },
-                    record.actualEndTime.ifBlank { "24:00" }
-                )
-        fun activeAt(record: StoreDailyRecord, receipt: CustomerPaymentRecord): Boolean =
-            CustomerTrafficDeepDive.matchSession(
-                receipt.tradeTime, listOf(sessionFor(record))
-            ) != null
+        fun activeAt(record: StoreDailyRecord, receipt: CustomerPaymentRecord): Boolean {
+            val candidates = sessionsByStoreAndDate[record.date to record.storeId]
+                .orEmpty().ifEmpty {
+                    listOf(CustomerTrafficSession(
+                        record.date, record.storeId, record.storeName,
+                        record.actualStartTime.ifBlank { "16:00" },
+                        record.actualEndTime.ifBlank { "24:00" }
+                    ))
+                }
+            // Old records may have multiple saved windows for the SAME store
+            // and day. Check each without treating those aliases as two stores.
+            return candidates.any { session ->
+                CustomerTrafficDeepDive.matchSession(
+                    receipt.tradeTime, listOf(session)
+                ) != null
+            }
+        }
 
         val sharedMatches = linkedMapOf<Key, MutableList<Match>>()
         val matchedIds = mutableSetOf<Long>()
