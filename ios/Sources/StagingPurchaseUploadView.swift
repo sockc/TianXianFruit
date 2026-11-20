@@ -21,7 +21,7 @@ struct StagingPurchaseUploadView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
-                Label("V0.3.1 · 测试账本采购同步",
+                Label("V0.3.3 · 测试账本采购同步",
                       systemImage: "arrow.triangle.2.circlepath")
                     .font(.headline)
 
