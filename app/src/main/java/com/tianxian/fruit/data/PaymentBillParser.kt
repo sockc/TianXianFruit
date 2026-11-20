@@ -1691,39 +1691,29 @@ internal object PaymentBillParser {
                 listOf("收支类型", "明细名称", "单号").map(::normalizeHeader)
             ) && text.contains("经营收款-来自")
 
+        // A payer's free-text remark may mention the *other* provider.
+        // Use strong structural evidence before the broad text scan so an
+        // Alipay export with "微信" in a memo stays an Alipay export.
+        val alipayHeader = headers.any { it.contains("支付宝交易号") }
+        val wechatHeader = headers.any {
+            it.contains("微信订单号") || it.contains("微信支付订单号")
+        }
+        val filename = fileName.lowercase(Locale.ROOT)
+        val namedAlipay = "支付宝" in filename || "alipay" in filename
+        val namedWechat = "微信" in filename || "wechat" in filename
+        val textAlipay = "支付宝" in text || "alipay" in text
+        val textWechat = "微信" in text || "wechat" in text
+
         return when {
-            isWechatBusinessAccountExport ||
-            text.contains(
-                "微信"
-            ) ||
-                text.contains(
-                    "wechat"
-                ) ||
-                headers.any {
-                    it.contains(
-                        "微信订单号"
-                    ) ||
-                        it.contains(
-                            "微信支付订单号"
-                        )
-                } ->
-                PaymentBillPlatform.WECHAT
+            isWechatBusinessAccountExport -> PaymentBillPlatform.WECHAT
+            alipayHeader && !wechatHeader -> PaymentBillPlatform.ALIPAY
+            wechatHeader && !alipayHeader -> PaymentBillPlatform.WECHAT
+            namedAlipay && !namedWechat -> PaymentBillPlatform.ALIPAY
+            namedWechat && !namedAlipay -> PaymentBillPlatform.WECHAT
+            textAlipay && !textWechat -> PaymentBillPlatform.ALIPAY
+            textWechat && !textAlipay -> PaymentBillPlatform.WECHAT
+            else -> null
 
-            text.contains(
-                "支付宝"
-            ) ||
-                text.contains(
-                    "alipay"
-                ) ||
-                headers.any {
-                    it.contains(
-                        "支付宝交易号"
-                    )
-                } ->
-                PaymentBillPlatform.ALIPAY
-
-            else ->
-                null
         }
     }
 
