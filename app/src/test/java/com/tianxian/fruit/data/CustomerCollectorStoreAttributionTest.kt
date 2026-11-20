@@ -54,6 +54,39 @@ class CustomerCollectorStoreAttributionTest {
         assertTrue(resolved.collectorMatchedIds.isEmpty())
     }
 
+    @Test fun configuredWrongCollectorClearsPreviouslyInferredStoreOnlyInAnalysis() {
+        val oldGuess = payment(3).copy(storeId = 10L, storeName = "九龙公园")
+        val resolved = CustomerCollectorStoreAttribution.resolve(
+            listOf(oldGuess), listOf(store(10L, "九龙公园", cashier = 7L)),
+            receiptCollectors, people
+        )
+        assertEquals(0L, resolved.rows.single().storeId)
+        assertTrue(resolved.rows.single().storeName.isBlank())
+        assertTrue(resolved.shared.isEmpty())
+        assertTrue(resolved.collectorMatchedIds.isEmpty())
+        // The source receipt object is untouched; no official or cloud row is written.
+        assertEquals(10L, oldGuess.storeId)
+    }
+
+    @Test fun conflictingCollectorDoesNotInheritOldTimeOnlyStoreGuess() {
+        val oldGuess = payment(1).copy(storeId = 10L, storeName = "九龙公园")
+        val resolved = CustomerCollectorStoreAttribution.resolve(
+            listOf(oldGuess), listOf(store(10L, "九龙公园")),
+            mapOf(1L to ReceiptCollectorPolicy.CONFLICT), people
+        )
+        assertEquals(0L, resolved.rows.single().storeId)
+        assertTrue(resolved.collectorMatchedIds.isEmpty())
+    }
+
+    @Test fun noOfficialSellingRecordCannotProveConfiguredCollectorsLocation() {
+        val oldGuess = payment(1).copy(storeId = 10L, storeName = "九龙公园")
+        val resolved = CustomerCollectorStoreAttribution.resolve(
+            listOf(oldGuess), emptyList(), receiptCollectors, people
+        )
+        assertEquals(0L, resolved.rows.single().storeId)
+        assertEquals(10L, oldGuess.storeId)
+    }
+
     @Test fun oneCollectorAtOneStoreAutomaticallyJoinsHistoricalStore() {
         val result = CustomerCollectorStoreAttribution.resolve(
             listOf(payment(1)), listOf(store(10, "九龙公园")), receiptCollectors, people
