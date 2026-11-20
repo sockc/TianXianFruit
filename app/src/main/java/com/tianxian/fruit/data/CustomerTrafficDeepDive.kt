@@ -101,7 +101,12 @@ internal object CustomerTrafficDeepDive {
                 bounds(session)?.let { (start, end) ->
                     !moment.isBefore(start) && moment.isBefore(end)
                 } == true
-        }.singleOrNull()
+        }
+            // Several historical windows may describe the same stall on the
+            // same business day. Those are not competing destinations.
+            // Different stalls OR different business days remain ambiguous.
+            .distinctBy { it.date to it.storeId }
+            .singleOrNull()
     }
 
     /** Read-only attribution; no original bills or synced business records change. */
