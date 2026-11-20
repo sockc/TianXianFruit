@@ -18,7 +18,7 @@ struct BusinessUploadView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
-                Label("V0.3.1 · 测试营业上传", systemImage: "lock.shield")
+                Label("V0.3.3 · 测试营业上传", systemImage: "lock.shield")
                     .font(.headline)
                 Text("只向独立 iOS_TEST_ 账本提交一笔新的营业记录。与 Android 同日同位置重复、已删除历史或本机提交状态不确定时，拒绝再次发送。")
                     .font(.caption).foregroundColor(.secondary)
