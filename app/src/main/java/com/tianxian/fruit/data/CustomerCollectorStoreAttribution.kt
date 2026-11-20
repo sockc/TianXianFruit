@@ -55,8 +55,20 @@ internal object CustomerCollectorStoreAttribution {
         partnerIdBySyncId: Map<String, Long>,
         sessions: List<CustomerTrafficSession> = emptyList()
     ): CollectorStoreAttributionResult {
-        if (receipts.isEmpty() || daily.isEmpty() || collectorByReceiptId.isEmpty()) {
+        if (receipts.isEmpty() || collectorByReceiptId.isEmpty()) {
             return CollectorStoreAttributionResult(receipts, emptyList(), emptySet())
+        }
+        // A previously inferred/stored location is not verified if a known
+        // bill collector cannot be matched to any formal business record.
+        // Clear only this read-only projection, never the imported ledger row.
+        fun unmatched(r: CustomerPaymentRecord): CustomerPaymentRecord =
+            r.copy(storeId = 0L, storeName = "")
+        if (daily.isEmpty()) {
+            val safeRows = receipts.map { receipt ->
+                if (collectorByReceiptId[receipt.id].isNullOrBlank()) receipt
+                else unmatched(receipt)
+            }
+            return CollectorStoreAttributionResult(safeRows, emptyList(), emptySet())
         }
 
         // Match by DATE + receiving partner + payment channel. A collector name
@@ -99,8 +111,12 @@ internal object CustomerCollectorStoreAttribution {
                 return@map receipt
             }
             val collectorSyncId = collectorByReceiptId[receipt.id].orEmpty()
-            val partnerId = partnerIdBySyncId[collectorSyncId] ?: return@map receipt
-            if (partnerId <= 0L) return@map receipt
+            if (collectorSyncId.isBlank()) return@map receipt
+            // Missing/deleted partner or conflicting assignments are not
+            // permission to fall back to an arbitrary timestamp-based store.
+            val partnerId = partnerIdBySyncId[collectorSyncId]
+                ?: return@map unmatched(receipt)
+            if (partnerId <= 0L) return@map unmatched(receipt)
 
             val tradeDay = receipt.tradeTime.take(10)
             val originalKey = Key(receipt.businessDate, receipt.platform, partnerId)
@@ -117,13 +133,13 @@ internal object CustomerCollectorStoreAttribution {
             }
             val key = if (inPreviousShift && previousKey != null) previousKey else originalKey
             val candidates = storesByKey[key].orEmpty().distinctBy { it.storeId }
-            if (candidates.isEmpty()) return@map receipt
+            if (candidates.isEmpty()) return@map unmatched(receipt)
             // A cashier owning a payment channel on that date alone is not
             // sufficient evidence that a transaction belongs to a store.
             // No matching selling window => leave the receipt unassigned.
             // If multiple candidate stores remain, preserve the shared group:
             // never guess a location from the payment timestamp alone.
-            if (candidates.none { activeAt(it, receipt) }) return@map receipt
+            if (candidates.none { activeAt(it, receipt) }) return@map unmatched(receipt)
 
             matchedIds.add(receipt.id)
             if (candidates.size == 1) {
