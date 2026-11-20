@@ -90,14 +90,18 @@ final class BusinessUploadTests: XCTestCase {
         func number(_ value: Double) -> String {
             String(format: "%.2f", value)
         }
-        let alternate = "[" + parsed.map { split in
-            "{\"partner_id\":\(split.partnerID)," +
-            "\"partner_name\":\"\(split.partnerName)\"," +
-            "\"amount\":\(number(split.amount))," +
-            "\"wechat_income\":\(number(split.wechatIncome))," +
-            "\"alipay_income\":\(number(split.alipayIncome))," +
-            "\"cash_income\":\(number(split.cashIncome))}"
-        }.joined(separator: ",") + "]"
+        let parts: [String] = parsed.map { split in
+            let fields: [String] = [
+                "\"partner_id\":" + String(split.partnerID),
+                "\"partner_name\":\"" + split.partnerName + "\"",
+                "\"amount\":" + number(split.amount),
+                "\"wechat_income\":" + number(split.wechatIncome),
+                "\"alipay_income\":" + number(split.alipayIncome),
+                "\"cash_income\":" + number(split.cashIncome)
+            ]
+            return "{" + fields.joined(separator: ",") + "}"
+        }
+        let alternate = "[" + parts.joined(separator: ",") + "]"
         XCTAssertNotEqual(alternate, original)
         var remotePayload = job.payload
         remotePayload["receipt_splits_json"] = .string(alternate)
