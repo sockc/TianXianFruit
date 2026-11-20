@@ -20,6 +20,9 @@ final class LedgerViewModel: ObservableObject {
     @Published private(set) var currentCursor: Int64 = 0
     @Published private(set) var isUsingCachedAuthorization = false
     @Published private(set) var cacheAvailable = true
+    @Published private(set) var businessCommitCapabilities: BusinessCommitCapabilities?
+    @Published private(set) var businessCommitError: String?
+    @Published private(set) var isBusinessCommitBusy = false
     @Published private(set) var purchaseCommitCapabilities: PurchaseCommitCapabilities?
     @Published private(set) var purchaseCommitError: String?
     @Published private(set) var isPurchaseCommitBusy = false
@@ -99,6 +102,68 @@ final class LedgerViewModel: ObservableObject {
         }
     }
 
+
+    func refreshBusinessCommitCapabilities() async {
+        businessCommitCapabilities = nil
+        businessCommitError = nil
+        guard let user = account, let token = accessToken,
+              let book = selectedBookID, !isUsingCachedAuthorization else {
+            businessCommitError = "账号尚未通过在线授权，正式营业上传不可用"
+            return
+        }
+        do {
+            let caps = try await api.businessCapabilities(token: token, bookID: book)
+            guard self.account?.username == user.username,
+                  self.accessToken == token, self.selectedBookID == book else { return }
+            if caps.allowsWrite { businessCommitCapabilities = caps }
+            else { businessCommitError = "正式营业事务接口未启用；只允许保存本机草稿" }
+        } catch {
+            businessCommitError = "服务器未提供正式营业事务能力；本机草稿不受影响"
+        }
+    }
+
+    func commitBusiness(_ proposal: BusinessCommitProposal)
+        async throws -> BusinessCommitReceipt {
+        guard !isBusinessCommitBusy, !isBusy,
+              let user = account, let book = selectedBook, let token = accessToken,
+              !isUsingCachedAuthorization,
+              user.username.lowercased() == proposal.account.lowercased(),
+              book.id == proposal.bookID,
+              PurchaseWorkspaceDraftPolicy.authorized(book: book, account: user)
+        else { throw BusinessAtomicError.scope }
+        isBusinessCommitBusy = true
+        defer { isBusinessCommitBusy = false }
+        // Never use cached capability to authorize a transaction.
+        let caps = try await api.businessCapabilities(token: token, bookID: book.id)
+        guard caps.allowsWrite, self.accessToken == token,
+              self.selectedBookID == book.id,
+              self.account?.username == user.username else {
+            throw BusinessAtomicError.unavailable
+        }
+        let receipt = try await api.businessCommit(token: token, proposal: proposal)
+        guard self.accessToken == token, self.selectedBookID == book.id,
+              self.account?.username == user.username else {
+            throw BusinessAtomicError.scope
+        }
+        return receipt
+    }
+
+    func findBusinessCommit(_ proposal: BusinessCommitProposal)
+        async throws -> BusinessCommitReceipt? {
+        guard !isBusinessCommitBusy, let user = account,
+              let book = selectedBook, let token = accessToken,
+              !isUsingCachedAuthorization,
+              user.username.lowercased() == proposal.account.lowercased(),
+              book.id == proposal.bookID else { throw BusinessAtomicError.scope }
+        isBusinessCommitBusy = true
+        defer { isBusinessCommitBusy = false }
+        let result = try await api.businessOperation(token: token, proposal: proposal)
+        guard self.accessToken == token, self.selectedBookID == book.id,
+              self.account?.username == user.username else {
+            throw BusinessAtomicError.scope
+        }
+        return result
+    }
 
     /// Never infer production-write capability from an Android/older server.
     /// Missing routes, offline access, or cached authorization all mean off.
@@ -206,6 +271,8 @@ final class LedgerViewModel: ObservableObject {
         customerError = nil
         purchaseCommitCapabilities = nil
         purchaseCommitError = nil
+        businessCommitCapabilities = nil
+        businessCommitError = nil
         weatherOverview = nil
         weatherCheckedAt = nil
         weatherError = nil
@@ -390,6 +457,9 @@ final class LedgerViewModel: ObservableObject {
         customerError = nil
         customerAPIAvailable = false
         isCustomerBusy = false
+        businessCommitCapabilities = nil
+        businessCommitError = nil
+        isBusinessCommitBusy = false
         weatherOverview = nil
         selectedWeatherStoreID = ""
         weatherCheckedAt = nil
