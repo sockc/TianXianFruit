@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V0.4.2: inventory and plan imports remain scoped to local drafts; production push stays disabled."""
+"""V0.4.3: atomic purchase endpoint is explicitly gated; raw sync push remains test-only."""
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1] / "Sources"
@@ -265,6 +265,32 @@ assert "/sync/push" not in import_policy
 assert "URLSession" not in import_policy
 assert "URLSession" not in commit_planning
 assert "pushSingle" not in commit_planning
-assert "/api/v1/purchases/commit" not in regular
+atomic = swift["PurchaseAtomicModels.swift"]
+atomic_store = swift["PurchaseWorkspaceStore.swift"]
+main_ui = swift["PurchaseWorkspaceView.swift"]
+vm = swift["LedgerViewModel.swift"]
+assert '"/api/v1/purchases/commit"' in regular
+assert '"/api/v1/purchases/capabilities"' in regular
+assert '"/api/v1/purchases/operations/"' in regular
+assert "func purchaseCommit(" in regular
+assert "func purchaseOperation(" in regular
+assert "PurchaseCommitCapabilities" in regular
+assert "api.purchaseCapabilities" in vm
+assert "capabilities.allows(proposal)" in vm
+assert "api.purchaseCommit(" in vm
+assert "model.commitPurchase(proposal)" in main_ui
+assert "workspace.reserve(" in main_ui
+assert "workspace.transition(" in main_ui
+assert "model.findPurchaseCommit(" in main_ui
+assert "PurchaseAtomicReadbackPolicy.confirmed" in main_ui
+assert "purchase_workspace_attempt" in atomic_store
+assert "PRIMARY KEY(draft_id,account,book_id)" in atomic_store
+assert "assertEditable(" in atomic_store
+assert "status == \"committed\" || status == \"already_committed\"" in atomic
+assert "PurchaseCommitCapabilities" in atomic
+assert "PurchaseAtomicReadbackPolicy" in atomic
+assert "purchaseOrder" not in atomic or "purchase_order" in atomic
+assert '"POST", "/api/v1/sync/push"' not in regular
+assert (root.parent / "Tests" / "PurchaseAtomicWriteTests.swift").exists()
 assert (root.parent / "Tests" / "PurchaseImportAndCommitTests.swift").exists()
-print("V0.4.2 PASS: selection-only import, immutable commit proposal preparation and zero production purchase writes.")
+print("V0.4.3 PASS: guarded atomic purchase commits, persistent operation lock and verified readback; legacy raw push remains test-only.")
