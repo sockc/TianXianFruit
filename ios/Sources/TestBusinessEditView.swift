@@ -153,8 +153,10 @@ struct TestBusinessEditView: View {
         }
         .navigationBarTitle("测试营业更正", displayMode: .inline)
         .onAppear(perform: open)
-        .onDisappear { coordinator.open(account: nil, book: nil) }
+        // NavigationLink pushes a child screen and may trigger onDisappear
+        // on its parent. Do not invalidate the in-scope test session here.
         .onChange(of: model.selectedBookID) { _ in open() }
+        .onChange(of: model.account?.username) { _ in open() }
     }
 
     private func open() {
