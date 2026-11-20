@@ -137,6 +137,13 @@ internal object CustomerCollectorStoreAttribution {
             val inPreviousShift = previous.any { saved ->
                 activeAt(saved, receipt)
             }
+            val inOriginalShift = storesByKey[originalKey].orEmpty()
+                .any { activeAt(it, receipt) }
+            // Consecutive business days can have overlapping midnight shifts
+            // for a collector. Both windows are evidence but neither is proof
+            // of which BUSINESS DAY owns this receipt. Leave it unresolved.
+            if (previousKey != null && previousKey != originalKey &&
+                inPreviousShift && inOriginalShift) return@map unmatched(receipt)
             val key = if (inPreviousShift && previousKey != null) previousKey else originalKey
             val candidates = storesByKey[key].orEmpty().distinctBy { it.storeId }
             // Collector/day/channel alone does not identify a selling position.
