@@ -59,6 +59,18 @@ final class TestDraftStore {
         )
         """)
         try exec("CREATE INDEX IF NOT EXISTS idx_staging_jobs_scope ON isolated_staging_jobs(source_account,book_id)")
+        try exec("""
+            CREATE TABLE IF NOT EXISTS isolated_business_jobs (
+                id TEXT PRIMARY KEY,
+                source_account TEXT NOT NULL,
+                book_id TEXT NOT NULL,
+                stage_host TEXT NOT NULL,
+                state TEXT NOT NULL,
+                payload BLOB NOT NULL,
+                created_at_ms INTEGER NOT NULL
+            )
+        """)
+        try exec("CREATE INDEX IF NOT EXISTS idx_business_jobs_scope ON isolated_business_jobs(source_account,book_id)")
     }
 
     deinit { if database != nil { sqlite3_close(database) } }
@@ -108,7 +120,9 @@ final class TestDraftStore {
         // Once a draft has an upload intent, its financial fields and
         // identity are frozen. Edits/duplicates must use a NEW draft ID.
         guard try stagingJob(id: draft.id, account: draft.account,
-                             book: draft.bookID) == nil else {
+                             book: draft.bookID) == nil,
+              try businessJob(id: draft.id, account: draft.account,
+                              book: draft.bookID) == nil else {
             throw TestDraftStoreError.lockedForUpload
         }
         let data = try JSONEncoder().encode(draft)
@@ -163,7 +177,8 @@ final class TestDraftStore {
     }
 
     func delete(id: String, account: String, book: String) throws {
-        guard try stagingJob(id: id, account: account, book: book) == nil else {
+        guard try stagingJob(id: id, account: account, book: book) == nil,
+              try businessJob(id: id, account: account, book: book) == nil else {
             throw TestDraftStoreError.lockedForUpload
         }
         let statement = try prepare("""
@@ -295,6 +310,101 @@ final class TestDraftStore {
         try step(stmt)
     }
 
+    /// Each submitted business draft has one immutable local intent.
+    /// A sending/unknown state cannot return to ready or send again.
+    func saveBusinessJob(_ job: BusinessUploadJob) throws {
+        guard !job.id.isEmpty, !job.sourceAccount.isEmpty,
+              !job.bookID.isEmpty,
+              job.stageHost == StagingPurchasePolicy.productionURL,
+              job.stageInstanceID == "production-scoped-testbook:" + job.bookID else {
+            throw TestDraftStoreError.invalid
+        }
+        if let old = try businessJob(id: job.id, account: job.sourceAccount,
+                                      book: job.bookID) {
+            guard old.sourceAccount == job.sourceAccount,
+                  old.bookID == job.bookID, old.stageHost == job.stageHost,
+                  old.stageInstanceID == job.stageInstanceID,
+                  old.stageUsername == job.stageUsername,
+                  old.deviceID == job.deviceID, old.syncID == job.syncID,
+                  old.payload == job.payload, old.createdAt == job.createdAt else {
+                throw TestDraftStoreError.invalid
+            }
+            let allowed: [BusinessUploadState: Set<BusinessUploadState>] = [
+                .ready: [.ready, .sending, .needsReview],
+                .sending: [.sending, .complete, .needsReview],
+                .needsReview: [.needsReview, .complete],
+                .complete: [.complete]
+            ]
+            guard allowed[old.state]?.contains(job.state) == true else {
+                throw TestDraftStoreError.invalid
+            }
+        }
+        let stmt = try prepare("""
+            INSERT INTO isolated_business_jobs
+              (id,source_account,book_id,stage_host,state,payload,created_at_ms)
+            VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,
+              state=excluded.state
+            WHERE source_account=excluded.source_account AND
+                  book_id=excluded.book_id AND stage_host=excluded.stage_host
+        """)
+        defer { sqlite3_finalize(stmt) }
+        bind(job.id, at: 1, to: stmt)
+        bind(normalized(job.sourceAccount), at: 2, to: stmt)
+        bind(job.bookID, at: 3, to: stmt)
+        bind(job.stageHost, at: 4, to: stmt)
+        bind(job.state.rawValue, at: 5, to: stmt)
+        bind(try JSONEncoder().encode(job), at: 6, to: stmt)
+        sqlite3_bind_int64(stmt, 7, Int64(job.createdAt.timeIntervalSince1970 * 1000))
+        try step(stmt)
+    }
+
+    func businessJob(id: String, account: String,
+                     book: String) throws -> BusinessUploadJob? {
+        let stmt = try prepare("""
+            SELECT payload FROM isolated_business_jobs
+            WHERE id=? AND source_account=? AND book_id=?
+        """)
+        defer { sqlite3_finalize(stmt) }
+        bind(id, at: 1, to: stmt)
+        bind(normalized(account), at: 2, to: stmt)
+        bind(book, at: 3, to: stmt)
+        guard sqlite3_step(stmt) == SQLITE_ROW,
+              let ptr = sqlite3_column_blob(stmt, 0) else { return nil }
+        let count = Int(sqlite3_column_bytes(stmt, 0))
+        let job = try JSONDecoder().decode(BusinessUploadJob.self,
+                                           from: Data(bytes: ptr, count: count))
+        guard normalized(job.sourceAccount) == normalized(account),
+              job.bookID == book, job.id == id else {
+            throw TestDraftStoreError.invalid
+        }
+        return job
+    }
+
+    func businessJobs(account: String, book: String) throws -> [BusinessUploadJob] {
+        let stmt = try prepare("""
+            SELECT id FROM isolated_business_jobs
+            WHERE source_account=? AND book_id=?
+            ORDER BY created_at_ms DESC
+        """)
+        defer { sqlite3_finalize(stmt) }
+        bind(normalized(account), at: 1, to: stmt)
+        bind(book, at: 2, to: stmt)
+        var ids: [String] = []
+        var rc = sqlite3_step(stmt)
+        while rc == SQLITE_ROW {
+            if let ptr = sqlite3_column_text(stmt, 0) {
+                ids.append(String(cString: ptr))
+            }
+            rc = sqlite3_step(stmt)
+        }
+        guard rc == SQLITE_DONE else {
+            throw TestDraftStoreError.sql(String(cString: sqlite3_errmsg(database)))
+        }
+        return try ids.compactMap { try businessJob(id: $0, account: account,
+                                                     book: book) }
+    }
+
     func stagingJob(id: String, account: String,
                     book: String) throws -> StagingPurchaseJob? {
         let stmt = try prepare("""
@@ -349,7 +459,7 @@ enum TestDraftStoreError: LocalizedError {
         switch self {
         case .invalid: return "测试草稿数据无效，没有写入或读取其他账本的数据"
         case .lockedForUpload:
-            return "该草稿已有关联的云端采购任务，禁止修改或删除；可以复制为新的本机草稿"
+            return "该草稿已有关联的云端测试任务，禁止修改或删除；如需修改请新建草稿"
         case .sql(let value): return "测试草稿本地存储失败：" + value
         }
     }
