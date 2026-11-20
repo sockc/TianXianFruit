@@ -16369,26 +16369,37 @@ class AppDatabase(
         readableDatabase.rawQuery(
             """
             SELECT b.*,
-                   COALESCE(NULLIF(b.observed_first_date,''),t.first_receipt_date,'') AS first_receipt_date,
-                   COALESCE(NULLIF(b.observed_last_date,''),t.last_receipt_date,'') AS last_receipt_date,
+                   COALESCE(NULLIF(b.observed_first_date,''),(
+                       SELECT MIN(SUBSTR(p.trade_time,1,10))
+                       FROM customer_payment_transaction p
+                       WHERE p.source_batch_id=b.id AND p.amount>0.005
+                   ),'') AS first_receipt_date,
+                   COALESCE(NULLIF(b.observed_last_date,''),(
+                       SELECT MAX(SUBSTR(p.trade_time,1,10))
+                       FROM customer_payment_transaction p
+                       WHERE p.source_batch_id=b.id AND p.amount>0.005
+                   ),'') AS last_receipt_date,
                    CASE WHEN b.observed_first_date<>'' THEN b.observed_receipt_days
-                        ELSE COALESCE(t.receipt_days,0) END AS receipt_days,
+                        ELSE (
+                            SELECT COUNT(DISTINCT SUBSTR(p.trade_time,1,10))
+                            FROM customer_payment_transaction p
+                            WHERE p.source_batch_id=b.id AND p.amount>0.005
+                        ) END AS receipt_days,
                    CASE WHEN b.observed_first_date<>'' THEN b.observed_receipt_rows
-                        ELSE COALESCE(t.receipt_count,0) END AS receipt_count,
+                        ELSE (
+                            SELECT COUNT(*)
+                            FROM customer_payment_transaction p
+                            WHERE p.source_batch_id=b.id AND p.amount>0.005
+                        ) END AS receipt_count,
                    CASE WHEN b.observed_first_date<>'' THEN 'FILE'
-                        WHEN t.first_receipt_date IS NOT NULL THEN 'INSERTED_ONLY'
+                        WHEN EXISTS (
+                            SELECT 1 FROM customer_payment_transaction p
+                            WHERE p.source_batch_id=b.id AND p.amount>0.005
+                        ) THEN 'INSERTED_ONLY'
                         ELSE 'NONE' END AS coverage_source
             FROM payment_import_batch b
-            LEFT JOIN (
-                SELECT source_batch_id,
-                       MIN(SUBSTR(trade_time,1,10)) AS first_receipt_date,
-                       MAX(SUBSTR(trade_time,1,10)) AS last_receipt_date,
-                       COUNT(DISTINCT SUBSTR(trade_time,1,10)) AS receipt_days,
-                       COUNT(*) AS receipt_count
-                FROM customer_payment_transaction
-                WHERE amount>0.005
-                GROUP BY source_batch_id
-            ) t ON t.source_batch_id=b.id
+            -- Fast path: modern imports have observed coverage already;
+            -- the indexed per-batch fallbacks run only for legacy rows.
             ORDER BY b.imported_at DESC,b.id DESC
             LIMIT ?
             """.trimIndent(),
