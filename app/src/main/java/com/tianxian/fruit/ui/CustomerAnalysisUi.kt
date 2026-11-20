@@ -82,7 +82,7 @@ internal enum class CustomerPaymentPlatform(val label: String) {
     ALL("合并"), WECHAT("微信"), ALIPAY("支付宝")
 }
 
-private enum class CustomerTrafficMetric(val label: String) {
+internal enum class CustomerTrafficMetric(val label: String) {
     CUSTOMERS("可识别客户"),
     AMOUNT("金额"),
     PAYMENTS("笔数")
