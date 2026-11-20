@@ -96,6 +96,49 @@ class CustomerCollectorStoreAttributionTest {
         assertTrue(1L in result.collectorMatchedIds)
     }
 
+    @Test fun sameCollectorAtDisjointShiftsCanBeAttributedByVerifiedTimes() {
+        val receipts = listOf(
+            payment(1).copy(tradeTime = "2026-10-16 18:30:00"),
+            payment(2).copy(tradeTime = "2026-10-16 21:15:00")
+        )
+        val result = CustomerCollectorStoreAttribution.resolve(
+            receipts,
+            listOf(store(10, "九龙公园"), store(20, "凰岗村")),
+            receiptCollectors, people,
+            listOf(
+                CustomerTrafficSession("2026-10-16", 10L, "九龙公园", "16:00", "20:00"),
+                CustomerTrafficSession("2026-10-16", 20L, "凰岗村", "20:00", "24:00")
+            )
+        )
+        assertEquals(listOf(10L, 20L), result.rows.map { it.storeId })
+        assertTrue(result.shared.isEmpty())
+        assertEquals(setOf(1L, 2L), result.collectorMatchedIds)
+    }
+
+    @Test fun changingOverlapsStillShowAllInvolvedStoresWithoutDoubleCount() {
+        val receipts = listOf(
+            payment(1).copy(tradeTime = "2026-10-16 18:30:00"),
+            payment(2).copy(tradeTime = "2026-10-16 21:15:00")
+        )
+        val result = CustomerCollectorStoreAttribution.resolve(
+            receipts,
+            listOf(store(10, "九龙公园"), store(20, "凰岗村"),
+                store(30, "第三位置")),
+            receiptCollectors, people,
+            listOf(
+                CustomerTrafficSession("2026-10-16", 10L, "九龙公园", "16:00", "21:00"),
+                CustomerTrafficSession("2026-10-16", 20L, "凰岗村", "17:00", "23:00"),
+                CustomerTrafficSession("2026-10-16", 30L, "第三位置", "20:00", "24:00")
+            )
+        )
+        assertTrue(result.rows.all { it.storeId == 0L &&
+            it.storeName == CustomerCollectorStoreAttribution.SHARED_STORE_NAME })
+        assertEquals(1, result.shared.size)
+        assertEquals(setOf(10L, 20L, 30L), result.shared.single().storeIds)
+        assertEquals(2, result.shared.single().payments)
+        assertEquals(30.0, result.shared.single().amount, 0.001)
+    }
+
     @Test fun sharedCashierAcrossTwoStoresIsCountedOnlyOnce() {
         val result = CustomerCollectorStoreAttribution.resolve(
             listOf(payment(1), payment(2)), listOf(
