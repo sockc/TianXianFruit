@@ -153,7 +153,8 @@ struct PurchaseWorkspaceEditorView: View {
                 createdAt: original?.createdAt ?? now,
                 updatedAt: now)
             try PurchaseWorkspaceDraftPolicy.validate(
-                proposed, buyers: model.snapshot.testPartners)
+                proposed, buyers: model.snapshot.testPartners,
+                fruits: model.snapshot.testFruits)
             guard onSave(proposed) else {
                 throw PurchaseWorkspaceStoreError.invalid
             }
