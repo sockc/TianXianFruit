@@ -1,4 +1,4 @@
-name: Check iOS V0.4.2 purchase import and atomic intent planning
+name: Check iOS V0.4.3 atomic purchase commit and recovery
 
 on:
   pull_request:
