@@ -20,7 +20,7 @@ struct BusinessUploadView: View {
             LazyVStack(alignment: .leading, spacing: 12) {
                 Label("V0.3.4 · 测试营业上传", systemImage: "lock.shield")
                     .font(.headline)
-                Text("只向独立 iOS_TEST_ 账本提交一笔新的营业记录。与 Android 同日同位置重复、已删除历史或本机提交状态不确定时，拒绝再次发送。")
+                Text("只向独立 iOS_TEST_ 账本提交新营业。支持逐人收款与实际营业时间；同日同位置重复、删除历史或提交结果不确定时，拒绝再次发送。")
                     .font(.caption).foregroundColor(.secondary)
 
                 if let book = allowedBook {
@@ -130,7 +130,7 @@ struct BusinessUploadView: View {
                                 in: RoundedRectangle(cornerRadius: 12))
                 }
                 DisclosureGroup("本版限制与金额说明", isExpanded: $showSafety) {
-                    Text("沿用 Android 原有营业利润公式：微信＋支付宝＋现金＋收摊库存估值－开摊库存估值－费用。营业源数据中的采购金额固定为 0，不把采购草稿额重复扣减。新老客户计数暂为 0；营业更正需进入独立测试更正页面；不提供删除、凌晨收款、资金结算或利润分配。只允许一笔新营业上云，网络中断后必须先只读核对，不能重复点击发送。")
+                    Text("V0.3.4 支持逐个收款人录入微信、支付宝、现金，同一渠道也可以多人收款；同时保存所填实际营业时间。沿用 Android 原利润公式，营业源数据采购金额仍为 0，客户计数暂为 0。时间跨午夜只表示营业时段，不自动计算凌晨收款。正式账本、删除、凌晨收款扣减和资金结算继续锁定；发生断网只能只读核对，不自动重发。")
                         .font(.caption).foregroundColor(.secondary)
                 }
             }
