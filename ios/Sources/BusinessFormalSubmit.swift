@@ -74,6 +74,61 @@ enum BusinessFormalSubmit {
         return try await verify(model, attempt: saved)
     }
 
+    /// A 404 for the original operation is NOT permission to allocate a new
+    /// operation ID. On V1.0.27 the exact original ID + payload hash is
+    /// idempotent under a book-row lock. Only an explicit user action may
+    /// resume that same immutable operation, and only in iOS_TEST_ books.
+    static func resumeOriginal(_ model: LedgerViewModel,
+                               attempt: BusinessCommitAttempt) async throws -> BusinessCommitAttempt {
+        guard attempt.phase == .unknown || attempt.phase == .prepared,
+              let account = model.account, let book = model.selectedBook,
+              book.id.lowercased() == attempt.bookID.lowercased(),
+              account.username.lowercased() == attempt.account.lowercased(),
+              book.name.hasPrefix("iOS_TEST_"), !model.isUsingCachedAuthorization
+        else { throw BusinessAtomicError.scope }
+        let outbox = try BusinessCommitOutbox()
+        guard let persisted = try outbox.load(id: attempt.proposal.operationID,
+            account: attempt.account, bookID: attempt.bookID),
+              persisted.proposal == attempt.proposal,
+              persisted.phase == .unknown || persisted.phase == .prepared else {
+            throw BusinessAtomicError.locked
+        }
+        // Query first: a committed operation must be verified, never resent.
+        if let receipt = try await model.findBusinessCommit(persisted.proposal) {
+            var accepted = persisted
+            accepted.receipt = receipt
+            accepted.phase = .accepted
+            accepted.updatedAt = Date()
+            try outbox.update(accepted)
+            return try await verify(model, attempt: accepted)
+        }
+        // A remote daily row without an operation receipt is ambiguous.
+        // Never attempt to manufacture a matching record or resend in that case.
+        try await freshPull(model)
+        let p = persisted.proposal
+        guard !model.snapshot.records.values.contains(where: { row in
+            row.tableName == "store_daily_record" && !row.isDeletion &&
+            row.payload["date"]?.text == p.date &&
+            (row.payload["store_sync_id"]?.text == p.storeSyncID ||
+             row.payload["store_name"]?.text == p.storeName)
+        }) else { throw BusinessAtomicError.cloudConflict }
+        var locked = persisted
+        if locked.phase == .prepared {
+            locked.phase = .unknown
+            locked.updatedAt = Date()
+            try outbox.update(locked)
+        }
+        // This rechecks a *live* V1.0.27 capability and account/device scope.
+        // The server deduplicates this same operation ID and canonical hash.
+        // Failure/timeout retains the same outbox; never generates a new ID.
+        let receipt = try await model.commitBusiness(p)
+        locked.receipt = receipt
+        locked.phase = .accepted
+        locked.updatedAt = Date()
+        try outbox.update(locked)
+        return try await verify(model, attempt: locked)
+    }
+
     private static func verify(_ model: LedgerViewModel,
                                attempt: BusinessCommitAttempt) async throws -> BusinessCommitAttempt {
         guard let receipt = attempt.receipt else { throw BusinessAtomicError.badReceipt }
