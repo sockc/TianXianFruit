@@ -172,6 +172,42 @@ class PaymentBillParserTest {
     }
 
     @Test
+    fun alipayOfficialGb18030PreambleAndTrailingColumnPreserveAllNaturalDayReceipts() {
+        // Shape derived from a real Alipay export, with all names, accounts,
+        // order IDs and amounts replaced by synthetic fixtures. Never commit
+        // merchant account information or original receipts to GitHub.
+        val csv = """
+            ------------------------------------------------------------------------------------
+            导出信息：
+            起始时间：[2026-10-14 00:00:00]    终止时间：[2026-10-15 23:59:59]
+            导出交易类型：[仅收入]
+            共4笔记录
+            收入：4笔 65.00元
+            特别提示：
+            ------------------------支付宝支付科技有限公司  电子客户回单------------------------
+            交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+            2026-10-15 00:10:00,收入,模拟顾客甲,***001,经营码交易,收入,15.25,账户余额,交易成功,safe-merchant-001,safe-store-001,,
+            2026-10-15 15:30:00,收入,模拟顾客乙,***002,收钱码收款,收入,9.75,账户余额,交易成功,safe-merchant-002,safe-store-002,,
+            2026-10-15 19:00:00,收入,模拟顾客丙,***003,经营码交易,收入,30.00,账户余额,交易成功,safe-merchant-003,safe-store-003,,
+            2026-10-15 23:50:00,收入,模拟顾客丁,***004,收钱码收款,收入,10.00,账户余额,交易成功,safe-merchant-004,safe-store-004,,
+        """.trimIndent()
+        val result = PaymentBillParser.parse(
+            "支付宝交易明细.csv", csv.toByteArray(Charset.forName("GB18030"))
+        )
+        assertEquals(PaymentBillPlatform.ALIPAY, result.platform)
+        assertEquals(4, result.totalRows)
+        assertEquals(4, result.acceptedRows)
+        assertEquals(0, result.ignoredRows)
+        assertEquals(0, result.errorRows)
+        assertEquals(65.0, result.transactions.sumOf { it.netAmount }, 0.001)
+        assertEquals(4, result.transactions.map { it.dedupeKey }.toSet().size)
+        assertTrue(result.transactions.all { it.identityConfidence == "LOW" })
+        // Importing the official file preserves its NATURAL transaction date.
+        // Only saved, verified operating windows may later reattribute 00:10.
+        assertTrue(result.transactions.all { it.businessDate == "2026-10-15" })
+    }
+
+    @Test
     fun alipayGb18030BusinessReceiptUsesStableBuyerIdentity() {
         val text =
             """
