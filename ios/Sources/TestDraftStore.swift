@@ -357,6 +357,16 @@ final class TestDraftStore {
         bind(try JSONEncoder().encode(job), at: 6, to: stmt)
         sqlite3_bind_int64(stmt, 7, Int64(job.createdAt.timeIntervalSince1970 * 1000))
         try step(stmt)
+        // SQLite ON CONFLICT ... WHERE may do nothing for an ID belonging
+        // to another account/book. Never send before checking disk readback.
+        guard let stored = try businessJob(
+            id: job.id, account: job.sourceAccount, book: job.bookID),
+              stored.syncID == job.syncID,
+              stored.payload == job.payload,
+              stored.state == job.state,
+              stored.stageInstanceID == job.stageInstanceID else {
+            throw TestDraftStoreError.invalid
+        }
     }
 
     func businessJob(id: String, account: String,
