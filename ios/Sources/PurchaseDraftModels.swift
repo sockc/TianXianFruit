@@ -10,6 +10,9 @@ struct PurchaseDraftLine: Codable, Equatable, Identifiable {
     var unit: String
     var unitPrice: String
     var unitWeightJin: String
+    /// Optional cloud plan-item provenance, never assumed to authorize completion.
+    /// Older V0.4.0-V0.4.1 JSON drafts decode with nil.
+    var sourcePlanItemSyncID: String? = nil
 
     static func blank() -> PurchaseDraftLine {
         PurchaseDraftLine(id: UUID().uuidString, fruitSyncID: "",
@@ -20,7 +23,8 @@ struct PurchaseDraftLine: Codable, Equatable, Identifiable {
     func duplicated() -> PurchaseDraftLine {
         PurchaseDraftLine(id: UUID().uuidString, fruitSyncID: fruitSyncID,
                           fruitName: fruitName, quantity: quantity, unit: unit,
-                          unitPrice: unitPrice, unitWeightJin: unitWeightJin)
+                          unitPrice: unitPrice, unitWeightJin: unitWeightJin,
+                          sourcePlanItemSyncID: sourcePlanItemSyncID)
     }
 }
 
