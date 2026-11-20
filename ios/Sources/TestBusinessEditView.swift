@@ -129,7 +129,12 @@ struct TestBusinessEditView: View {
                                 .font(.caption.bold())
                                 .foregroundColor(job.state == .complete ? .green : .orange)
                             Text(job.note).font(.caption).foregroundColor(.secondary)
-                            if job.state != .ready {
+                            if job.state == .ready {
+                                Button("取消未发送的本机更正") {
+                                    coordinator.cancelUnsent(id: job.id)
+                                }
+                                .disabled(coordinator.busy)
+                            } else {
                                 Button {
                                     Task { await coordinator.inspect(id: job.id) }
                                 } label: {
