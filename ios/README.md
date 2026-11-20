@@ -1,24 +1,25 @@
-# 天鲜账本 iOS V0.4.6 — 正式营业原子事务客户端
+# 天鲜账本 iOS V0.4.7 — 安卓营业结构对齐
 
-**版本 0.4.6 / Build 26**，兼容 iPhone X / iOS 16.6 / TrollStore（最低 iOS 15）。原 Bundle ID 不变，建议覆盖安装，不卸载旧版。
+**版本 0.4.7 / Build 27**，支持 iPhone X / iOS 16.6 / TrollStore（最低 iOS 15），Bundle ID 不变。覆盖安装保留本机草稿；请勿卸载旧版。
 
-## 本版已提交的客户端代码
+## 本版修改
 
-- 正式营业页已提供原生本机录入草稿：每个收款人独立微信、支付宝和现金金额，可填写实际开收摊时间。
-- 新增专用 GET `/api/v1/business/capabilities`、POST `/api/v1/business/commit` 和 GET `/api/v1/business/operations/{operation_id}` 客户端协议；所有请求限制为固定的 HTTPS 服务器，禁止跨域令牌重定向。
-- 客户端必须在线获取服务端 `business_atomic_commit_v1` 的明确原子、幂等与逐人收款能力。默认不支持/离线/未授权时，正式提交按钮禁用，仍可保存本机草稿。
-- 提交前两次完整拉取营业记录，确认同日同位置云端不存在已有营业、位置与收款人仍有效，并核验渠道总额。服务端仍需独立进行真正的并发/唯一约束核验。
-- POST 前在独立 SQLite 插入不可变操作 UUID 和请求内容，并落盘未知状态。发生崩溃、超时、未知响应时不会重新 POST，只能查询同一操作。
-- 收到回执后回读营业主记录与每位收款人明细，全部匹配才标记确认；服务器未提供逐人完整同步则不会错误地标记成功。
-- 已增加客户端协议、金额、云端重复位置、SQLite 幂等锁单元测试源码。
+- 找回资料库中 **TianXian-Server V1.0.25-PurchaseAtomic FULL** 真实源码，并在其基础上编写 **Server V1.0.26-BusinessAtomic FULL/PATCH**（当前只是交付源码，没有部署线上）。
+- Android 正式营业逐人收款实际存储在 `store_daily_record.receipt_splits_json`；修复 V0.4.6 中误认为独立 `store_daily_collector` 的回读逻辑。
+- iOS 录入表增加必填「支出 / 开摊库存估值 / 收摊库存估值」，对旧本机草稿缺少这些值的情况保持空白，禁止默认为零。
+- 服务端采用 Android 现有利润计算式：`profit = revenue + stock_left_value - opening_stock_value - expense`。客户端将四项作为不可变事务载荷的一部分，服务端自行复算。
+- 保留营业草稿账号/账本隔离、服务器事务能力检测、双次完整刷新、同日同位置防重复、SQLite 操作锁、异常只读查询和回读校验。
+- 新服务端营业接口默认关闭：`TIANXIAN_BUSINESS_COMMIT_ENABLED=false`，即使客户端版本升级，也不会自动开放正式账本写入。
 
-## 本版尚未交付
+## 服务器匹配条件
 
-**正式服务器端尚未实现、部署或测试对应营业事务接口；本版不等于正式营业云端可写。** 当前可访问的仓库没有与现网一致的 TianXian-Server V1.0.25 数据库迁移及接口源码，不能假设其数据结构并修改线上账表。实际部署之前，iOS 按默认关闭状态运行，旧 `/sync/push` 禁止用于正式营业。
+正式服务器升级、PostgreSQL 并发核验、安卓客户端真实字段回读、账号权限与独立测试账本确认之前，不得手动打开营业写入开关。当前未部署 V1.0.26，iOS 上传按钮依然禁用。
 
-服务器安全约束见 [BUSINESS_COMMIT_CONTRACT.md](BUSINESS_COMMIT_CONTRACT.md)；至少需要服务端数据库原子事务、并发唯一约束、同 UUID 指纹幂等、权限/设备检验、安卓同步事件、结算关联保护和原操作查询。
+V0.4.7 **不修改安卓当日结算、利润分配、资金转账及凌晨收款算法**。一切正式营业提交须使用专用原子事务，不通过 `/sync/push` 伪造多记录事务。
 
-## 与现有安卓端一致的边界
+详见 [BUSINESS_COMMIT_CONTRACT.md](BUSINESS_COMMIT_CONTRACT.md)。
 
-不改安卓当日结算算法、利润分配比例、资金轧差与转账规则；不自动生成凌晨收款、历史更正或删除。本机草稿不会出现在已同步营业额里。iOS 编译与 GitHub Actions 测试结果需以实际工作流为准，不把源码提交视为编译通过。
+## 验证状态
 
+- 服务端 V1.0.25 原采购原子测试 8 项通过；新增 V1.0.26 营业事务测试 4 项通过，测试是独立离线环境。
+- Python 服务端源码 `compileall` 通过；尚未获得 iOS GitHub Actions 编译成功证明，也未进行线上 PostgreSQL/安卓跨端联合测试。
