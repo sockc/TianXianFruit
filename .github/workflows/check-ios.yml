@@ -1,4 +1,4 @@
-name: Check iOS V0.2.8 cloud purchase item reconciliation
+name: Check iOS V0.2.9 isolated test-book sales
 
 on:
   pull_request:
