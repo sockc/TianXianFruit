@@ -40,7 +40,7 @@ struct TestSyncAuditView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
-                Label("V0.3.2 · 测试同步核对中心",
+                Label("V0.3.3 · 测试同步核对中心",
                       systemImage: "checklist")
                     .font(.headline)
                 Text("用一次云端完整回读检查本机四类测试记录：采购新增、营业新增、营业金额更正及采购备注更正。只读，不会发送或补发任何财务数据。")
