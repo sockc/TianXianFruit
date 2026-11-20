@@ -18,6 +18,8 @@ struct PurchaseWorkspaceEditorView: View {
     @State private var remark: String
     @State private var lines: [PurchaseDraftLine]
     @State private var errorText: String?
+    @State private var showImportPicker = false
+    @State private var importNotice: String?
 
     init(original: PurchaseWorkspaceDraft?, date: Date,
          account: String, bookID: String,
@@ -69,6 +71,18 @@ struct PurchaseWorkspaceEditorView: View {
                         }
                     }
                     .pickerStyle(MenuPickerStyle())
+                    Button {
+                        showImportPicker = true
+                    } label: {
+                        Label("导入库存 / 待采购计划", systemImage: "square.and.arrow.down.on.square")
+                    }
+                    .font(.subheadline)
+                    .disabled(!canEdit)
+                    if let importNotice {
+                        Text(importNotice)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                     Picker("采购类型", selection: $purchaseType) {
                         Text("计划采购").tag("PLANNED")
                         Text("临时采购").tag("TEMPORARY")
@@ -135,6 +149,23 @@ struct PurchaseWorkspaceEditorView: View {
             .navigationBarItems(leading: Button("取消") { dismiss() })
         }
         .navigationViewStyle(StackNavigationViewStyle())
+        .sheet(isPresented: $showImportPicker) {
+            PurchaseImportPickerView(
+                date: BusinessDates.key(date),
+                buyerSyncID: buyerSyncID,
+                events: Array(model.snapshot.records.values)) { chosen in
+                    let originalLines = lines.count == 1 &&
+                        lines[0].fruitSyncID.isEmpty ? [] : lines
+                    let imported = PurchaseImportPolicy.append(
+                        chosen, to: originalLines)
+                    if imported.added > 0 {
+                        lines = imported.lines
+                    }
+                    importNotice = "已导入 " + String(imported.added) +
+                        " 种，重复或超过上限跳过 " + String(imported.skipped) +
+                        " 种。采购单价需要实际核实。"
+                }
+        }
     }
 
     private func save() {
@@ -211,6 +242,15 @@ private struct PurchaseWorkspaceLineCard: View {
             .pickerStyle(MenuPickerStyle())
             .onChange(of: line.fruitSyncID) { next in
                 line.fruitName = fruits.first { $0.id == next }?.name ?? ""
+                line.sourcePlanItemSyncID = nil
+            }
+            .onChange(of: line.unit) { _ in
+                line.sourcePlanItemSyncID = nil
+            }
+            if line.sourcePlanItemSyncID != nil {
+                Text("来自当天待采购计划 · 仅本机草稿，尚未完成采购")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
             }
 
             HStack(spacing: 10) {
