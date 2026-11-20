@@ -18,7 +18,7 @@ struct BusinessUploadView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
-                Label("V0.2.9 · 测试营业上传", systemImage: "lock.shield")
+                Label("V0.3.0 · 测试营业上传", systemImage: "lock.shield")
                     .font(.headline)
                 Text("只向独立 iOS_TEST_ 账本提交一笔新的营业记录。与 Android 同日同位置重复、已删除历史或本机提交状态不确定时，拒绝再次发送。")
                     .font(.caption).foregroundColor(.secondary)
@@ -130,7 +130,7 @@ struct BusinessUploadView: View {
                                 in: RoundedRectangle(cornerRadius: 12))
                 }
                 DisclosureGroup("本版限制与金额说明", isExpanded: $showSafety) {
-                    Text("沿用 Android 原有营业利润公式：微信＋支付宝＋现金＋收摊库存估值－开摊库存估值－费用。营业源数据中的采购金额固定为 0，不把采购草稿额重复扣减。新老客户计数暂为 0；不提供营业编辑、删除、凌晨收款、资金结算或利润分配。只允许一笔新营业上云，网络中断后必须先只读核对，不能重复点击发送。")
+                    Text("沿用 Android 原有营业利润公式：微信＋支付宝＋现金＋收摊库存估值－开摊库存估值－费用。营业源数据中的采购金额固定为 0，不把采购草稿额重复扣减。新老客户计数暂为 0；营业更正需进入独立测试更正页面；不提供删除、凌晨收款、资金结算或利润分配。只允许一笔新营业上云，网络中断后必须先只读核对，不能重复点击发送。")
                         .font(.caption).foregroundColor(.secondary)
                 }
             }
