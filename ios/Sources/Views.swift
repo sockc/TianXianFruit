@@ -454,7 +454,7 @@ private struct MorePage: View {
                     Label("测试账本营业同步", systemImage: "arrow.up.right.circle")
                 }
                 NavigationLink(destination: TestBusinessEditView()) {
-                    Label("测试账本营业金额更正 · 冲突核对", systemImage: "square.and.pencil")
+                    Label("测试账本营业更正 · 多收款人", systemImage: "square.and.pencil")
                 }
                 NavigationLink(destination: TestSyncAuditView()) {
                     Label("测试同步核对中心 · 一键只读检查", systemImage: "checklist")
@@ -483,9 +483,9 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.3.2 · 测试同步统一核对版")
+                Text("版本：iOS V0.3.3 · 营业多收款人更正版")
                     .font(.caption).foregroundColor(.secondary)
-                Text("正式账本始终只读。iOS_TEST_ 测试账本开放既有受控写入；新增一键只读核对中心，不自动重发或变更任何结算。")
+                Text("正式账本始终只读。iOS_TEST_ 测试账本增加多人收款逐人更正，已结算日禁止修改，结算本身不变。")
                     .font(.caption2).foregroundColor(.secondary)
                 Button(role: .destructive) {
                     model.signOut()
