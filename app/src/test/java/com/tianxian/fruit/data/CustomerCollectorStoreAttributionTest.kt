@@ -273,6 +273,27 @@ class CustomerCollectorStoreAttributionTest {
         assertTrue(1L in result.collectorMatchedIds)
     }
 
+    @Test fun overlappingAdjacentBusinessDaysDoNotGuessWhichDayOwnsMidnightReceipt() {
+        val midnight = payment(1, date = "2026-10-17")
+            .copy(tradeTime = "2026-10-17 00:25:00")
+        val result = CustomerCollectorStoreAttribution.resolve(
+            listOf(midnight),
+            listOf(store(10L, "九龙公园", date = "2026-10-16"),
+                store(20L, "凰岗村", date = "2026-10-17")),
+            receiptCollectors, people,
+            listOf(
+                CustomerTrafficSession("2026-10-16", 10L, "九龙公园",
+                    "16:00", "02:00"),
+                CustomerTrafficSession("2026-10-17", 20L, "凰岗村",
+                    "00:00", "04:00")
+            )
+        )
+        assertEquals(0L, result.rows.single().storeId)
+        assertEquals("2026-10-17", result.rows.single().businessDate)
+        assertTrue(result.shared.isEmpty())
+        assertTrue(result.collectorMatchedIds.isEmpty())
+    }
+
     @Test fun nextMorningPaymentUsesPreviousDayWhenTheStoreStayedOpen() {
         val late = payment(1, date = "2026-10-17")
             .copy(tradeTime = "2026-10-17 00:25:00")
