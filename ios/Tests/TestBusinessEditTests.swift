@@ -343,4 +343,31 @@ final class TestBusinessEditTests: XCTestCase {
         XCTAssertThrowsError(try prepare(base, events: [base, deleted]))
     }
 
+    func testExactAndroidInt64CollectorAndExpenseIDsSurviveEditReadback() throws {
+        let base = try record()
+        var payload = base.payload
+        payload["id"] = .exactInteger(79152283000000002)
+        payload["store_id"] = .exactInteger(79152283000000001)
+        payload["wechat_collector_id"] = .exactInteger(79152283000000002)
+        payload["expense_payer_id"] = .exactInteger(79152283000000002)
+        let exact = SyncEvent(tableName: base.tableName, syncId: base.syncId,
+            rowVersion: base.rowVersion, operation: base.operation, payload: payload)
+        let job = try prepare(exact)
+        XCTAssertEqual(job.proposed.payload["wechat_collector_id"],
+                       .exactInteger(79152283000000002))
+        XCTAssertEqual(job.proposed.payload["expense_payer_id"],
+                       .exactInteger(79152283000000002))
+        XCTAssertTrue(TestBusinessEditPolicy.confirmed(
+            job, events: [job.proposed]),
+            "A correct Int64 cloud readback must not be rejected as a non-Double")
+        var tampered = job.proposed.payload
+        tampered["expense_payer_id"] = .exactInteger(79152283000000003)
+        let wrong = SyncEvent(tableName: job.proposed.tableName,
+            syncId: job.proposed.syncId, rowVersion: job.proposed.rowVersion,
+            operation: job.proposed.operation, payload: tampered)
+        XCTAssertFalse(TestBusinessEditPolicy.confirmed(
+            job, events: [wrong]),
+            "Adjacent 17-digit numeric identities must not be conflated")
+    }
+
 }
