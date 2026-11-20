@@ -76,4 +76,26 @@ final class BusinessCloudDetailTests: XCTestCase {
             book: book("iOS_TEST_88"), record: noSplits,
             events: [noSplits], cachedAuthorization: false))
     }
+    func testCloudInt64PayloadRoundTripIsLossless() throws {
+        // Without this, copying an Android row into an iOS edit request
+        // could change 79152283000000002 into an adjacent numeric ID.
+        let raw = """
+        {"id":79152283000000002,"store_id":79152283000000001,
+         "revenue":60.25,"deleted":0}
+        """.data(using: .utf8)!
+        let value = try JSONDecoder().decode([String: JSONValue].self, from: raw)
+        guard case .exactInteger(let id) = value["id"],
+              case .exactInteger(let store) = value["store_id"] else {
+            XCTFail("Large Android IDs were decoded as imprecise Double")
+            return
+        }
+        XCTAssertEqual(id, 79152283000000002)
+        XCTAssertEqual(store, 79152283000000001)
+        let exported = try JSONEncoder().encode(value)
+        let reloaded = try JSONDecoder().decode([String: JSONValue].self,
+                                                from: exported)
+        XCTAssertEqual(reloaded["id"], .exactInteger(79152283000000002))
+        XCTAssertEqual(reloaded["store_id"], .exactInteger(79152283000000001))
+    }
+
 }
