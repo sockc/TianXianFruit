@@ -27,7 +27,9 @@ class CustomerUiIORegression(unittest.TestCase):
 
     def test_customer_snapshot_stays_on_background_dispatcher(self):
         self.assertIn("value = withContext(Dispatchers.IO)", UI)
-        self.assertIn("db.getCustomerPayments(), sessions", UI)
+        self.assertIn("val rawPayments = db.getCustomerPayments()", UI)
+        self.assertIn("rawPayments, sessions, protectedCollectorIds", UI)
+        self.assertIn("val protectedCollectorIds = collectorByReceipt", UI)
 
 
 if __name__ == "__main__":
