@@ -12,8 +12,9 @@ struct CloudAPIError: LocalizedError {
     }
 }
 
-/// All network operations are allow-listed here. This client cannot send
-/// sales, purchase, inventory, overnight or settlement mutations.
+/// All network operations are allow-listed here. Only the opt-in, capability-
+/// gated atomic purchases endpoint can mutate formal ledger rows; generic
+/// purchase, inventory, overnight, settlement or sales sync push is forbidden.
 final class CloudAPI: NSObject, URLSessionTaskDelegate {
     private let root = "https://sync.830888.xyz"
     private lazy var session: URLSession = {
