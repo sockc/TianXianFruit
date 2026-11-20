@@ -2418,6 +2418,7 @@ private fun CustomerOverview(
     var showQualityDetails by remember { mutableStateOf(false) }
     var showStores by remember { mutableStateOf(false) }
     var showShared by remember { mutableStateOf(false) }
+    var showSameWeekday by remember(displayDate, selectedStoreId) { mutableStateOf(false) }
     val reliablePayments = remember(payments) {
         payments.count { PaymentTrafficAnalytics.isIdentified(it) }
     }
@@ -2582,6 +2583,41 @@ private fun CustomerOverview(
                                     fontWeight = FontWeight.SemiBold)
                                 CustomerReceiptReconciliationDetails(reconciliations)
                             }
+                        }
+                    }
+                }
+            }
+        }
+        if (singleDay && sameWeekdayComparisons.isNotEmpty()) {
+            item(key = "weekday_comparison") {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable { showSameWeekday = !showSameWeekday }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "可识别客户 · 同位置同星期",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            if (showSameWeekday) "收起 ⌃" else "查看 ›",
+                            color = Color(0xFF087D4E),
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                    AnimatedVisibility(showSameWeekday) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                "仅统计有可靠付款人标识的独立收款；不能代表全部付款笔数。" +
+                                    "同星期历史少于3天时，不应据此判断客流涨跌。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF9A6700)
+                            )
+                            SameWeekdayCustomerCard(sameWeekdayComparisons)
                         }
                     }
                 }
@@ -3103,7 +3139,7 @@ private fun SameWeekdayCustomerCard(
                 }
 
                 val changeText =
-                    row.percentChange
+                    row.percentChange.takeIf { row.sampleDays >= 3 }
                         ?.let {
                             value ->
                             val sign =
