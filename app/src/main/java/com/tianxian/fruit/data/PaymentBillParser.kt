@@ -353,11 +353,20 @@ internal object PaymentBillParser {
                 .any { token -> type.trim().contains(token) }
         if (explicitNonMerchantType) return null
 
+        // Alipay's "交易分类=收入" is too broad. A user-supplied remark
+        // containing "二维码收款" is not proof of a merchant QR payment.
+        // Accept merchant evidence from transaction type/product only;
+        // WeChat retains its existing multi-column matching behavior.
+        val merchantEvidence = if (platform == PaymentBillPlatform.ALIPAY) {
+            listOf(type, product).joinToString("|").uppercase(Locale.ROOT)
+        } else {
+            typeEvidence
+        }
         val strictReceipt =
             STRICT_RECEIPT_PHRASES
                 .any {
                     phrase ->
-                    typeEvidence.contains(
+                    merchantEvidence.contains(
                         phrase.uppercase(
                             Locale.ROOT
                         )
