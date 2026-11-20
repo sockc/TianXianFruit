@@ -23,14 +23,8 @@ struct TestBusinessEditView: View {
     }
 
     private var records: [SyncEvent] {
-        coordinator.liveEvents.filter {
-            $0.tableName == "store_daily_record" && !$0.isDeletion &&
-            (focusRecordSyncID == nil || $0.syncId == focusRecordSyncID)
-        }.sorted {
-            let first = $0.payload["date"]?.text ?? ""
-            let second = $1.payload["date"]?.text ?? ""
-            return first == second ? $0.syncId < $1.syncId : first > second
-        }
+        TestBusinessEditSourcePolicy.editableRecords(
+            in: coordinator.liveEvents, focus: focusRecordSyncID)
     }
 
     var body: some View {
