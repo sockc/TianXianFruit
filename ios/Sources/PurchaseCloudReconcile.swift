@@ -52,7 +52,8 @@ enum PurchaseCloudReconcilePolicy {
                 $0.quantity.trimmingCharacters(in: .whitespacesAndNewlines),
                 $0.unit.trimmingCharacters(in: .whitespacesAndNewlines),
                 $0.unitPrice.trimmingCharacters(in: .whitespacesAndNewlines),
-                $0.unitWeightJin.trimmingCharacters(in: .whitespacesAndNewlines)
+                $0.unitWeightJin.trimmingCharacters(in: .whitespacesAndNewlines),
+                $0.sourcePlanItemSyncID ?? ""
             ].joined(separator: "\u{1f}")
         }.joined(separator: "\u{1e}")
         let parts = [
