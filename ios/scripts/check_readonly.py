@@ -209,7 +209,8 @@ assert "selectedBookID == bookID" in editor
 assert "model.account?.username.lowercased()" in editor
 assert "purchase_workspace_draft" in workspace_store
 assert "account=? AND book_id=?" in workspace_store
-assert "book_id=excluded" not in workspace_store
+assert "SET book_id=excluded" not in workspace_store
+assert "AND book_id=excluded.book_id" in workspace_store
 assert "SELECT payload FROM purchase_workspace_draft" in workspace_store
 assert "INSERT INTO purchase_workspace_draft" in workspace_store
 assert "purchase_plan_item" not in workspace_store
