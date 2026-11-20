@@ -109,7 +109,13 @@ enum PurchaseCommitPlanningPolicy {
 
         let buyer = visible(records, table: "partner", id: draft.buyerSyncID)
         guard buyer.count == 1,
-              buyer[0].payload["name"]?.text == draft.buyerName else {
+              buyer[0].payload["name"]?.text == draft.buyerName,
+              let buyerNumericID = buyer[0].payload["id"]?.decimal,
+              buyerNumericID > 0, buyerNumericID.rounded() == buyerNumericID,
+              records.filter({
+                  !$0.isDeletion && $0.tableName == "partner" &&
+                  $0.payload["id"]?.decimal == buyerNumericID
+              }).count == 1 else {
             throw PurchaseCommitPlanningError.staleBuyer
         }
         try PurchaseWorkspaceDraftPolicy.validate(draft, buyers: [
@@ -130,7 +136,13 @@ enum PurchaseCommitPlanningPolicy {
         for line in draft.lines {
             let fruit = visible(records, table: "fruit", id: line.fruitSyncID)
             guard fruit.count == 1,
-                  fruit[0].payload["name"]?.text == line.fruitName else {
+                  fruit[0].payload["name"]?.text == line.fruitName,
+                  let fruitNumericID = fruit[0].payload["id"]?.decimal,
+                  fruitNumericID > 0, fruitNumericID.rounded() == fruitNumericID,
+                  records.filter({
+                      !$0.isDeletion && $0.tableName == "fruit" &&
+                      $0.payload["id"]?.decimal == fruitNumericID
+                  }).count == 1 else {
                 throw PurchaseCommitPlanningError.staleFruit
             }
             let quantity = try PurchaseDraftPolicy.quantity(line.quantity)
@@ -143,6 +155,7 @@ enum PurchaseCommitPlanningPolicy {
                 guard items.count == 1,
                       items[0].payload["status"]?.decimal == 0,
                       items[0].payload["fruit_name"]?.text == line.fruitName,
+                      items[0].payload["fruit_id"]?.decimal == fruitNumericID,
                       items[0].payload["unit"]?.text == line.unit,
                       items[0].rowVersion > 0 else {
                     throw PurchaseCommitPlanningError.stalePlan
@@ -169,8 +182,8 @@ enum PurchaseCommitPlanningPolicy {
                 }
                 guard collabs.count == 1,
                       collabs[0].rowVersion > 0,
-                      (collabs[0].payload["buyer_id"]?.decimal ?? 0) == 0 ||
-                      collabs[0].payload["buyer_name"]?.text == draft.buyerName else {
+                      ((collabs[0].payload["buyer_id"]?.decimal ?? 0) == 0 ||
+                       collabs[0].payload["buyer_id"]?.decimal == buyerNumericID) else {
                     throw PurchaseCommitPlanningError.missingCollaboration
                 }
                 versions.append(PurchaseExpectedVersion(
