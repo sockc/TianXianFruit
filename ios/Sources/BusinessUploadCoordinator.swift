@@ -178,6 +178,20 @@ final class BusinessUploadCoordinator: ObservableObject {
             }
             try await api.validateSession(auth)
             try requireCurrent(g)
+            // Re-read just before sending: avoid accepting an Android record
+            // created after the first inspection. Still not server-side CAS.
+            let latest = try await api.pullAll(auth)
+            try requireCurrent(g)
+            guard !BusinessUploadPolicy.conflict(
+                date: job.payload["date"]?.text ?? "",
+                storeSyncID: job.payload["store_sync_id"]?.text ?? "",
+                storeName: job.payload["store_name"]?.text ?? "",
+                events: latest) else {
+                job.state = .needsReview
+                job.note = "最终提交前发现安卓/云端已有同日同位置营业，未出网"
+                try storage.saveBusinessJob(job)
+                throw StagingSafetyError.needsReview(job.note)
+            }
             job.state = .sending
             job.note = "网络请求之前已落盘；任何未知结果都不能自动重试"
             try storage.saveBusinessJob(job)
