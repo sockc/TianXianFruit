@@ -103,7 +103,7 @@ enum PurchaseImportPolicy {
         let source = active(events)
         let possible = source.filter {
             $0.tableName == "inventory_snapshot" &&
-            $0.payload["date"]?.text ?? "" <= date &&
+            ($0.payload["date"]?.text ?? "") <= date &&
             BusinessDates.parse($0.payload["date"]?.text ?? "") != nil
         }
         guard let last = possible.compactMap({
