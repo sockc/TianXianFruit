@@ -548,6 +548,29 @@ final class TestDraftStore {
         }
     }
 
+    /// Only a never-sent edit can be cancelled. A sent/unknown request remains
+    /// immutable and must be inspected via readback, never manually cleared.
+    func cancelUnsentBusinessEdit(id: String, account: String,
+                                  book: String) throws {
+        guard let saved = try businessEditJob(id: id, account: account,
+                                              book: book),
+              saved.state == .ready else {
+            throw TestDraftStoreError.lockedForUpload
+        }
+        let stmt = try prepare("""
+            DELETE FROM isolated_business_edit_jobs
+            WHERE id=? AND source_account=? AND book_id=? AND state='ready'
+        """)
+        defer { sqlite3_finalize(stmt) }
+        bind(id, at: 1, to: stmt)
+        bind(normalized(account), at: 2, to: stmt)
+        bind(book, at: 3, to: stmt)
+        try step(stmt)
+        guard sqlite3_changes(database) == 1 else {
+            throw TestDraftStoreError.invalid
+        }
+    }
+
     func stagingJob(id: String, account: String,
                     book: String) throws -> StagingPurchaseJob? {
         let stmt = try prepare("""
