@@ -11,6 +11,36 @@ import org.junit.Test
 
 class PaymentBillParserTest {
     @Test
+    fun alipayMerchantBillIsNotMistakenForWechatWhenMemoMentionsWechat() {
+        val csv = """
+            支付宝交易明细
+            交易时间,交易分类,交易对方,商品说明,备注,收/支,金额,交易状态,交易订单号
+            2026-11-20 18:00:00,收入,模拟顾客,收钱码收款,顾客询问微信付款,收入,25.00,交易成功,alipay-20261120-1
+        """.trimIndent()
+        val result = PaymentBillParser.parse(
+            "支付宝交易明细.csv", csv.toByteArray(Charset.forName("GB18030"))
+        )
+        assertEquals(PaymentBillPlatform.ALIPAY, result.platform)
+        assertEquals(1, result.acceptedRows)
+        assertEquals(25.0, result.transactions.single().netAmount, 0.001)
+    }
+
+    @Test
+    fun wechatMerchantBillIsNotMistakenForAlipayWhenMemoMentionsAlipay() {
+        val csv = """
+            微信支付账单
+            交易时间,交易类型,交易对方,备注,收/支,金额(元),当前状态,交易单号
+            2026-11-20 19:00:00,二维码收款,模拟顾客,顾客询问支付宝付款,收入,18.00,支付成功,wechat-20261120-1
+        """.trimIndent()
+        val result = PaymentBillParser.parse(
+            "微信支付账单.csv", csv.toByteArray(Charsets.UTF_8)
+        )
+        assertEquals(PaymentBillPlatform.WECHAT, result.platform)
+        assertEquals(1, result.acceptedRows)
+        assertEquals(18.0, result.transactions.single().netAmount, 0.001)
+    }
+
+    @Test
     fun onlyStrictWechatBusinessReceiptsAreAccepted() {
         val csv =
             """
