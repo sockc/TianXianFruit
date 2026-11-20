@@ -28,7 +28,7 @@ struct TestBusinessEditView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 13) {
-                Label("V0.3.3 · 测试营业更正", systemImage: "pencil.circle")
+                Label("V0.3.4 · 测试营业更正", systemImage: "pencil.circle")
                     .font(.headline)
                 Text("仅测试账本：可按原收款人分别更正微信、支付宝、现金金额。已发生结算的日期禁止更正；日期、位置和收款人身份不变。")
                     .font(.caption).foregroundColor(.secondary)
