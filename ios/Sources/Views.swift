@@ -337,16 +337,23 @@ private struct BusinessPage: View {
                                 .font(.caption2).foregroundColor(.secondary)
                         }
                         ForEach(day.rows) { row in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(row.storeName).font(.subheadline)
-                                    Text("已存利润：\(row.profit.formatted(.currency(code: "CNY")))")
+                            NavigationLink(destination: BusinessCloudDetailView(
+                                recordSyncID: row.id,
+                                bookID: model.selectedBookID ?? "")) {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(row.storeName).font(.subheadline)
+                                        Text("已存利润：\(row.profit.formatted(.currency(code: "CNY")))")
+                                            .font(.caption).foregroundColor(.secondary)
+                                    }
+                                    Spacer()
+                                    Text(row.revenue.formatted(.currency(code: "CNY")))
+                                        .font(.subheadline.bold())
+                                    Image(systemName: "chevron.right")
                                         .font(.caption).foregroundColor(.secondary)
                                 }
-                                Spacer()
-                                Text(row.revenue.formatted(.currency(code: "CNY")))
-                                    .font(.subheadline.bold())
                             }
+                            .buttonStyle(.plain)
                             Divider()
                         }
                     }
@@ -359,7 +366,7 @@ private struct BusinessPage: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
                 }
-                Text("只展示已同步的正式营业数据；不补算利润、不修改当日结算。")
+                Text("点击位置记录查看云端明细；测试账本可进入安全更正，正式账本保持只读，不修改当日结算。")
                     .font(.caption2).foregroundColor(.secondary)
                 SyncFooter()
             }
