@@ -183,7 +183,8 @@ enum PurchaseWorkspaceDraftPolicy {
     }
 
     static func validate(_ draft: PurchaseWorkspaceDraft,
-                         buyers: [TestLookup]) throws {
+                         buyers: [TestLookup],
+                         fruits: [TestLookup]? = nil) throws {
         guard !draft.id.isEmpty, !draft.account.isEmpty, !draft.bookID.isEmpty,
               BusinessDates.parse(draft.date) != nil else {
             throw TestWriteError.missingData("采购日期与账本")
@@ -197,5 +198,15 @@ enum PurchaseWorkspaceDraftPolicy {
             throw TestWriteError.missingData("采购类型")
         }
         _ = try PurchaseDraftPolicy.total(draft.lines)
+        if let fruits {
+            for line in draft.lines {
+                guard fruits.filter({
+                    $0.id == line.fruitSyncID && $0.name == line.fruitName
+                }).count == 1 else {
+                    throw TestWriteError.missingData(
+                        "商品已更名或云端身份不匹配，请重新选择")
+                }
+            }
+        }
     }
 }
