@@ -94,4 +94,48 @@ final class BusinessAtomicCommitTests: XCTestCase {
         XCTAssertEqual(try store.load(id: row.id,
             account: user.username, bookID: book.id)?.phase, .unknown)
     }
+    func testAndroidSingleRowSplitReadbackIsVerified() throws {
+        let row = draft()
+        let book = CloudBook(id: UUID().uuidString, name: "测试账本",
+                             role: "OWNER", deleted: nil, purged: nil)
+        let user = Account(username: "unituser", displayName: "Unit", systemRole: nil)
+        let partnerPK = JSONValue.number(42)
+        var rows = cloud(row)
+        rows[1] = SyncEvent(tableName: "partner",
+            syncId: row.collectors[0].partnerSyncID,
+            rowVersion: 1, operation: "UPSERT",
+            payload: ["name": .string("收款人A"), "id": partnerPK])
+        let proposal = try BusinessCommitPolicy.prepare(
+            row, book: book, account: user, records: rows)
+        let split = """
+        [{"partner_id":42,"partner_name":"收款人A","amount":60.25,
+          "wechat_income":35.25,"alipay_income":20.0,"cash_income":5.0}]
+        """
+        let recordID = UUID().uuidString
+        rows.append(SyncEvent(tableName: "store_daily_record",
+            syncId: recordID, rowVersion: 1, operation: "UPSERT",
+            payload: [
+                "date": .string(row.date), "store_name": .string(row.storeName),
+                "store_sync_id": .string(row.storeID),
+                "revenue": .number(60.25), "wechat_income": .number(35.25),
+                "alipay_income": .number(20.0), "cash_income": .number(5.0),
+                "expense": .number(1.0),
+                "opening_stock_value": .number(10.0),
+                "stock_left_value": .number(15.0), "profit": .number(64.25),
+                "actual_start_time": .string("16:00"),
+                "actual_end_time": .string("00:10"),
+                "receipt_splits_json": .string(split)
+            ]))
+        let receipt = BusinessCommitReceipt(status: "committed",
+            operationID: proposal.operationID, bookID: proposal.bookID,
+            recordSyncID: recordID,
+            collectorSyncIDs: proposal.collectors.map(\.partnerSyncID),
+            payloadHash: proposal.payloadHash, syncCursor: 1)
+        XCTAssertTrue(BusinessCommitPolicy.readback(proposal, receipt: receipt,
+                                                    records: rows))
+        rows.removeLast()
+        XCTAssertFalse(BusinessCommitPolicy.readback(proposal, receipt: receipt,
+                                                     records: rows))
+    }
+
 }
