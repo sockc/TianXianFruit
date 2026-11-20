@@ -150,22 +150,19 @@ final class TestBusinessEditCoordinator: ObservableObject {
             try current(g)
             let available = try await api.pullAll(auth)
             try current(g)
-            guard let latest = available.first(where: {
-                $0.tableName == original.tableName &&
-                $0.syncId == original.syncId
-            }), latest.rowVersion == original.rowVersion,
-               latest.operation == original.operation,
-               latest.payload == original.payload else {
+            guard TestBusinessEditSourcePolicy.isUnchanged(
+                original, in: available),
+                  let latest = available.first(where: {
+                      $0.tableName == original.tableName &&
+                      $0.syncId == original.syncId
+                  }) else {
                 // No job is reserved and no POST has begun. This is a stale
                 // form, not an unknown upload. Refresh the editor's source
                 // from the server; never modify the user's old record.
                 liveEvents = available
                 liveRecordsReady = true
-                let currentVersion = available.first(where: {
-                    $0.tableName == original.tableName &&
-                    $0.syncId == original.syncId
-                })?.rowVersion
-                let revision = currentVersion.map(String.init) ?? "已删除"
+                let revision = TestBusinessEditSourcePolicy.version(
+                    original, in: available)
                 message = "更正未发送：页面原版本 \(original.rowVersion)，云端最新版本 \(revision)。返回上一页重新打开这笔营业；原数据未覆盖。"
                 return
             }
