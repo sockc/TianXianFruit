@@ -118,7 +118,7 @@ final class PurchaseCloudReconcileTests: XCTestCase {
         XCTAssertNotEqual(PurchaseCloudReconcilePolicy.fingerprint(initial),
                           PurchaseCloudReconcilePolicy.fingerprint(same))
         same = initial
-        same.bookID = "different-book"
+        same.buyerSyncID = "different-buyer"
         XCTAssertNotEqual(PurchaseCloudReconcilePolicy.fingerprint(initial),
                           PurchaseCloudReconcilePolicy.fingerprint(same))
     }
