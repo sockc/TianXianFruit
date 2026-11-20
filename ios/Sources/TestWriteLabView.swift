@@ -95,6 +95,10 @@ struct TestWriteLabView: View {
     @State private var alipayCollectorID = ""
     @State private var cashCollectorID = ""
     @State private var expensePayerID = ""
+    @State private var usePerPersonCollectors = false
+    @State private var businessCollectors: [BusinessCollectorDraftLine] = []
+    @State private var actualStartTime = ""
+    @State private var actualEndTime = ""
 
     @State private var buyerSyncID = ""
     @State private var fruitSyncID = ""
@@ -117,7 +121,7 @@ struct TestWriteLabView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
-                Label("V0.3.3 · 测试账本营业与采购", systemImage: "lock.shield")
+                Label("V0.3.4 · 测试账本营业与采购", systemImage: "lock.shield")
                     .font(.headline).foregroundColor(.orange)
                 Text("测试账本可录入营业及多商品采购草稿，之后从对应同步页面提交；正式账本始终只读。")
                     .font(.caption).foregroundColor(.secondary)
@@ -274,12 +278,70 @@ struct TestWriteLabView: View {
                     Text(item.name).tag(item.id)
                 }
             }.pickerStyle(MenuPickerStyle())
-            amount("微信收款", text: $wechat)
-            collector("微信收款人", selection: $wechatCollectorID)
-            amount("支付宝收款", text: $alipay)
-            collector("支付宝收款人", selection: $alipayCollectorID)
-            amount("现金收款", text: $cash)
-            collector("现金收款人", selection: $cashCollectorID)
+            Toggle("按收款人逐人录入（支持同一渠道多人收款）",
+                   isOn: $usePerPersonCollectors)
+                .font(.subheadline)
+                .onChange(of: usePerPersonCollectors) { enabled in
+                    if enabled && businessCollectors.isEmpty {
+                        businessCollectors = [BusinessCollectorDraftLine()]
+                    }
+                }
+            if usePerPersonCollectors {
+                Text("逐人记录实际收款，不需要先填渠道总额；每位收款人只能出现一次。")
+                    .font(.caption2).foregroundColor(.secondary)
+                ForEach($businessCollectors) { $item in
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("收款人").font(.subheadline.bold())
+                            Spacer()
+                            Button(role: .destructive) {
+                                businessCollectors.removeAll { $0.id == item.id }
+                            } label: {
+                                Label("移除", systemImage: "minus.circle")
+                            }
+                            .font(.caption)
+                        }
+                        collector("选择已同步收款人",
+                                  selection: $item.partnerSyncID)
+                        amount("微信", text: $item.wechat)
+                        amount("支付宝", text: $item.alipay)
+                        amount("现金", text: $item.cash)
+                    }
+                    .padding(10)
+                    .background(Color(UIColor.tertiarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 9))
+                }
+                Button {
+                    if businessCollectors.count < 12 {
+                        businessCollectors.append(BusinessCollectorDraftLine())
+                    }
+                } label: {
+                    Label("新增一位收款人", systemImage: "person.badge.plus")
+                }
+                .disabled(businessCollectors.count >= 12)
+                if let totals = try? BusinessCollectorDraftPolicy.totals(
+                    businessCollectors) {
+                    Text(String(format: "汇总 · 微信 ¥%.2f / 支付宝 ¥%.2f / 现金 ¥%.2f",
+                                Double(totals.wechat) / 100,
+                                Double(totals.alipay) / 100,
+                                Double(totals.cash) / 100))
+                        .font(.caption.bold())
+                } else {
+                    Text("金额格式不正确，暂不能保存")
+                        .font(.caption).foregroundColor(.orange)
+                }
+            } else {
+                amount("微信收款", text: $wechat)
+                collector("微信收款人", selection: $wechatCollectorID)
+                amount("支付宝收款", text: $alipay)
+                collector("支付宝收款人", selection: $alipayCollectorID)
+                amount("现金收款", text: $cash)
+                collector("现金收款人", selection: $cashCollectorID)
+            }
+            field("实际开摊时间 HH:mm（可选）", text: $actualStartTime)
+            field("实际收摊时间 HH:mm（可跨午夜）", text: $actualEndTime)
+            Text("时间只能同时填或同时留空；例如 16:00 → 00:10 是跨日营业时段，不代表凌晨收款金额。")
+                .font(.caption2).foregroundColor(.secondary)
             amount("支出", text: $expense)
             collector("支出付款人", selection: $expensePayerID)
             amount("开摊库存估值", text: $openingStock)
@@ -359,15 +421,31 @@ struct TestWriteLabView: View {
         let fields: [String: String]
         if draftKind == .business {
             let store = model.snapshot.testStores.first { $0.id == storeSyncID }
+            let receipts: (wechat: String, alipay: String, cash: String)
+            if usePerPersonCollectors {
+                guard let sums = try? BusinessCollectorDraftPolicy.totals(
+                    businessCollectors) else {
+                    draftManager.message = "逐人收款金额不是有效数字，请核对"
+                    return
+                }
+                receipts = (
+                    String(format: "%.2f", Double(sums.wechat) / 100),
+                    String(format: "%.2f", Double(sums.alipay) / 100),
+                    String(format: "%.2f", Double(sums.cash) / 100))
+            } else {
+                receipts = (wechat, alipay, cash)
+            }
             fields = [
                 "store_sync_id": storeSyncID,
                 "store_name": store?.name ?? "",
-                "wechat": wechat,
-                "wechat_collector_sync_id": wechatCollectorID,
-                "alipay": alipay,
-                "alipay_collector_sync_id": alipayCollectorID,
-                "cash": cash,
-                "cash_collector_sync_id": cashCollectorID,
+                "wechat": receipts.wechat,
+                "wechat_collector_sync_id": usePerPersonCollectors ? "" : wechatCollectorID,
+                "alipay": receipts.alipay,
+                "alipay_collector_sync_id": usePerPersonCollectors ? "" : alipayCollectorID,
+                "cash": receipts.cash,
+                "cash_collector_sync_id": usePerPersonCollectors ? "" : cashCollectorID,
+                "actual_start_time": actualStartTime.trimmingCharacters(in: .whitespacesAndNewlines),
+                "actual_end_time": actualEndTime.trimmingCharacters(in: .whitespacesAndNewlines),
                 "expense": expense,
                 "expense_payer_sync_id": expensePayerID,
                 "opening_stock_value": openingStock,
@@ -391,7 +469,9 @@ struct TestWriteLabView: View {
         let draft = TestDraft(
             id: UUID().uuidString, account: account.username, bookID: book.id,
             kind: draftKind, date: BusinessDates.key(entryDate),
-            fields: fields, createdAt: Date())
+            fields: fields, createdAt: Date(),
+            businessCollectors: draftKind == .business && usePerPersonCollectors
+                ? businessCollectors : nil)
         draftManager.save(draft, book: book)
     }
 
