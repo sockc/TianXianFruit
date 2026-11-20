@@ -51,6 +51,15 @@ struct PurchaseCloudDetailView: View {
                     .padding(12)
                     .background(Color(UIColor.secondarySystemGroupedBackground),
                                 in: RoundedRectangle(cornerRadius: 12))
+                    if model.selectedBook?.name.hasPrefix(TestWritePolicy.prefix) == true {
+                        NavigationLink(destination: PurchaseRemarkEditView(
+                            order: order, bookID: bookID)) {
+                            Label("修改测试账本采购备注（不改金额）",
+                                  systemImage: "square.and.pencil")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                    }
                     Text("云端商品明细 · \(result.items.count) 条").font(.headline)
                     if result.items.isEmpty {
                         Text("暂无可安全归属的商品明细")
