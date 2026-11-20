@@ -20,15 +20,20 @@ struct TestBusinessEditValues: Equatable {
     let expense: String
     let opening: String
     let closing: String
+    /// Explicit per-person channel edits. Nil keeps the old single-person
+    /// correction path and refuses to guess multi-person allocation.
+    let splits: [TestBusinessSplitInput]?
 
     init(wechat: String, alipay: String, cash: String, expense: String,
-         opening: String, closing: String) {
+         opening: String, closing: String,
+         splits: [TestBusinessSplitInput]? = nil) {
         self.wechat = wechat
         self.alipay = alipay
         self.cash = cash
         self.expense = expense
         self.opening = opening
         self.closing = closing
+        self.splits = splits
     }
 
     init(_ event: SyncEvent) {
@@ -38,6 +43,49 @@ struct TestBusinessEditValues: Equatable {
         expense = String(format: "%.2f", event.payload["expense"]?.decimal ?? 0)
         opening = String(format: "%.2f", event.payload["opening_stock_value"]?.decimal ?? 0)
         closing = String(format: "%.2f", event.payload["stock_left_value"]?.decimal ?? 0)
+        splits = nil
+    }
+}
+
+/// Exact existing collector identity with editable per-channel amounts. We
+/// never introduce, remove, rename or remap a collector on iOS.
+struct TestBusinessSplitInput: Equatable, Identifiable {
+    let partnerID: Int64
+    let partnerName: String
+    var wechat: String
+    var alipay: String
+    var cash: String
+
+    var id: String { String(partnerID) + "|" + partnerName }
+
+    static func from(_ event: SyncEvent) -> [TestBusinessSplitInput] {
+        guard let raw = event.payload["receipt_splits_json"]?.text,
+              let data = raw.data(using: .utf8),
+              let splits = try? JSONDecoder().decode(
+                [TestBusinessReceiptSplit].self, from: data) else { return [] }
+        return splits.map { value in
+            TestBusinessSplitInput(
+                partnerID: value.partnerID,
+                partnerName: value.partnerName,
+                wechat: String(format: "%.2f", value.wechatIncome),
+                alipay: String(format: "%.2f", value.alipayIncome),
+                cash: String(format: "%.2f", value.cashIncome))
+        }
+    }
+
+    static func total(_ entries: [TestBusinessSplitInput],
+                      key: KeyPath<TestBusinessSplitInput, String>) -> String {
+        var total: Int64 = 0
+        for row in entries {
+            guard let value = Double(row[keyPath: key]),
+                  value.isFinite, value >= 0, value <= 1_000_000,
+                  abs(value * 100 - (value * 100).rounded()) < 0.0001,
+                  total <= Int64.max - Int64((value * 100).rounded()) else {
+                return "无效金额"
+            }
+            total += Int64((value * 100).rounded())
+        }
+        return String(format: "%.2f", Double(total) / 100.0)
     }
 }
 
@@ -74,9 +122,9 @@ struct TestBusinessReceiptSplit: Codable, Equatable {
     }
 }
 
-/// The only writable operation in V0.3.0: amendment of an existing, modern,
-/// uniquely identified TEST business row with unchanged collector identities.
-/// No delete, settlement, overnight receipt or purchase modifications.
+/// TEST-only correction of modern stable business rows. V0.3.3 accepts
+/// explicit per-person amounts without guessing allocation. Date, location,
+/// collector identities, midnight receipts and settlement remain immutable.
 enum TestBusinessEditPolicy {
     private static func money(_ raw: String, name: String) throws -> Int64 {
         Int64((try TestWritePolicy.money(raw, label: name) * 100).rounded())
@@ -90,6 +138,38 @@ enum TestBusinessEditPolicy {
 
     private static func amount(_ n: Int64) -> JSONValue {
         .number(Double(n) / 100)
+    }
+
+    /// Android's business edit/delete invalidates derived settlement rows in
+    /// the same SQLite transaction. iOS does not have that server capability.
+    /// Fail closed if there is even historical evidence of derived data for
+    /// the date; never leave a stale transfer or distributed profit behind.
+    static func hasDerivedSettlement(date: String,
+                                     events: [SyncEvent]) -> Bool {
+        let dateTables: Set<String> = [
+            "profit_distribution", "daily_cash_settlement",
+            "settlement_partner", "settlement_transfer",
+            "profit_settlement_item"
+        ]
+        return events.contains { event in
+            if dateTables.contains(event.tableName) {
+                let dateKey = event.tableName == "profit_settlement_item"
+                    ? "profit_date" : "date"
+                if event.payload[dateKey]?.text == date { return true }
+                // Period transfers can cover more dates than their save date.
+                if event.tableName == "settlement_transfer",
+                   let first = event.payload["range_start_date"]?.text,
+                   let last = event.payload["range_end_date"]?.text,
+                   !first.isEmpty, !last.isEmpty,
+                   first <= date, date <= last { return true }
+            }
+            if event.tableName == "profit_settlement_batch",
+               let first = event.payload["period_start"]?.text,
+               let last = event.payload["period_end"]?.text,
+               !first.isEmpty, !last.isEmpty,
+               first <= date, date <= last { return true }
+            return false
+        }
     }
 
     private static func activeBusiness(_ record: SyncEvent,
@@ -133,6 +213,10 @@ enum TestBusinessEditPolicy {
         }), current.rowVersion == job.original.rowVersion,
            current.operation == job.original.operation,
            current.payload == job.original.payload else { return false }
+        guard let date = current.payload["date"]?.text,
+              !hasDerivedSettlement(date: date, events: events) else {
+            return false
+        }
         return (try? activeBusiness(current, events: events)) != nil
     }
 
@@ -150,6 +234,11 @@ enum TestBusinessEditPolicy {
             throw StagingSafetyError.wrongSourceBook
         }
         try activeBusiness(original, events: events)
+        guard let sourceDate = original.payload["date"]?.text,
+              !hasDerivedSettlement(date: sourceDate, events: events) else {
+            throw StagingSafetyError.needsReview(
+                "该日已有利润分配、结算或转账历史；安卓需同步作废派生数据，iOS 禁止直接更正")
+        }
         let wechat = try money(values.wechat, name: "微信")
         let alipay = try money(values.alipay, name: "支付宝")
         let cash = try money(values.cash, name: "现金")
@@ -165,6 +254,14 @@ enum TestBusinessEditPolicy {
             throw StagingSafetyError.needsReview(
                 "原始收款人明细不完整，请先在 Android 修正")
         }
+        guard Set(splits.map { String($0.partnerID) + "|" + $0.partnerName }).count
+                == splits.count,
+              splits.allSatisfy({ $0.partnerID > 0 && !$0.partnerName.isEmpty })
+        else {
+            throw StagingSafetyError.needsReview(
+                "原始收款人身份不完整或有重复项，请在 Android 核对")
+        }
+        let beforeSplits = splits
         let oldAmounts: [String: Int64] = try [
             "wechat_income", "alipay_income", "cash_income"
         ].reduce(into: [:]) { result, field in
@@ -199,12 +296,46 @@ enum TestBusinessEditPolicy {
             }
             set(&splits[target], Double(desired) / 100)
         }
-        try apply("wechat_income", desired: wechat,
-                  get: { $0.wechatIncome }, set: { $0.wechatIncome = $1 })
-        try apply("alipay_income", desired: alipay,
-                  get: { $0.alipayIncome }, set: { $0.alipayIncome = $1 })
-        try apply("cash_income", desired: cash,
-                  get: { $0.cashIncome }, set: { $0.cashIncome = $1 })
+        if let explicit = values.splits {
+            guard explicit.count == splits.count,
+                  Set(explicit.map(\.id)).count == explicit.count,
+                  Set(explicit.map(\.id)) == Set(splits.map {
+                    String($0.partnerID) + "|" + $0.partnerName
+                  }) else {
+                throw StagingSafetyError.needsReview(
+                    "收款人集合已变化；不能增加、移除或重新归属到其他收款人")
+            }
+            let byID = Dictionary(uniqueKeysWithValues: explicit.map {
+                ($0.id, $0)
+            })
+            for index in splits.indices {
+                let identity = String(splits[index].partnerID) + "|" +
+                               splits[index].partnerName
+                guard let entry = byID[identity] else {
+                    throw StagingSafetyError.invalidDraft
+                }
+                let w = try money(entry.wechat, name: "微信收款")
+                let a = try money(entry.alipay, name: "支付宝收款")
+                let c = try money(entry.cash, name: "现金收款")
+                guard w + a + c > 0 else {
+                    throw StagingSafetyError.needsReview(
+                        "不允许删除原有收款人或将其所有渠道金额清零")
+                }
+                splits[index].wechatIncome = Double(w) / 100
+                splits[index].alipayIncome = Double(a) / 100
+                splits[index].cashIncome = Double(c) / 100
+            }
+        } else {
+            try apply("wechat_income", desired: wechat,
+                      get: { $0.wechatIncome },
+                      set: { $0.wechatIncome = $1 })
+            try apply("alipay_income", desired: alipay,
+                      get: { $0.alipayIncome },
+                      set: { $0.alipayIncome = $1 })
+            try apply("cash_income", desired: cash,
+                      get: { $0.cashIncome },
+                      set: { $0.cashIncome = $1 })
+        }
         for index in splits.indices {
             let item = splits[index]
             guard item.partnerID >= 0, !item.partnerName.isEmpty,
@@ -216,7 +347,15 @@ enum TestBusinessEditPolicy {
             splits[index].amount = Double(a + b + c) / 100
         }
         let total = splits.reduce(0.0) { $0 + $1.amount }
-        guard abs(total - Double(wechat + alipay + cash) / 100) < 0.005 else {
+        func sumCents(_ field: KeyPath<TestBusinessReceiptSplit, Double>) -> Int64 {
+            splits.reduce(Int64(0)) {
+                $0 + (cents($1[keyPath: field]) ?? 0)
+            }
+        }
+        guard sumCents(\.wechatIncome) == wechat,
+              sumCents(\.alipayIncome) == alipay,
+              sumCents(\.cashIncome) == cash,
+              abs(total - Double(wechat + alipay + cash) / 100) < 0.005 else {
             throw StagingSafetyError.needsReview("更新后的收款归属与营业额不一致")
         }
         let changed = [
@@ -224,7 +363,8 @@ enum TestBusinessEditPolicy {
             "cash_income": cash, "expense": expense,
             "opening_stock_value": opening, "stock_left_value": closing
         ]
-        guard changed.contains(where: { entry in
+        let splitsChanged = beforeSplits != splits
+        guard splitsChanged || changed.contains(where: { entry in
             cents(original.payload[entry.key]?.decimal ?? -1) != entry.value
         }) else {
             throw StagingSafetyError.needsReview("金额没有变化，无需提交")
