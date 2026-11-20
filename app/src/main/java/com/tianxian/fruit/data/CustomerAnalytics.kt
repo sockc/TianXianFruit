@@ -373,21 +373,15 @@ internal object CustomerAnalyticsEngine {
                 it.businessDate ==
                     date
             }
-        val stores =
-            current
-                .map {
-                    it.storeName
-                }
-                .distinct()
+        // Local IDs identify physical stalls. Store names are editable and
+        // two different stalls can legitimately share the same display name.
+        val stores = current.map { it.storeId }.distinct()
 
-        return stores.mapNotNull {
-            storeName ->
+        return stores.mapNotNull { storeId ->
+            val currentStoreRows = current.filter { it.storeId == storeId }
+            val storeName = currentStoreRows.firstOrNull()?.storeName.orEmpty()
             val currentCustomers =
-                current
-                    .filter {
-                        it.storeName ==
-                            storeName
-                    }
+                currentStoreRows
                     .map {
                         it.customerKey
                     }
@@ -398,10 +392,8 @@ internal object CustomerAnalyticsEngine {
                 positive
                     .asSequence()
                     .filter {
-                        it.storeName ==
-                            storeName &&
-                            it.businessDate <
-                                date
+                        it.storeId == storeId &&
+                            it.businessDate < date
                     }
                     .groupBy {
                         it.businessDate
