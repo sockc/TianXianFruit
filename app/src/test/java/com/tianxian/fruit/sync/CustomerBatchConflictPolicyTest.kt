@@ -13,6 +13,35 @@ class CustomerBatchConflictPolicyTest {
             kind, key, platform, fileHash, status, revision
         )
 
+    @Test fun identicalFileAcrossDevicesCanBeAcknowledgedDespiteParserCountChanges() {
+        assertTrue(CustomerBatchConflictPolicy.sameImportedFile(
+            "ALIPAY", hash, "ALIPAY", hash
+        ))
+        assertTrue(CustomerBatchConflictPolicy.sameImportedFile(
+            "WECHAT", hash, "WECHAT", hash
+        ))
+        // Counts, imported timestamps and display filenames are not part
+        // of immutable file identity and should never be overwritten.
+    }
+
+    @Test fun missingOrDifferentLocalFileIdentityMustNeverBeAcknowledged() {
+        assertFalse(CustomerBatchConflictPolicy.sameImportedFile(
+            "ALIPAY", hash, null, null
+        ))
+        assertFalse(CustomerBatchConflictPolicy.sameImportedFile(
+            "ALIPAY", hash, "WECHAT", hash
+        ))
+        assertFalse(CustomerBatchConflictPolicy.sameImportedFile(
+            "ALIPAY", hash, "ALIPAY", "b".repeat(64)
+        ))
+        assertFalse(CustomerBatchConflictPolicy.sameImportedFile(
+            "ALIPAY", "INVALID", "ALIPAY", "INVALID"
+        ))
+        assertFalse(CustomerBatchConflictPolicy.sameImportedFile(
+            "ALIPAY", "A".repeat(64), "ALIPAY", "A".repeat(64)
+        ))
+    }
+
     @Test fun acceptsOnlySameFileWithExistingServerRevision() {
         assertTrue(compatible())
         assertTrue(compatible(platform = "WECHAT", key = "WECHAT|$hash"))
