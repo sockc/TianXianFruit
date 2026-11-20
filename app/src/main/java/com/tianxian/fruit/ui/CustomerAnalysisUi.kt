@@ -254,8 +254,14 @@ internal fun CustomerAnalysisContent(
             val dailyHistory = db.getDailyRecordsBetween(null, null)
             val collectorByReceipt = db.getCustomerCollectorByReceiptId()
             val partnerIds = db.getCustomerCollectorPartnerIds()
+            val rawPayments = db.getCustomerPayments()
+            // Configured collectors take priority over store inference from
+            // timestamps. An unresolved or conflicting collector must remain
+            // unassigned rather than inheriting a time-only guess.
+            val protectedCollectorIds = collectorByReceipt
+                .filterValues { it.isNotBlank() }.keys
             val receipts = CustomerTrafficDeepDive.attributeBusinessDays(
-                db.getCustomerPayments(), sessions
+                rawPayments, sessions, protectedCollectorIds
             )
             val attribution = CustomerCollectorStoreAttribution.resolve(
                 receipts, dailyHistory, collectorByReceipt, partnerIds, sessions
