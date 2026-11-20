@@ -399,7 +399,9 @@ internal object CustomerCloudBridge {
                     "BATCH" -> {
                         val platform = body.str("platform")
                         val hash = body.str("file_hash")
-                        if ("$platform|$hash" != key) continue
+                        if (!CustomerCloudEventKeyPolicy.batch(key, platform, hash)) {
+                            throw IllegalStateException("云端账单批次键与文件身份不一致：$key")
+                        }
                         val inserted = database.insertWithOnConflict("payment_import_batch", null, ContentValues().apply {
                             put("platform", platform); put("file_hash", hash)
                             put("file_name", body.str("file_name"))
@@ -420,7 +422,9 @@ internal object CustomerCloudBridge {
                     "RECEIPT" -> {
                         val platform = body.str("platform")
                         val receiptKey = body.str("dedupe_key")
-                        if ("$platform|$receiptKey" != key || receiptKey.isBlank()) continue
+                        if (!CustomerCloudEventKeyPolicy.receipt(key, platform, receiptKey)) {
+                            throw IllegalStateException("云端收款交易键与内容不一致：$key")
+                        }
                         val stableStore = body.str("store_sync_id")
                         val storeId = if (stableStore.isNotBlank()) database.rawQuery(
                             "SELECT id FROM store WHERE sync_id=? LIMIT 1", arrayOf(stableStore)
@@ -519,9 +523,11 @@ internal object CustomerCloudBridge {
                         val platform = body.str("platform")
                         val receiptKey = body.str("dedupe_key")
                         val fileHash = body.str("file_hash")
-                        if ("$platform|$receiptKey|$fileHash" != key ||
-                            platform !in setOf("WECHAT", "ALIPAY") ||
-                            fileHash.length != 64) continue
+                        if (!CustomerCloudEventKeyPolicy.sourceLink(
+                                key, platform, receiptKey, fileHash
+                            )) {
+                            throw IllegalStateException("云端账单来源键与内容不一致：$key")
+                        }
                         database.insertWithOnConflict(
                             "customer_payment_source_link", null, ContentValues().apply {
                                 put("platform", platform)
