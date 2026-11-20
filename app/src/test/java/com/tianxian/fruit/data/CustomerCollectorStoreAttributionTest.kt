@@ -139,6 +139,48 @@ class CustomerCollectorStoreAttributionTest {
         assertTrue(result.shared.isEmpty())
     }
 
+    @Test fun paymentOutsideAllSavedSellingWindowsIsNotAutomaticallyAttributed() {
+        val beforeOpening = payment(1).copy(tradeTime = "2026-10-16 14:30:00")
+        val afterClosing = payment(2).copy(tradeTime = "2026-10-16 23:30:00")
+        val onlyStore = listOf(store(10, "九龙公园"))
+        val sessions = listOf(CustomerTrafficSession("2026-10-16", 10L,
+            "九龙公园", "16:00", "22:00"))
+        val result = CustomerCollectorStoreAttribution.resolve(
+            listOf(beforeOpening, afterClosing), onlyStore,
+            receiptCollectors, people, sessions
+        )
+        assertTrue(result.rows.all { it.storeId == 0L })
+        assertTrue(result.collectorMatchedIds.isEmpty())
+        assertTrue(result.shared.isEmpty())
+    }
+
+    @Test fun multipleStoresOutsideAllWindowsDoNotClaimPayments() {
+        val early = payment(1).copy(tradeTime = "2026-10-16 09:30:00")
+        val result = CustomerCollectorStoreAttribution.resolve(
+            listOf(early),
+            listOf(store(10, "九龙公园"), store(20, "凰岗村")),
+            receiptCollectors, people
+        )
+        assertEquals(0L, result.rows.single().storeId)
+        assertTrue(result.shared.isEmpty())
+        assertTrue(result.collectorMatchedIds.isEmpty())
+    }
+
+    @Test fun sameCollectorOverlappingShiftsKeepSharedPaymentsOnce() {
+        val rows = listOf(payment(1), payment(2))
+        val result = CustomerCollectorStoreAttribution.resolve(
+            rows, listOf(store(10, "九龙公园"), store(20, "凰岗村")),
+            receiptCollectors, people,
+            listOf(CustomerTrafficSession("2026-10-16", 10L, "九龙公园",
+                "16:00", "22:00"), CustomerTrafficSession("2026-10-16",
+                20L, "凰岗村", "17:00", "23:00"))
+        )
+        assertEquals(1, result.shared.size)
+        assertEquals(2, result.shared.single().payments)
+        assertEquals(30.0, result.shared.single().amount, 0.001)
+        assertTrue(result.rows.all { it.storeId == 0L })
+    }
+
     @Test fun nextMorningPaymentUsesPreviousDayWhenTheStoreStayedOpen() {
         val late = payment(1, date = "2026-10-17")
             .copy(tradeTime = "2026-10-17 00:25:00")
