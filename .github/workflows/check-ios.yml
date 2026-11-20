@@ -1,4 +1,4 @@
-name: Check iOS V0.3.4 multi-collector business entry and operating hours
+name: Check iOS V0.4.0 Android-style purchase workspace
 
 on:
   pull_request:
