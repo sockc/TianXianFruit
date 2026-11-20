@@ -26,8 +26,8 @@ private struct LoginView: View {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("天鲜账本").font(.largeTitle.bold())
-                        Text("iOS V0.2.7 · 草稿预演").foregroundColor(.secondary)
-                        Label("无营业、采购或结算写入功能", systemImage: "lock.shield")
+                        Text("iOS V0.4.0 · 采购主页面").foregroundColor(.secondary)
+                        Label("采购本机录入已开放，云端财务修改暂未开放", systemImage: "lock.shield")
                             .font(.footnote).foregroundColor(.green)
                     }.padding(.vertical, 10)
                 }
@@ -81,7 +81,7 @@ private struct DashboardView: View {
                         .tabItem { Label("首页", systemImage: "house") }
                     BusinessPage()
                         .tabItem { Label("营业", systemImage: "chart.bar") }
-                    PurchasesPage()
+                    PurchaseWorkspaceView()
                         .tabItem { Label("采购", systemImage: "cart") }
                     InventoryPage()
                         .tabItem { Label("库存", systemImage: "shippingbox") }
@@ -108,7 +108,7 @@ private struct DashboardView: View {
     private var header: some View {
         VStack(spacing: 6) {
             HStack {
-                Label("只读", systemImage: "lock.shield.fill")
+                Label("云端只读", systemImage: "lock.shield.fill")
                     .font(.caption.bold()).foregroundColor(.green)
                 Spacer()
                 if model.books.count > 1 {
@@ -275,7 +275,7 @@ private struct BusinessPage: View {
     }
 }
 
-private struct PurchasesPage: View {
+struct PurchasesHistoryView: View {
     @EnvironmentObject private var model: LedgerViewModel
     @State private var period = "近30天"
     @State private var buyer = ""
@@ -483,9 +483,9 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.3.4 · 营业多人录入及营业时间")
+                Text("版本：iOS V0.4.0 · 采购主页面")
                     .font(.caption).foregroundColor(.secondary)
-                Text("正式账本始终只读。iOS_TEST_ 测试账本新增多人收款逐人录入和营业时间，结算与凌晨收款保持锁定。")
+                Text("采购页面按安卓的待采购、已完成采购和采购人分组展示；正式账号支持本机采购录入。正式云端修改和资金结算暂未开放。")
                     .font(.caption2).foregroundColor(.secondary)
                 Button(role: .destructive) {
                     model.signOut()
@@ -534,7 +534,7 @@ private struct SearchField: View {
     }
 }
 
-private struct SyncFooter: View {
+struct SyncFooter: View {
     @EnvironmentObject private var model: LedgerViewModel
     var body: some View {
         HStack {
