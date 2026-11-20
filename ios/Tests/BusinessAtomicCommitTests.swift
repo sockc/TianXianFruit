@@ -11,7 +11,8 @@ final class BusinessAtomicCommitTests: XCTestCase {
                                            wechat: "35.25", alipay: "20", cash: "5")
             ],
             startTime: "16:00", endTime: "00:10",
-            note: "本机备注不上传", updatedAt: Date())
+            note: "本机备注不上传", expense: "1.00",
+            openingStock: "10.00", closingStock: "15.00", updatedAt: Date())
     }
 
     private func cloud(_ draft: BusinessLocalDraft) -> [SyncEvent] {
@@ -45,6 +46,7 @@ final class BusinessAtomicCommitTests: XCTestCase {
         let proposal = try BusinessCommitPolicy.prepare(
             row, book: book, account: user, records: cloud(row))
         XCTAssertEqual(proposal.totalRevenue, "60.25")
+        XCTAssertEqual(proposal.profit, "64.25")
         XCTAssertEqual(proposal.collectors.count, 1)
         XCTAssertEqual(proposal.actualEndTime, "00:10")
         XCTAssertEqual(proposal.payloadHash.count, 64)
@@ -80,7 +82,10 @@ final class BusinessAtomicCommitTests: XCTestCase {
             collectors: replaced.collectors, actualStartTime: replaced.actualStartTime,
             actualEndTime: replaced.actualEndTime, wechat: replaced.wechat,
             alipay: replaced.alipay, cash: replaced.cash,
-            totalRevenue: replaced.totalRevenue, payloadHash: "different")
+            totalRevenue: replaced.totalRevenue, expense: replaced.expense,
+            openingStockValue: replaced.openingStockValue,
+            stockLeftValue: replaced.stockLeftValue,
+            profit: replaced.profit, payloadHash: "different")
         XCTAssertThrowsError(try store.reserve(replaced))
         var unknown = original
         unknown.phase = .unknown
