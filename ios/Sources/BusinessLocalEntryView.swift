@@ -11,6 +11,9 @@ struct BusinessLocalDraft: Codable, Identifiable {
     var startTime: String
     var endTime: String
     var note: String
+    var expense: String? = nil
+    var openingStock: String? = nil
+    var closingStock: String? = nil
     var updatedAt: Date
 }
 
@@ -50,6 +53,9 @@ struct BusinessLocalEntryView: View {
     @State private var startTime = ""
     @State private var endTime = ""
     @State private var note = ""
+    @State private var expense = ""
+    @State private var openingStock = ""
+    @State private var closingStock = ""
     @State private var errorText: String?
     @State private var saved = false
     @State private var attempt: BusinessCommitAttempt?
@@ -82,11 +88,17 @@ struct BusinessLocalEntryView: View {
             startTime = draft.startTime
             endTime = draft.endTime
             note = draft.note
+            expense = draft.expense ?? ""
+            openingStock = draft.openingStock ?? ""
+            closingStock = draft.closingStock ?? ""
         } else {
             lines = [BusinessCollectorDraftLine()]
             startTime = ""
             endTime = ""
             note = ""
+            expense = ""
+            openingStock = ""
+            closingStock = ""
         }
         saved = false
         errorText = nil
@@ -123,13 +135,22 @@ struct BusinessLocalEntryView: View {
             ]
             try BusinessCollectorDraftPolicy.validate(lines, fields: fields)
             try BusinessCollectorDraftPolicy.validateTimes(fields)
+            // These three amounts must be explicitly supplied: silently
+            // assuming zero could misstate Android's saved daily profit.
+            guard !expense.isEmpty, !openingStock.isEmpty, !closingStock.isEmpty
+            else { throw BusinessAtomicError.invalidDraft }
+            _ = try BusinessCollectorDraftPolicy.cents(expense, label: "支出")
+            _ = try BusinessCollectorDraftPolicy.cents(openingStock, label: "开摊库存估值")
+            _ = try BusinessCollectorDraftPolicy.cents(closingStock, label: "收摊库存估值")
             let previous = BusinessLocalDraftStore.load(account: account, bookID: bookID)
                 .first(where: { $0.date == dateKey && $0.storeID == storeID })
             let draft = BusinessLocalDraft(
                 id: previous?.id ?? UUID().uuidString, date: dateKey,
                 storeID: store.id, storeName: store.name, collectors: lines,
                 startTime: fields["actual_start_time"] ?? "",
-                endTime: fields["actual_end_time"] ?? "", note: note, updatedAt: Date())
+                endTime: fields["actual_end_time"] ?? "", note: note,
+                expense: expense, openingStock: openingStock,
+                closingStock: closingStock, updatedAt: Date())
             try BusinessLocalDraftStore.save(draft, account: account, bookID: bookID)
             saved = true
             errorText = nil
@@ -224,6 +245,13 @@ struct BusinessLocalEntryView: View {
                                     Double(totals.cash)/100))
                             .font(.caption.bold())
                     }
+                }
+                Section(header: Text("营业成本与利润依据（必填）")) {
+                    amount("支出", value: $expense)
+                    amount("开摊库存估值", value: $openingStock)
+                    amount("收摊库存估值", value: $closingStock)
+                    Text("利润按安卓原规则：收款总额＋收摊库存－开摊库存－支出。必须确认实际数据；不能为了上传直接全部填零。")
+                        .font(.caption).foregroundColor(.secondary)
                 }
                 Section(header: Text("实际营业时间")) {
                     TextField("开摊 HH:mm，例如 16:00", text: $startTime)
