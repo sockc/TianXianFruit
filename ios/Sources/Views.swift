@@ -480,9 +480,9 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.3.0 · TrollStore 测试营业更正版")
+                Text("版本：iOS V0.3.1 · TrollStore 测试采购备注更正版")
                     .font(.caption).foregroundColor(.secondary)
-                Text("正式账本始终只读。仅 iOS_TEST_ 测试账本允许营业新增、受控金额更正和采购新增；删除、结算及利润分配仍锁定。")
+                Text("正式账本始终只读。仅 iOS_TEST_ 测试账本允许营业新增、更正、采购新增及备注更正；采购金额、删除、结算仍锁定。")
                     .font(.caption2).foregroundColor(.secondary)
                 Button(role: .destructive) {
                     model.signOut()
