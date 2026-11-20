@@ -436,10 +436,23 @@ internal object CustomerCloudBridge {
                         CustomerReceiptReferencePolicy.unresolved(
                             stableStore, storeId, fileHash, batchId
                         )?.let { reason ->
-                            throw IllegalStateException(
-                                "云端账单关联的${reason}（交易 ${platform}|${receiptKey}）；" +
-                                    "已保留本地数据与同步游标"
-                            )
+                            // On a second device an IDENTICAL receipt may
+                            // already exist from another overlapping export.
+                            // Such a duplicate is checked below before ACK,
+                            // without requiring its remote source batch locally.
+                            // A genuinely new receipt cannot be acknowledged
+                            // while its original store/file links are absent.
+                            val alreadyLocal = database.rawQuery(
+                                "SELECT 1 FROM customer_payment_transaction " +
+                                    "WHERE platform=? AND dedupe_key=? LIMIT 1",
+                                arrayOf(platform, receiptKey)
+                            ).use { it.moveToFirst() }
+                            if (!alreadyLocal) {
+                                throw IllegalStateException(
+                                    "云端账单关联的${reason}（交易 ${platform}|${receiptKey}）；" +
+                                        "已保留本地数据与同步游标"
+                                )
+                            }
                         }
                         val inserted = database.insertWithOnConflict(
                             "customer_payment_transaction", null, ContentValues().apply {
