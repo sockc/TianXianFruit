@@ -214,6 +214,22 @@ class CustomerCollectorStoreAttributionTest {
         assertTrue(result.rows.all { it.storeId == 0L })
     }
 
+    @Test fun laterValidWindowForSameStoreSurvivesLegacyDuplicateSessions() {
+        val day = "2026-10-16"
+        val receipt = payment(1).copy(tradeTime = "$day 19:15:00")
+        val result = CustomerCollectorStoreAttribution.resolve(
+            listOf(receipt), listOf(store(10L, "九龙公园")),
+            receiptCollectors, people,
+            listOf(
+                CustomerTrafficSession(day, 10L, "九龙公园", "16:00", "18:00"),
+                CustomerTrafficSession(day, 10L, "九龙公园", "18:00", "23:00")
+            )
+        )
+        assertEquals(10L, result.rows.single().storeId)
+        assertTrue(result.shared.isEmpty())
+        assertTrue(1L in result.collectorMatchedIds)
+    }
+
     @Test fun nextMorningPaymentUsesPreviousDayWhenTheStoreStayedOpen() {
         val late = payment(1, date = "2026-10-17")
             .copy(tradeTime = "2026-10-17 00:25:00")
