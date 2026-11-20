@@ -140,6 +140,34 @@ struct BusinessLocalEntryView: View {
         }
     }
 
+    private func commitDraft() async {
+        guard !submitting, attempt == nil, editingAllowed,
+              let draft = BusinessLocalDraftStore.load(account: account, bookID: bookID)
+                .first(where: { $0.date == dateKey && $0.storeID == storeID }) else { return }
+        submitting = true
+        defer { submitting = false; loadAttempt() }
+        do {
+            let result = try await BusinessFormalSubmit.send(model, draft: draft)
+            attempt = result
+            commitMessage = result.label
+        } catch {
+            commitMessage = error.localizedDescription
+        }
+    }
+
+    private func checkOriginalOperation() async {
+        guard !submitting, let saved = attempt else { return }
+        submitting = true
+        defer { submitting = false; loadAttempt() }
+        do {
+            let result = try await BusinessFormalSubmit.recover(model, attempt: saved)
+            attempt = result
+            commitMessage = result.label
+        } catch {
+            commitMessage = error.localizedDescription
+        }
+    }
+
     var body: some View {
         NavigationView {
             Form {
@@ -210,7 +238,7 @@ struct BusinessLocalEntryView: View {
                     } label: {
                         Label("保存本机营业草稿", systemImage: "square.and.arrow.down")
                     }
-                    .disabled(!editingAllowed || storeID.isEmpty)
+                    .disabled(!editingAllowed || storeID.isEmpty || attempt != nil || submitting)
                     if saved {
                         Label("本机草稿已保存，未提交云端", systemImage: "checkmark.circle")
                             .foregroundColor(.green)
@@ -218,7 +246,31 @@ struct BusinessLocalEntryView: View {
                     if let errorText {
                         Text(errorText).font(.caption).foregroundColor(.orange)
                     }
-                    Text("正式营业上传、更正、删除、凌晨收款和资金结算仍锁定；本机草稿不会被 Android 同步，也不会计入营业汇总。")
+                    if let attempt {
+                        Text(attempt.label).font(.caption).foregroundColor(.orange)
+                        Button {
+                            Task { await checkOriginalOperation() }
+                        } label: {
+                            Label("查询原操作（不再次提交）", systemImage: "shield.lefthalf.filled")
+                        }
+                        .disabled(submitting)
+                    } else {
+                        Button {
+                            Task { await commitDraft() }
+                        } label: {
+                            Label("提交正式营业", systemImage: "arrow.up.circle")
+                        }
+                        .disabled(!editingAllowed || !saved || submitting ||
+                                  model.businessCommitCapabilities?.allowsWrite != true)
+                    }
+                    if submitting { ProgressView("正在核对营业事务…") }
+                    if let commitMessage {
+                        Text(commitMessage).font(.caption).foregroundColor(.orange)
+                    }
+                    if let warning = model.businessCommitError {
+                        Text(warning).font(.caption).foregroundColor(.secondary)
+                    }
+                    Text("必须由服务器启用专用原子营业事务才可提交；未开放时只保存本机草稿。发生断网或超时，只能查询原操作，不允许再次发送。")
                         .font(.caption2).foregroundColor(.secondary)
                 }
             }
@@ -230,6 +282,7 @@ struct BusinessLocalEntryView: View {
                 }
             }
             .onAppear {
+                Task { await model.refreshBusinessCommitCapabilities() }
                 if storeID.isEmpty, model.snapshot.testStores.count == 1 {
                     storeID = model.snapshot.testStores[0].id
                 }
