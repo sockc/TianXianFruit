@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import com.tianxian.fruit.data.AppDatabase
+import com.tianxian.fruit.data.PaymentImportBatchRecord
 import com.tianxian.fruit.data.OvernightReceiptSnapshot
 import com.tianxian.fruit.data.OvernightReceiptDeletionPolicy
 import com.tianxian.fruit.data.NaturalDayReceiptDraft
@@ -148,7 +149,8 @@ internal object CustomerCloudBridge {
         includeSettings: Boolean = false,
         includeSourceLinks: Boolean = false,
         includeOvernight: Boolean = false,
-        includeCashDeduction: Boolean = false
+        includeCashDeduction: Boolean = false,
+        importBatchSnapshot: List<PaymentImportBatchRecord>? = null
     ): List<SyncItem> {
         val ack = ackMap(db.readableDatabase)
         val results = mutableListOf<SyncItem>()
@@ -162,7 +164,11 @@ internal object CustomerCloudBridge {
         }
 
         // Keep source batches ahead of their receipts for lineage reconstruction.
-        val batches = db.getPaymentImportBatches(1_000_000)
+        // On a long initial import, rebuilding file coverage for every 180
+        // receipts turns batch processing into repeated whole-history queries.
+        // Reuse one immutable snapshot during upload pages; the final pending
+        // check still refreshes it to catch edits/imports made concurrently.
+        val batches = importBatchSnapshot ?: db.getPaymentImportBatches(1_000_000)
         for (b in batches) {
             if (b.platform !in listOf("WECHAT", "ALIPAY") || b.fileHash.length != 64) continue
             val key = "${b.platform}|${b.fileHash}"
@@ -802,10 +808,11 @@ internal object CustomerCloudBridge {
         var uploaded = 0
         var existingBatchMetadata = 0
         if (canWrite) {
+            val importBatchSnapshot = db.getPaymentImportBatches(1_000_000)
             for (page in 0 until 400) {
                 val batch = pending(context, db, bookId, MAX_BATCH, supportsCollector,
                     supportsAnalysis, supportsSettings, supportsSourceLinks,
-                    supportsOvernight,supportsCashDeduction)
+                    supportsOvernight, supportsCashDeduction, importBatchSnapshot)
                 if (batch.isEmpty()) break
                 val body = JSONObject().put("items", JSONArray().apply {
                     batch.forEach { put(it.json()) }
