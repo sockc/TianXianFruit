@@ -64,7 +64,7 @@ final class BusinessUploadTests: XCTestCase {
     func testMultiCollectorSplitRevenueAndProfitAreExact() throws {
         let job = try prepared()
         XCTAssertEqual(job.payload["revenue"]?.decimal, 200)
-        XCTAssertEqual(job.payload["profit"]?.decimal, 130
+        XCTAssertEqual(job.payload["profit"]?.decimal, 130)
         // Android business source saves purchase_cost=0; purchase cost
         // belongs to the separate purchase table and must not be deducted.
         XCTAssertEqual(job.payload["purchase_cost"]?.decimal, 0)
@@ -136,9 +136,17 @@ final class BusinessUploadTests: XCTestCase {
         XCTAssertThrowsError(try store.saveBusinessJob(retry))
         job.state = .needsReview
         try store.saveBusinessJob(job)
-        retry = job
-        retry.payload["cash_income"] = .number(1234)
-        XCTAssertThrowsError(try store.saveBusinessJob(retry))
+        var altered = job.payload
+        altered["cash_income"] = .number(1234)
+        let malicious = BusinessUploadJob(
+            id: job.id, sourceAccount: job.sourceAccount,
+            bookID: job.bookID, stageHost: job.stageHost,
+            stageInstanceID: job.stageInstanceID,
+            stageUsername: job.stageUsername, deviceID: job.deviceID,
+            syncID: job.syncID, payload: altered,
+            createdAt: job.createdAt, state: .needsReview,
+            note: job.note)
+        XCTAssertThrowsError(try store.saveBusinessJob(malicious))
         let restored = try TestDraftStore(url: path).businessJob(
             id: job.id, account: job.sourceAccount, book: job.bookID)
         XCTAssertEqual(restored?.state, .needsReview)
