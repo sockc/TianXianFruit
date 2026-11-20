@@ -490,7 +490,7 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.4.0 · 采购主页面")
+                Text("版本：iOS V0.4.0 · 安卓风格采购主页面")
                     .font(.caption).foregroundColor(.secondary)
                 Text("采购页面按安卓的待采购、已完成采购和采购人分组展示；正式账号支持本机采购录入。正式云端修改和资金结算暂未开放。")
                     .font(.caption2).foregroundColor(.secondary)
