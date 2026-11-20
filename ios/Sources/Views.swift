@@ -272,7 +272,7 @@ private struct BusinessPage: View {
                     }
                     .pickerStyle(MenuPickerStyle())
                     Spacer()
-                    Text("共 \\(rows.count) 条位置记录")
+                    Text("共 \(rows.count) 条位置记录")
                         .font(.caption).foregroundColor(.secondary)
                 }
                 SearchField(placeholder: "搜索日期或位置", text: $searchText)
@@ -302,18 +302,18 @@ private struct BusinessPage: View {
                         HStack {
                             Text(day.date).font(.subheadline.bold())
                             Spacer()
-                            Text("合计 \\(sum(day.rows, \.revenue).formatted(.currency(code: "CNY")))")
+                            Text("合计 \(sum(day.rows, \.revenue).formatted(.currency(code: "CNY")))")
                                 .font(.caption.bold())
                         }
                         if day.rows.count > 1 {
-                            Text("\\(day.rows.count) 个位置 · 已存利润 \\(sum(day.rows, \.profit).formatted(.currency(code: "CNY")))")
+                            Text("\(day.rows.count) 个位置 · 已存利润 \(sum(day.rows, \.profit).formatted(.currency(code: "CNY")))")
                                 .font(.caption2).foregroundColor(.secondary)
                         }
                         ForEach(day.rows) { row in
                             HStack {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(row.storeName).font(.subheadline)
-                                    Text("已存利润：\\(row.profit.formatted(.currency(code: "CNY")))")
+                                    Text("已存利润：\(row.profit.formatted(.currency(code: "CNY")))")
                                         .font(.caption).foregroundColor(.secondary)
                                 }
                                 Spacer()
