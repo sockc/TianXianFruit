@@ -52,6 +52,9 @@ struct BusinessLocalEntryView: View {
     @State private var note = ""
     @State private var errorText: String?
     @State private var saved = false
+    @State private var attempt: BusinessCommitAttempt?
+    @State private var commitMessage: String?
+    @State private var submitting = false
 
     init(date: Date) {
         _date = State(initialValue: date)
@@ -87,9 +90,23 @@ struct BusinessLocalEntryView: View {
         }
         saved = false
         errorText = nil
+        loadAttempt()
+    }
+
+    private func loadAttempt() {
+        let draft = BusinessLocalDraftStore.load(account: account, bookID: bookID)
+            .first { $0.date == dateKey && $0.storeID == storeID }
+        guard let id = draft?.id else { attempt = nil; return }
+        do {
+            attempt = try BusinessCommitOutbox().load(
+                id: id, account: account, bookID: bookID)
+        } catch {
+            commitMessage = "上传保护记录不可读取，禁止写入：" + error.localizedDescription
+        }
     }
 
     private func save() {
+        guard attempt == nil, commitMessage?.hasPrefix("上传保护记录不可读取") != true else { return }
         guard editingAllowed,
               let store = model.snapshot.testStores.first(where: { $0.id == storeID }) else {
             errorText = "请选择有效营业位置，并确认账本编辑权限"
@@ -116,6 +133,7 @@ struct BusinessLocalEntryView: View {
             try BusinessLocalDraftStore.save(draft, account: account, bookID: bookID)
             saved = true
             errorText = nil
+            loadAttempt()
         } catch {
             errorText = error.localizedDescription
             saved = false
