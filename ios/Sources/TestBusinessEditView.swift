@@ -246,10 +246,22 @@ private struct TestBusinessEditForm: View {
         model.selectedBook?.name.hasPrefix(TestWritePolicy.prefix) == true
     }
 
+    private var hasChanges: Bool {
+        let before = TestBusinessEditValues(original)
+        let after = amounts
+        return before.wechat != after.wechat ||
+               before.alipay != after.alipay ||
+               before.cash != after.cash ||
+               before.expense != after.expense ||
+               before.opening != after.opening ||
+               before.closing != after.closing ||
+               (multiCollector &&
+                splitRows != TestBusinessSplitInput.from(original))
+    }
+
     private var canSubmit: Bool {
         correctBook && coordinator.connected && !coordinator.busy &&
-        !previouslySettled &&
-        (amounts != TestBusinessEditValues(original))
+        !previouslySettled && hasChanges
     }
 
     var body: some View {
