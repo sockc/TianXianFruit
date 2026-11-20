@@ -199,57 +199,121 @@ private struct HomePage: View {
 
 private struct BusinessPage: View {
     @EnvironmentObject private var model: LedgerViewModel
-    @State private var period = "近30天"
+    @State private var period = "单日"
+    @State private var selectedDate = Date()
     @State private var position = ""
     @State private var searchText = ""
     @State private var visibleDays = 14
 
+    private var selectedKey: String { BusinessDates.key(selectedDate) }
+    private var startingKey: String {
+        switch period {
+        case "近7天": return BusinessDates.daysAgo(6, from: selectedDate)
+        case "近30天": return BusinessDates.daysAgo(29, from: selectedDate)
+        case "全部": return "0000-00-00"
+        default: return selectedKey
+        }
+    }
+
     private var rows: [StoreDailyRow] {
         model.snapshot.business.filter { row in
-            (period == "全部" || row.date >= BusinessDates.daysAgo(period == "近7天" ? 6 : 29)) &&
+            (period == "全部" || (row.date >= startingKey && row.date <= selectedKey)) &&
             (position.isEmpty || row.storeName == position) &&
             (searchText.isEmpty || row.storeName.localizedCaseInsensitiveContains(searchText) ||
              row.date.contains(searchText))
         }
     }
 
+    private var grouped: [DayRows<StoreDailyRow>] {
+        DayRows<StoreDailyRow>.grouping(rows, date: { $0.date })
+    }
+
+    private func moveDay(_ offset: Int) {
+        selectedDate = BusinessDates.calendar.date(byAdding: .day, value: offset, to: selectedDate)
+            ?? selectedDate
+        visibleDays = 14
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 8) {
-                    Picker("日期", selection: $period) {
-                        Text("近7天").tag("近7天")
-                        Text("近30天").tag("近30天")
-                        Text("全部").tag("全部")
-                    }.pickerStyle(SegmentedPickerStyle())
+                HStack {
+                    Button { moveDay(-1) } label: {
+                        Image(systemName: "chevron.left")
+                            .frame(width: 38, height: 36)
+                    }
+                    .accessibilityLabel("上一日")
+                    Spacer(minLength: 0)
+                    DatePicker("营业日期", selection: $selectedDate, in: ...Date(),
+                               displayedComponents: .date)
+                        .datePickerStyle(CompactDatePickerStyle())
+                        .labelsHidden()
+                        .onChange(of: selectedDate) { _ in visibleDays = 14 }
+                    Spacer(minLength: 0)
+                    Button { moveDay(1) } label: {
+                        Image(systemName: "chevron.right")
+                            .frame(width: 38, height: 36)
+                    }
+                    .disabled(selectedKey >= BusinessDates.key(Date()))
+                    .accessibilityLabel("下一日")
+                }
+                Picker("日期范围", selection: $period) {
+                    Text("单日").tag("单日")
+                    Text("近7天").tag("近7天")
+                    Text("近30天").tag("近30天")
+                    Text("全部").tag("全部")
+                }
+                .pickerStyle(SegmentedPickerStyle())
+                .onChange(of: period) { _ in visibleDays = 14 }
+                HStack {
                     Picker("位置", selection: $position) {
                         Text("全部位置").tag("")
                         ForEach(model.snapshot.locations, id: \.self) { Text($0).tag($0) }
-                    }.pickerStyle(MenuPickerStyle())
+                    }
+                    .pickerStyle(MenuPickerStyle())
+                    Spacer()
+                    Text("共 \\(rows.count) 条位置记录")
+                        .font(.caption).foregroundColor(.secondary)
                 }
                 SearchField(placeholder: "搜索日期或位置", text: $searchText)
-                HStack {
-                    Text("营业记录 · \(rows.count) 条").font(.headline)
-                    Spacer()
-                    Text(sum(rows, \.revenue).formatted(.currency(code: "CNY")))
-                        .font(.subheadline.bold())
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("营业额").foregroundColor(.secondary)
+                        Spacer()
+                        Text(sum(rows, \.revenue).formatted(.currency(code: "CNY")))
+                            .font(.headline.bold())
+                    }
+                    HStack {
+                        Text("已存利润").foregroundColor(.secondary)
+                        Spacer()
+                        Text(sum(rows, \.profit).formatted(.currency(code: "CNY")))
+                            .font(.subheadline.bold())
+                    }
+                    .font(.subheadline)
                 }
+                .padding(12)
+                .background(Color(UIColor.secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: 12))
                 if rows.isEmpty {
-                    EmptyStateView(title: "此范围没有营业记录", icon: "chart.bar")
+                    EmptyStateView(title: "此范围没有已同步营业记录", icon: "chart.bar")
                 }
-                ForEach(Array(DayRows<StoreDailyRow>.grouping(rows, date: { $0.date }).prefix(visibleDays)), id: \.date) { day in
+                ForEach(Array(grouped.prefix(visibleDays)), id: \.date) { day in
                     VStack(alignment: .leading, spacing: 9) {
                         HStack {
                             Text(day.date).font(.subheadline.bold())
                             Spacer()
-                            Text("合计 \(sum(day.rows, \.revenue).formatted(.currency(code: "CNY")))")
+                            Text("合计 \\(sum(day.rows, \.revenue).formatted(.currency(code: "CNY")))")
                                 .font(.caption.bold())
+                        }
+                        if day.rows.count > 1 {
+                            Text("\\(day.rows.count) 个位置 · 已存利润 \\(sum(day.rows, \.profit).formatted(.currency(code: "CNY")))")
+                                .font(.caption2).foregroundColor(.secondary)
                         }
                         ForEach(day.rows) { row in
                             HStack {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(row.storeName).font(.subheadline)
-                                    Text("已存利润：\(row.profit.formatted(.currency(code: "CNY")))")
+                                    Text("已存利润：\\(row.profit.formatted(.currency(code: "CNY")))")
                                         .font(.caption).foregroundColor(.secondary)
                                 }
                                 Spacer()
@@ -263,11 +327,13 @@ private struct BusinessPage: View {
                     .background(Color(UIColor.secondarySystemGroupedBackground),
                                 in: RoundedRectangle(cornerRadius: 12))
                 }
-                if DayRows<StoreDailyRow>.grouping(rows, date: { $0.date }).count > visibleDays {
+                if grouped.count > visibleDays {
                     Button("加载更早营业记录") { visibleDays += 14 }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
                 }
+                Text("只展示已同步的正式营业数据；不补算利润、不修改当日结算。")
+                    .font(.caption2).foregroundColor(.secondary)
                 SyncFooter()
             }
             .padding(12)
