@@ -151,6 +151,11 @@ enum BusinessUploadPolicy {
             try add(alipay, from: "alipay_collector_sync_id", channel: "alipay")
             try add(cashIn, from: "cash_collector_sync_id", channel: "cash")
         }
+        guard Set(collectors.values.map(\.id)).count == collectors.count else {
+            // A stale or aliased partner sync reference must never create
+            // two rows assigned to the same Android numeric partner.
+            throw StagingSafetyError.staleReferences
+        }
         let splits: [[String: Any]] = collectors.keys.sorted().compactMap { key in
             guard let part = collectors[key] else { return nil }
             return ["partner_id": part.id, "partner_name": part.name,
