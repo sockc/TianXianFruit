@@ -107,12 +107,18 @@ internal object CustomerTrafficDeepDive {
     /** Read-only attribution; no original bills or synced business records change. */
     fun attributeBusinessDays(
         rows: List<CustomerPaymentRecord>,
-        sessions: List<CustomerTrafficSession>
+        sessions: List<CustomerTrafficSession>,
+        // Explicit bill-collector assignment has higher authority than a
+        // time-only location guess. The collector resolver handles these IDs.
+        collectorProtectedIds: Set<Long> = emptySet()
     ): List<CustomerPaymentRecord> {
         // Avoid scanning months/years of shifts for each payment. Only the
         // transaction day and preceding date can contain its trading window.
         val shiftsByDate = sessions.groupBy { it.date }
         return rows.map { record ->
+            // Do not guess a location for a bill whose collector was explicitly
+            // assigned, including conflicting assignments across exports.
+            if (record.id in collectorProtectedIds) return@map record
             // A standalone refund never establishes that the buyer visited a store.
             if (record.amount <= 0.005) return@map record
             val moment = tradeTime(record) ?: return@map record
