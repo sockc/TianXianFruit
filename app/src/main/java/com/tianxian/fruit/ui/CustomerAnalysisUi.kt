@@ -82,7 +82,7 @@ internal enum class CustomerPaymentPlatform(val label: String) {
     ALL("合并"), WECHAT("微信"), ALIPAY("支付宝")
 }
 
-private enum class CustomerTrafficMetric(val label: String) {
+internal enum class CustomerTrafficMetric(val label: String) {
     CUSTOMERS("可识别客户"),
     AMOUNT("金额"),
     PAYMENTS("笔数")
@@ -254,8 +254,14 @@ internal fun CustomerAnalysisContent(
             val dailyHistory = db.getDailyRecordsBetween(null, null)
             val collectorByReceipt = db.getCustomerCollectorByReceiptId()
             val partnerIds = db.getCustomerCollectorPartnerIds()
+            val rawPayments = db.getCustomerPayments()
+            // Configured collectors take priority over store inference from
+            // timestamps. An unresolved or conflicting collector must remain
+            // unassigned rather than inheriting a time-only guess.
+            val protectedCollectorIds = collectorByReceipt
+                .filterValues { it.isNotBlank() }.keys
             val receipts = CustomerTrafficDeepDive.attributeBusinessDays(
-                db.getCustomerPayments(), sessions
+                rawPayments, sessions, protectedCollectorIds
             )
             val attribution = CustomerCollectorStoreAttribution.resolve(
                 receipts, dailyHistory, collectorByReceipt, partnerIds, sessions
@@ -429,9 +435,15 @@ internal fun CustomerAnalysisContent(
             runCatching { LocalDate.parse(it.date) }.getOrNull()
         }.filter { it in calendarBusinessDates }.toSet()
     }
-    val importBatches = remember(dataVersion, showSettings, tab) {
-        if (showSettings || tab == CustomerAnalysisTab.RECORDS) {
-            db.getPaymentImportBatches(200)
+    // Batch coverage builds aggregate counts over imported transactions.
+    // Never run this database query on the Compose/UI thread when opening
+    // the records or settings tab. An empty batch list is shown while
+    // the background refresh runs, without blocking scrolling.
+    val importBatches by produceState<List<PaymentImportBatchRecord>>(
+        initialValue = emptyList(), db, dataVersion, showSettings, tab
+    ) {
+        value = if (showSettings || tab == CustomerAnalysisTab.RECORDS) {
+            withContext(Dispatchers.IO) { db.getPaymentImportBatches(200) }
         } else emptyList()
     }
 
@@ -514,12 +526,16 @@ internal fun CustomerAnalysisContent(
         )
     }
 
+    // The same official, non-deleted daily records were already loaded in
+    // CustomerAnalysisSnapshot on Dispatchers.IO. Reuse that snapshot rather
+    // than issue another SQLite query from a Compose recomposition.
     val singleDayReconciliations = remember(
-        rawRecords, dataVersion, range, dayAnchor, selectedStoreId
+        rawRecords, dailyHistory, collectorAttribution.shared,
+        range, dayAnchor, selectedStoreId
     ) {
         if (range != CustomerRange.TODAY || selectedStoreId == -1L) emptyList()
         else CustomerPaymentReconciliationEngine.inspect(
-            db.getDailyRecordsBetween(dayAnchor.toString(), dayAnchor.toString()),
+            dailyHistory.filter { it.date == dayAnchor.toString() },
             rawRecords, dayAnchor.toString(), selectedStoreId,
             sharedCollectors = collectorAttribution.shared
         )
@@ -2408,6 +2424,7 @@ private fun CustomerOverview(
     var showQualityDetails by remember { mutableStateOf(false) }
     var showStores by remember { mutableStateOf(false) }
     var showShared by remember { mutableStateOf(false) }
+    var showSameWeekday by remember(displayDate, selectedStoreId) { mutableStateOf(false) }
     val reliablePayments = remember(payments) {
         payments.count { PaymentTrafficAnalytics.isIdentified(it) }
     }
@@ -2572,6 +2589,41 @@ private fun CustomerOverview(
                                     fontWeight = FontWeight.SemiBold)
                                 CustomerReceiptReconciliationDetails(reconciliations)
                             }
+                        }
+                    }
+                }
+            }
+        }
+        if (singleDay && sameWeekdayComparisons.isNotEmpty()) {
+            item(key = "weekday_comparison") {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable { showSameWeekday = !showSameWeekday }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "可识别客户 · 同位置同星期",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            if (showSameWeekday) "收起 ⌃" else "查看 ›",
+                            color = Color(0xFF087D4E),
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                    AnimatedVisibility(showSameWeekday) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                "仅统计有可靠付款人标识的独立收款；不能代表全部付款笔数。" +
+                                    "同星期历史少于3天时，不应据此判断客流涨跌。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF9A6700)
+                            )
+                            SameWeekdayCustomerCard(sameWeekdayComparisons)
                         }
                     }
                 }
@@ -3093,7 +3145,7 @@ private fun SameWeekdayCustomerCard(
                 }
 
                 val changeText =
-                    row.percentChange
+                    row.percentChange.takeIf { row.sampleDays >= 3 }
                         ?.let {
                             value ->
                             val sign =
@@ -3115,7 +3167,10 @@ private fun SameWeekdayCustomerCard(
                         FontWeight.SemiBold
                 )
                 Text(
-                    "当天 ${row.currentCustomers} 人 · 最近 ${row.sampleDays} 个同星期平均 ${String.format(Locale.CHINA, "%.1f", row.averageCustomers)} 人 · ${signedInt(row.difference)} 人（$changeText）",
+                    if (row.sampleDays < 3)
+                        "当天 ${row.currentCustomers} 人 · 仅有${row.sampleDays}个同星期历史样本，资料不足"
+                    else
+                        "当天 ${row.currentCustomers} 人 · 最近 ${row.sampleDays} 个同星期平均 ${String.format(Locale.CHINA, "%.1f", row.averageCustomers)} 人 · ${signedInt(row.difference)} 人（$changeText）",
                     style =
                         MaterialTheme
                             .typography
@@ -3139,33 +3194,17 @@ private fun SameWeekdayCustomerCard(
     }
 }
 
-private fun trafficValueLabel(
+internal fun trafficValueLabel(
     metric: CustomerTrafficMetric,
     value: Double
 ): String =
     when (metric) {
         CustomerTrafficMetric.CUSTOMERS,
-        CustomerTrafficMetric.PAYMENTS ->
-            value
-                .toInt()
-                .toString()
-
+        CustomerTrafficMetric.PAYMENTS -> value.toInt().toString()
+        // Full yuan values, no ambiguous K abbreviation or lost magnitude.
         CustomerTrafficMetric.AMOUNT ->
-            if (
-                value >=
-                1000
-            ) {
-                String.format(
-                    Locale.CHINA,
-                    "%.1fk",
-                    value /
-                        1000.0
-                )
-            } else {
-                value
-                    .toInt()
-                    .toString()
-            }
+            if (value.isFinite()) String.format(Locale.CHINA, "%,.0f", value)
+            else "—"
     }
 
 @Composable

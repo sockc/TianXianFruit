@@ -11,6 +11,36 @@ import org.junit.Test
 
 class PaymentBillParserTest {
     @Test
+    fun alipayMerchantBillIsNotMistakenForWechatWhenMemoMentionsWechat() {
+        val csv = """
+            支付宝交易明细
+            交易时间,交易分类,交易对方,商品说明,备注,收/支,金额,交易状态,交易订单号
+            2026-11-20 18:00:00,收入,模拟顾客,收钱码收款,顾客询问微信付款,收入,25.00,交易成功,alipay-20261120-1
+        """.trimIndent()
+        val result = PaymentBillParser.parse(
+            "支付宝交易明细.csv", csv.toByteArray(Charset.forName("GB18030"))
+        )
+        assertEquals(PaymentBillPlatform.ALIPAY, result.platform)
+        assertEquals(1, result.acceptedRows)
+        assertEquals(25.0, result.transactions.single().netAmount, 0.001)
+    }
+
+    @Test
+    fun wechatMerchantBillIsNotMistakenForAlipayWhenMemoMentionsAlipay() {
+        val csv = """
+            微信支付账单
+            交易时间,交易类型,交易对方,备注,收/支,金额(元),当前状态,交易单号
+            2026-11-20 19:00:00,二维码收款,模拟顾客,顾客询问支付宝付款,收入,18.00,支付成功,wechat-20261120-1
+        """.trimIndent()
+        val result = PaymentBillParser.parse(
+            "微信支付账单.csv", csv.toByteArray(Charsets.UTF_8)
+        )
+        assertEquals(PaymentBillPlatform.WECHAT, result.platform)
+        assertEquals(1, result.acceptedRows)
+        assertEquals(18.0, result.transactions.single().netAmount, 0.001)
+    }
+
+    @Test
     fun onlyStrictWechatBusinessReceiptsAreAccepted() {
         val csv =
             """
@@ -107,6 +137,104 @@ class PaymentBillParserTest {
             setOf("ali-merchant-1", "ali-qr-1"),
             result.transactions.map { it.transactionRef }.toSet()
         )
+    }
+
+    @Test
+    fun alipayRepeatedExportUsesStableReceiptKeysIndependentOfRowOrder() {
+        val heading = "支付宝交易明细\n交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,交易状态,交易订单号"
+        val first = "2026-11-11 18:00:00,收入,买家A,***01,经营码交易,收入,25.50,交易成功,ali-stable-a"
+        val second = "2026-11-11 19:00:00,收入,买家B,***02,收钱码收款,收入,12.00,交易成功,ali-stable-b"
+        fun parse(rows: List<String>) = PaymentBillParser.parse(
+            "支付宝交易明细.csv",
+            (heading + "\n" + rows.joinToString("\n")).toByteArray(Charset.forName("GB18030"))
+        )
+        val original = parse(listOf(first, second))
+        val reordered = parse(listOf(second, first))
+        assertEquals(2, original.acceptedRows)
+        assertEquals(2, reordered.acceptedRows)
+        assertEquals(original.transactions.map { it.dedupeKey }.toSet(),
+            reordered.transactions.map { it.dedupeKey }.toSet())
+        assertEquals(2, original.transactions.map { it.dedupeKey }.toSet().size)
+        assertEquals(37.50, original.transactions.sumOf { it.netAmount }, 0.001)
+    }
+
+    @Test
+    fun alipayExplicitTransferCannotBecomeMerchantReceiptViaRemark() {
+        val csv = """
+            支付宝交易明细
+            交易时间,交易类型,交易对方,商品说明,备注,收/支,金额,交易状态,交易订单号
+            2026-11-20 18:00:00,转账,朋友A,朋友转账,经营收款,收入,500.00,交易成功,ali-transfer-memo
+            2026-11-20 18:02:00,红包,朋友B,红包,二维码收款,收入,20.00,交易成功,ali-redpacket-memo
+            2026-11-20 18:03:00,经营收款,顾客C,经营码交易,水果,收入,35.00,交易成功,ali-business-true
+        """.trimIndent()
+        val result = PaymentBillParser.parse(
+            "支付宝交易明细.csv", csv.toByteArray(Charset.forName("GB18030"))
+        )
+        assertEquals(PaymentBillPlatform.ALIPAY, result.platform)
+        assertEquals(3, result.totalRows)
+        assertEquals(1, result.acceptedRows)
+        assertEquals(2, result.ignoredRows)
+        assertEquals("ali-business-true", result.transactions.single().transactionRef)
+        assertEquals(35.0, result.transactions.single().netAmount, 0.001)
+    }
+
+    @Test
+    fun alipayIncomeCategoryMustNotTrustMerchantWordsInFreeTextRemarks() {
+        val csv = """
+            支付宝交易明细
+            交易时间,交易分类,交易对方,商品说明,备注,收/支,金额,交易状态,交易订单号
+            2026-11-20 18:04:00,收入,朋友,朋友转账,经营收款,收入,500.00,交易成功,ali-friend-remark
+            2026-11-20 18:05:00,收入,顾客A,经营码交易,水果,收入,35.00,交易成功,ali-merchant-code
+            2026-11-20 18:06:00,收入,顾客B,收钱码收款,收款备注,收入,28.00,交易成功,ali-payment-code
+        """.trimIndent()
+        val result = PaymentBillParser.parse(
+            "支付宝交易明细.csv", csv.toByteArray(Charset.forName("GB18030"))
+        )
+        assertEquals(PaymentBillPlatform.ALIPAY, result.platform)
+        assertEquals(3, result.totalRows)
+        assertEquals(2, result.acceptedRows)
+        assertEquals(1, result.ignoredRows)
+        assertEquals(
+            setOf("ali-merchant-code", "ali-payment-code"),
+            result.transactions.map { it.transactionRef }.toSet()
+        )
+        assertEquals(63.0, result.transactions.sumOf { it.netAmount }, 0.001)
+    }
+
+    @Test
+    fun alipayOfficialGb18030PreambleAndTrailingColumnPreserveAllNaturalDayReceipts() {
+        // Shape derived from a real Alipay export, with all names, accounts,
+        // order IDs and amounts replaced by synthetic fixtures. Never commit
+        // merchant account information or original receipts to GitHub.
+        val csv = """
+            ------------------------------------------------------------------------------------
+            导出信息：
+            起始时间：[2026-10-14 00:00:00]    终止时间：[2026-10-15 23:59:59]
+            导出交易类型：[仅收入]
+            共4笔记录
+            收入：4笔 65.00元
+            特别提示：
+            ------------------------支付宝支付科技有限公司  电子客户回单------------------------
+            交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注,
+            2026-10-15 00:10:00,收入,模拟顾客甲,***001,经营码交易,收入,15.25,账户余额,交易成功,safe-merchant-001,safe-store-001,,
+            2026-10-15 15:30:00,收入,模拟顾客乙,***002,收钱码收款,收入,9.75,账户余额,交易成功,safe-merchant-002,safe-store-002,,
+            2026-10-15 19:00:00,收入,模拟顾客丙,***003,经营码交易,收入,30.00,账户余额,交易成功,safe-merchant-003,safe-store-003,,
+            2026-10-15 23:50:00,收入,模拟顾客丁,***004,收钱码收款,收入,10.00,账户余额,交易成功,safe-merchant-004,safe-store-004,,
+        """.trimIndent()
+        val result = PaymentBillParser.parse(
+            "支付宝交易明细.csv", csv.toByteArray(Charset.forName("GB18030"))
+        )
+        assertEquals(PaymentBillPlatform.ALIPAY, result.platform)
+        assertEquals(4, result.totalRows)
+        assertEquals(4, result.acceptedRows)
+        assertEquals(0, result.ignoredRows)
+        assertEquals(0, result.errorRows)
+        assertEquals(65.0, result.transactions.sumOf { it.netAmount }, 0.001)
+        assertEquals(4, result.transactions.map { it.dedupeKey }.toSet().size)
+        assertTrue(result.transactions.all { it.identityConfidence == "LOW" })
+        // Importing the official file preserves its NATURAL transaction date.
+        // Only saved, verified operating windows may later reattribute 00:10.
+        assertTrue(result.transactions.all { it.businessDate == "2026-10-15" })
     }
 
     @Test

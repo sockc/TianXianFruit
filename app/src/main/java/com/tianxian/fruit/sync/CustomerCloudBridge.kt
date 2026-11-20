@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import com.tianxian.fruit.data.AppDatabase
+import com.tianxian.fruit.data.PaymentImportBatchRecord
 import com.tianxian.fruit.data.OvernightReceiptSnapshot
 import com.tianxian.fruit.data.OvernightReceiptDeletionPolicy
 import com.tianxian.fruit.data.NaturalDayReceiptDraft
@@ -148,7 +149,8 @@ internal object CustomerCloudBridge {
         includeSettings: Boolean = false,
         includeSourceLinks: Boolean = false,
         includeOvernight: Boolean = false,
-        includeCashDeduction: Boolean = false
+        includeCashDeduction: Boolean = false,
+        importBatchSnapshot: List<PaymentImportBatchRecord>? = null
     ): List<SyncItem> {
         val ack = ackMap(db.readableDatabase)
         val results = mutableListOf<SyncItem>()
@@ -162,7 +164,11 @@ internal object CustomerCloudBridge {
         }
 
         // Keep source batches ahead of their receipts for lineage reconstruction.
-        val batches = db.getPaymentImportBatches(1_000_000)
+        // On a long initial import, rebuilding file coverage for every 180
+        // receipts turns batch processing into repeated whole-history queries.
+        // Reuse one immutable snapshot during upload pages; the final pending
+        // check still refreshes it to catch edits/imports made concurrently.
+        val batches = importBatchSnapshot ?: db.getPaymentImportBatches(1_000_000)
         for (b in batches) {
             if (b.platform !in listOf("WECHAT", "ALIPAY") || b.fileHash.length != 64) continue
             val key = "${b.platform}|${b.fileHash}"
@@ -393,7 +399,9 @@ internal object CustomerCloudBridge {
                     "BATCH" -> {
                         val platform = body.str("platform")
                         val hash = body.str("file_hash")
-                        if ("$platform|$hash" != key) continue
+                        if (!CustomerCloudEventKeyPolicy.batch(key, platform, hash)) {
+                            throw IllegalStateException("云端账单批次键与文件身份不一致：$key")
+                        }
                         val inserted = database.insertWithOnConflict("payment_import_batch", null, ContentValues().apply {
                             put("platform", platform); put("file_hash", hash)
                             put("file_name", body.str("file_name"))
@@ -409,12 +417,37 @@ internal object CustomerCloudBridge {
                             put("observed_receipt_days", body.optInt("receipt_days"))
                             put("observed_receipt_rows", body.optInt("receipt_count"))
                         }, SQLiteDatabase.CONFLICT_IGNORE)
-                        if (inserted > 0L) ack(database, kind, key, "REMOTE", version)
+                        if (inserted <= 0L) {
+                            // A second device may already have imported the
+                            // exact same file. Its parser counts can differ,
+                            // so compare only the immutable file SHA-256 and
+                            // provider. Keep the local metadata untouched.
+                            val existing = database.rawQuery(
+                                "SELECT platform,file_hash FROM payment_import_batch " +
+                                    "WHERE file_hash=? LIMIT 1",
+                                arrayOf(hash)
+                            ).use { cursor ->
+                                if (!cursor.moveToFirst()) null
+                                else cursor.string("platform") to cursor.string("file_hash")
+                            }
+                            if (!CustomerBatchConflictPolicy.sameImportedFile(
+                                    platform, hash, existing?.first, existing?.second)) {
+                                throw IllegalStateException(
+                                    "云端账单批次与本机文件身份不一致，拒绝覆盖：$key"
+                                )
+                            }
+                        }
+                        // Whether freshly inserted or already present with
+                        // matching immutable identity, acknowledge the cloud
+                        // event so this device cannot re-push the same BATCH.
+                        ack(database, kind, key, "REMOTE", version)
                     }
                     "RECEIPT" -> {
                         val platform = body.str("platform")
                         val receiptKey = body.str("dedupe_key")
-                        if ("$platform|$receiptKey" != key || receiptKey.isBlank()) continue
+                        if (!CustomerCloudEventKeyPolicy.receipt(key, platform, receiptKey)) {
+                            throw IllegalStateException("云端收款交易键与内容不一致：$key")
+                        }
                         val stableStore = body.str("store_sync_id")
                         val storeId = if (stableStore.isNotBlank()) database.rawQuery(
                             "SELECT id FROM store WHERE sync_id=? LIMIT 1", arrayOf(stableStore)
@@ -423,6 +456,31 @@ internal object CustomerCloudBridge {
                         val batchId = if (fileHash.isNotBlank()) database.rawQuery(
                             "SELECT id FROM payment_import_batch WHERE file_hash=? LIMIT 1", arrayOf(fileHash)
                         ).use { if (it.moveToFirst()) it.getLong(0) else 0L } else 0L
+                        // An acknowledged orphan receipt permanently loses its
+                        // imported-file or stall attribution on another device.
+                        // Abort the whole downloaded SQLite page transaction,
+                        // keeping its cursor at the last fully verified event.
+                        CustomerReceiptReferencePolicy.unresolved(
+                            stableStore, storeId, fileHash, batchId
+                        )?.let { reason ->
+                            // On a second device an IDENTICAL receipt may
+                            // already exist from another overlapping export.
+                            // Such a duplicate is checked below before ACK,
+                            // without requiring its remote source batch locally.
+                            // A genuinely new receipt cannot be acknowledged
+                            // while its original store/file links are absent.
+                            val alreadyLocal = database.rawQuery(
+                                "SELECT 1 FROM customer_payment_transaction " +
+                                    "WHERE platform=? AND dedupe_key=? LIMIT 1",
+                                arrayOf(platform, receiptKey)
+                            ).use { it.moveToFirst() }
+                            if (!alreadyLocal) {
+                                throw IllegalStateException(
+                                    "云端账单关联的${reason}（交易 ${platform}|${receiptKey}）；" +
+                                        "已保留本地数据与同步游标"
+                                )
+                            }
+                        }
                         val inserted = database.insertWithOnConflict(
                             "customer_payment_transaction", null, ContentValues().apply {
                                 put("platform", platform); put("dedupe_key", receiptKey)
@@ -444,15 +502,55 @@ internal object CustomerCloudBridge {
                                 put("created_at", System.currentTimeMillis())
                             }, SQLiteDatabase.CONFLICT_IGNORE
                         )
-                        if (inserted > 0L) ack(database, kind, key, "REMOTE", version)
+                        if (inserted > 0L) {
+                            ack(database, kind, key, "REMOTE", version)
+                        } else {
+                            // A second device can already have this receipt
+                            // from the SAME exported order. CONFLICT_IGNORE
+                            // is not a sync acknowledgment: verify all
+                            // immutable money/time/location evidence first.
+                            val local = database.rawQuery("""
+                                SELECT platform,dedupe_key,transaction_ref,trade_time,
+                                       business_date,amount,refund_amount,net_amount,
+                                       store_id
+                                FROM customer_payment_transaction
+                                WHERE platform=? AND dedupe_key=? LIMIT 1
+                            """.trimIndent(), arrayOf(platform, receiptKey)).use { cursor ->
+                                if (!cursor.moveToFirst()) null
+                                else CustomerReceiptFinancialIdentity(
+                                    cursor.string("platform"), cursor.string("dedupe_key"),
+                                    cursor.string("transaction_ref"), cursor.string("trade_time"),
+                                    cursor.string("business_date"), cursor.num("amount"),
+                                    cursor.num("refund_amount"), cursor.num("net_amount"),
+                                    stableRowId(database, "store", cursor.long("store_id"))
+                                )
+                            }
+                            val remote = CustomerReceiptFinancialIdentity(
+                                platform, receiptKey, body.str("transaction_ref"),
+                                body.str("trade_time"), body.str("business_date"),
+                                body.optDouble("amount"), body.optDouble("refund_amount"),
+                                body.optDouble("net_amount"), stableStore
+                            )
+                            if (local == null ||
+                                !CustomerReceiptIdentityPolicy.matches(local, remote)) {
+                                throw IllegalStateException(
+                                    "相同交易键的本机与云端收款内容不同，已拒绝覆盖：" +
+                                        "$platform|$receiptKey")
+                            }
+                            // Only the sync ACK is added. Never overwrite the
+                            // original local bill, its payer, or its file links.
+                            ack(database, kind, key, "REMOTE", version)
+                        }
                     }
                     "SOURCE_LINK" -> {
                         val platform = body.str("platform")
                         val receiptKey = body.str("dedupe_key")
                         val fileHash = body.str("file_hash")
-                        if ("$platform|$receiptKey|$fileHash" != key ||
-                            platform !in setOf("WECHAT", "ALIPAY") ||
-                            fileHash.length != 64) continue
+                        if (!CustomerCloudEventKeyPolicy.sourceLink(
+                                key, platform, receiptKey, fileHash
+                            )) {
+                            throw IllegalStateException("云端账单来源键与内容不一致：$key")
+                        }
                         database.insertWithOnConflict(
                             "customer_payment_source_link", null, ContentValues().apply {
                                 put("platform", platform)
@@ -698,7 +796,30 @@ internal object CustomerCloudBridge {
         val pullPages: Int,
         val existingBatchMetadata: Int = 0
     )
+    /**
+     * Preserve the last successful sync timestamp on failure, but expose a
+     * durable, bounded failure reason until the next successful sync.
+     * Never acknowledge pending records or advance the cursor here.
+     */
     fun sync(
+        context: Context, db: AppDatabase, bookId: String, identity: String,
+        canWrite: Boolean,
+        request: (String, String, JSONObject?) -> JSONObject
+    ): Result = CustomerSyncSerialPolicy.forBook(bookId) {
+        // Keep failure-status updates inside the same ledger lock; otherwise a
+        // second successful sync could clear its error before the first
+        // failing caller writes an obsolete failure message.
+        try {
+            syncInternal(context, db, bookId, identity, canWrite, request)
+        } catch (failure: Exception) {
+            val detail = failure.message.orEmpty().ifBlank { "未知错误" }.take(240)
+            context.getSharedPreferences("customer_cloud_sync_status_v1", Context.MODE_PRIVATE)
+                .edit().putString("error_$bookId", "同步失败：$detail").apply()
+            throw failure
+        }
+    }
+
+    private fun syncInternal(
         context: Context, db: AppDatabase, bookId: String, identity: String,
         canWrite: Boolean,
         request: (String, String, JSONObject?) -> JSONObject
@@ -708,7 +829,8 @@ internal object CustomerCloudBridge {
         var pushBatches = 0
         val endpoint = "/api/v1/books/$bookId/customer-analytics"
         // Return no false success on an older server: capabilities is mandatory.
-        val caps = request("GET", "$endpoint/capabilities", null)
+        val caps = runCatching { request("GET", "$endpoint/capabilities", null) }
+            .getOrElse { throw IllegalStateException("客流同步读取服务端能力失败（本机数据保留）：${it.message}", it) }
         if (!caps.optBoolean("supported") || caps.optInt("version") != 1) {
             throw IllegalStateException("服务器尚未支持客流同步 V1")
         }
@@ -740,19 +862,30 @@ internal object CustomerCloudBridge {
         fun pull() {
             for (page in 0 until 400) {
                 val before = serverCursor(database)
-                val response = request("GET", "$endpoint/changes?cursor=$before&limit=200&include_assignments=true" +
-                    (if (supportsCollector) "&include_collectors=true" else "") +
-                    (if (supportsAnalysis) "&include_analysis=true" else "") +
-                    (if (supportsSettings) "&include_settings=true" else "") +
-                    (if (supportsSourceLinks) "&include_source_links=true" else "") +
-                    (if (supportsOvernight) "&include_overnight=true" else ""), null)
+                val response = runCatching {
+                    request("GET", "$endpoint/changes?cursor=$before&limit=200&include_assignments=true" +
+                        (if (supportsCollector) "&include_collectors=true" else "") +
+                        (if (supportsAnalysis) "&include_analysis=true" else "") +
+                        (if (supportsSettings) "&include_settings=true" else "") +
+                        (if (supportsSourceLinks) "&include_source_links=true" else "") +
+                        (if (supportsOvernight) "&include_overnight=true" else ""), null)
+                }.getOrElse {
+                    throw IllegalStateException("客流同步下载失败（页${page + 1}，游标$before；本机数据保留）：${it.message}", it)
+                }
                 pullPages++
                 val changes = response.getJSONArray("changes")
                 val next = response.getLong("next_cursor")
-                if (next < before || (changes.length() > 0 && next == before)) {
-                    throw IllegalStateException("客流同步游标异常")
+                if (!CustomerSyncCursorPolicy.progresses(
+                        before, next, changes.length(), response.optBoolean("has_more"))) {
+                    throw IllegalStateException(
+                        "客流同步游标异常：下载页${page + 1}，当前=$before，下一页=$next，" +
+                            "记录=${changes.length()}（本机数据保留）")
                 }
-                applyRemote(context, db, bookId, changes, next)
+                runCatching { applyRemote(context, db, bookId, changes, next) }
+                    .getOrElse {
+                        throw IllegalStateException(
+                            "客流同步应用下载数据失败（页${page + 1}，本机事务回滚）：${it.message}", it)
+                    }
                 totalDownload += changes.length()
                 if (!response.optBoolean("has_more")) return
             }
@@ -767,15 +900,20 @@ internal object CustomerCloudBridge {
         var uploaded = 0
         var existingBatchMetadata = 0
         if (canWrite) {
+            val importBatchSnapshot = db.getPaymentImportBatches(1_000_000)
             for (page in 0 until 400) {
                 val batch = pending(context, db, bookId, MAX_BATCH, supportsCollector,
                     supportsAnalysis, supportsSettings, supportsSourceLinks,
-                    supportsOvernight,supportsCashDeduction)
+                    supportsOvernight, supportsCashDeduction, importBatchSnapshot)
                 if (batch.isEmpty()) break
                 val body = JSONObject().put("items", JSONArray().apply {
                     batch.forEach { put(it.json()) }
                 })
-                val response = request("POST", "$endpoint/push", body)
+                val response = runCatching { request("POST", "$endpoint/push", body) }
+                    .getOrElse {
+                        throw IllegalStateException(
+                            "客流同步上传失败（批次${page + 1}，本机待上传记录保留）：${it.message}", it)
+                    }
                 pushBatches++
                 val confirmed = response.getJSONArray("items")
                 if (confirmed.length() != batch.size) throw IllegalStateException("服务器账单确认笔数异常")
@@ -832,7 +970,11 @@ internal object CustomerCloudBridge {
                 throw IllegalStateException("待同步客流记录较多，已分批上传，仍有未确认记录")
             }
         }
-        pull()
+        // The first pull already fetched the current server cursor. Only
+        // locally submitted batches can require a second read-after-write.
+        // Avoid one redundant HTTP round-trip for the common no-op/read-only
+        // sync case; the next invocation still catches concurrent changes.
+        if (CustomerSyncPullPolicy.needsPostUploadPull(pushBatches)) pull()
         val status = context.getSharedPreferences("customer_cloud_sync_status_v1", Context.MODE_PRIVATE)
         val unsyncedCollector = !supportsCollector &&
             db.getCustomerBillCollectorAssignments().isNotEmpty()

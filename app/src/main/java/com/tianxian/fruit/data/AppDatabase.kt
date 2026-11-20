@@ -11398,6 +11398,10 @@ class AppDatabase(
                 } else {
                     null
                 }
+            // A nonzero carried opening quantity without a verifiable prior
+            // snapshot is unknown cost, never a free/zero-cost batch. This
+            // guard only changes read-only inventory profit estimates, not
+            // formal sales, purchase accounting or settlement amounts.
             val openingBasis =
                 if (item.openingQuantity > 0.000001 && previousSnapshotDate != null) {
                     estimateInventoryCostBasisAtSnapshot(
@@ -11405,6 +11409,9 @@ class AppDatabase(
                         item.fruitId,
                         item.unit
                     )
+                } else if (InventoryOpeningCostEvidencePolicy.sourceMissing(
+                        item.openingQuantity, previousSnapshotDate)) {
+                    InventoryCostBasis(null, false)
                 } else {
                     InventoryCostBasis(0.0, true)
                 }
@@ -11415,11 +11422,16 @@ class AppDatabase(
                     null
                 }
             val purchasedQuantity = purchase?.quantity ?: item.purchasedQuantity
+            // Positive purchase quantity without a matching completed
+            // purchase row is UNKNOWN cost, not a free/zero-cost purchase.
+            // This only gates read-only profit estimates and warning flags.
+            val purchaseCostAvailable = InventoryPurchaseCostEvidencePolicy.isAvailable(
+                item.purchasedQuantity, purchase != null, purchase?.costAvailable ?: false
+            )
             val purchaseCost = roundMoney(purchase?.cost ?: 0.0)
             val availableQuantity = item.openingQuantity + purchasedQuantity
             val costAvailable =
-                openingCost != null &&
-                    (purchase?.costAvailable ?: true)
+                openingCost != null && purchaseCostAvailable
             val availableCost =
                 if (costAvailable) {
                     (openingCost ?: 0.0) + purchaseCost
@@ -11500,7 +11512,7 @@ class AppDatabase(
                 estimatedSalesRevenue = estimatedSalesRevenue,
                 estimatedProductGrossProfit = estimatedProductGrossProfit,
                 costSource = effectiveCost.source,
-                purchaseCostAvailable = purchase?.costAvailable ?: true
+                purchaseCostAvailable = purchaseCostAvailable
             )
         }
 
@@ -16103,14 +16115,29 @@ class AppDatabase(
     fun getCustomerCollectorByReceiptId(): Map<Long, String> {
         val candidates = linkedMapOf<Long, MutableSet<String>>()
         readableDatabase.rawQuery("""
-            SELECT p.id AS receipt_id, COALESCE(a.partner_sync_id,'') AS partner_sync_id
+            -- Only collector-assigned receipt/source links are needed.
+            -- Joining ALL historical receipts (including unassigned files)
+            -- on every customer page open made the UI snapshot expensive.
+            SELECT p.id AS receipt_id, a.partner_sync_id AS partner_sync_id
+            FROM customer_bill_collector_assignment a
+            JOIN customer_payment_source_link l
+              ON l.platform=a.platform AND l.file_hash=a.file_hash
+            JOIN customer_payment_transaction p
+              ON p.platform=l.platform AND p.dedupe_key=l.dedupe_key
+            WHERE a.partner_sync_id<>''
+            UNION ALL
+            -- Legacy receipts without source links keep their original
+            -- import-batch attribution; do not infer it for linked receipts.
+            SELECT p.id AS receipt_id, a.partner_sync_id AS partner_sync_id
             FROM customer_payment_transaction p
-            LEFT JOIN customer_payment_source_link l
-              ON l.platform=p.platform AND l.dedupe_key=p.dedupe_key
-            LEFT JOIN payment_import_batch b ON b.id=p.source_batch_id
-            LEFT JOIN customer_bill_collector_assignment a
-              ON a.platform=p.platform
-             AND a.file_hash=COALESCE(l.file_hash,b.file_hash)
+            JOIN payment_import_batch b ON b.id=p.source_batch_id
+            JOIN customer_bill_collector_assignment a
+              ON a.platform=p.platform AND a.file_hash=b.file_hash
+            WHERE a.partner_sync_id<>''
+              AND NOT EXISTS (
+                  SELECT 1 FROM customer_payment_source_link l
+                  WHERE l.platform=p.platform AND l.dedupe_key=p.dedupe_key
+              )
         """.trimIndent(), null).use { c ->
             while (c.moveToNext()) {
                 val set = candidates.getOrPut(c.long("receipt_id")) { linkedSetOf() }
@@ -16362,26 +16389,37 @@ class AppDatabase(
         readableDatabase.rawQuery(
             """
             SELECT b.*,
-                   COALESCE(NULLIF(b.observed_first_date,''),t.first_receipt_date,'') AS first_receipt_date,
-                   COALESCE(NULLIF(b.observed_last_date,''),t.last_receipt_date,'') AS last_receipt_date,
+                   COALESCE(NULLIF(b.observed_first_date,''),(
+                       SELECT MIN(SUBSTR(p.trade_time,1,10))
+                       FROM customer_payment_transaction p
+                       WHERE p.source_batch_id=b.id AND p.amount>0.005
+                   ),'') AS first_receipt_date,
+                   COALESCE(NULLIF(b.observed_last_date,''),(
+                       SELECT MAX(SUBSTR(p.trade_time,1,10))
+                       FROM customer_payment_transaction p
+                       WHERE p.source_batch_id=b.id AND p.amount>0.005
+                   ),'') AS last_receipt_date,
                    CASE WHEN b.observed_first_date<>'' THEN b.observed_receipt_days
-                        ELSE COALESCE(t.receipt_days,0) END AS receipt_days,
+                        ELSE (
+                            SELECT COUNT(DISTINCT SUBSTR(p.trade_time,1,10))
+                            FROM customer_payment_transaction p
+                            WHERE p.source_batch_id=b.id AND p.amount>0.005
+                        ) END AS receipt_days,
                    CASE WHEN b.observed_first_date<>'' THEN b.observed_receipt_rows
-                        ELSE COALESCE(t.receipt_count,0) END AS receipt_count,
+                        ELSE (
+                            SELECT COUNT(*)
+                            FROM customer_payment_transaction p
+                            WHERE p.source_batch_id=b.id AND p.amount>0.005
+                        ) END AS receipt_count,
                    CASE WHEN b.observed_first_date<>'' THEN 'FILE'
-                        WHEN t.first_receipt_date IS NOT NULL THEN 'INSERTED_ONLY'
+                        WHEN EXISTS (
+                            SELECT 1 FROM customer_payment_transaction p
+                            WHERE p.source_batch_id=b.id AND p.amount>0.005
+                        ) THEN 'INSERTED_ONLY'
                         ELSE 'NONE' END AS coverage_source
             FROM payment_import_batch b
-            LEFT JOIN (
-                SELECT source_batch_id,
-                       MIN(SUBSTR(trade_time,1,10)) AS first_receipt_date,
-                       MAX(SUBSTR(trade_time,1,10)) AS last_receipt_date,
-                       COUNT(DISTINCT SUBSTR(trade_time,1,10)) AS receipt_days,
-                       COUNT(*) AS receipt_count
-                FROM customer_payment_transaction
-                WHERE amount>0.005
-                GROUP BY source_batch_id
-            ) t ON t.source_batch_id=b.id
+            -- Fast path: modern imports have observed coverage already;
+            -- the indexed per-batch fallbacks run only for legacy rows.
             ORDER BY b.imported_at DESC,b.id DESC
             LIMIT ?
             """.trimIndent(),

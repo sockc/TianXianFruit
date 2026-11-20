@@ -11,6 +11,24 @@ package com.tianxian.fruit.sync
  * newly recognized RECEIPT events. Financial receipts are never exempted.
  */
 internal object CustomerBatchConflictPolicy {
+    /**
+     * Two devices may import the identical original CSV with different parser
+     * revisions. The bytes' SHA-256 and payment provider establish file
+     * identity; derived receipt counts and display name are NOT authoritative.
+     * Never overwrite local metadata when acknowledging that remote batch.
+     */
+    fun sameImportedFile(
+        remotePlatform: String,
+        remoteFileHash: String,
+        localPlatform: String?,
+        localFileHash: String?
+    ): Boolean =
+        remotePlatform in setOf("WECHAT", "ALIPAY") &&
+            remoteFileHash.length == 64 &&
+            remoteFileHash.all { it in '0'..'9' || it in 'a'..'f' } &&
+            localPlatform == remotePlatform &&
+            localFileHash == remoteFileHash
+
     fun existingFileMetadata(
         kind: String,
         key: String,

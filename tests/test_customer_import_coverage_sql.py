@@ -89,7 +89,12 @@ class CustomerImportCoverageSqlTest(unittest.TestCase):
 
     def test_kotlin_db_query_prioritizes_parsed_file_metadata(self):
         source = APP_DB.read_text(encoding="utf-8")
-        self.assertIn("COALESCE(NULLIF(b.observed_first_date,''),t.first_receipt_date,'')", source)
+        # The SQL may use either a grouped aggregate or the optimized indexed
+        # per-batch fallback. Preserve the important data contract rather than
+        # pinning the old internal alias "t".
+        self.assertIn("NULLIF(b.observed_first_date,'')", source)
+        self.assertIn("AS first_receipt_date", source)
+        self.assertIn("WHEN b.observed_first_date<>'' THEN 'FILE'", source)
         self.assertIn('put("observed_first_date", receiptStart)', source)
         self.assertIn("const val DB_VERSION = 45", source)
 

@@ -55,8 +55,20 @@ internal object CustomerCollectorStoreAttribution {
         partnerIdBySyncId: Map<String, Long>,
         sessions: List<CustomerTrafficSession> = emptyList()
     ): CollectorStoreAttributionResult {
-        if (receipts.isEmpty() || daily.isEmpty() || collectorByReceiptId.isEmpty()) {
+        if (receipts.isEmpty() || collectorByReceiptId.isEmpty()) {
             return CollectorStoreAttributionResult(receipts, emptyList(), emptySet())
+        }
+        // A previously inferred/stored location is not verified if a known
+        // bill collector cannot be matched to any formal business record.
+        // Clear only this read-only projection, never the imported ledger row.
+        fun unmatched(r: CustomerPaymentRecord): CustomerPaymentRecord =
+            r.copy(storeId = 0L, storeName = "")
+        if (daily.isEmpty()) {
+            val safeRows = receipts.map { receipt ->
+                if (collectorByReceiptId[receipt.id].isNullOrBlank()) receipt
+                else unmatched(receipt)
+            }
+            return CollectorStoreAttributionResult(safeRows, emptyList(), emptySet())
         }
 
         // Match by DATE + receiving partner + payment channel. A collector name
@@ -77,6 +89,27 @@ internal object CustomerCollectorStoreAttribution {
                 }
             }
         }
+        // Index completed selling windows once. Re-checking the entire
+        // sessions list for each receipt makes large imported bills expensive.
+        val sessionsByStoreAndDate = sessions.groupBy { it.date to it.storeId }
+        fun activeAt(record: StoreDailyRecord, receipt: CustomerPaymentRecord): Boolean {
+            val candidates = sessionsByStoreAndDate[record.date to record.storeId]
+                .orEmpty().ifEmpty {
+                    listOf(CustomerTrafficSession(
+                        record.date, record.storeId, record.storeName,
+                        record.actualStartTime.ifBlank { "16:00" },
+                        record.actualEndTime.ifBlank { "24:00" }
+                    ))
+                }
+            // Old records may have multiple saved windows for the SAME store
+            // and day. Check each without treating those aliases as two stores.
+            return candidates.any { session ->
+                CustomerTrafficDeepDive.matchSession(
+                    receipt.tradeTime, listOf(session)
+                ) != null
+            }
+        }
+
         val sharedMatches = linkedMapOf<Key, MutableList<Match>>()
         val matchedIds = mutableSetOf<Long>()
         val attributed = receipts.map { receipt ->
@@ -84,8 +117,12 @@ internal object CustomerCollectorStoreAttribution {
                 return@map receipt
             }
             val collectorSyncId = collectorByReceiptId[receipt.id].orEmpty()
-            val partnerId = partnerIdBySyncId[collectorSyncId] ?: return@map receipt
-            if (partnerId <= 0L) return@map receipt
+            if (collectorSyncId.isBlank()) return@map receipt
+            // Missing/deleted partner or conflicting assignments are not
+            // permission to fall back to an arbitrary timestamp-based store.
+            val partnerId = partnerIdBySyncId[collectorSyncId]
+                ?: return@map unmatched(receipt)
+            if (partnerId <= 0L) return@map unmatched(receipt)
 
             val tradeDay = receipt.tradeTime.take(10)
             val originalKey = Key(receipt.businessDate, receipt.platform, partnerId)
@@ -98,27 +135,31 @@ internal object CustomerCollectorStoreAttribution {
             val previousKey = previousDay?.let { Key(it, receipt.platform, partnerId) }
             val previous = previousKey?.let(storesByKey::get).orEmpty()
             val inPreviousShift = previous.any { saved ->
-                val businessWindow = sessions.firstOrNull {
-                    it.date == saved.date && it.storeId == saved.storeId
-                } ?: CustomerTrafficSession(saved.date, saved.storeId, saved.storeName,
-                    saved.actualStartTime.ifBlank { "16:00" },
-                    saved.actualEndTime.ifBlank { "24:00" })
-                CustomerTrafficDeepDive.matchSession(
-                    receipt.tradeTime, listOf(businessWindow)
-                ) != null
+                activeAt(saved, receipt)
             }
+            val inOriginalShift = storesByKey[originalKey].orEmpty()
+                .any { activeAt(it, receipt) }
+            // Consecutive business days can have overlapping midnight shifts
+            // for a collector. Both windows are evidence but neither is proof
+            // of which BUSINESS DAY owns this receipt. Leave it unresolved.
+            if (previousKey != null && previousKey != originalKey &&
+                inPreviousShift && inOriginalShift) return@map unmatched(receipt)
             val key = if (inPreviousShift && previousKey != null) previousKey else originalKey
             val candidates = storesByKey[key].orEmpty().distinctBy { it.storeId }
-            if (candidates.isEmpty()) return@map receipt
+            // Collector/day/channel alone does not identify a selling position.
+            // Narrow to actual saved selling windows: disjoint shifts can be
+            // assigned precisely, but overlapping windows remain shared.
+            val activeCandidates = candidates.filter { activeAt(it, receipt) }
+            if (activeCandidates.isEmpty()) return@map unmatched(receipt)
 
             matchedIds.add(receipt.id)
-            if (candidates.size == 1) {
-                val store = candidates.single()
+            if (activeCandidates.size == 1) {
+                val store = activeCandidates.single()
                 receipt.copy(businessDate = key.date, storeId = store.storeId,
                     storeName = store.storeName)
             } else {
                 sharedMatches.getOrPut(key) { mutableListOf() }
-                    .add(Match(key, candidates, receipt))
+                    .add(Match(key, activeCandidates, receipt))
                 // Do not double-count this payment in several location totals.
                 receipt.copy(businessDate = key.date, storeId = 0L,
                     storeName = SHARED_STORE_NAME)
@@ -126,8 +167,10 @@ internal object CustomerCollectorStoreAttribution {
         }
 
         val groups = sharedMatches.map { (key, matches) ->
-            val first = matches.first().records
-            val people = first.asSequence().flatMap { saved ->
+            // Candidate windows may differ by hour: do not let the first
+            // shared receipt hide a later involved position.
+            val involvedStores = matches.flatMap { it.records }.distinctBy { it.storeId }
+            val people = involvedStores.asSequence().flatMap { saved ->
                 saved.receiptSplits.asSequence()
                     .filter { it.partnerId == key.partnerId }
                     .map { it.partnerName }
@@ -136,7 +179,7 @@ internal object CustomerCollectorStoreAttribution {
             SharedCollectorTraffic(
                 date = key.date, platform = key.platform,
                 partnerId = key.partnerId, partnerName = people,
-                stores = first.map { it.storeId to it.storeName },
+                stores = involvedStores.map { it.storeId to it.storeName },
                 receiptIds = distinct.map { it.id }.toSet(),
                 payments = distinct.size,
                 amount = distinct.sumOf { it.netAmount }

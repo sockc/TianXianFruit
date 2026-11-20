@@ -88,4 +88,23 @@ class OvernightReceiptAuditPolicyTest {
         assertNull(OvernightReceiptPolicy.adjustment(original(),entries))
     }
 
+    @Test fun duplicateWithNonzeroSecondRowStillFlagsDeletedOwner() {
+        val deleted = OvernightReceiptDeletionPolicy.clearedNatural(original(), day, 1L)
+        val rows = listOf(morning(day, 0.0), morning(day, 47.0))
+        val issues = OvernightReceiptAuditPolicy.inspect(
+            day, listOf(sale(2L, 300.0)), rows, listOf(deleted), emptySet())
+        assertTrue(issues.any { it.reason == OvernightReviewReason.DUPLICATE_MORNING })
+        assertTrue(issues.any { it.reason == OvernightReviewReason.DELETED_OWNER })
+        assertNull(OvernightReceiptPolicy.adjustment(original(2L), rows))
+    }
+
+    @Test fun duplicateWithNonzeroSecondRowStillFlagsSharedCollector() {
+        val rows = listOf(morning(day, 0.0), morning(day, 47.0))
+        val issues = OvernightReceiptAuditPolicy.inspect(
+            day, listOf(sale(1L, 1073.0), sale(2L, 300.0)),
+            rows, listOf(original()), emptySet())
+        assertTrue(issues.any { it.reason == OvernightReviewReason.DUPLICATE_MORNING })
+        assertTrue(issues.any { it.reason == OvernightReviewReason.SHARED_COLLECTOR })
+    }
+
 }

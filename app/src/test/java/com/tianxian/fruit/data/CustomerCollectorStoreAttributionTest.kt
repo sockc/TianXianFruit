@@ -54,6 +54,39 @@ class CustomerCollectorStoreAttributionTest {
         assertTrue(resolved.collectorMatchedIds.isEmpty())
     }
 
+    @Test fun configuredWrongCollectorClearsPreviouslyInferredStoreOnlyInAnalysis() {
+        val oldGuess = payment(3).copy(storeId = 10L, storeName = "九龙公园")
+        val resolved = CustomerCollectorStoreAttribution.resolve(
+            listOf(oldGuess), listOf(store(10L, "九龙公园", cashier = 7L)),
+            receiptCollectors, people
+        )
+        assertEquals(0L, resolved.rows.single().storeId)
+        assertTrue(resolved.rows.single().storeName.isBlank())
+        assertTrue(resolved.shared.isEmpty())
+        assertTrue(resolved.collectorMatchedIds.isEmpty())
+        // The source receipt object is untouched; no official or cloud row is written.
+        assertEquals(10L, oldGuess.storeId)
+    }
+
+    @Test fun conflictingCollectorDoesNotInheritOldTimeOnlyStoreGuess() {
+        val oldGuess = payment(1).copy(storeId = 10L, storeName = "九龙公园")
+        val resolved = CustomerCollectorStoreAttribution.resolve(
+            listOf(oldGuess), listOf(store(10L, "九龙公园")),
+            mapOf(1L to ReceiptCollectorPolicy.CONFLICT), people
+        )
+        assertEquals(0L, resolved.rows.single().storeId)
+        assertTrue(resolved.collectorMatchedIds.isEmpty())
+    }
+
+    @Test fun noOfficialSellingRecordCannotProveConfiguredCollectorsLocation() {
+        val oldGuess = payment(1).copy(storeId = 10L, storeName = "九龙公园")
+        val resolved = CustomerCollectorStoreAttribution.resolve(
+            listOf(oldGuess), emptyList(), receiptCollectors, people
+        )
+        assertEquals(0L, resolved.rows.single().storeId)
+        assertEquals(10L, oldGuess.storeId)
+    }
+
     @Test fun oneCollectorAtOneStoreAutomaticallyJoinsHistoricalStore() {
         val result = CustomerCollectorStoreAttribution.resolve(
             listOf(payment(1)), listOf(store(10, "九龙公园")), receiptCollectors, people
@@ -61,6 +94,49 @@ class CustomerCollectorStoreAttributionTest {
         assertEquals(10L, result.rows.single().storeId)
         assertTrue(result.shared.isEmpty())
         assertTrue(1L in result.collectorMatchedIds)
+    }
+
+    @Test fun sameCollectorAtDisjointShiftsCanBeAttributedByVerifiedTimes() {
+        val receipts = listOf(
+            payment(1).copy(tradeTime = "2026-10-16 18:30:00"),
+            payment(2).copy(tradeTime = "2026-10-16 21:15:00")
+        )
+        val result = CustomerCollectorStoreAttribution.resolve(
+            receipts,
+            listOf(store(10, "九龙公园"), store(20, "凰岗村")),
+            receiptCollectors, people,
+            listOf(
+                CustomerTrafficSession("2026-10-16", 10L, "九龙公园", "16:00", "20:00"),
+                CustomerTrafficSession("2026-10-16", 20L, "凰岗村", "20:00", "24:00")
+            )
+        )
+        assertEquals(listOf(10L, 20L), result.rows.map { it.storeId })
+        assertTrue(result.shared.isEmpty())
+        assertEquals(setOf(1L, 2L), result.collectorMatchedIds)
+    }
+
+    @Test fun changingOverlapsStillShowAllInvolvedStoresWithoutDoubleCount() {
+        val receipts = listOf(
+            payment(1).copy(tradeTime = "2026-10-16 18:30:00"),
+            payment(2).copy(tradeTime = "2026-10-16 21:15:00")
+        )
+        val result = CustomerCollectorStoreAttribution.resolve(
+            receipts,
+            listOf(store(10, "九龙公园"), store(20, "凰岗村"),
+                store(30, "第三位置")),
+            receiptCollectors, people,
+            listOf(
+                CustomerTrafficSession("2026-10-16", 10L, "九龙公园", "16:00", "21:00"),
+                CustomerTrafficSession("2026-10-16", 20L, "凰岗村", "17:00", "23:00"),
+                CustomerTrafficSession("2026-10-16", 30L, "第三位置", "20:00", "24:00")
+            )
+        )
+        assertTrue(result.rows.all { it.storeId == 0L &&
+            it.storeName == CustomerCollectorStoreAttribution.SHARED_STORE_NAME })
+        assertEquals(1, result.shared.size)
+        assertEquals(setOf(10L, 20L, 30L), result.shared.single().storeIds)
+        assertEquals(2, result.shared.single().payments)
+        assertEquals(30.0, result.shared.single().amount, 0.001)
     }
 
     @Test fun sharedCashierAcrossTwoStoresIsCountedOnlyOnce() {
@@ -137,6 +213,85 @@ class CustomerCollectorStoreAttributionTest {
         )
         assertEquals(listOf(10L, 20L), result.rows.map { it.storeId })
         assertTrue(result.shared.isEmpty())
+    }
+
+    @Test fun paymentOutsideAllSavedSellingWindowsIsNotAutomaticallyAttributed() {
+        val beforeOpening = payment(1).copy(tradeTime = "2026-10-16 14:30:00")
+        val afterClosing = payment(2).copy(tradeTime = "2026-10-16 23:30:00")
+        val onlyStore = listOf(store(10, "九龙公园"))
+        val sessions = listOf(CustomerTrafficSession("2026-10-16", 10L,
+            "九龙公园", "16:00", "22:00"))
+        val result = CustomerCollectorStoreAttribution.resolve(
+            listOf(beforeOpening, afterClosing), onlyStore,
+            receiptCollectors, people, sessions
+        )
+        assertTrue(result.rows.all { it.storeId == 0L })
+        assertTrue(result.collectorMatchedIds.isEmpty())
+        assertTrue(result.shared.isEmpty())
+    }
+
+    @Test fun multipleStoresOutsideAllWindowsDoNotClaimPayments() {
+        val early = payment(1).copy(tradeTime = "2026-10-16 09:30:00")
+        val result = CustomerCollectorStoreAttribution.resolve(
+            listOf(early),
+            listOf(store(10, "九龙公园"), store(20, "凰岗村")),
+            receiptCollectors, people
+        )
+        assertEquals(0L, result.rows.single().storeId)
+        assertTrue(result.shared.isEmpty())
+        assertTrue(result.collectorMatchedIds.isEmpty())
+    }
+
+    @Test fun sameCollectorOverlappingShiftsKeepSharedPaymentsOnce() {
+        val rows = listOf(payment(1), payment(2))
+        val result = CustomerCollectorStoreAttribution.resolve(
+            rows, listOf(store(10, "九龙公园"), store(20, "凰岗村")),
+            receiptCollectors, people,
+            listOf(CustomerTrafficSession("2026-10-16", 10L, "九龙公园",
+                "16:00", "22:00"), CustomerTrafficSession("2026-10-16",
+                20L, "凰岗村", "17:00", "23:00"))
+        )
+        assertEquals(1, result.shared.size)
+        assertEquals(2, result.shared.single().payments)
+        assertEquals(30.0, result.shared.single().amount, 0.001)
+        assertTrue(result.rows.all { it.storeId == 0L })
+    }
+
+    @Test fun laterValidWindowForSameStoreSurvivesLegacyDuplicateSessions() {
+        val day = "2026-10-16"
+        val receipt = payment(1).copy(tradeTime = "$day 19:15:00")
+        val result = CustomerCollectorStoreAttribution.resolve(
+            listOf(receipt), listOf(store(10L, "九龙公园")),
+            receiptCollectors, people,
+            listOf(
+                CustomerTrafficSession(day, 10L, "九龙公园", "16:00", "18:00"),
+                CustomerTrafficSession(day, 10L, "九龙公园", "18:00", "23:00")
+            )
+        )
+        assertEquals(10L, result.rows.single().storeId)
+        assertTrue(result.shared.isEmpty())
+        assertTrue(1L in result.collectorMatchedIds)
+    }
+
+    @Test fun overlappingAdjacentBusinessDaysDoNotGuessWhichDayOwnsMidnightReceipt() {
+        val midnight = payment(1, date = "2026-10-17")
+            .copy(tradeTime = "2026-10-17 00:25:00")
+        val result = CustomerCollectorStoreAttribution.resolve(
+            listOf(midnight),
+            listOf(store(10L, "九龙公园", date = "2026-10-16"),
+                store(20L, "凰岗村", date = "2026-10-17")),
+            receiptCollectors, people,
+            listOf(
+                CustomerTrafficSession("2026-10-16", 10L, "九龙公园",
+                    "16:00", "02:00"),
+                CustomerTrafficSession("2026-10-17", 20L, "凰岗村",
+                    "00:00", "04:00")
+            )
+        )
+        assertEquals(0L, result.rows.single().storeId)
+        assertEquals("2026-10-17", result.rows.single().businessDate)
+        assertTrue(result.shared.isEmpty())
+        assertTrue(result.collectorMatchedIds.isEmpty())
     }
 
     @Test fun nextMorningPaymentUsesPreviousDayWhenTheStoreStayedOpen() {

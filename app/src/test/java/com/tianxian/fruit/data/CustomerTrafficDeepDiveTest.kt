@@ -95,6 +95,50 @@ class CustomerTrafficDeepDiveTest {
         assertEquals("2026-10-15",kept.businessDate)
     }
 
+    @Test fun configuredCollectorTakesPriorityOverTimeOnlyStoreGuess() {
+        val receipt = record(91, "2026-10-14 18:05:00", storeId = 0L)
+        val sessions = listOf(session("2026-10-14", 1, "16:00", "22:00"))
+        val unprotected = CustomerTrafficDeepDive.attributeBusinessDays(
+            listOf(receipt), sessions
+        ).single()
+        assertEquals(1L, unprotected.storeId)
+
+        val protected = CustomerTrafficDeepDive.attributeBusinessDays(
+            listOf(receipt), sessions, collectorProtectedIds = setOf(91L)
+        ).single()
+        assertEquals(0L, protected.storeId)
+        assertEquals(receipt.businessDate, protected.businessDate)
+        assertEquals(receipt.tradeTime, protected.tradeTime)
+    }
+
+    @Test fun overlappingHistoricalWindowsAtSameStoreAreOneCandidate() {
+        val receipt = record(92, "2026-10-15 00:25:00", storeId = 0L)
+        val windows = listOf(
+            session("2026-10-14", 1, "16:00", "01:00"),
+            session("2026-10-14", 1, "20:00", "02:00")
+        )
+        val matched = CustomerTrafficDeepDive.matchSession(receipt.tradeTime, windows)
+        assertEquals(1L, matched?.storeId)
+        assertEquals("2026-10-14", matched?.date)
+        val attributed = CustomerTrafficDeepDive.attributeBusinessDays(
+            listOf(receipt), windows
+        ).single()
+        assertEquals(1L, attributed.storeId)
+        assertEquals("2026-10-14", attributed.businessDate)
+        // Read-only projection: original natural-day receipt stays unchanged.
+        assertEquals("2026-10-15", receipt.businessDate)
+    }
+
+    @Test fun sameStoreOnTwoOverlappingBusinessDaysIsStillAmbiguous() {
+        val windows = listOf(
+            session("2026-10-14", 1, "23:00", "02:00"),
+            session("2026-10-15", 1, "00:00", "03:00")
+        )
+        assertNull(CustomerTrafficDeepDive.matchSession(
+            "2026-10-15 00:25:00", windows
+        ))
+    }
+
     @Test fun uniqueDaytimeShiftCanSafelyMatchPreviouslyUnassignedPayment() {
         val receipt = record(40, "2026-10-14 18:05:00", storeId = 0L)
         val sessions = listOf(

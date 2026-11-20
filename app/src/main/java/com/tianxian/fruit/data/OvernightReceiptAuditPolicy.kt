@@ -47,13 +47,14 @@ internal object OvernightReceiptAuditPolicy {
         val result = mutableListOf<OvernightReviewIssue>()
         for ((partner, entries) in today.groupBy { it.partnerId }) {
             val activeStores = entries.map { it.storeId }.toSet()
-            val previous = mornings.firstOrNull {
-                it.calendarDate == date && it.partnerId == partner
+            // Scan every candidate. A legacy duplicate's first entry may be
+            // zero/blank while a later entry carries real money. Do not let
+            // firstOrNull() hide a deleted-owner or shared-collector warning.
+            val relevantDates = setOf(date, day.plusDays(1).toString())
+            val relevantMornings = mornings.filter {
+                it.partnerId == partner && it.calendarDate in relevantDates
             }
-            val following = mornings.firstOrNull {
-                it.calendarDate == day.plusDays(1).toString() && it.partnerId == partner
-            }
-            val hasMorning = moneyPositive(previous) || moneyPositive(following)
+            val hasMorning = relevantMornings.any(::moneyPositive)
             val source = drafts.firstOrNull {
                 it.businessDate == date && it.partnerId == partner
             }
@@ -64,10 +65,9 @@ internal object OvernightReceiptAuditPolicy {
             fun flag(reason: OvernightReviewReason, stores: Set<Long>, detail: String) {
                 result.add(OvernightReviewIssue(date, partner, reason, stores, detail))
             }
-            val duplicate = mornings.filter {
-                it.partnerId == partner && it.calendarDate in
-                    setOf(date, day.plusDays(1).toString())
-            }.groupingBy { it.calendarDate }.eachCount().values.any { it > 1 }
+            val duplicate = relevantMornings.groupingBy {
+                it.calendarDate
+            }.eachCount().values.any { it > 1 }
             if (duplicate) {
                 flag(OvernightReviewReason.DUPLICATE_MORNING, activeStores,
                     "同一收款人、同一凌晨日期存在重复记录，请核对合并，暂停自动调整")
