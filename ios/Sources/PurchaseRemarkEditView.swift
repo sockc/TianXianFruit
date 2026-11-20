@@ -38,7 +38,7 @@ struct PurchaseRemarkEditView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Label("V0.3.1 · 测试采购备注更正",
+                Label("V0.3.3 · 测试采购备注更正",
                       systemImage: "pencil.and.list.clipboard")
                     .font(.headline)
                 Text("只修改备注，不改变采购金额、商品、采购人、库存或结算。任何冲突、断网或结果不明都不会自动重发。")
