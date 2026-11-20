@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V0.4.0: real-account purchase entry is scoped local-only; cloud remains read-only."""
+"""V0.4.1: cloud reconciliation is read-only; formal purchase writes require server transactions."""
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1] / "Sources"
@@ -221,4 +221,24 @@ assert "pushSingle" not in editor
 assert "StagingPurchaseAPI" not in workspace
 assert "purchase_workspace_draft" not in regular
 assert (root.parent / "Tests" / "PurchaseWorkspaceTests.swift").exists()
-print("V0.4.0 PASS: Android plan cloud reads; isolated formal-account local purchase drafts; no production push.")
+reconcile = swift["PurchaseCloudReconcile.swift"]
+last_price = swift["PurchaseLastPricePolicy.swift"]
+assert "PurchaseCloudReconcilePolicy.inspect" in workspace
+assert "model.refresh(forceFull: true)" in workspace
+assert "model.isUsingCachedAuthorization" in workspace
+assert "PurchaseLastPricePolicy.latest" in editor
+assert "price > 0" in last_price
+assert "purchase_order" in last_price and "purchase_item" in last_price
+assert "fruitSyncID" in last_price
+assert "SHA256.hash" in reconcile
+assert "matchingCloudOrder" in reconcile
+assert "potentialDuplicate" in reconcile
+assert "absentFromLatestCloud" in reconcile
+assert "unsafeToCompare" in reconcile
+assert "/sync/push" not in reconcile
+assert "pushSingle" not in reconcile
+assert "URLSession" not in reconcile
+assert "api.push" not in last_price
+assert (root.parent / "Tests" / "PurchaseCloudReconcileTests.swift").exists()
+assert (root.parent / "PURCHASE_COMMIT_CONTRACT.md").exists()
+print("V0.4.1 PASS: formal-account readback, unique cloud identity checks and last valid price; no production purchase writes.")
