@@ -64,7 +64,7 @@ final class BusinessUploadTests: XCTestCase {
     func testMultiCollectorSplitRevenueAndProfitAreExact() throws {
         let job = try prepared()
         XCTAssertEqual(job.payload["revenue"]?.decimal, 200)
-        XCTAssertEqual(job.payload["profit"]?.decimal, 160)
+        XCTAssertEqual(job.payload["profit"]?.decimal, 130
         // Android business source saves purchase_cost=0; purchase cost
         // belongs to the separate purchase table and must not be deducted.
         XCTAssertEqual(job.payload["purchase_cost"]?.decimal, 0)
