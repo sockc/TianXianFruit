@@ -80,6 +80,39 @@ final class BusinessUploadTests: XCTestCase {
             job, events: sources() + [job.event]))
     }
 
+    func testReadbackAcceptsEquivalentNumericJSONButRejectsChangedSplit() throws {
+        let job = try prepared()
+        let original = try XCTUnwrap(job.payload["receipt_splits_json"]?.text)
+        let data = try XCTUnwrap(original.data(using: .utf8))
+        let parsed = try JSONDecoder().decode(
+            [TestBusinessReceiptSplit].self, from: data)
+
+        func number(_ value: Double) -> String {
+            String(format: "%.2f", value)
+        }
+        let alternate = "[" + parsed.map { split in
+            "{\"partner_id\":\(split.partnerID)," +
+            "\"partner_name\":\"\(split.partnerName)\"," +
+            "\"amount\":\(number(split.amount))," +
+            "\"wechat_income\":\(number(split.wechatIncome))," +
+            "\"alipay_income\":\(number(split.alipayIncome))," +
+            "\"cash_income\":\(number(split.cashIncome))}"
+        }.joined(separator: ",") + "]"
+        XCTAssertNotEqual(alternate, original)
+        var remotePayload = job.payload
+        remotePayload["receipt_splits_json"] = .string(alternate)
+        XCTAssertTrue(BusinessUploadPolicy.verified(job, events: [
+            remote("store_daily_record", job.syncID, remotePayload)
+        ]))
+
+        remotePayload["receipt_splits_json"] = .string(
+            alternate.replacingOccurrences(of: "\"amount\":140.00",
+                                           with: "\"amount\":141.00"))
+        XCTAssertFalse(BusinessUploadPolicy.verified(job, events: [
+            remote("store_daily_record", job.syncID, remotePayload)
+        ]))
+    }
+
     func testExistingSameDayStoreAndDeletedHistoryBlockNewBusiness() throws {
         let job = try prepared()
         XCTAssertTrue(BusinessUploadPolicy.conflict(
