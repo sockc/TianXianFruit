@@ -1,4 +1,4 @@
-name: Check iOS V0.3.3 explicit multi-collector business editing
+name: Check iOS V0.3.4 multi-collector business entry and operating hours
 
 on:
   pull_request:
