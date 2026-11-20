@@ -1,0 +1,232 @@
+import Foundation
+import SwiftUI
+
+/// Formal-book local draft only. This type must never be passed to /sync/push.
+struct BusinessLocalDraft: Codable, Identifiable {
+    var id: String
+    var date: String
+    var storeID: String
+    var storeName: String
+    var collectors: [BusinessCollectorDraftLine]
+    var startTime: String
+    var endTime: String
+    var note: String
+    var updatedAt: Date
+}
+
+enum BusinessLocalDraftStore {
+    private static func key(account: String, bookID: String) -> String {
+        "ios.formal.business.drafts.v1." + account.lowercased() + "." + bookID.lowercased()
+    }
+
+    static func load(account: String, bookID: String) -> [BusinessLocalDraft] {
+        guard !account.isEmpty, !bookID.isEmpty,
+              let data = UserDefaults.standard.data(forKey: key(account: account, bookID: bookID)),
+              let drafts = try? JSONDecoder().decode([BusinessLocalDraft].self, from: data)
+        else { return [] }
+        return drafts
+    }
+
+    static func save(_ draft: BusinessLocalDraft, account: String, bookID: String) throws {
+        guard !account.isEmpty, !bookID.isEmpty else {
+            throw TestWriteError.insufficientSchema("未选择账号或账本")
+        }
+        var drafts = load(account: account, bookID: bookID)
+        // One local draft per calendar date and stall. No network side effects.
+        drafts.removeAll { ($0.date == draft.date && $0.storeID == draft.storeID) || $0.id == draft.id }
+        drafts.append(draft)
+        let data = try JSONEncoder().encode(drafts)
+        UserDefaults.standard.set(data, forKey: key(account: account, bookID: bookID))
+    }
+}
+
+/// An isolated local editor; the existing TestWriteLab and cloud write API are untouched.
+struct BusinessLocalEntryView: View {
+    @EnvironmentObject private var model: LedgerViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var date: Date
+    @State private var storeID = ""
+    @State private var lines: [BusinessCollectorDraftLine] = [BusinessCollectorDraftLine()]
+    @State private var startTime = ""
+    @State private var endTime = ""
+    @State private var note = ""
+    @State private var errorText: String?
+    @State private var saved = false
+
+    init(date: Date) {
+        _date = State(initialValue: date)
+    }
+
+    private var account: String { model.account?.username ?? "" }
+    private var bookID: String { model.selectedBookID ?? "" }
+    private var dateKey: String { BusinessDates.key(date) }
+    private var editingAllowed: Bool {
+        guard let book = model.selectedBook, book.isAvailable, !account.isEmpty else { return false }
+        return ["OWNER", "SUPERADMIN", "EDITOR"].contains(book.role.uppercased())
+    }
+
+    private var existingRemote: Bool {
+        model.snapshot.business.contains {
+            $0.date == dateKey && model.snapshot.testStores.first(where: { $0.id == storeID })?.name == $0.storeName
+        }
+    }
+
+    private func loadDraft() {
+        guard !storeID.isEmpty else { return }
+        if let draft = BusinessLocalDraftStore.load(account: account, bookID: bookID)
+            .first(where: { $0.date == dateKey && $0.storeID == storeID }) {
+            lines = draft.collectors
+            startTime = draft.startTime
+            endTime = draft.endTime
+            note = draft.note
+        } else {
+            lines = [BusinessCollectorDraftLine()]
+            startTime = ""
+            endTime = ""
+            note = ""
+        }
+        saved = false
+        errorText = nil
+    }
+
+    private func save() {
+        guard editingAllowed,
+              let store = model.snapshot.testStores.first(where: { $0.id == storeID }) else {
+            errorText = "请选择有效营业位置，并确认账本编辑权限"
+            return
+        }
+        do {
+            let totals = try BusinessCollectorDraftPolicy.totals(lines)
+            let fields = [
+                "wechat": String(format: "%.2f", Double(totals.wechat) / 100),
+                "alipay": String(format: "%.2f", Double(totals.alipay) / 100),
+                "cash": String(format: "%.2f", Double(totals.cash) / 100),
+                "actual_start_time": startTime.trimmingCharacters(in: .whitespaces),
+                "actual_end_time": endTime.trimmingCharacters(in: .whitespaces)
+            ]
+            try BusinessCollectorDraftPolicy.validate(lines, fields: fields)
+            try BusinessCollectorDraftPolicy.validateTimes(fields)
+            let previous = BusinessLocalDraftStore.load(account: account, bookID: bookID)
+                .first(where: { $0.date == dateKey && $0.storeID == storeID })
+            let draft = BusinessLocalDraft(
+                id: previous?.id ?? UUID().uuidString, date: dateKey,
+                storeID: store.id, storeName: store.name, collectors: lines,
+                startTime: fields["actual_start_time"] ?? "",
+                endTime: fields["actual_end_time"] ?? "", note: note, updatedAt: Date())
+            try BusinessLocalDraftStore.save(draft, account: account, bookID: bookID)
+            saved = true
+            errorText = nil
+        } catch {
+            errorText = error.localizedDescription
+            saved = false
+        }
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(header: Text("营业日期与位置")) {
+                    DatePicker("营业日期", selection: $date, displayedComponents: .date)
+                        .onChange(of: date) { _ in loadDraft() }
+                    Picker("营业位置", selection: $storeID) {
+                        Text("请选择位置").tag("")
+                        ForEach(model.snapshot.testStores) { store in
+                            Text(store.name).tag(store.id)
+                        }
+                    }
+                    .onChange(of: storeID) { _ in loadDraft() }
+                    if existingRemote {
+                        Label("云端已有此日此位置营业记录。本机草稿不会覆盖已有记录。",
+                              systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundColor(.orange)
+                    }
+                }
+                Section(header: Text("收款人及金额（元）")) {
+                    ForEach($lines) { $line in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Picker("收款人", selection: $line.partnerSyncID) {
+                                    Text("请选择收款人").tag("")
+                                    ForEach(model.snapshot.testPartners) { person in
+                                        Text(person.name).tag(person.id)
+                                    }
+                                }
+                                if lines.count > 1 {
+                                    Button(role: .destructive) {
+                                        lines.removeAll { $0.id == line.id }
+                                    } label: {
+                                        Image(systemName: "minus.circle")
+                                    }
+                                }
+                            }
+                            amount("微信", value: $line.wechat)
+                            amount("支付宝", value: $line.alipay)
+                            amount("现金", value: $line.cash)
+                        }
+                    }
+                    if lines.count < 12 {
+                        Button {
+                            lines.append(BusinessCollectorDraftLine())
+                        } label: {
+                            Label("增加收款人", systemImage: "person.badge.plus")
+                        }
+                    }
+                    if let totals = try? BusinessCollectorDraftPolicy.totals(lines) {
+                        Text(String(format: "微信 ¥%.2f · 支付宝 ¥%.2f · 现金 ¥%.2f",
+                                    Double(totals.wechat)/100,
+                                    Double(totals.alipay)/100,
+                                    Double(totals.cash)/100))
+                            .font(.caption.bold())
+                    }
+                }
+                Section(header: Text("实际营业时间")) {
+                    TextField("开摊 HH:mm，例如 16:00", text: $startTime)
+                    TextField("收摊 HH:mm，例如 00:10", text: $endTime)
+                    Text("两项同时填写或同时留空；跨午夜仅表示营业时段，不自动生成凌晨收款扣减。")
+                        .font(.caption).foregroundColor(.secondary)
+                    TextField("本机备注（不参与结算）", text: $note)
+                }
+                Section {
+                    Button {
+                        save()
+                    } label: {
+                        Label("保存本机营业草稿", systemImage: "square.and.arrow.down")
+                    }
+                    .disabled(!editingAllowed || storeID.isEmpty)
+                    if saved {
+                        Label("本机草稿已保存，未提交云端", systemImage: "checkmark.circle")
+                            .foregroundColor(.green)
+                    }
+                    if let errorText {
+                        Text(errorText).font(.caption).foregroundColor(.orange)
+                    }
+                    Text("正式营业上传、更正、删除、凌晨收款和资金结算仍锁定；本机草稿不会被 Android 同步，也不会计入营业汇总。")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("营业录入")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("关闭") { dismiss() }
+                }
+            }
+            .onAppear {
+                if storeID.isEmpty, model.snapshot.testStores.count == 1 {
+                    storeID = model.snapshot.testStores[0].id
+                }
+                loadDraft()
+            }
+        }
+    }
+
+    private func amount(_ title: String, value: Binding<String>) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            TextField("0.00", text: value)
+                .keyboardType(.decimalPad)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
