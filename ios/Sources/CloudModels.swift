@@ -5,6 +5,8 @@ import Foundation
 indirect enum JSONValue: Codable, Equatable {
     case string(String)
     case number(Double)
+    /// Android SQLite signed 64-bit IDs must never round through Double.
+    case exactInteger(Int64)
     case bool(Bool)
     case object([String: JSONValue])
     case array([JSONValue])
@@ -14,6 +16,11 @@ indirect enum JSONValue: Codable, Equatable {
         let value = try decoder.singleValueContainer()
         if value.decodeNil() { self = .null }
         else if let flag = try? value.decode(Bool.self) { self = .bool(flag) }
+        else if let identity = try? value.decode(Int64.self),
+                identity > 9_007_199_254_740_991 ||
+                identity < -9_007_199_254_740_991 {
+            self = .exactInteger(identity)
+        }
         else if let amount = try? value.decode(Double.self) { self = .number(amount) }
         else if let text = try? value.decode(String.self) { self = .string(text) }
         else if let map = try? value.decode([String: JSONValue].self) { self = .object(map) }
@@ -26,6 +33,7 @@ indirect enum JSONValue: Codable, Equatable {
         switch self {
         case .string(let text): try value.encode(text)
         case .number(let amount): try value.encode(amount)
+        case .exactInteger(let identity): try value.encode(identity)
         case .bool(let flag): try value.encode(flag)
         case .object(let map): try value.encode(map)
         case .array(let list): try value.encode(list)
@@ -37,6 +45,7 @@ indirect enum JSONValue: Codable, Equatable {
         switch self {
         case .string(let value): return value
         case .number(let value): return String(value)
+        case .exactInteger(let value): return String(value)
         default: return ""
         }
     }
@@ -44,6 +53,7 @@ indirect enum JSONValue: Codable, Equatable {
     var decimal: Double {
         switch self {
         case .number(let value): return value
+        case .exactInteger(let value): return Double(value)
         case .string(let value): return Double(value) ?? 0
         default: return 0
         }
@@ -53,6 +63,7 @@ indirect enum JSONValue: Codable, Equatable {
         switch self {
         case .bool(let value): return value
         case .number(let value): return value != 0
+        case .exactInteger(let value): return value != 0
         case .string(let value): return value == "1" || value.lowercased() == "true"
         default: return false
         }
