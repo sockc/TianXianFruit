@@ -149,6 +149,29 @@ class PaymentBillParserTest {
     }
 
     @Test
+    fun alipayIncomeCategoryMustNotTrustMerchantWordsInFreeTextRemarks() {
+        val csv = """
+            支付宝交易明细
+            交易时间,交易分类,交易对方,商品说明,备注,收/支,金额,交易状态,交易订单号
+            2026-11-20 18:04:00,收入,朋友,朋友转账,经营收款,收入,500.00,交易成功,ali-friend-remark
+            2026-11-20 18:05:00,收入,顾客A,经营码交易,水果,收入,35.00,交易成功,ali-merchant-code
+            2026-11-20 18:06:00,收入,顾客B,收钱码收款,收款备注,收入,28.00,交易成功,ali-payment-code
+        """.trimIndent()
+        val result = PaymentBillParser.parse(
+            "支付宝交易明细.csv", csv.toByteArray(Charset.forName("GB18030"))
+        )
+        assertEquals(PaymentBillPlatform.ALIPAY, result.platform)
+        assertEquals(3, result.totalRows)
+        assertEquals(2, result.acceptedRows)
+        assertEquals(1, result.ignoredRows)
+        assertEquals(
+            setOf("ali-merchant-code", "ali-payment-code"),
+            result.transactions.map { it.transactionRef }.toSet()
+        )
+        assertEquals(63.0, result.transactions.sumOf { it.netAmount }, 0.001)
+    }
+
+    @Test
     fun alipayGb18030BusinessReceiptUsesStableBuyerIdentity() {
         val text =
             """
