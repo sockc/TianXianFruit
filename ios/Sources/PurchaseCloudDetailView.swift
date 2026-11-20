@@ -23,6 +23,12 @@ struct PurchaseCloudDetailView: View {
                         Text(order.date + " · " + order.buyer).font(.headline)
                         Text("采购订单：" + order.totalCost.formatted(.currency(code: "CNY")))
                             .font(.title3.bold())
+                        if let remark = model.snapshot.records[
+                            "purchase_order|" + order.id]?.payload["remark"]?.text,
+                           !remark.isEmpty {
+                            Text("采购备注：" + remark)
+                                .font(.subheadline).foregroundColor(.secondary)
+                        }
                         Text("云端记录只读 · 不会改变 Android 采购、库存或结算")
                             .font(.caption2).foregroundColor(.secondary)
                     }
