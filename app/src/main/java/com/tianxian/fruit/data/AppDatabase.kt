@@ -11409,7 +11409,8 @@ class AppDatabase(
                         item.fruitId,
                         item.unit
                     )
-                } else if (item.openingQuantity > 0.000001) {
+                } else if (InventoryOpeningCostEvidencePolicy.sourceMissing(
+                        item.openingQuantity, previousSnapshotDate)) {
                     InventoryCostBasis(null, false)
                 } else {
                     InventoryCostBasis(0.0, true)
