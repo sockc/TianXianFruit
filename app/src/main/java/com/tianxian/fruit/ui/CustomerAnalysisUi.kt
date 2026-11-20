@@ -3161,7 +3161,10 @@ private fun SameWeekdayCustomerCard(
                         FontWeight.SemiBold
                 )
                 Text(
-                    "当天 ${row.currentCustomers} 人 · 最近 ${row.sampleDays} 个同星期平均 ${String.format(Locale.CHINA, "%.1f", row.averageCustomers)} 人 · ${signedInt(row.difference)} 人（$changeText）",
+                    if (row.sampleDays < 3)
+                        "当天 ${row.currentCustomers} 人 · 仅有${row.sampleDays}个同星期历史样本，资料不足"
+                    else
+                        "当天 ${row.currentCustomers} 人 · 最近 ${row.sampleDays} 个同星期平均 ${String.format(Locale.CHINA, "%.1f", row.averageCustomers)} 人 · ${signedInt(row.difference)} 人（$changeText）",
                     style =
                         MaterialTheme
                             .typography
