@@ -1,4 +1,4 @@
-name: Check iOS V0.4.1 purchase cloud reconcile and last price
+name: Check iOS V0.4.2 purchase import and atomic intent planning
 
 on:
   pull_request:
