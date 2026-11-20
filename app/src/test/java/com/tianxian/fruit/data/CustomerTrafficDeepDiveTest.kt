@@ -95,6 +95,22 @@ class CustomerTrafficDeepDiveTest {
         assertEquals("2026-10-15",kept.businessDate)
     }
 
+    @Test fun configuredCollectorTakesPriorityOverTimeOnlyStoreGuess() {
+        val receipt = record(91, "2026-10-14 18:05:00", storeId = 0L)
+        val sessions = listOf(session("2026-10-14", 1, "16:00", "22:00"))
+        val unprotected = CustomerTrafficDeepDive.attributeBusinessDays(
+            listOf(receipt), sessions
+        ).single()
+        assertEquals(1L, unprotected.storeId)
+
+        val protected = CustomerTrafficDeepDive.attributeBusinessDays(
+            listOf(receipt), sessions, collectorProtectedIds = setOf(91L)
+        ).single()
+        assertEquals(0L, protected.storeId)
+        assertEquals(receipt.businessDate, protected.businessDate)
+        assertEquals(receipt.tradeTime, protected.tradeTime)
+    }
+
     @Test fun uniqueDaytimeShiftCanSafelyMatchPreviouslyUnassignedPayment() {
         val receipt = record(40, "2026-10-14 18:05:00", storeId = 0L)
         val sessions = listOf(
