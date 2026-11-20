@@ -105,7 +105,7 @@ jobs:
       - name: Upload private signed IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TianXianFruit-iOS-v0.2.7-AdHoc
+          name: TianXianFruit-iOS-v0.2.8-AdHoc
           path: ${{ runner.temp }}/ipa/*.ipa
           retention-days: 7
           if-no-files-found: error
