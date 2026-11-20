@@ -83,6 +83,19 @@ final class TestDraftStore {
             )
         """)
         try exec("CREATE INDEX IF NOT EXISTS idx_edit_jobs_scope ON isolated_business_edit_jobs(source_account,book_id)")
+        try exec("""
+            CREATE TABLE IF NOT EXISTS isolated_purchase_remark_jobs (
+                id TEXT PRIMARY KEY,
+                source_account TEXT NOT NULL,
+                book_id TEXT NOT NULL,
+                stage_host TEXT NOT NULL,
+                state TEXT NOT NULL,
+                payload BLOB NOT NULL,
+                created_at_ms INTEGER NOT NULL
+            )
+        """)
+        try exec("CREATE INDEX IF NOT EXISTS idx_remark_jobs_scope ON isolated_purchase_remark_jobs(source_account,book_id)")
+
 
     }
 
@@ -559,6 +572,146 @@ final class TestDraftStore {
         }
         let stmt = try prepare("""
             DELETE FROM isolated_business_edit_jobs
+            WHERE id=? AND source_account=? AND book_id=? AND state='ready'
+        """)
+        defer { sqlite3_finalize(stmt) }
+        bind(id, at: 1, to: stmt)
+        bind(normalized(account), at: 2, to: stmt)
+        bind(book, at: 3, to: stmt)
+        try step(stmt)
+        guard sqlite3_changes(database) == 1 else {
+            throw TestDraftStoreError.invalid
+        }
+    }
+
+    /// Immutable metadata-only purchase correction; requires one durable
+    /// request identity. No mutation of a previously sent edit is permitted.
+    func savePurchaseRemarkJob(_ job: PurchaseRemarkEditJob) throws {
+        guard !job.id.isEmpty, !job.sourceAccount.isEmpty, !job.bookID.isEmpty,
+              job.stageHost == StagingPurchasePolicy.productionURL,
+              job.stageInstanceID == "production-scoped-testbook:" + job.bookID,
+              job.original.tableName == "purchase_order",
+              job.proposed.tableName == "purchase_order",
+              job.proposed.syncId == job.original.syncId,
+              job.proposed.rowVersion == job.original.rowVersion + 1 else {
+            throw TestDraftStoreError.invalid
+        }
+        if let prev = try purchaseRemarkJob(id: job.id,
+                        account: job.sourceAccount, book: job.bookID) {
+            func same(_ x: SyncEvent, _ y: SyncEvent) -> Bool {
+                x.tableName == y.tableName && x.syncId == y.syncId &&
+                x.operation == y.operation && x.rowVersion == y.rowVersion &&
+                x.payload == y.payload
+            }
+            guard prev.stageHost == job.stageHost,
+                  prev.stageInstanceID == job.stageInstanceID,
+                  prev.stageUsername == job.stageUsername,
+                  prev.deviceID == job.deviceID,
+                  prev.createdAt == job.createdAt,
+                  prev.sourceAccount == job.sourceAccount,
+                  prev.bookID == job.bookID,
+                  same(prev.original, job.original),
+                  same(prev.proposed, job.proposed),
+                  PurchaseRemarkEditPolicy.childrenEqual(
+                    prev.children, job.children) else {
+                throw TestDraftStoreError.invalid
+            }
+            let transitions: [PurchaseRemarkEditState: Set<PurchaseRemarkEditState>] = [
+                .ready: [.ready, .sending, .needsReview],
+                .sending: [.sending, .complete, .needsReview],
+                .needsReview: [.needsReview, .complete],
+                .complete: [.complete]
+            ]
+            guard transitions[prev.state]?.contains(job.state) == true else {
+                throw TestDraftStoreError.invalid
+            }
+        }
+        let stmt = try prepare("""
+            INSERT INTO isolated_purchase_remark_jobs
+              (id,source_account,book_id,stage_host,state,payload,created_at_ms)
+            VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+              payload=excluded.payload, state=excluded.state
+            WHERE source_account=excluded.source_account AND
+                  book_id=excluded.book_id AND stage_host=excluded.stage_host
+        """)
+        defer { sqlite3_finalize(stmt) }
+        bind(job.id, at: 1, to: stmt)
+        bind(normalized(job.sourceAccount), at: 2, to: stmt)
+        bind(job.bookID, at: 3, to: stmt)
+        bind(job.stageHost, at: 4, to: stmt)
+        bind(job.state.rawValue, at: 5, to: stmt)
+        bind(try JSONEncoder().encode(job), at: 6, to: stmt)
+        sqlite3_bind_int64(stmt, 7,
+            Int64(job.createdAt.timeIntervalSince1970 * 1000))
+        try step(stmt)
+        // A no-op UPSERT (foreign account/book collision) must fail closed.
+        guard let saved = try purchaseRemarkJob(
+                    id: job.id, account: job.sourceAccount, book: job.bookID),
+              saved.state == job.state,
+              saved.proposed.payload == job.proposed.payload,
+              saved.proposed.rowVersion == job.proposed.rowVersion else {
+            throw TestDraftStoreError.invalid
+        }
+    }
+
+    func purchaseRemarkJob(id: String, account: String,
+                           book: String) throws -> PurchaseRemarkEditJob? {
+        let stmt = try prepare("""
+            SELECT payload FROM isolated_purchase_remark_jobs
+            WHERE id=? AND source_account=? AND book_id=?
+        """)
+        defer { sqlite3_finalize(stmt) }
+        bind(id, at: 1, to: stmt)
+        bind(normalized(account), at: 2, to: stmt)
+        bind(book, at: 3, to: stmt)
+        guard sqlite3_step(stmt) == SQLITE_ROW,
+              let ptr = sqlite3_column_blob(stmt, 0) else { return nil }
+        let count = Int(sqlite3_column_bytes(stmt, 0))
+        let job = try JSONDecoder().decode(PurchaseRemarkEditJob.self,
+            from: Data(bytes: ptr, count: count))
+        guard job.id == id, job.bookID == book,
+              normalized(job.sourceAccount) == normalized(account) else {
+            throw TestDraftStoreError.invalid
+        }
+        return job
+    }
+
+    func purchaseRemarkJobs(account: String,
+                            book: String) throws -> [PurchaseRemarkEditJob] {
+        let stmt = try prepare("""
+            SELECT id FROM isolated_purchase_remark_jobs
+            WHERE source_account=? AND book_id=?
+            ORDER BY created_at_ms DESC
+        """)
+        defer { sqlite3_finalize(stmt) }
+        bind(normalized(account), at: 1, to: stmt)
+        bind(book, at: 2, to: stmt)
+        var ids: [String] = []
+        var status = sqlite3_step(stmt)
+        while status == SQLITE_ROW {
+            if let ptr = sqlite3_column_text(stmt, 0) {
+                ids.append(String(cString: ptr))
+            }
+            status = sqlite3_step(stmt)
+        }
+        guard status == SQLITE_DONE else {
+            throw TestDraftStoreError.sql(String(cString: sqlite3_errmsg(database)))
+        }
+        return try ids.compactMap {
+            try purchaseRemarkJob(id: $0, account: account, book: book)
+        }
+    }
+
+    func cancelUnsentRemark(id: String, account: String,
+                            book: String) throws {
+        guard let saved = try purchaseRemarkJob(id: id, account: account,
+                                                book: book),
+              saved.state == .ready else {
+            throw TestDraftStoreError.lockedForUpload
+        }
+        let stmt = try prepare("""
+            DELETE FROM isolated_purchase_remark_jobs
             WHERE id=? AND source_account=? AND book_id=? AND state='ready'
         """)
         defer { sqlite3_finalize(stmt) }
