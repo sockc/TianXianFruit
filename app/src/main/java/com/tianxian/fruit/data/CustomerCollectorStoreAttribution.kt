@@ -139,22 +139,20 @@ internal object CustomerCollectorStoreAttribution {
             }
             val key = if (inPreviousShift && previousKey != null) previousKey else originalKey
             val candidates = storesByKey[key].orEmpty().distinctBy { it.storeId }
-            if (candidates.isEmpty()) return@map unmatched(receipt)
-            // A cashier owning a payment channel on that date alone is not
-            // sufficient evidence that a transaction belongs to a store.
-            // No matching selling window => leave the receipt unassigned.
-            // If multiple candidate stores remain, preserve the shared group:
-            // never guess a location from the payment timestamp alone.
-            if (candidates.none { activeAt(it, receipt) }) return@map unmatched(receipt)
+            // Collector/day/channel alone does not identify a selling position.
+            // Narrow to actual saved selling windows: disjoint shifts can be
+            // assigned precisely, but overlapping windows remain shared.
+            val activeCandidates = candidates.filter { activeAt(it, receipt) }
+            if (activeCandidates.isEmpty()) return@map unmatched(receipt)
 
             matchedIds.add(receipt.id)
-            if (candidates.size == 1) {
-                val store = candidates.single()
+            if (activeCandidates.size == 1) {
+                val store = activeCandidates.single()
                 receipt.copy(businessDate = key.date, storeId = store.storeId,
                     storeName = store.storeName)
             } else {
                 sharedMatches.getOrPut(key) { mutableListOf() }
-                    .add(Match(key, candidates, receipt))
+                    .add(Match(key, activeCandidates, receipt))
                 // Do not double-count this payment in several location totals.
                 receipt.copy(businessDate = key.date, storeId = 0L,
                     storeName = SHARED_STORE_NAME)
@@ -162,8 +160,10 @@ internal object CustomerCollectorStoreAttribution {
         }
 
         val groups = sharedMatches.map { (key, matches) ->
-            val first = matches.first().records
-            val people = first.asSequence().flatMap { saved ->
+            // Candidate windows may differ by hour: do not let the first
+            // shared receipt hide a later involved position.
+            val involvedStores = matches.flatMap { it.records }.distinctBy { it.storeId }
+            val people = involvedStores.asSequence().flatMap { saved ->
                 saved.receiptSplits.asSequence()
                     .filter { it.partnerId == key.partnerId }
                     .map { it.partnerName }
@@ -172,7 +172,7 @@ internal object CustomerCollectorStoreAttribution {
             SharedCollectorTraffic(
                 date = key.date, platform = key.platform,
                 partnerId = key.partnerId, partnerName = people,
-                stores = first.map { it.storeId to it.storeName },
+                stores = involvedStores.map { it.storeId to it.storeName },
                 receiptIds = distinct.map { it.id }.toSet(),
                 payments = distinct.size,
                 amount = distinct.sumOf { it.netAmount }
