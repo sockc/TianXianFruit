@@ -25,6 +25,8 @@ struct TestDraft: Codable, Identifiable, Equatable {
     /// Optional by design: V0.2.5 single-item drafts remain readable without
     /// modifying their stored JSON or upload identity.
     var purchaseItems: [PurchaseDraftLine]? = nil
+    /// Optional to preserve V0.2.x/V0.3.x persisted draft decoding.
+    var businessCollectors: [BusinessCollectorDraftLine]? = nil
 
     var summary: String {
         switch kind {
@@ -123,12 +125,19 @@ enum TestWritePolicy {
                 ("expense", "expense_payer_sync_id")
             ] {
                 let amount = try money(draft.fields[channel] ?? "", label: channel)
-                if amount > 0 && (draft.fields[collector] ?? "").isEmpty {
+                if amount > 0 &&
+                   (channel == "expense" || draft.businessCollectors == nil) &&
+                   (draft.fields[collector] ?? "").isEmpty {
                     throw TestWriteError.missingData(channel + " 对应的合伙人/收款人")
                 }
             }
-            // Only a draft: collector/split, costs and authoritative profit
-            // are still required before a real business mutation could exist.
+            try BusinessCollectorDraftPolicy.validateTimes(draft.fields)
+            if let explicit = draft.businessCollectors {
+                try BusinessCollectorDraftPolicy.validate(
+                    explicit, fields: draft.fields)
+            }
+            // A draft is still local-only until the separate TEST upload
+            // confirms the isolated account, partner IDs and cloud snapshot.
         case .purchase:
             if let lines = draft.purchaseItems {
                 guard !(draft.fields["buyer_sync_id"] ?? "").isEmpty else {
