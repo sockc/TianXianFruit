@@ -483,9 +483,9 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.3.3 · 营业多收款人更正版")
+                Text("版本：iOS V0.3.4 · 营业多人录入及营业时间")
                     .font(.caption).foregroundColor(.secondary)
-                Text("正式账本始终只读。iOS_TEST_ 测试账本增加多人收款逐人更正，已结算日禁止修改，结算本身不变。")
+                Text("正式账本始终只读。iOS_TEST_ 测试账本新增多人收款逐人录入和营业时间，结算与凌晨收款保持锁定。")
                     .font(.caption2).foregroundColor(.secondary)
                 Button(role: .destructive) {
                     model.signOut()
