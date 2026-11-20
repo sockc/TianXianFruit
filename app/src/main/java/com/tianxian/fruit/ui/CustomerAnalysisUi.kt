@@ -3149,33 +3149,17 @@ private fun SameWeekdayCustomerCard(
     }
 }
 
-private fun trafficValueLabel(
+internal fun trafficValueLabel(
     metric: CustomerTrafficMetric,
     value: Double
 ): String =
     when (metric) {
         CustomerTrafficMetric.CUSTOMERS,
-        CustomerTrafficMetric.PAYMENTS ->
-            value
-                .toInt()
-                .toString()
-
+        CustomerTrafficMetric.PAYMENTS -> value.toInt().toString()
+        // Full yuan values, no ambiguous K abbreviation or lost magnitude.
         CustomerTrafficMetric.AMOUNT ->
-            if (
-                value >=
-                1000
-            ) {
-                String.format(
-                    Locale.CHINA,
-                    "%.1fk",
-                    value /
-                        1000.0
-                )
-            } else {
-                value
-                    .toInt()
-                    .toString()
-            }
+            if (value.isFinite()) String.format(Locale.CHINA, "%,.0f", value)
+            else "—"
     }
 
 @Composable
