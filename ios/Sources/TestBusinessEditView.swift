@@ -129,6 +129,11 @@ struct TestBusinessEditView: View {
                                 .font(.caption.bold())
                                 .foregroundColor(job.state == .complete ? .green : .orange)
                             Text(job.note).font(.caption).foregroundColor(.secondary)
+                            let review = BusinessEditCloudReview(
+                                job: job, snapshot: model.snapshot)
+                            Text("云端复核：" + review.title)
+                                .font(.caption2)
+                                .foregroundColor(review.status == .current ? .green : .secondary)
                             if job.state == .ready {
                                 Button("取消未发送的本机更正") {
                                     coordinator.cancelUnsent(id: job.id)
@@ -148,6 +153,17 @@ struct TestBusinessEditView: View {
                         .background(Color(UIColor.secondarySystemGroupedBackground),
                                     in: RoundedRectangle(cornerRadius: 12))
                     }
+                }
+                if !coordinator.jobs.isEmpty {
+                    Button {
+                        Task { await model.refresh(forceFull: true) }
+                    } label: {
+                        Label("完整刷新云端营业记录（只读）",
+                              systemImage: "arrow.clockwise")
+                    }
+                    .disabled(model.isBusy)
+                    Text("以上核对只表示服务器当前版本，不代表 Android 本机已经同步。")
+                        .font(.caption2).foregroundColor(.secondary)
                 }
                 DisclosureGroup("本版安全范围", isExpanded: $showSafety) {
                     Text("仅支持最新版本的稳定同日同位置营业身份。每个支付渠道只能有一位可明确识别的收款人，已有多人收款比例不明时不自动分摊；这类记录仍在 Android 编辑。编辑仅更新收款金额、费用及库存估值，按安卓原公式得到营业额和利润；正式账本、删除、凌晨收款和资金结算继续锁定。")
