@@ -163,6 +163,20 @@ enum TestBusinessEditPolicy {
                    !first.isEmpty, !last.isEmpty,
                    first <= date, date <= last { return true }
             }
+            if dateTables.contains(event.tableName) &&
+               event.isDeletion &&
+               event.payload["date"] == nil &&
+               event.payload["profit_date"] == nil {
+                // A tombstone without its date cannot be safely assigned
+                // to another day. Block instead of silently ignoring it.
+                return true
+            }
+            if event.tableName == "profit_settlement_batch",
+               event.isDeletion &&
+               (event.payload["period_start"] == nil ||
+                event.payload["period_end"] == nil) {
+                return true
+            }
             if event.tableName == "profit_settlement_batch",
                let first = event.payload["period_start"]?.text,
                let last = event.payload["period_end"]?.text,
@@ -261,6 +275,10 @@ enum TestBusinessEditPolicy {
             throw StagingSafetyError.needsReview(
                 "原始收款人身份不完整或有重复项，请在 Android 核对")
         }
+        guard Set(splits.map(\.partnerID)).count == splits.count else {
+            throw StagingSafetyError.needsReview(
+                "原始收款人 ID 存在重复，禁止跨设备更正")
+        }
         let beforeSplits = splits
         let oldAmounts: [String: Int64] = try [
             "wechat_income", "alipay_income", "cash_income"
@@ -295,6 +313,17 @@ enum TestBusinessEditPolicy {
               sourceCash == oldAmounts["cash_income"] else {
             throw StagingSafetyError.needsReview(
                 "原有各渠道金额与收款人明细不一致，请先在安卓核对")
+        }
+        guard let oldRevenue = cents(original.payload["revenue"]?.decimal ?? -1),
+              let oldExpense = cents(original.payload["expense"]?.decimal ?? -1),
+              let oldOpening = cents(original.payload["opening_stock_value"]?.decimal ?? -1),
+              let oldClosing = cents(original.payload["stock_left_value"]?.decimal ?? -1),
+              let oldProfit = original.payload["profit"]?.decimal,
+              oldProfit.isFinite,
+              abs(oldProfit - Double(oldRevenue + oldClosing - oldOpening - oldExpense) / 100.0) < 0.005,
+              oldRevenue == sourceWechat + sourceAlipay + sourceCash else {
+            throw StagingSafetyError.needsReview(
+                "原营业额或利润与原明细不一致，禁止 iOS 重新计算覆盖")
         }
         func apply(_ key: String, desired: Int64,
                    get: (TestBusinessReceiptSplit) -> Double,
