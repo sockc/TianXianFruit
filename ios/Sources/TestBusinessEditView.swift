@@ -28,9 +28,9 @@ struct TestBusinessEditView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 13) {
-                Label("V0.3.1 · 测试营业更正", systemImage: "pencil.circle")
+                Label("V0.3.3 · 测试营业更正", systemImage: "pencil.circle")
                     .font(.headline)
-                Text("只修改测试账本一条已同步营业的金额，不修改位置、日期、收款人或客户数据。云端版本已变化时禁止覆盖；每次编辑至多发送一次。")
+                Text("仅测试账本：可按原收款人分别更正微信、支付宝、现金金额。已发生结算的日期禁止更正；日期、位置和收款人身份不变。")
                     .font(.caption).foregroundColor(.secondary)
 
                 if let book = testBook {
@@ -166,7 +166,7 @@ struct TestBusinessEditView: View {
                         .font(.caption2).foregroundColor(.secondary)
                 }
                 DisclosureGroup("本版安全范围", isExpanded: $showSafety) {
-                    Text("仅支持最新版本的稳定同日同位置营业身份。每个支付渠道只能有一位可明确识别的收款人，已有多人收款比例不明时不自动分摊；这类记录仍在 Android 编辑。编辑仅更新收款金额、费用及库存估值，按安卓原公式得到营业额和利润；正式账本、删除、凌晨收款和资金结算继续锁定。")
+                    Text("多人收款必须逐个输入原有收款人的实际金额，不能增加、删除或更换收款人。只有没有利润分配、结算与转账历史的营业日才允许更正；检测到历史就阻止写入，避免与安卓自动作废结算的规则不一致。营业删除、日期及位置调整、凌晨收款、结算仍未开放。")
                         .font(.caption).foregroundColor(.secondary)
                 }
             }
@@ -202,6 +202,7 @@ private struct TestBusinessEditForm: View {
     @State private var expense: String
     @State private var opening: String
     @State private var closing: String
+    @State private var splitRows: [TestBusinessSplitInput]
     @State private var confirm = false
 
     init(original: SyncEvent, bookID: String,
@@ -216,12 +217,28 @@ private struct TestBusinessEditForm: View {
         _expense = State(initialValue: current.expense)
         _opening = State(initialValue: current.opening)
         _closing = State(initialValue: current.closing)
+        _splitRows = State(initialValue: TestBusinessSplitInput.from(original))
     }
 
+    private var multiCollector: Bool { splitRows.count > 1 }
+
     private var amounts: TestBusinessEditValues {
-        TestBusinessEditValues(wechat: wechat, alipay: alipay,
-                               cash: cash, expense: expense,
-                               opening: opening, closing: closing)
+        let w = multiCollector ?
+            TestBusinessSplitInput.total(splitRows, key: \.wechat) : wechat
+        let a = multiCollector ?
+            TestBusinessSplitInput.total(splitRows, key: \.alipay) : alipay
+        let c = multiCollector ?
+            TestBusinessSplitInput.total(splitRows, key: \.cash) : cash
+        return TestBusinessEditValues(
+            wechat: w, alipay: a, cash: c,
+            expense: expense, opening: opening, closing: closing,
+            splits: multiCollector ? splitRows : nil)
+    }
+
+    private var previouslySettled: Bool {
+        guard let date = original.payload["date"]?.text else { return true }
+        return TestBusinessEditPolicy.hasDerivedSettlement(
+            date: date, events: Array(model.snapshot.records.values))
     }
 
     private var correctBook: Bool {
@@ -231,7 +248,8 @@ private struct TestBusinessEditForm: View {
 
     private var canSubmit: Bool {
         correctBook && coordinator.connected && !coordinator.busy &&
-        amounts != TestBusinessEditValues(original)
+        !previouslySettled &&
+        (amounts != TestBusinessEditValues(original))
     }
 
     var body: some View {
@@ -246,10 +264,38 @@ private struct TestBusinessEditForm: View {
                     .font(.caption).foregroundColor(.secondary)
             }
             if correctBook {
+                if previouslySettled {
+                    Section {
+                        Label("该营业日已有分配或结算记录，请先在安卓处理。iOS 禁止更正，以免留下一笔未同步作废的资金结算。",
+                              systemImage: "lock.shield")
+                            .font(.caption).foregroundColor(.orange)
+                    }
+                }
+                if multiCollector {
+                    Section(header: Text("按收款人更正金额（元）")) {
+                        Text("每位原收款人独立输入，不自动按比例分摊。收款人身份不可变。")
+                            .font(.caption).foregroundColor(.secondary)
+                        ForEach($splitRows) { $split in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(split.partnerName)
+                                    .font(.subheadline.bold())
+                                amount("微信", text: $split.wechat)
+                                amount("支付宝", text: $split.alipay)
+                                amount("现金", text: $split.cash)
+                            }
+                        }
+                        Text("合计：微信 ¥" + amounts.wechat +
+                             " · 支付宝 ¥" + amounts.alipay +
+                             " · 现金 ¥" + amounts.cash)
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
                 Section(header: Text("修改金额（元）")) {
-                    amount("微信", text: $wechat)
-                    amount("支付宝", text: $alipay)
-                    amount("现金", text: $cash)
+                    if !multiCollector {
+                        amount("微信", text: $wechat)
+                        amount("支付宝", text: $alipay)
+                        amount("现金", text: $cash)
+                    }
                     amount("费用", text: $expense)
                     amount("开摊库存估值", text: $opening)
                     amount("收摊库存估值", text: $closing)
@@ -265,7 +311,7 @@ private struct TestBusinessEditForm: View {
                     if let message = coordinator.message {
                         Text(message).font(.caption).foregroundColor(.orange)
                     }
-                    Text("不允许修改日期、位置、收款人、顾客、凌晨收款、利润分配或资金结算。")
+                    Text("不得更改日期、位置、收款人身份、顾客、凌晨收款或已结算日。若另一设备已修改，提交前会拒绝覆盖。")
                         .font(.caption2).foregroundColor(.secondary)
                 }
             } else {
