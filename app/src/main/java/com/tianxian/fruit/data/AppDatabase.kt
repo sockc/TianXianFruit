@@ -11398,6 +11398,10 @@ class AppDatabase(
                 } else {
                     null
                 }
+            // A nonzero carried opening quantity without a verifiable prior
+            // snapshot is unknown cost, never a free/zero-cost batch. This
+            // guard only changes read-only inventory profit estimates, not
+            // formal sales, purchase accounting or settlement amounts.
             val openingBasis =
                 if (item.openingQuantity > 0.000001 && previousSnapshotDate != null) {
                     estimateInventoryCostBasisAtSnapshot(
@@ -11405,6 +11409,8 @@ class AppDatabase(
                         item.fruitId,
                         item.unit
                     )
+                } else if (item.openingQuantity > 0.000001) {
+                    InventoryCostBasis(null, false)
                 } else {
                     InventoryCostBasis(0.0, true)
                 }
