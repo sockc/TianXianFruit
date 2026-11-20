@@ -1,4 +1,4 @@
-name: Check iOS V0.4.0 Android-style purchase workspace
+name: Check iOS V0.4.1 purchase cloud reconcile and last price
 
 on:
   pull_request:
