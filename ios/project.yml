@@ -21,7 +21,7 @@ targets:
         INFOPLIST_FILE: Config/AppInfo.plist
         GENERATE_INFOPLIST_FILE: NO
         MARKETING_VERSION: "0.4.8"
-        CURRENT_PROJECT_VERSION: "28"
+        CURRENT_PROJECT_VERSION: "29"
   TianXianFruitTests:
     type: bundle.unit-test
     platform: iOS
