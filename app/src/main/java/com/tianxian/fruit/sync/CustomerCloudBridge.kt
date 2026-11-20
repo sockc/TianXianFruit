@@ -450,7 +450,45 @@ internal object CustomerCloudBridge {
                                 put("created_at", System.currentTimeMillis())
                             }, SQLiteDatabase.CONFLICT_IGNORE
                         )
-                        if (inserted > 0L) ack(database, kind, key, "REMOTE", version)
+                        if (inserted > 0L) {
+                            ack(database, kind, key, "REMOTE", version)
+                        } else {
+                            // A second device can already have this receipt
+                            // from the SAME exported order. CONFLICT_IGNORE
+                            // is not a sync acknowledgment: verify all
+                            // immutable money/time/location evidence first.
+                            val local = database.rawQuery("""
+                                SELECT platform,dedupe_key,transaction_ref,trade_time,
+                                       business_date,amount,refund_amount,net_amount,
+                                       store_id
+                                FROM customer_payment_transaction
+                                WHERE platform=? AND dedupe_key=? LIMIT 1
+                            """.trimIndent(), arrayOf(platform, receiptKey)).use { cursor ->
+                                if (!cursor.moveToFirst()) null
+                                else CustomerReceiptFinancialIdentity(
+                                    cursor.string("platform"), cursor.string("dedupe_key"),
+                                    cursor.string("transaction_ref"), cursor.string("trade_time"),
+                                    cursor.string("business_date"), cursor.num("amount"),
+                                    cursor.num("refund_amount"), cursor.num("net_amount"),
+                                    stableRowId(database, "store", cursor.long("store_id"))
+                                )
+                            }
+                            val remote = CustomerReceiptFinancialIdentity(
+                                platform, receiptKey, body.str("transaction_ref"),
+                                body.str("trade_time"), body.str("business_date"),
+                                body.optDouble("amount"), body.optDouble("refund_amount"),
+                                body.optDouble("net_amount"), stableStore
+                            )
+                            if (local == null ||
+                                !CustomerReceiptIdentityPolicy.matches(local, remote)) {
+                                throw IllegalStateException(
+                                    "相同交易键的本机与云端收款内容不同，已拒绝覆盖：" +
+                                        "$platform|$receiptKey")
+                            }
+                            // Only the sync ACK is added. Never overwrite the
+                            // original local bill, its payer, or its file links.
+                            ack(database, kind, key, "REMOTE", version)
+                        }
                     }
                     "SOURCE_LINK" -> {
                         val platform = body.str("platform")
