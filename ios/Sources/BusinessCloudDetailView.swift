@@ -51,26 +51,36 @@ struct BusinessCloudDetailView: View {
         return value.formatted(.currency(code: "CNY"))
     }
 
+    /// Compatible with iOS 15 and the iPhone X deployment target.
+    private func detailLine(_ label: String, value: String) -> some View {
+        HStack {
+            Text(label).foregroundColor(.secondary)
+            Spacer(minLength: 8)
+            Text(value).multilineTextAlignment(.trailing)
+        }
+        .font(.subheadline)
+    }
+
     var body: some View {
         Form {
             if let record {
                 Section(header: Text("云端营业记录")) {
-                    LabeledContent("营业日期", value: record.payload["date"]?.text ?? "")
-                    LabeledContent("营业位置", value: record.payload["store_name"]?.text ?? "未命名")
-                    LabeledContent("云端记录版本", value: String(record.rowVersion))
-                    LabeledContent("营业额", value: amount("revenue"))
-                    LabeledContent("已保存利润", value: amount("profit"))
+                    detailLine("营业日期", value: record.payload["date"]?.text ?? "")
+                    detailLine("营业位置", value: record.payload["store_name"]?.text ?? "未命名")
+                    detailLine("云端记录版本", value: String(record.rowVersion))
+                    detailLine("营业额", value: amount("revenue"))
+                    detailLine("已保存利润", value: amount("profit"))
                 }
 
                 Section(header: Text("收款与成本")) {
-                    LabeledContent("微信", value: amount("wechat_income"))
-                    LabeledContent("支付宝", value: amount("alipay_income"))
-                    LabeledContent("现金", value: amount("cash_income"))
-                    LabeledContent("支出", value: amount("expense"))
-                    LabeledContent("开摊库存估值", value: amount("opening_stock_value"))
-                    LabeledContent("收摊库存估值", value: amount("stock_left_value"))
-                    LabeledContent("实际开摊", value: record.payload["actual_start_time"]?.text ?? "")
-                    LabeledContent("实际收摊", value: record.payload["actual_end_time"]?.text ?? "")
+                    detailLine("微信", value: amount("wechat_income"))
+                    detailLine("支付宝", value: amount("alipay_income"))
+                    detailLine("现金", value: amount("cash_income"))
+                    detailLine("支出", value: amount("expense"))
+                    detailLine("开摊库存估值", value: amount("opening_stock_value"))
+                    detailLine("收摊库存估值", value: amount("stock_left_value"))
+                    detailLine("实际开摊", value: record.payload["actual_start_time"]?.text ?? "")
+                    detailLine("实际收摊", value: record.payload["actual_end_time"]?.text ?? "")
                 }
 
                 Section(header: Text("按收款人分配")) {
