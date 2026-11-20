@@ -194,6 +194,20 @@ final class TestBusinessEditCoordinator: ObservableObject {
         }
     }
 
+    /// Local-only cancellation is legal only before any network request
+    /// can have started. Never erase sending/unknown jobs.
+    func cancelUnsent(id: String) {
+        guard !busy, let store, let book else { return }
+        do {
+            try store.cancelUnsentBusinessEdit(id: id,
+                account: account, book: book.id)
+            message = "未发出的本机更正已取消；没有修改服务器"
+            reload()
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
     func inspect(id: String) async {
         guard !busy else { return }
         let g = generation
