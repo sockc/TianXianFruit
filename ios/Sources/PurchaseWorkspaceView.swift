@@ -55,6 +55,9 @@ struct PurchaseWorkspaceView: View {
     @State private var date = Date()
     @State private var request: PurchaseWorkspaceEditorRequest?
     @State private var showDrafts = true
+    @State private var reconcilingID: String?
+    @State private var reviewedID: String?
+    @State private var review: PurchaseCloudReconcileReport?
 
     private var day: String { BusinessDates.key(date) }
     private var planning: PurchasePlanningDay {
@@ -121,10 +124,12 @@ struct PurchaseWorkspaceView: View {
         .onAppear(perform: reload)
         .onChange(of: model.selectedBookID) { _ in
             request = nil
+            clearReview()
             reload()
         }
         .onChange(of: model.account?.username) { _ in
             request = nil
+            clearReview()
             reload()
         }
     }
@@ -286,15 +291,23 @@ struct PurchaseWorkspaceView: View {
                             .font(.caption)
                         HStack {
                             Button("修改") {
+                                clearReview()
                                 request = PurchaseWorkspaceEditorRequest(
                                     original: draft)
                             }
                             .disabled(!canEdit)
                             Spacer()
+                            Button("核对云端") {
+                                Task { await reconcile(draft) }
+                            }
+                            .disabled(!canEdit || model.isBusy ||
+                                      reconcilingID != nil)
+                            Spacer()
                             Button("删除本机录入", role: .destructive) {
                                 if let bookID = model.selectedBookID,
                                    let account = model.account?.username,
                                    canEdit {
+                                    clearReview()
                                     workspace.delete(draft,
                                         account: account, bookID: bookID)
                                 }
@@ -302,6 +315,21 @@ struct PurchaseWorkspaceView: View {
                             .disabled(!canEdit)
                         }
                         .font(.caption)
+                        if reconcilingID == draft.id {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                Text("正在刷新云端并核对订单")
+                                    .font(.caption)
+                            }
+                        } else if reviewedID == draft.id, let review {
+                            Label(review.message, systemImage:
+                                review.isConfirmedCloudOrder ?
+                                "checkmark.shield.fill" :
+                                "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundColor(
+                                    review.isConfirmedCloudOrder ? .green : .orange)
+                        }
                     }
                     .padding(10)
                     .background(Color(UIColor.secondarySystemGroupedBackground),
@@ -360,6 +388,41 @@ struct PurchaseWorkspaceView: View {
     private func shiftDate(_ by: Int) {
         date = BusinessDates.calendar.date(
             byAdding: .day, value: by, to: date) ?? date
+    }
+
+    private func clearReview() {
+        reviewedID = nil
+        review = nil
+    }
+
+    private func reconcile(_ draft: PurchaseWorkspaceDraft) async {
+        guard reconcilingID == nil, !model.isBusy,
+              model.account?.username.lowercased() == draft.account.lowercased(),
+              model.selectedBookID == draft.bookID,
+              !model.isUsingCachedAuthorization else {
+            workspace.message = "离线或正在同步时不能核对云端订单"
+            return
+        }
+        let oldSynced = model.lastSyncAt
+        reconcilingID = draft.id
+        clearReview()
+        defer { reconcilingID = nil }
+        await model.refresh(forceFull: true)
+        guard model.account?.username.lowercased() == draft.account.lowercased(),
+              model.selectedBookID == draft.bookID,
+              !model.isUsingCachedAuthorization,
+              model.errorMessage == nil,
+              let current = model.lastSyncAt,
+              oldSynced == nil || current > oldSynced! else {
+            workspace.message = "此次未成功完整同步，不能据旧缓存判断是否已上传"
+            return
+        }
+        // A full refresh can make a referenced fruit/partner invalid. Never
+        // reuse earlier cached lookup status or claim successful cloud write.
+        let report = PurchaseCloudReconcilePolicy.inspect(
+            draft, events: Array(model.snapshot.records.values))
+        review = report
+        reviewedID = draft.id
     }
 
     private func reload() {
