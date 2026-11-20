@@ -51,6 +51,16 @@ final class PurchaseWorkspaceStore {
             CREATE INDEX IF NOT EXISTS idx_purchase_workspace_scope
             ON purchase_workspace_draft(account,book_id,date)
             """)
+        try execute("""
+            CREATE TABLE IF NOT EXISTS purchase_workspace_attempt (
+                draft_id TEXT NOT NULL,
+                account TEXT NOT NULL,
+                book_id TEXT NOT NULL,
+                payload BLOB NOT NULL,
+                updated_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(draft_id,account,book_id)
+            )
+            """)
     }
 
     deinit { if db != nil { sqlite3_close(db) } }
@@ -176,4 +186,121 @@ final class PurchaseWorkspaceStore {
             throw PurchaseWorkspaceStoreError.missing
         }
     }
+
+    /// Immutable outbox is written BEFORE making the HTTP request.
+    func attempt(id: String, account: String,
+                 bookID: String) throws -> PurchaseCommitAttempt? {
+        let query = try statement("""
+            SELECT payload FROM purchase_workspace_attempt
+            WHERE draft_id=? AND account=? AND book_id=?
+            """)
+        defer { sqlite3_finalize(query) }
+        bind(id, at: 1, query: query)
+        bind(accountKey(account), at: 2, query: query)
+        bind(bookID, at: 3, query: query)
+        let state = sqlite3_step(query)
+        if state == SQLITE_DONE { return nil }
+        guard state == SQLITE_ROW,
+              let raw = sqlite3_column_blob(query, 0),
+              sqlite3_column_bytes(query, 0) > 0 else {
+            throw PurchaseWorkspaceStoreError.invalid
+        }
+        let item = try JSONDecoder().decode(
+            PurchaseCommitAttempt.self,
+            from: Data(bytes: raw, count: Int(sqlite3_column_bytes(query, 0))))
+        guard accountKey(item.account) == accountKey(account),
+              item.bookID == bookID, item.id == id else {
+            throw PurchaseWorkspaceStoreError.scope
+        }
+        return item
+    }
+
+    /// Never replace the payload of an in-flight purchase. The same operation
+    /// UUID and exact proposal survive app crash, network loss or account swap.
+    func reserve(_ proposal: PurchaseCommitProposal,
+                 account: String, bookID: String) throws
+        -> PurchaseCommitAttempt {
+        guard proposal.account.lowercased() == accountKey(account),
+              proposal.bookID == bookID,
+              !proposal.draftID.isEmpty else { throw PurchaseWorkspaceStoreError.scope }
+        if let old = try attempt(
+            id: proposal.draftID, account: account, bookID: bookID) {
+            guard old.proposal == proposal else {
+                throw PurchaseAtomicError.staleDraft
+            }
+            return old
+        }
+        let now = Date()
+        let item = PurchaseCommitAttempt(
+            account: accountKey(account), bookID: bookID,
+            proposal: proposal, createdAt: now, updatedAt: now,
+            phase: .prepared, receipt: nil)
+        let blob = try JSONEncoder().encode(item)
+        let query = try statement("""
+            INSERT INTO purchase_workspace_attempt
+                (draft_id,account,book_id,payload,updated_at_ms)
+            VALUES (?,?,?,?,?)
+            """)
+        defer { sqlite3_finalize(query) }
+        bind(proposal.draftID, at: 1, query: query)
+        bind(accountKey(account), at: 2, query: query)
+        bind(bookID, at: 3, query: query)
+        bind(blob, at: 4, query: query)
+        sqlite3_bind_int64(query, 5, Int64(now.timeIntervalSince1970 * 1000))
+        guard sqlite3_step(query) == SQLITE_DONE,
+              sqlite3_changes(db) == 1 else {
+            throw PurchaseAtomicError.persistentStore
+        }
+        return item
+    }
+
+    func updateAttempt(_ item: PurchaseCommitAttempt,
+                       account: String, bookID: String) throws {
+        guard accountKey(item.account) == accountKey(account),
+              item.bookID == bookID,
+              let previous = try attempt(id: item.id, account: account,
+                                         bookID: bookID),
+              item.proposal == previous.proposal else {
+            throw PurchaseWorkspaceStoreError.scope
+        }
+        let allowed: Bool
+        switch (previous.phase, item.phase) {
+        case (.prepared, .unknown), (.prepared, .accepted),
+             (.unknown, .accepted), (.accepted, .confirmed),
+             (.prepared, .prepared), (.unknown, .unknown),
+             (.accepted, .accepted), (.confirmed, .confirmed):
+            allowed = true
+        default: allowed = false
+        }
+        guard allowed,
+              item.phase == .prepared || item.updatedAt >= previous.updatedAt else {
+            throw PurchaseWorkspaceStoreError.invalid
+        }
+        let blob = try JSONEncoder().encode(item)
+        let query = try statement("""
+            UPDATE purchase_workspace_attempt SET payload=?,updated_at_ms=?
+            WHERE draft_id=? AND account=? AND book_id=?
+              AND updated_at_ms=?
+            """)
+        defer { sqlite3_finalize(query) }
+        bind(blob, at: 1, query: query)
+        sqlite3_bind_int64(query, 2,
+            Int64(item.updatedAt.timeIntervalSince1970 * 1000))
+        bind(item.id, at: 3, query: query)
+        bind(accountKey(account), at: 4, query: query)
+        bind(bookID, at: 5, query: query)
+        sqlite3_bind_int64(query, 6,
+            Int64(previous.updatedAt.timeIntervalSince1970 * 1000))
+        guard sqlite3_step(query) == SQLITE_DONE,
+              sqlite3_changes(db) == 1 else {
+            throw PurchaseWorkspaceStoreError.missing
+        }
+    }
+
+    func assertEditable(id: String, account: String, bookID: String) throws {
+        if try attempt(id: id, account: account, bookID: bookID) != nil {
+            throw PurchaseAtomicError.blockedByAttempt
+        }
+    }
+
 }
