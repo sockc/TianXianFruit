@@ -19,6 +19,12 @@ class CustomerUiIORegression(unittest.TestCase):
             UI
         )
 
+    def test_same_weekday_card_is_collapsible_and_conservative(self):
+        self.assertIn("SameWeekdayCustomerCard(sameWeekdayComparisons)", UI)
+        self.assertIn("row.sampleDays < 3", UI)
+        self.assertIn("资料不足", UI)
+        self.assertIn("showSameWeekday", UI)
+
     def test_customer_snapshot_stays_on_background_dispatcher(self):
         self.assertIn("value = withContext(Dispatchers.IO)", UI)
         self.assertIn("db.getCustomerPayments(), sessions", UI)
