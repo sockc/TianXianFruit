@@ -238,17 +238,36 @@ enum BusinessUploadPolicy {
               let rhsText = row.payload["receipt_splits_json"]?.text,
               let lhsData = lhsText.data(using: .utf8),
               let rhsData = rhsText.data(using: .utf8),
-              let a = try? JSONSerialization.jsonObject(with: lhsData) as? [[String: Any]],
-              let b = try? JSONSerialization.jsonObject(with: rhsData) as? [[String: Any]] else {
-            return false
+              let a = try? JSONDecoder().decode(
+                [TestBusinessReceiptSplit].self, from: lhsData),
+              let b = try? JSONDecoder().decode(
+                [TestBusinessReceiptSplit].self, from: rhsData),
+              a.count == b.count else { return false }
+
+        // A server may serialize the same money as 140 or 140.0. Compare
+        // numeric splits instead of NSNumber's string formatting.
+        let left = a.sorted {
+            $0.partnerID == $1.partnerID ?
+                $0.partnerName < $1.partnerName : $0.partnerID < $1.partnerID
         }
-        func normalized(_ splits: [[String: Any]]) -> [String] {
-            splits.map { split in
-                split.keys.sorted().map { key in
-                    key + ":" + String(describing: split[key] ?? "")
-                }.joined(separator: "|")
-            }.sorted()
+        let right = b.sorted {
+            $0.partnerID == $1.partnerID ?
+                $0.partnerName < $1.partnerName : $0.partnerID < $1.partnerID
         }
-        return normalized(a) == normalized(b)
+        for (want, got) in zip(left, right) {
+            guard want.partnerID == got.partnerID,
+                  want.partnerName == got.partnerName else { return false }
+            let pairs: [(Double, Double)] = [
+                (want.amount, got.amount),
+                (want.wechatIncome, got.wechatIncome),
+                (want.alipayIncome, got.alipayIncome),
+                (want.cashIncome, got.cashIncome)
+            ]
+            guard pairs.allSatisfy({
+                $0.0.isFinite && $0.1.isFinite &&
+                abs($0.0 - $0.1) < 0.005
+            }) else { return false }
+        }
+        return true
     }
 }
