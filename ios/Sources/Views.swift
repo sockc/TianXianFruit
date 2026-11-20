@@ -450,6 +450,9 @@ private struct MorePage: View {
                 NavigationLink(destination: StagingPurchaseUploadView()) {
                     Label("测试账本采购同步", systemImage: "arrow.up.doc")
                 }
+                NavigationLink(destination: BusinessUploadView()) {
+                    Label("测试账本营业同步", systemImage: "arrow.up.right.circle")
+                }
                 Divider()
                 Text("账号与同步").font(.headline)
                 VStack(alignment: .leading, spacing: 12) {
@@ -474,9 +477,9 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.2.8 · TrollStore 测试采购同步版")
+                Text("版本：iOS V0.2.9 · TrollStore 测试营业与采购版")
                     .font(.caption).foregroundColor(.secondary)
-                Text("正式云端仍只读。仅经隔离证明的测试服务端允许采购上传；营业写入和所有结算仍锁定。")
+                Text("正式账本始终只读。仅独立 iOS_TEST_ 测试账本允许新增营业和采购；结算及利润分配仍锁定。")
                     .font(.caption2).foregroundColor(.secondary)
                 Button(role: .destructive) {
                     model.signOut()
