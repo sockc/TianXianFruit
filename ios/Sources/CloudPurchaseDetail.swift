@@ -77,6 +77,7 @@ struct CloudPurchaseDetail {
         guard let raw else { return nil }
         let value: Double
         switch raw {
+        case .exactInteger(let identity): return identity > 0 ? identity : nil
         case .number(let number): value = number
         case .string(let text): value = Double(text) ?? 0
         default: return nil
@@ -91,6 +92,7 @@ struct CloudPurchaseDetail {
         guard let raw else { return nil }
         let value: Double
         switch raw {
+        case .exactInteger(let identity): value = Double(identity)
         case .number(let number): value = number
         case .string(let text):
             guard let parsed = Double(text) else { return nil }
