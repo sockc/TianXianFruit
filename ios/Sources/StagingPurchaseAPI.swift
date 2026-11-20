@@ -186,7 +186,7 @@ final class StagingPurchaseAPI: NSObject, URLSessionTaskDelegate {
             "POST", "/api/v1/auth/login",
             payload: JSONEncoder().encode(LoginPayload(
                 username: normalized, password: password, deviceID: deviceID,
-                deviceName: "天鲜 iOS 测试账本", platform: "ios", appVersion: "0.4.2")))
+                deviceName: "天鲜 iOS 测试账本", platform: "ios", appVersion: "0.4.3")))
         let auth = try JSONDecoder().decode(LoginResponse.self, from: authBytes)
         let account = try await get(Account.self, path: "/api/v1/auth/me",
                                     token: auth.accessToken)
@@ -213,7 +213,7 @@ final class StagingPurchaseAPI: NSObject, URLSessionTaskDelegate {
                            token: auth.accessToken,
                            payload: JSONEncoder().encode(DeviceRegistration(
                              deviceID: deviceID, name: "天鲜 iOS 测试账本",
-                             platform: "ios", appVersion: "0.4.2")))
+                             platform: "ios", appVersion: "0.4.3")))
         return StagingSession(token: auth.accessToken, username: account.username,
                               deviceID: deviceID, book: book,
                               scope: scope, host: base.absoluteString)
