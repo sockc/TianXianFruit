@@ -520,12 +520,16 @@ internal fun CustomerAnalysisContent(
         )
     }
 
+    // The same official, non-deleted daily records were already loaded in
+    // CustomerAnalysisSnapshot on Dispatchers.IO. Reuse that snapshot rather
+    // than issue another SQLite query from a Compose recomposition.
     val singleDayReconciliations = remember(
-        rawRecords, dataVersion, range, dayAnchor, selectedStoreId
+        rawRecords, dailyHistory, collectorAttribution.shared,
+        range, dayAnchor, selectedStoreId
     ) {
         if (range != CustomerRange.TODAY || selectedStoreId == -1L) emptyList()
         else CustomerPaymentReconciliationEngine.inspect(
-            db.getDailyRecordsBetween(dayAnchor.toString(), dayAnchor.toString()),
+            dailyHistory.filter { it.date == dayAnchor.toString() },
             rawRecords, dayAnchor.toString(), selectedStoreId,
             sharedCollectors = collectorAttribution.shared
         )
