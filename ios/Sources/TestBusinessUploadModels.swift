@@ -218,9 +218,12 @@ enum BusinessUploadPolicy {
         let numberKeys = ["wechat_income", "alipay_income", "cash_income",
                           "revenue", "expense", "profit",
                           "opening_stock_value", "stock_left_value",
-                          "purchase_cost", "new_customer", "old_customer"]
+                          "purchase_cost", "new_customer", "old_customer",
+                          "wechat_collector_id", "alipay_collector_id",
+                          "cash_collector_id", "expense_payer_id"]
         let textKeys = ["date", "store_sync_id", "store_name",
-                        "expense_payer_name"]
+                        "wechat_collector_name", "alipay_collector_name",
+                        "cash_collector_name", "expense_payer_name"]
         for key in numberKeys {
             guard let a = job.payload[key]?.decimal,
                   let b = row.payload[key]?.decimal,
