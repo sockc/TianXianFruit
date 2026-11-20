@@ -429,6 +429,18 @@ internal object CustomerCloudBridge {
                         val batchId = if (fileHash.isNotBlank()) database.rawQuery(
                             "SELECT id FROM payment_import_batch WHERE file_hash=? LIMIT 1", arrayOf(fileHash)
                         ).use { if (it.moveToFirst()) it.getLong(0) else 0L } else 0L
+                        // An acknowledged orphan receipt permanently loses its
+                        // imported-file or stall attribution on another device.
+                        // Abort the whole downloaded SQLite page transaction,
+                        // keeping its cursor at the last fully verified event.
+                        CustomerReceiptReferencePolicy.unresolved(
+                            stableStore, storeId, fileHash, batchId
+                        )?.let { reason ->
+                            throw IllegalStateException(
+                                "云端账单关联的${reason}（交易 ${platform}|${receiptKey}）；" +
+                                    "已保留本地数据与同步游标"
+                            )
+                        }
                         val inserted = database.insertWithOnConflict(
                             "customer_payment_transaction", null, ContentValues().apply {
                                 put("platform", platform); put("dedupe_key", receiptKey)
