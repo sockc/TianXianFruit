@@ -119,7 +119,7 @@ enum PurchaseRemarkEditPolicy {
     static func childrenEqual(_ left: [SyncEvent],
                               _ right: [SyncEvent]) -> Bool {
         guard left.count == right.count else { return false }
-        return zip(left, right).allSatisfy { same($0, $1) }
+        return zip(left, right).allSatisfy { pair in same(pair.0, pair.1) }
     }
 
     static func prepare(original: SyncEvent, remark: String,
