@@ -18,8 +18,11 @@ private final class TestDraftManager: ObservableObject {
         guard let account, let book, let storage else { return }
         do {
             drafts = try storage.load(account: account, book: book)
-            lockedDraftIDs = Set(try storage.stagingJobs(
-                account: account, book: book).map(\.id))
+            let purchases = try storage.stagingJobs(
+                account: account, book: book).map(\.id)
+            let sales = try storage.businessJobs(
+                account: account, book: book).map(\.id)
+            lockedDraftIDs = Set(purchases + sales)
         }
         catch { message = error.localizedDescription }
     }
@@ -114,9 +117,9 @@ struct TestWriteLabView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 14) {
-                Label("V0.2.7 · 测试账本采购", systemImage: "lock.shield")
+                Label("V0.2.9 · 测试账本营业与采购", systemImage: "lock.shield")
                     .font(.headline).foregroundColor(.orange)
-                Text("测试账本内可以录入和编辑多商品采购；进入“采购同步”可一键提交测试订单。正式账本、营业与结算仍只读。")
+                Text("测试账本可录入营业及多商品采购草稿，之后从对应同步页面提交；正式账本始终只读。")
                     .font(.caption).foregroundColor(.secondary)
 
                 if let book {
@@ -197,7 +200,7 @@ struct TestWriteLabView: View {
                                     Text("已绑定云端上传任务 · 不可修改或删除")
                                         .font(.caption2).foregroundColor(.orange)
                                 } else if draft.purchaseItems != nil {
-                                    Text("多商品本机草稿 · 暂不支持云端上传")
+                                    Text("多商品采购草稿 · 可进入采购同步上传")
                                         .font(.caption2).foregroundColor(.secondary)
                                 } else {
                                     Text("本机草稿 · 尚无云端任务")
@@ -239,7 +242,7 @@ struct TestWriteLabView: View {
                     }
                 }
                 Divider()
-                Text("本页负责本机草稿。进入“采购同步”后，测试账号通过服务端权限核验才允许上传；正式账本、营业、利润和结算写入仍锁定。")
+                Text("本页只保存本机草稿；经测试账号权限验证后，可在“测试营业同步”或“采购同步”提交，正式账本与结算写入始终锁定。")
                     .font(.caption2).foregroundColor(.secondary)
             }
             .padding(12)
@@ -281,8 +284,8 @@ struct TestWriteLabView: View {
             collector("支出付款人", selection: $expensePayerID)
             amount("开摊库存估值", text: $openingStock)
             amount("收摊库存估值", text: $closingStock)
-            amount("当日采购金额（仅录入核对）", text: $purchaseCost)
-            Text("不自动计算利润、不扣凌晨收款、不修改 Android 当日结算。正式云端营业写入仍锁定。")
+            amount("当日采购金额（仅本机备注，不参与营业上传）", text: $purchaseCost)
+            Text("测试营业上传遵守 Android 原营业利润公式，不扣凌晨收款，不生成资金结算；正式账本写入仍锁定。")
                 .font(.caption2).foregroundColor(.orange)
         }
         .padding(12)
