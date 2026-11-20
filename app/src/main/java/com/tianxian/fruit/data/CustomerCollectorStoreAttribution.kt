@@ -77,6 +77,21 @@ internal object CustomerCollectorStoreAttribution {
                 }
             }
         }
+        // Index completed selling windows once. Re-checking the entire
+        // sessions list for each receipt makes large imported bills expensive.
+        val sessionsByStoreAndDate = sessions.groupBy { it.date to it.storeId }
+        fun sessionFor(record: StoreDailyRecord): CustomerTrafficSession =
+            sessionsByStoreAndDate[record.date to record.storeId]?.firstOrNull()
+                ?: CustomerTrafficSession(
+                    record.date, record.storeId, record.storeName,
+                    record.actualStartTime.ifBlank { "16:00" },
+                    record.actualEndTime.ifBlank { "24:00" }
+                )
+        fun activeAt(record: StoreDailyRecord, receipt: CustomerPaymentRecord): Boolean =
+            CustomerTrafficDeepDive.matchSession(
+                receipt.tradeTime, listOf(sessionFor(record))
+            ) != null
+
         val sharedMatches = linkedMapOf<Key, MutableList<Match>>()
         val matchedIds = mutableSetOf<Long>()
         val attributed = receipts.map { receipt ->
@@ -98,18 +113,17 @@ internal object CustomerCollectorStoreAttribution {
             val previousKey = previousDay?.let { Key(it, receipt.platform, partnerId) }
             val previous = previousKey?.let(storesByKey::get).orEmpty()
             val inPreviousShift = previous.any { saved ->
-                val businessWindow = sessions.firstOrNull {
-                    it.date == saved.date && it.storeId == saved.storeId
-                } ?: CustomerTrafficSession(saved.date, saved.storeId, saved.storeName,
-                    saved.actualStartTime.ifBlank { "16:00" },
-                    saved.actualEndTime.ifBlank { "24:00" })
-                CustomerTrafficDeepDive.matchSession(
-                    receipt.tradeTime, listOf(businessWindow)
-                ) != null
+                activeAt(saved, receipt)
             }
             val key = if (inPreviousShift && previousKey != null) previousKey else originalKey
             val candidates = storesByKey[key].orEmpty().distinctBy { it.storeId }
             if (candidates.isEmpty()) return@map receipt
+            // A cashier owning a payment channel on that date alone is not
+            // sufficient evidence that a transaction belongs to a store.
+            // No matching selling window => leave the receipt unassigned.
+            // If multiple candidate stores remain, preserve the shared group:
+            // never guess a location from the payment timestamp alone.
+            if (candidates.none { activeAt(it, receipt) }) return@map receipt
 
             matchedIds.add(receipt.id)
             if (candidates.size == 1) {
