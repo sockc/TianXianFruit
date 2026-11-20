@@ -11422,11 +11422,16 @@ class AppDatabase(
                     null
                 }
             val purchasedQuantity = purchase?.quantity ?: item.purchasedQuantity
+            // Positive purchase quantity without a matching completed
+            // purchase row is UNKNOWN cost, not a free/zero-cost purchase.
+            // This only gates read-only profit estimates and warning flags.
+            val purchaseCostAvailable = InventoryPurchaseCostEvidencePolicy.isAvailable(
+                item.purchasedQuantity, purchase != null, purchase?.costAvailable ?: false
+            )
             val purchaseCost = roundMoney(purchase?.cost ?: 0.0)
             val availableQuantity = item.openingQuantity + purchasedQuantity
             val costAvailable =
-                openingCost != null &&
-                    (purchase?.costAvailable ?: true)
+                openingCost != null && purchaseCostAvailable
             val availableCost =
                 if (costAvailable) {
                     (openingCost ?: 0.0) + purchaseCost
@@ -11507,7 +11512,7 @@ class AppDatabase(
                 estimatedSalesRevenue = estimatedSalesRevenue,
                 estimatedProductGrossProfit = estimatedProductGrossProfit,
                 costSource = effectiveCost.source,
-                purchaseCostAvailable = purchase?.costAvailable ?: true
+                purchaseCostAvailable = purchaseCostAvailable
             )
         }
 
