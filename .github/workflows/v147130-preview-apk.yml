@@ -1,9 +1,9 @@
 name: V1.4.7.130 Preview APK
 
 on:
-  push:
+  pull_request:
     branches:
-      - fix/v1.4.7.130-audit-foundation
+      - main
     paths:
       - .github/workflows/v147130-preview-apk.yml
   workflow_dispatch:
