@@ -1,4 +1,4 @@
-name: Check iOS V0.4.3 atomic purchase commit and recovery
+name: Check iOS V0.4.8 purchase/business atomic persistence
 
 on:
   pull_request:
