@@ -456,6 +456,9 @@ private struct MorePage: View {
                 NavigationLink(destination: TestBusinessEditView()) {
                     Label("测试账本营业金额更正 · 冲突核对", systemImage: "square.and.pencil")
                 }
+                NavigationLink(destination: TestSyncAuditView()) {
+                    Label("测试同步核对中心 · 一键只读检查", systemImage: "checklist")
+                }
                 Divider()
                 Text("账号与同步").font(.headline)
                 VStack(alignment: .leading, spacing: 12) {
@@ -480,9 +483,9 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.3.1 · TrollStore 测试采购备注更正版")
+                Text("版本：iOS V0.3.2 · 测试同步统一核对版")
                     .font(.caption).foregroundColor(.secondary)
-                Text("正式账本始终只读。仅 iOS_TEST_ 测试账本允许营业新增、更正、采购新增及备注更正；采购金额、删除、结算仍锁定。")
+                Text("正式账本始终只读。iOS_TEST_ 测试账本开放既有受控写入；新增一键只读核对中心，不自动重发或变更任何结算。")
                     .font(.caption2).foregroundColor(.secondary)
                 Button(role: .destructive) {
                     model.signOut()
