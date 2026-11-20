@@ -24,9 +24,13 @@ final class BusinessEditCloudReviewTests: XCTestCase {
                 "wechat_collector_id": .number(5),
                 "alipay_collector_id": .number(5),
                 "cash_collector_id": .number(5),
+                "wechat_collector_name": .string("甲"),
+                "alipay_collector_name": .string("甲"),
+                "cash_collector_name": .string("甲"),
                 "expense_payer_id": .number(0),
                 "expense_payer_name": .string("未指定"),
-                "receipt_splits_json": .string("[]")
+                "receipt_splits_json": .string(
+                    "[{\"partner_id\":5,\"partner_name\":\"甲\",\"amount\":\(cash),\"wechat_income\":0,\"alipay_income\":0,\"cash_income\":\(cash)}]")
             ])
     }
 
