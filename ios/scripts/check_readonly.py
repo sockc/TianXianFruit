@@ -245,7 +245,7 @@ import_policy = swift["PurchaseImportPolicy.swift"]
 import_picker = swift["PurchaseImportPickerView.swift"]
 commit_planning = swift["PurchaseCommitPlanningPolicy.swift"]
 draft_line = swift["PurchaseDraftModels.swift"]
-assert "PurchaseImportPolicy.inventory" in editor
+assert "PurchaseImportPolicy.inventory" in import_picker
 assert "PurchaseImportPickerView(" in editor
 assert "PurchaseImportPolicy.append" in editor
 assert "sourcePlanItemSyncID" in draft_line
