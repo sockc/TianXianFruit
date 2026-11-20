@@ -225,6 +225,12 @@ private struct BusinessPage: View {
         }
     }
 
+    private var localDrafts: [BusinessLocalDraft] {
+        guard let account = model.account?.username, let book = model.selectedBookID else { return [] }
+        return BusinessLocalDraftStore.load(account: account, bookID: book)
+            .filter { $0.date == selectedKey }
+    }
+
     private var grouped: [DayRows<StoreDailyRow>] {
         DayRows<StoreDailyRow>.grouping(rows, date: { $0.date })
     }
@@ -285,6 +291,17 @@ private struct BusinessPage: View {
                     }
                     .buttonStyle(.bordered)
                     .disabled(model.selectedBookID == nil)
+                }
+                if !localDrafts.isEmpty {
+                    HStack {
+                        Label("本机营业草稿 \(localDrafts.count) 条（未上传）",
+                              systemImage: "square.and.pencil")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                        Spacer()
+                        Button("继续编辑") { showLocalEntry = true }
+                            .font(.caption)
+                    }
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
