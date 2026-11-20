@@ -123,9 +123,34 @@ enum BusinessUploadPolicy {
             else { part.cash += sum }
             collectors[syncID] = part
         }
-        try add(wechat, from: "wechat_collector_sync_id", channel: "wechat")
-        try add(alipay, from: "alipay_collector_sync_id", channel: "alipay")
-        try add(cashIn, from: "cash_collector_sync_id", channel: "cash")
+        if let explicit = draft.businessCollectors {
+            // The allocation was frozen with the original local draft.
+            // Re-resolve every partner against this freshly pulled cloud book.
+            // Never invent an owner or infer amounts from the grand total.
+            try BusinessCollectorDraftPolicy.validate(
+                explicit, fields: draft.fields)
+            for item in explicit {
+                let partner = try StagingPayloadBuilder.reference(
+                    table: "partner", syncID: item.partnerSyncID,
+                    events: events)
+                let w = try cents(item.wechat, name: "微信逐人金额")
+                let a = try cents(item.alipay, name: "支付宝逐人金额")
+                let c = try cents(item.cash, name: "现金逐人金额")
+                guard partner.numericID > 0, !partner.name.isEmpty,
+                      w + a + c > 0 else {
+                    throw StagingSafetyError.staleReferences
+                }
+                collectors[item.partnerSyncID] = Split(
+                    id: partner.numericID, name: partner.name,
+                    wechat: w, alipay: a, cash: c)
+            }
+        } else {
+            // Legacy, already-persisted V0.3.3 drafts: one collector per
+            // channel, automatically merged by stable partner sync ID.
+            try add(wechat, from: "wechat_collector_sync_id", channel: "wechat")
+            try add(alipay, from: "alipay_collector_sync_id", channel: "alipay")
+            try add(cashIn, from: "cash_collector_sync_id", channel: "cash")
+        }
         let splits: [[String: Any]] = collectors.keys.sorted().compactMap { key in
             guard let part = collectors[key] else { return nil }
             return ["partner_id": part.id, "partner_name": part.name,
@@ -181,7 +206,8 @@ enum BusinessUploadPolicy {
             "purchase_cost": .number(0),
             "profit": cash(profit),
             "new_customer": .number(0), "old_customer": .number(0),
-            "actual_start_time": .string(""), "actual_end_time": .string(""),
+            "actual_start_time": .string(draft.fields["actual_start_time"] ?? ""),
+            "actual_end_time": .string(draft.fields["actual_end_time"] ?? ""),
             "deleted": .number(0), "sync_id": .string(key),
             "sync_status": .number(0), "row_version": .number(1),
             "created_at": .number(Double(milliseconds)),
@@ -232,6 +258,13 @@ enum BusinessUploadPolicy {
         for key in textKeys {
             guard let a = job.payload[key]?.text, a == row.payload[key]?.text else {
                 return false
+            }
+        }
+        // Older source drafts omitted time metadata. For newly supplied
+        // operating hours, require an exact round trip from the cloud.
+        for key in ["actual_start_time", "actual_end_time"] {
+            if let expected = job.payload[key]?.text, !expected.isEmpty {
+                guard row.payload[key]?.text == expected else { return false }
             }
         }
         guard let lhsText = job.payload["receipt_splits_json"]?.text,
