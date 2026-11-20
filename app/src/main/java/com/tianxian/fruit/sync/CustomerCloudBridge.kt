@@ -417,7 +417,30 @@ internal object CustomerCloudBridge {
                             put("observed_receipt_days", body.optInt("receipt_days"))
                             put("observed_receipt_rows", body.optInt("receipt_count"))
                         }, SQLiteDatabase.CONFLICT_IGNORE)
-                        if (inserted > 0L) ack(database, kind, key, "REMOTE", version)
+                        if (inserted <= 0L) {
+                            // A second device may already have imported the
+                            // exact same file. Its parser counts can differ,
+                            // so compare only the immutable file SHA-256 and
+                            // provider. Keep the local metadata untouched.
+                            val existing = database.rawQuery(
+                                "SELECT platform,file_hash FROM payment_import_batch " +
+                                    "WHERE file_hash=? LIMIT 1",
+                                arrayOf(hash)
+                            ).use { cursor ->
+                                if (!cursor.moveToFirst()) null
+                                else cursor.string("platform") to cursor.string("file_hash")
+                            }
+                            if (!CustomerBatchConflictPolicy.sameImportedFile(
+                                    platform, hash, existing?.first, existing?.second)) {
+                                throw IllegalStateException(
+                                    "云端账单批次与本机文件身份不一致，拒绝覆盖：$key"
+                                )
+                            }
+                        }
+                        // Whether freshly inserted or already present with
+                        // matching immutable identity, acknowledge the cloud
+                        // event so this device cannot re-push the same BATCH.
+                        ack(database, kind, key, "REMOTE", version)
                     }
                     "RECEIPT" -> {
                         val platform = body.str("platform")
