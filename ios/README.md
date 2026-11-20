@@ -1,3 +1,13 @@
+# 天鲜账本 iOS V0.4.8 — 正式营业隔离保护
+
+**版本 0.4.8 / Build 28**。与 TianXian-Server V1.0.27 的限制一致：只有名称严格以 `iOS_TEST_` 开头的测试账本才可能启用正式营业事务提交。其他账本依然可查看和保存本机营业草稿，但「提交正式营业」始终禁用。
+
+服务端还要求在线编辑权限、设备验证及 `TIANXIAN_BUSINESS_COMMIT_ENABLED=true`，默认关闭。客户端开关或缓存不构成授权。未取得服务器能力时，保持禁用。旧安卓结算规则不变。V1.0.27 服务端还将 PostgreSQL 建表和兼容迁移放入同一 advisory transaction lock 防并发重复创建数据库对象。
+
+当前源码已提交 GitHub；iOS IPA 编译与安卓/iOS 双端联调未验证，不宣称已可发布。
+
+---
+
 # 天鲜账本 iOS V0.4.7 — 安卓营业结构对齐
 
 **版本 0.4.7 / Build 27**，支持 iPhone X / iOS 16.6 / TrollStore（最低 iOS 15），Bundle ID 不变。覆盖安装保留本机草稿；请勿卸载旧版。
