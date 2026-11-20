@@ -22,7 +22,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Verify business endpoints are read-only
+      - name: Verify isolated write endpoints and no generic business push
         run: python3 ios/scripts/check_readonly.py
       - name: Install iOS build utilities
         run: brew install xcodegen ldid
@@ -58,8 +58,8 @@ jobs:
           ldid -S "$TARGET/TianXianFruit"
           cd "$RUNNER_TEMP/trollstore"
           ditto -c -k --sequesterRsrc --keepParent Payload \
-            "$RUNNER_TEMP/TianXianFruit-iOS-v0.4.3-TrollStore.ipa"
-          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v0.4.3-TrollStore.ipa"
+            "$RUNNER_TEMP/TianXianFruit-iOS-v0.4.8-TrollStore.ipa"
+          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v0.4.8-TrollStore.ipa"
       - name: Verify app bundle structure and deployment target
         shell: bash
         run: |
@@ -67,7 +67,7 @@ jobs:
           python3 - <<'PY'
           import os, plistlib, zipfile
           from pathlib import Path
-          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v0.4.3-TrollStore.ipa"
+          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v0.4.8-TrollStore.ipa"
           with zipfile.ZipFile(p) as z:
               names = set(z.namelist())
               base = "Payload/TianXianFruit.app/"
@@ -83,7 +83,7 @@ jobs:
       - name: Upload installable-by-TrollStore test IPA
         uses: actions/upload-artifact@v4
         with:
-          name: TianXianFruit-iOS-v0.4.3-TrollStore
-          path: ${{ runner.temp }}/TianXianFruit-iOS-v0.4.3-TrollStore.ipa
+          name: TianXianFruit-iOS-v0.4.8-TrollStore
+          path: ${{ runner.temp }}/TianXianFruit-iOS-v0.4.8-TrollStore.ipa
           if-no-files-found: error
           retention-days: 14
