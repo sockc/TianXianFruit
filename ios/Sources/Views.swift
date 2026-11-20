@@ -444,20 +444,27 @@ private struct MorePage: View {
                 NavigationLink(destination: OperatingReportView()) {
                     Label("导出经营报表 · PDF / 图片", systemImage: "square.and.arrow.up")
                 }
-                NavigationLink(destination: TestWriteLabView()) {
-                    Label("写入测试实验室 · 仅本机草稿", systemImage: "square.and.pencil")
-                }
-                NavigationLink(destination: StagingPurchaseUploadView()) {
-                    Label("测试账本采购同步", systemImage: "arrow.up.doc")
-                }
-                NavigationLink(destination: BusinessUploadView()) {
-                    Label("测试账本营业同步", systemImage: "arrow.up.right.circle")
-                }
-                NavigationLink(destination: TestBusinessEditView()) {
-                    Label("测试账本营业更正 · 多收款人", systemImage: "square.and.pencil")
-                }
-                NavigationLink(destination: TestSyncAuditView()) {
-                    Label("测试同步核对中心 · 一键只读检查", systemImage: "checklist")
+                if model.selectedBook?.name.hasPrefix(TestWritePolicy.prefix) == true {
+                    DisclosureGroup("兼容旧版测试数据（不影响正式账本）") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            NavigationLink(destination: TestWriteLabView()) {
+                                Label("旧版测试草稿", systemImage: "square.and.pencil")
+                            }
+                            NavigationLink(destination: StagingPurchaseUploadView()) {
+                                Label("旧版测试采购同步", systemImage: "arrow.up.doc")
+                            }
+                            NavigationLink(destination: BusinessUploadView()) {
+                                Label("旧版测试营业同步", systemImage: "arrow.up.right.circle")
+                            }
+                            NavigationLink(destination: TestBusinessEditView()) {
+                                Label("旧版测试营业更正", systemImage: "square.and.pencil")
+                            }
+                            NavigationLink(destination: TestSyncAuditView()) {
+                                Label("旧版测试同步核对", systemImage: "checklist")
+                            }
+                        }
+                        .padding(.top, 8)
+                    }
                 }
                 Divider()
                 Text("账号与同步").font(.headline)
