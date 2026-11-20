@@ -23,7 +23,7 @@ struct TestBusinessEditView: View {
     }
 
     private var records: [SyncEvent] {
-        model.snapshot.records.values.filter {
+        coordinator.liveEvents.filter {
             $0.tableName == "store_daily_record" && !$0.isDeletion &&
             (focusRecordSyncID == nil || $0.syncId == focusRecordSyncID)
         }.sorted {
@@ -84,19 +84,24 @@ struct TestBusinessEditView: View {
                 if let message = coordinator.message {
                     Text(message).font(.caption).foregroundColor(.orange)
                 }
+                if testBook != nil && !coordinator.liveRecordsReady {
+                    Text("更正操作必须先从服务器取得最新完整记录，不使用旧版本机缓存。")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
 
                 HStack {
                     Text(focusRecordSyncID == nil ? "已同步营业记录" : "本次选择的营业记录").font(.headline)
                     Spacer()
                     Button {
-                        Task { await model.refresh() }
+                        Task { await coordinator.refreshCurrent() }
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
-                    .disabled(model.isBusy)
-                    .accessibilityLabel("刷新营业记录")
+                    .disabled(coordinator.busy || !coordinator.connected)
+                    .accessibilityLabel("重新获取服务器最新营业记录")
                 }
-                if testBook != nil {
+                if testBook != nil && coordinator.connected &&
+                   coordinator.liveRecordsReady {
                     if records.isEmpty {
                         Text("所选记录不存在或已变更，请回到营业历史刷新")
                             .font(.caption).foregroundColor(.secondary)
@@ -164,13 +169,16 @@ struct TestBusinessEditView: View {
                 }
                 if !coordinator.jobs.isEmpty {
                     Button {
-                        Task { await model.refresh(forceFull: true) }
+                        Task {
+                            await coordinator.refreshCurrent()
+                            await model.refresh(forceFull: true)
+                        }
                     } label: {
-                        Label("完整刷新云端营业记录（只读）",
+                        Label("重新读取云端记录并核对（只读）",
                               systemImage: "arrow.clockwise")
                     }
-                    .disabled(model.isBusy)
-                    Text("以上核对只表示服务器当前版本，不代表 Android 本机已经同步。")
+                    .disabled(model.isBusy || coordinator.busy)
+                    Text("更正列表以服务器刚读取的记录为准；安卓本机需另行同步。")
                         .font(.caption2).foregroundColor(.secondary)
                 }
                 DisclosureGroup("本版安全范围", isExpanded: $showSafety) {
@@ -246,7 +254,7 @@ private struct TestBusinessEditForm: View {
     private var previouslySettled: Bool {
         guard let date = original.payload["date"]?.text else { return true }
         return TestBusinessEditPolicy.hasDerivedSettlement(
-            date: date, events: Array(model.snapshot.records.values))
+            date: date, events: coordinator.liveEvents)
     }
 
     private var correctBook: Bool {
@@ -268,7 +276,8 @@ private struct TestBusinessEditForm: View {
     }
 
     private var canSubmit: Bool {
-        correctBook && coordinator.connected && !coordinator.busy &&
+        correctBook && coordinator.connected &&
+        coordinator.liveRecordsReady && !coordinator.busy &&
         !previouslySettled && hasChanges
     }
 
