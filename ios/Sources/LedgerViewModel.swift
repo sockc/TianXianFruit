@@ -20,6 +20,9 @@ final class LedgerViewModel: ObservableObject {
     @Published private(set) var currentCursor: Int64 = 0
     @Published private(set) var isUsingCachedAuthorization = false
     @Published private(set) var cacheAvailable = true
+    @Published private(set) var purchaseCommitCapabilities: PurchaseCommitCapabilities?
+    @Published private(set) var purchaseCommitError: String?
+    @Published private(set) var isPurchaseCommitBusy = false
     @Published private(set) var customerSnapshot = CustomerReadSnapshot()
     @Published private(set) var customerCursor: Int64 = 0
     @Published private(set) var customerSyncedAt: Date?
@@ -97,6 +100,85 @@ final class LedgerViewModel: ObservableObject {
     }
 
 
+    /// Never infer production-write capability from an Android/older server.
+    /// Missing routes, offline access, or cached authorization all mean off.
+    func refreshPurchaseCommitCapabilities() async {
+        purchaseCommitCapabilities = nil
+        purchaseCommitError = nil
+        guard let account, let token = accessToken,
+              let book = selectedBookID,
+              !isUsingCachedAuthorization else { return }
+        do {
+            let caps = try await api.purchaseCapabilities(token: token, bookID: book)
+            guard self.account?.username == account.username,
+                  self.accessToken == token,
+                  self.selectedBookID == book else { return }
+            if caps.version == 1 && caps.atomic && caps.idempotency &&
+               caps.feature == "purchase_atomic_commit_v1" {
+                purchaseCommitCapabilities = caps
+            }
+        } catch {
+            purchaseCommitError = "采购云端写入未启用；本机录入仍可使用"
+        }
+    }
+
+    /// Call only after the SQLite immutable outbox is durably reserved.
+    /// The HTTP request contains the existing account-scoped device ID.
+    func commitPurchase(_ proposal: PurchaseCommitProposal)
+        async throws -> PurchaseCommitReceipt {
+        guard !isPurchaseCommitBusy, !isBusy,
+              let account, let book = selectedBook,
+              let token = accessToken,
+              !isUsingCachedAuthorization,
+              account.username.lowercased() == proposal.account.lowercased(),
+              book.id == proposal.bookID,
+              PurchaseWorkspaceDraftPolicy.authorized(book: book, account: account)
+        else { throw PurchaseAtomicError.scopeChanged }
+        isPurchaseCommitBusy = true
+        defer { isPurchaseCommitBusy = false }
+        // The capability is re-fetched before each actual write, so a stale
+        // UI checkbox or a previous server version cannot enable mutation.
+        let capabilities = try await api.purchaseCapabilities(
+            token: token, bookID: book.id)
+        guard capabilities.allows(proposal),
+              self.accessToken == token,
+              self.selectedBookID == book.id,
+              self.account?.username == account.username else {
+            throw PurchaseAtomicError.unsupported
+        }
+        let result = try await api.purchaseCommit(
+            token: token, proposal: proposal)
+        guard self.accessToken == token,
+              self.selectedBookID == book.id,
+              self.account?.username == account.username else {
+            throw PurchaseAtomicError.scopeChanged
+        }
+        return result
+    }
+
+    /// Network timeout/unknown state: only this GET may be used for recovery.
+    /// No second POST or fresh operation id is automatically generated.
+    func findPurchaseCommit(_ proposal: PurchaseCommitProposal)
+        async throws -> PurchaseCommitReceipt? {
+        guard !isPurchaseCommitBusy,
+              let account, let book = selectedBook,
+              let token = accessToken, !isUsingCachedAuthorization,
+              account.username.lowercased() == proposal.account.lowercased(),
+              book.id == proposal.bookID else {
+            throw PurchaseAtomicError.scopeChanged
+        }
+        isPurchaseCommitBusy = true
+        defer { isPurchaseCommitBusy = false }
+        let result = try await api.purchaseOperation(
+            token: token, proposal: proposal)
+        guard self.accessToken == token,
+              self.selectedBookID == book.id,
+              self.account?.username == account.username else {
+            throw PurchaseAtomicError.scopeChanged
+        }
+        return result
+    }
+
     private func saveProfile(_ profile: VerifiedProfile) throws {
         let bytes = try JSONEncoder().encode(profile)
         guard let json = String(data: bytes, encoding: .utf8) else {
@@ -122,6 +204,8 @@ final class LedgerViewModel: ObservableObject {
         customerSyncedAt = nil
         customerAPIAvailable = false
         customerError = nil
+        purchaseCommitCapabilities = nil
+        purchaseCommitError = nil
         weatherOverview = nil
         weatherCheckedAt = nil
         weatherError = nil
