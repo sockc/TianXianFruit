@@ -3,26 +3,52 @@ import SwiftUI
 @MainActor
 final class PurchaseWorkspaceModel: ObservableObject {
     @Published private(set) var drafts: [PurchaseWorkspaceDraft] = []
+    @Published private(set) var attempts: [String: PurchaseCommitAttempt] = [:]
+    @Published private(set) var storageReady = false
     @Published var message: String?
     private let store: PurchaseWorkspaceStore?
 
     init() {
-        do { store = try PurchaseWorkspaceStore() }
-        catch { store = nil; message = error.localizedDescription }
+        do {
+            store = try PurchaseWorkspaceStore()
+            storageReady = true
+        }
+        catch {
+            store = nil
+            storageReady = false
+            message = error.localizedDescription
+        }
     }
 
     func reload(account: String?, bookID: String?) {
         drafts = []
+        attempts = [:]
         guard let account, let bookID, let store else { return }
         do {
-            drafts = try store.load(account: account, bookID: bookID)
-        } catch { message = error.localizedDescription }
+            let existing = try store.load(account: account, bookID: bookID)
+            var locked: [String: PurchaseCommitAttempt] = [:]
+            for draft in existing {
+                if let result = try store.attempt(
+                    id: draft.id, account: account, bookID: bookID) {
+                    locked[draft.id] = result
+                }
+            }
+            drafts = existing
+            attempts = locked
+            storageReady = true
+        } catch {
+            storageReady = false
+            message = "采购提交保护记录读取失败，已禁止进一步操作：" +
+                error.localizedDescription
+        }
     }
 
     func save(_ item: PurchaseWorkspaceDraft,
               account: String, bookID: String) -> Bool {
         guard let store else { message = "本机采购数据库不可用"; return false }
         do {
+            try store.assertEditable(
+                id: item.id, account: account, bookID: bookID)
             try store.save(item, account: account, bookID: bookID)
             reload(account: account, bookID: bookID)
             message = "已保存在本机采购录入，不影响云端采购额或结算"
@@ -33,10 +59,44 @@ final class PurchaseWorkspaceModel: ObservableObject {
         }
     }
 
+    func reserve(_ proposal: PurchaseCommitProposal,
+                 account: String, bookID: String) throws
+        -> PurchaseCommitAttempt {
+        guard storageReady, let store else {
+            throw PurchaseAtomicError.persistentStore
+        }
+        let attempt = try store.reserve(
+            proposal, account: account, bookID: bookID)
+        reload(account: account, bookID: bookID)
+        return attempt
+    }
+
+    func transition(_ attempt: PurchaseCommitAttempt,
+                    to phase: PurchaseCommitAttempt.Phase,
+                    receipt: PurchaseCommitReceipt? = nil,
+                    account: String, bookID: String) throws {
+        guard storageReady, let store else {
+            throw PurchaseAtomicError.persistentStore
+        }
+        var changed = attempt
+        changed.phase = phase
+        changed.updatedAt = Date()
+        if let receipt { changed.receipt = receipt }
+        try store.updateAttempt(
+            changed, account: account, bookID: bookID)
+        reload(account: account, bookID: bookID)
+    }
+
+    func attempt(for draft: PurchaseWorkspaceDraft) -> PurchaseCommitAttempt? {
+        attempts[draft.id]
+    }
+
     func delete(_ item: PurchaseWorkspaceDraft,
                 account: String, bookID: String) {
         guard let store else { return }
         do {
+            try store.assertEditable(
+                id: item.id, account: account, bookID: bookID)
             try store.delete(item.id, account: account, bookID: bookID)
             reload(account: account, bookID: bookID)
             message = "已删除本机草稿，没有删除云端采购"
@@ -58,6 +118,9 @@ struct PurchaseWorkspaceView: View {
     @State private var reconcilingID: String?
     @State private var reviewedID: String?
     @State private var review: PurchaseCloudReconcileReport?
+    @State private var pendingCommitID: String?
+    @State private var showConfirm = false
+    @State private var submittingID: String?
 
     private var day: String { BusinessDates.key(date) }
     private var planning: PurchasePlanningDay {
@@ -71,7 +134,8 @@ struct PurchaseWorkspaceView: View {
         workspace.drafts.filter { $0.date == day }
     }
     private var canEdit: Bool {
-        guard let book = model.selectedBook else { return false }
+        guard workspace.storageReady,
+              let book = model.selectedBook else { return false }
         return PurchaseWorkspaceDraftPolicy.authorized(
             book: book, account: model.account)
     }
@@ -121,16 +185,32 @@ struct PurchaseWorkspaceView: View {
                 Text("请先登录并选择账本")
             }
         }
-        .onAppear(perform: reload)
+        .alert("确认提交正式采购？", isPresented: $showConfirm) {
+            Button("取消", role: .cancel) { pendingCommitID = nil }
+            Button("确认提交") {
+                guard let id = pendingCommitID,
+                      let draft = localDrafts.first(where: { $0.id == id })
+                else { return }
+                Task { await submitPurchase(draft) }
+            }
+        } message: {
+            Text("提交成功后会生成正式采购订单并同步到安卓。网络异常只查询原操作，不自动重复创建；已结算日不会被修改。")
+        }
+        .onAppear {
+            reload()
+            Task { await model.refreshPurchaseCommitCapabilities() }
+        }
         .onChange(of: model.selectedBookID) { _ in
             request = nil
             clearReview()
             reload()
+            Task { await model.refreshPurchaseCommitCapabilities() }
         }
         .onChange(of: model.account?.username) { _ in
             request = nil
             clearReview()
             reload()
+            Task { await model.refreshPurchaseCommitCapabilities() }
         }
     }
 
@@ -281,8 +361,17 @@ struct PurchaseWorkspaceView: View {
                                   "计划采购" : "临时采购"))
                                 .font(.subheadline.bold())
                             Spacer()
-                            Text("未提交")
-                                .font(.caption.bold()).foregroundColor(.orange)
+                            if let attempt = workspace.attempt(for: draft) {
+                                Text(attempt.phase == .confirmed ?
+                                    "云端已确认" : "提交待核对")
+                                    .font(.caption.bold())
+                                    .foregroundColor(
+                                        attempt.phase == .confirmed ?
+                                        .green : .orange)
+                            } else {
+                                Text("本机未提交")
+                                    .font(.caption.bold()).foregroundColor(.orange)
+                            }
                         }
                         Text(String(draft.lines.count) + " 种商品 · " +
                              (draft.total.map {
@@ -295,7 +384,7 @@ struct PurchaseWorkspaceView: View {
                                 request = PurchaseWorkspaceEditorRequest(
                                     original: draft)
                             }
-                            .disabled(!canEdit)
+                            .disabled(!canEdit || workspace.attempt(for: draft) != nil)
                             Spacer()
                             Button("核对云端") {
                                 Task { await reconcile(draft) }
@@ -312,9 +401,41 @@ struct PurchaseWorkspaceView: View {
                                         account: account, bookID: bookID)
                                 }
                             }
-                            .disabled(!canEdit)
+                            .disabled(!canEdit || workspace.attempt(for: draft) != nil)
                         }
                         .font(.caption)
+
+                        if let attempt = workspace.attempt(for: draft) {
+                            Text(attempt.label)
+                                .font(.caption2)
+                                .foregroundColor(.orange)
+                            Button(attempt.phase == .accepted ?
+                                   "核对订单同步" : "查询原提交结果") {
+                                Task { await recoverPurchase(attempt) }
+                            }
+                            .disabled(model.isPurchaseCommitBusy || submittingID != nil ||
+                                      model.isBusy)
+                            .font(.caption)
+                        } else if canEdit, let caps = model.purchaseCommitCapabilities,
+                                  caps.enabled && caps.atomic && caps.idempotency {
+                            Button {
+                                pendingCommitID = draft.id
+                                showConfirm = true
+                            } label: {
+                                Label("提交正式采购", systemImage: "arrow.up.doc.fill")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.isPurchaseCommitBusy ||
+                                      model.isBusy || submittingID != nil)
+                        } else {
+                            Text("服务端采购写入尚未启用，本机草稿不会影响安卓结算")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        if submittingID == draft.id {
+                            ProgressView("正在检查并提交正式采购")
+                                .font(.caption)
+                        }
                         if reconcilingID == draft.id {
                             HStack(spacing: 8) {
                                 ProgressView()
@@ -388,6 +509,115 @@ struct PurchaseWorkspaceView: View {
     private func shiftDate(_ by: Int) {
         date = BusinessDates.calendar.date(
             byAdding: .day, value: by, to: date) ?? date
+    }
+
+    /// All cloud writes are explicit, preflight-checked and preceded by a
+    /// durable reservation. Never retry a timed-out request automatically.
+    private func submitPurchase(_ draft: PurchaseWorkspaceDraft) async {
+        guard submittingID == nil,
+              workspace.attempt(for: draft) == nil,
+              let account = model.account,
+              let book = model.selectedBook,
+              account.username.lowercased() == draft.account.lowercased(),
+              book.id == draft.bookID,
+              canEdit, !model.isBusy else { return }
+        submittingID = draft.id
+        defer { submittingID = nil }
+        do {
+            await model.refresh(forceFull: true)
+            guard model.errorMessage == nil,
+                  model.lastSyncAt != nil,
+                  model.selectedBookID == book.id,
+                  model.account?.username == account.username,
+                  !model.isUsingCachedAuthorization else {
+                throw PurchaseAtomicError.scopeChanged
+            }
+            let events = Array(model.snapshot.records.values)
+            let review = PurchaseCloudReconcilePolicy.inspect(
+                draft, events: events)
+            guard review.status == .absentFromLatestCloud else {
+                workspace.message = review.message
+                return
+            }
+            let proposal = try PurchaseCommitPlanningPolicy.prepare(
+                draft, account: account, book: book, records: events)
+            guard let caps = model.purchaseCommitCapabilities,
+                  caps.allows(proposal) else {
+                throw PurchaseAtomicError.unsupported
+            }
+            let pending = try workspace.reserve(
+                proposal, account: account.username, bookID: book.id)
+            guard pending.phase == .prepared else {
+                throw PurchaseAtomicError.blockedByAttempt
+            }
+            do {
+                let receipt = try await model.commitPurchase(proposal)
+                try workspace.transition(pending, to: .accepted,
+                    receipt: receipt, account: account.username, bookID: book.id)
+                await verifyCommitted(proposal, receipt: receipt,
+                                      account: account.username, bookID: book.id)
+            } catch {
+                // If a write was attempted and the response is uncertain, do
+                // not retry POST, do not change operation id, do not unlock.
+                if let existing = workspace.attempt(for: draft),
+                   existing.phase == .prepared {
+                    try? workspace.transition(existing, to: .unknown,
+                        account: account.username, bookID: book.id)
+                }
+                throw error
+            }
+        } catch {
+            workspace.message = error.localizedDescription
+        }
+    }
+
+    private func recoverPurchase(_ attempt: PurchaseCommitAttempt) async {
+        guard submittingID == nil,
+              model.account?.username.lowercased() == attempt.account.lowercased(),
+              model.selectedBookID == attempt.bookID else { return }
+        submittingID = attempt.id
+        defer { submittingID = nil }
+        do {
+            if let receipt = attempt.receipt {
+                await verifyCommitted(attempt.proposal, receipt: receipt,
+                                      account: attempt.account, bookID: attempt.bookID)
+                return
+            }
+            guard let receipt = try await model.findPurchaseCommit(
+                attempt.proposal) else {
+                workspace.message = "服务器暂未确认这笔采购，请勿重复提交；原本机记录已保留"
+                return
+            }
+            try workspace.transition(attempt, to: .accepted,
+                receipt: receipt, account: attempt.account, bookID: attempt.bookID)
+            await verifyCommitted(attempt.proposal, receipt: receipt,
+                                  account: attempt.account, bookID: attempt.bookID)
+        } catch {
+            workspace.message = error.localizedDescription
+        }
+    }
+
+    private func verifyCommitted(_ proposal: PurchaseCommitProposal,
+                                 receipt: PurchaseCommitReceipt,
+                                 account: String, bookID: String) async {
+        await model.refresh(forceFull: true)
+        guard model.errorMessage == nil,
+              model.account?.username.lowercased() == account.lowercased(),
+              model.selectedBookID == bookID,
+              PurchaseAtomicReadbackPolicy.confirmed(
+                proposal, receipt: receipt,
+                records: Array(model.snapshot.records.values)),
+              let last = workspace.attempts[proposal.draftID] else {
+            workspace.message = "服务器提交回执已保存，但尚未核对到全部订单明细；请点击“核对订单同步”"
+            return
+        }
+        do {
+            try workspace.transition(last, to: .confirmed,
+                receipt: receipt, account: account, bookID: bookID)
+            workspace.message = "采购已完整同步至云端，安卓刷新后可查看"
+        } catch {
+            workspace.message = error.localizedDescription
+        }
     }
 
     private func clearReview() {
