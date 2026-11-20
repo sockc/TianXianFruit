@@ -1,4 +1,4 @@
-name: Check iOS V0.2.7 simplified test-book multi-item sync
+name: Check iOS V0.2.8 cloud purchase item reconciliation
 
 on:
   pull_request:
