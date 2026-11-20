@@ -140,7 +140,7 @@ struct PurchaseWorkspaceEditorView: View {
     private func save() {
         do {
             guard canEdit else { throw PurchaseWorkspaceStoreError.scope }
-            let buyer = try XCTLookupBuyer()
+            let buyer = try resolvedBuyer()
             let now = Date()
             let proposed = PurchaseWorkspaceDraft(
                 id: original?.id ?? UUID().uuidString,
@@ -163,7 +163,7 @@ struct PurchaseWorkspaceEditorView: View {
         }
     }
 
-    private func XCTLookupBuyer() throws -> TestLookup {
+    private func resolvedBuyer() throws -> TestLookup {
         guard let value = model.snapshot.testPartners.first(where: {
             $0.id == buyerSyncID
         }) else { throw TestWriteError.missingData("采购人") }
