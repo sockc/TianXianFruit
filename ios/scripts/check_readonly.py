@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V0.3.3: explicit TEST collector splits must not invalidate settled financial records."""
+"""V0.3.4: per-person TEST uploads use resolved collectors, not settlement writes."""
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1] / "Sources"
@@ -173,4 +173,22 @@ assert "previouslySettled" in edit_ui
 assert "pendingUploads" in editor
 assert "api.pushSingle(sending.proposed" in editor
 assert "api.validateSession(auth)" in editor
-print("V0.3.3 PASS: TEST-only explicit collector editing; settled-day guard; one-shot outbox; official read-only.")
+business_drafts = swift["BusinessCollectorDraftPolicy.swift"]
+business_form = swift["TestWriteLabView.swift"]
+business_payload = swift["TestBusinessUploadModels.swift"]
+write_models = swift["TestWriteModels.swift"]
+assert "struct BusinessCollectorDraftLine" in business_drafts
+assert "BusinessCollectorDraftPolicy.validateTimes" in write_models
+assert "BusinessCollectorDraftPolicy.validate(" in write_models
+assert "businessCollectors" in write_models
+assert "draft.businessCollectors" in business_payload
+assert "StagingPayloadBuilder.reference" in business_payload
+assert "actual_start_time" in business_payload
+assert "actual_end_time" in business_payload
+assert "usePerPersonCollectors" in business_form
+assert "BusinessCollectorDraftPolicy.totals" in business_form
+assert "TestBusinessUploadModels.swift" in str(root / "TestBusinessUploadModels.swift")
+assert (root.parent / "Tests" / "BusinessCollectorDraftTests.swift").exists()
+assert "api.pushSingle" not in business_form
+assert "pushSingle" not in business_drafts
+print("V0.3.4 PASS: official books read-only; per-person source validation, clock checks, one-shot TEST upload.")
