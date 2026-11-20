@@ -71,6 +71,19 @@ final class TestDraftStore {
             )
         """)
         try exec("CREATE INDEX IF NOT EXISTS idx_business_jobs_scope ON isolated_business_jobs(source_account,book_id)")
+        try exec("""
+            CREATE TABLE IF NOT EXISTS isolated_business_edit_jobs (
+                id TEXT PRIMARY KEY,
+                source_account TEXT NOT NULL,
+                book_id TEXT NOT NULL,
+                stage_host TEXT NOT NULL,
+                state TEXT NOT NULL,
+                payload BLOB NOT NULL,
+                created_at_ms INTEGER NOT NULL
+            )
+        """)
+        try exec("CREATE INDEX IF NOT EXISTS idx_edit_jobs_scope ON isolated_business_edit_jobs(source_account,book_id)")
+
     }
 
     deinit { if database != nil { sqlite3_close(database) } }
@@ -413,6 +426,126 @@ final class TestDraftStore {
         }
         return try ids.compactMap { try businessJob(id: $0, account: account,
                                                      book: book) }
+    }
+
+    /// Immutable correction intent, separate from new business/purchase jobs.
+    /// A missing SQL upsert is an error, never permission to send a mutation.
+    func saveBusinessEditJob(_ job: TestBusinessEditJob) throws {
+        guard !job.id.isEmpty, !job.sourceAccount.isEmpty,
+              !job.bookID.isEmpty,
+              job.stageHost == StagingPurchasePolicy.productionURL,
+              job.stageInstanceID == "production-scoped-testbook:" + job.bookID,
+              job.original.tableName == "store_daily_record",
+              job.proposed.tableName == "store_daily_record",
+              job.original.syncId == job.proposed.syncId,
+              job.proposed.rowVersion == job.original.rowVersion + 1 else {
+            throw TestDraftStoreError.invalid
+        }
+        if let old = try businessEditJob(id: job.id, account: job.sourceAccount,
+                                         book: job.bookID) {
+            guard old.sourceAccount == job.sourceAccount,
+                  old.bookID == job.bookID, old.stageHost == job.stageHost,
+                  old.stageInstanceID == job.stageInstanceID,
+                  old.stageUsername == job.stageUsername,
+                  old.deviceID == job.deviceID,
+                  old.original.tableName == job.original.tableName,
+                  old.original.syncId == job.original.syncId,
+                  old.original.rowVersion == job.original.rowVersion,
+                  old.original.operation == job.original.operation,
+                  old.original.payload == job.original.payload,
+                  old.proposed.tableName == job.proposed.tableName,
+                  old.proposed.syncId == job.proposed.syncId,
+                  old.proposed.rowVersion == job.proposed.rowVersion,
+                  old.proposed.operation == job.proposed.operation,
+                  old.proposed.payload == job.proposed.payload,
+                  old.createdAt == job.createdAt else {
+                throw TestDraftStoreError.invalid
+            }
+            let allowed: [TestBusinessEditState: Set<TestBusinessEditState>] = [
+                .ready: [.ready, .sending, .needsReview],
+                .sending: [.sending, .complete, .needsReview],
+                .needsReview: [.needsReview, .complete],
+                .complete: [.complete]
+            ]
+            guard allowed[old.state]?.contains(job.state) == true else {
+                throw TestDraftStoreError.invalid
+            }
+        }
+        let stmt = try prepare("""
+            INSERT INTO isolated_business_edit_jobs
+              (id,source_account,book_id,stage_host,state,payload,created_at_ms)
+            VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+              payload=excluded.payload, state=excluded.state
+            WHERE source_account=excluded.source_account AND
+                  book_id=excluded.book_id AND stage_host=excluded.stage_host
+        """)
+        defer { sqlite3_finalize(stmt) }
+        bind(job.id, at: 1, to: stmt)
+        bind(normalized(job.sourceAccount), at: 2, to: stmt)
+        bind(job.bookID, at: 3, to: stmt)
+        bind(job.stageHost, at: 4, to: stmt)
+        bind(job.state.rawValue, at: 5, to: stmt)
+        bind(try JSONEncoder().encode(job), at: 6, to: stmt)
+        sqlite3_bind_int64(stmt, 7, Int64(job.createdAt.timeIntervalSince1970 * 1000))
+        try step(stmt)
+        guard let saved = try businessEditJob(id: job.id,
+                                              account: job.sourceAccount,
+                                              book: job.bookID),
+              saved.state == job.state,
+              saved.original.payload == job.original.payload,
+              saved.proposed.payload == job.proposed.payload,
+              saved.proposed.rowVersion == job.proposed.rowVersion else {
+            throw TestDraftStoreError.invalid
+        }
+    }
+
+    func businessEditJob(id: String, account: String,
+                         book: String) throws -> TestBusinessEditJob? {
+        let stmt = try prepare("""
+            SELECT payload FROM isolated_business_edit_jobs
+            WHERE id=? AND source_account=? AND book_id=?
+        """)
+        defer { sqlite3_finalize(stmt) }
+        bind(id, at: 1, to: stmt)
+        bind(normalized(account), at: 2, to: stmt)
+        bind(book, at: 3, to: stmt)
+        guard sqlite3_step(stmt) == SQLITE_ROW,
+              let ptr = sqlite3_column_blob(stmt, 0) else { return nil }
+        let count = Int(sqlite3_column_bytes(stmt, 0))
+        let job = try JSONDecoder().decode(TestBusinessEditJob.self,
+                                           from: Data(bytes: ptr, count: count))
+        guard job.id == id, job.bookID == book,
+              normalized(job.sourceAccount) == normalized(account) else {
+            throw TestDraftStoreError.invalid
+        }
+        return job
+    }
+
+    func businessEditJobs(account: String,
+                          book: String) throws -> [TestBusinessEditJob] {
+        let stmt = try prepare("""
+            SELECT id FROM isolated_business_edit_jobs
+            WHERE source_account=? AND book_id=?
+            ORDER BY created_at_ms DESC
+        """)
+        defer { sqlite3_finalize(stmt) }
+        bind(normalized(account), at: 1, to: stmt)
+        bind(book, at: 2, to: stmt)
+        var ids: [String] = []
+        var status = sqlite3_step(stmt)
+        while status == SQLITE_ROW {
+            if let ptr = sqlite3_column_text(stmt, 0) {
+                ids.append(String(cString: ptr))
+            }
+            status = sqlite3_step(stmt)
+        }
+        guard status == SQLITE_DONE else {
+            throw TestDraftStoreError.sql(String(cString: sqlite3_errmsg(database)))
+        }
+        return try ids.compactMap {
+            try businessEditJob(id: $0, account: account, book: book)
+        }
     }
 
     func stagingJob(id: String, account: String,
