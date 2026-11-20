@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V0.2.9: official account read-only; test-only client is the sole writer."""
+"""V0.3.0: official books read-only; guarded test-book corrections only."""
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1] / "Sources"
@@ -87,4 +87,22 @@ assert "coordinator.inspect" in view_business
 assert "isolated_business_jobs" in outbox
 assert "businessJob(id: draft.id" in outbox
 assert (root.parent / "Tests" / "BusinessUploadTests.swift").exists()
-print("V0.2.9 PASS: official account read-only; TEST sales/purchases with durable outbox.")
+editor = swift["TestBusinessEditCoordinator.swift"]
+edit_policy = swift["TestBusinessEditPolicy.swift"]
+edit_ui = swift["TestBusinessEditView.swift"]
+assert "api.pushSingle(sending.proposed" in editor
+assert "api.validateSession(auth)" in editor
+assert "TestBusinessEditPolicy.unchanged" in editor
+assert "TestBusinessEditPolicy.confirmed" in editor
+assert "try store.saveBusinessEditJob(sending)" in editor
+assert "sending.state = .sending" in editor
+assert "TestSyncCredentialStore.load" in editor
+assert "book.name.hasPrefix(TestWritePolicy.prefix)" in editor
+assert "rowVersion + 1" in edit_policy
+assert "receipt_splits_json" in edit_policy
+assert "BusinessUploadPolicy.androidSyncID" in edit_policy
+assert "isolated_business_edit_jobs" in outbox
+assert "coordinator.submit" in edit_ui
+assert "coordinator.inspect" in edit_ui
+assert (root.parent / "Tests" / "TestBusinessEditTests.swift").exists()
+print("V0.3.0 PASS: official books read-only; TEST corrections use version checks and one-shot outbox.")
