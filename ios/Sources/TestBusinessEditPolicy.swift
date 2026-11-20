@@ -474,6 +474,10 @@ enum TestBusinessEditPolicy {
             switch original {
             case .number(let value):
                 guard abs(remote.decimal - value) < 0.005 else { return false }
+            case .exactInteger(let value):
+                // Never validate an Android 17-digit collector/expense
+                // identity via floating-point comparison.
+                guard remote == .exactInteger(value) else { return false }
             case .string(let value):
                 guard remote.text == value else { return false }
             default: return false
