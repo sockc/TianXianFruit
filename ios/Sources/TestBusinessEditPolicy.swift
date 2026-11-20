@@ -224,8 +224,8 @@ enum TestBusinessEditPolicy {
             "cash_income": cash, "expense": expense,
             "opening_stock_value": opening, "stock_left_value": closing
         ]
-        guard changed.contains(where: { key, newValue in
-            cents(original.payload[key]?.decimal ?? -1) != newValue
+        guard changed.contains(where: { entry in
+            cents(original.payload[entry.key]?.decimal ?? -1) != entry.value
         }) else {
             throw StagingSafetyError.needsReview("金额没有变化，无需提交")
         }
@@ -263,7 +263,10 @@ enum TestBusinessEditPolicy {
         }
         guard candidates.count == 1, let actual = candidates.first,
               !actual.isDeletion,
-              actual.rowVersion == job.proposed.rowVersion else { return false }
+              actual.rowVersion == job.proposed.rowVersion,
+              (try? activeBusiness(actual, events: events)) != nil else {
+            return false
+        }
         // Compare all business/ownership fields that this operation changes.
         for key in [
             "date", "store_sync_id", "store_name", "wechat_income",
