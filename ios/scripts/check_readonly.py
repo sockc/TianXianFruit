@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V0.4.1: cloud reconciliation is read-only; formal purchase writes require server transactions."""
+"""V0.4.2: inventory and plan imports remain scoped to local drafts; production push stays disabled."""
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1] / "Sources"
@@ -241,4 +241,30 @@ assert "URLSession" not in reconcile
 assert "api.push" not in last_price
 assert (root.parent / "Tests" / "PurchaseCloudReconcileTests.swift").exists()
 assert (root.parent / "PURCHASE_COMMIT_CONTRACT.md").exists()
-print("V0.4.1 PASS: formal-account readback, unique cloud identity checks and last valid price; no production purchase writes.")
+import_policy = swift["PurchaseImportPolicy.swift"]
+import_picker = swift["PurchaseImportPickerView.swift"]
+commit_planning = swift["PurchaseCommitPlanningPolicy.swift"]
+draft_line = swift["PurchaseDraftModels.swift"]
+assert "PurchaseImportPolicy.inventory" in editor
+assert "PurchaseImportPickerView(" in editor
+assert "PurchaseImportPolicy.append" in editor
+assert "sourcePlanItemSyncID" in draft_line
+assert "sourcePlanItemSyncID" in reconcile
+assert "purchase_plan_item" in import_policy
+assert "inventory_snapshot" in import_policy
+assert "purchase_collaboration" in import_policy
+assert "remaining_quantity" in import_policy
+assert "suggestedQuantity: \"1\"" in import_policy
+assert 'unitPrice: "0"' in import_policy
+assert "PurchaseCommitPlanningPolicy" in commit_planning
+assert "expectedVersions" in commit_planning
+assert "rowVersion" in commit_planning
+assert "payloadHash" in commit_planning
+assert "SHA256.hash" in commit_planning
+assert "/sync/push" not in import_policy
+assert "URLSession" not in import_policy
+assert "URLSession" not in commit_planning
+assert "pushSingle" not in commit_planning
+assert "/api/v1/purchases/commit" not in regular
+assert (root.parent / "Tests" / "PurchaseImportAndCommitTests.swift").exists()
+print("V0.4.2 PASS: selection-only import, immutable commit proposal preparation and zero production purchase writes.")
