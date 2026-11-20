@@ -9,6 +9,10 @@ final class TestBusinessEditCoordinator: ObservableObject {
     @Published private(set) var busy = false
     @Published private(set) var message: String?
     @Published private(set) var jobs: [TestBusinessEditJob] = []
+    /// Authoritative, fully materialized cloud rows for test editing. Do not
+    /// edit the general read-only cache: older cached Int64 IDs may be rounded.
+    @Published private(set) var liveEvents: [SyncEvent] = []
+    @Published private(set) var liveRecordsReady = false
 
     private let store: TestDraftStore?
     private var api: StagingPurchaseAPI?
@@ -25,6 +29,7 @@ final class TestBusinessEditCoordinator: ObservableObject {
     func open(account: String?, book: CloudBook?) {
         generation += 1
         api = nil; auth = nil; connected = false
+        liveEvents = []; liveRecordsReady = false
         self.account = account ?? ""
         self.book = book
         reload()
@@ -58,7 +63,10 @@ final class TestBusinessEditCoordinator: ObservableObject {
                 endpoint: StagingPurchasePolicy.productionURL)
             let session = try await client.resume(saved, sourceBook: book)
             try current(g)
+            let fresh = try await client.pullAll(session)
+            try current(g)
             api = client; auth = session; connected = true
+            liveEvents = fresh; liveRecordsReady = true
             message = nil
             reload()
         } catch {
@@ -84,8 +92,11 @@ final class TestBusinessEditCoordinator: ObservableObject {
             let session = try await client.login(
                 username: username, password: password, sourceBook: book)
             try current(g)
+            let fresh = try await client.pullAll(session)
+            try current(g)
             try TestSyncCredentialStore.save(session, sourceAccount: account)
             api = client; auth = session; connected = true
+            liveEvents = fresh; liveRecordsReady = true
             message = "测试账本登录已验证"
             reload()
         } catch {
@@ -94,7 +105,8 @@ final class TestBusinessEditCoordinator: ObservableObject {
     }
 
     private func active() throws -> (StagingPurchaseAPI, StagingSession, CloudBook, TestDraftStore) {
-        guard connected, let api, let auth, let book, let store,
+        guard connected, liveRecordsReady,
+              let api, let auth, let book, let store,
               !account.isEmpty, auth.book.id == book.id,
               book.name.hasPrefix(TestWritePolicy.prefix),
               auth.host == api.base.absoluteString,
@@ -102,6 +114,26 @@ final class TestBusinessEditCoordinator: ObservableObject {
             throw StagingSafetyError.wrongSourceBook
         }
         return (api, auth, book, store)
+    }
+
+    /// Re-fetch the source record without a new login or another write.
+    func refreshCurrent() async {
+        guard !busy else { return }
+        let g = generation
+        busy = true
+        defer { busy = false }
+        do {
+            let (client, session, _, _) = try active()
+            try await client.validateSession(session)
+            try current(g)
+            let fresh = try await client.pullAll(session)
+            try current(g)
+            liveEvents = fresh
+            liveRecordsReady = true
+            message = "已获取云端最新营业；打开记录后再更正，不会覆盖旧版本"
+        } catch {
+            if g == generation { message = "刷新云端失败，未发送任何修改：" + error.localizedDescription }
+        }
     }
 
     /// One-tap preflight + immutable intent + single POST + authoritative
@@ -124,8 +156,18 @@ final class TestBusinessEditCoordinator: ObservableObject {
             }), latest.rowVersion == original.rowVersion,
                latest.operation == original.operation,
                latest.payload == original.payload else {
-                throw StagingSafetyError.needsReview(
-                    "安卓或其他设备已修改此记录；请刷新页面后重选，原数据未覆盖")
+                // No job is reserved and no POST has begun. This is a stale
+                // form, not an unknown upload. Refresh the editor's source
+                // from the server; never modify the user's old record.
+                liveEvents = available
+                liveRecordsReady = true
+                let currentVersion = available.first(where: {
+                    $0.tableName == original.tableName &&
+                    $0.syncId == original.syncId
+                })?.rowVersion
+                let revision = currentVersion.map(String.init) ?? "已删除"
+                message = "更正未发送：页面原版本 \(original.rowVersion)，云端最新版本 \(revision)。返回上一页重新打开这笔营业；原数据未覆盖。"
+                return
             }
             // Never issue two amendments for one record while any previous
             // request is missing a verified cloud outcome.
@@ -159,12 +201,15 @@ final class TestBusinessEditCoordinator: ObservableObject {
             let check = try await api.pullAll(auth)
             try current(g)
             guard TestBusinessEditPolicy.unchanged(prepared, events: check) else {
-                var conflict = prepared
-                conflict.state = .needsReview
-                conflict.note = "提交前云端版本变化，未执行更正"
-                try store.saveBusinessEditJob(conflict)
-                job = conflict
-                throw StagingSafetyError.needsReview(conflict.note)
+                // Still in .ready: absolutely no outbound business POST.
+                // Cancel this never-sent local reservation so it does not
+                // permanently block the record on later attempts.
+                try store.cancelUnsentBusinessEdit(id: prepared.id,
+                    account: account, book: book.id)
+                job = nil
+                liveEvents = check; liveRecordsReady = true
+                message = "更正未发送：提交前云端记录发生变化，已清理本机未发送任务。返回上一页重新打开最新记录。"
+                return
             }
             var sending = prepared
             sending.state = .sending
@@ -185,6 +230,7 @@ final class TestBusinessEditCoordinator: ObservableObject {
                 throw StagingSafetyError.needsReview(
                     "云端财务字段或收款归属不一致，请查看 Android")
             }
+            liveEvents = remote; liveRecordsReady = true
             sending.state = .complete
             sending.note = "云端已确认营业更正；安卓端仍需完成同步查看"
             try store.saveBusinessEditJob(sending)
@@ -233,6 +279,7 @@ final class TestBusinessEditCoordinator: ObservableObject {
             try current(g)
             let events = try await api.pullAll(auth)
             try current(g)
+            liveEvents = events; liveRecordsReady = true
             if TestBusinessEditPolicy.confirmed(job, events: events) {
                 // A job that has never sent cannot claim ownership of a
                 // pre-existing matching remote revision.
