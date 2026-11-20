@@ -387,7 +387,11 @@ final class BusinessCommitOutbox {
         }
     }
 
-    func load(id: String, account: String, bookID: String) throws -> BusinessCommitAttempt? {
+    // Keep the exact SQLite BLOB for compare-and-swap. JSONEncoder is not
+    // required to emit stable dictionary-key ordering on repeated encodes;
+    // re-encoding a decoded outbox item can differ byte-for-byte.
+    private func loadStored(id: String, account: String, bookID: String)
+        throws -> (attempt: BusinessCommitAttempt, bytes: Data)? {
         let stmt = try statement("""
             SELECT payload FROM attempts
             WHERE operation_id=? AND account=? AND book_id=?
@@ -405,10 +409,14 @@ final class BusinessCommitOutbox {
         let raw = Data(bytes: ptr, count: Int(sqlite3_column_bytes(stmt, 0)))
         let result = try JSONDecoder().decode(BusinessCommitAttempt.self, from: raw)
         guard result.proposal.operationID.lowercased() == id.lowercased(),
-              result.account == account.lowercased(),
+              result.account.lowercased() == account.lowercased(),
               result.bookID.lowercased() == bookID.lowercased()
         else { throw BusinessAtomicError.persistence }
-        return result
+        return (result, raw)
+    }
+
+    func load(id: String, account: String, bookID: String) throws -> BusinessCommitAttempt? {
+        try loadStored(id: id, account: account, bookID: bookID)?.attempt
     }
 
     func reserve(_ proposal: BusinessCommitProposal) throws -> BusinessCommitAttempt {
@@ -437,11 +445,12 @@ final class BusinessCommitOutbox {
     }
 
     func update(_ attempt: BusinessCommitAttempt) throws {
-        guard let previous = try load(id: attempt.proposal.operationID,
+        guard let stored = try loadStored(id: attempt.proposal.operationID,
             account: attempt.account, bookID: attempt.bookID),
-              previous.proposal == attempt.proposal else {
+              stored.attempt.proposal == attempt.proposal else {
             throw BusinessAtomicError.locked
         }
+        let previous = stored.attempt
         let rank: [BusinessCommitAttempt.Phase: Int] = [
             .prepared: 0, .unknown: 1, .accepted: 2, .confirmed: 3]
         guard rank[attempt.phase, default: 0] >= rank[previous.phase, default: 0]
@@ -455,7 +464,7 @@ final class BusinessCommitOutbox {
         bind(attempt.proposal.operationID.lowercased(), at: 2, to: stmt)
         bind(attempt.account.lowercased(), at: 3, to: stmt)
         bind(attempt.bookID.lowercased(), at: 4, to: stmt)
-        bind(try JSONEncoder().encode(previous), at: 5, to: stmt)
+        bind(stored.bytes, at: 5, to: stmt)
         guard sqlite3_step(stmt) == SQLITE_DONE,
               sqlite3_changes(db) == 1 else { throw BusinessAtomicError.persistence }
     }
