@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V0.2.7: source account read-only; business push only in scoped test client."""
+"""V0.2.9: official account read-only; test-only client is the sole writer."""
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1] / "Sources"
@@ -69,4 +69,22 @@ assert "stagePassword" not in ui
 assert 'Label("上传测试账本"' in ui
 assert "confirmAndroidReview" not in ui
 assert "return false" in swift["TestWriteModels.swift"]  # raw drafts cannot push directly
-print("V0.2.7 PASS: test-only scoped token, one-tap full purchase, immutable per-item outbox.")
+business = swift["BusinessUploadCoordinator.swift"]
+policy_business = swift["TestBusinessUploadModels.swift"]
+view_business = swift["BusinessUploadView.swift"]
+assert "api.pushSingle(job.event" in business
+assert "api.validateSession(auth)" in business
+assert "BusinessUploadPolicy.conflict" in business
+assert "job.state = .sending" in business
+assert "try storage.saveBusinessJob(job)" in business
+assert "BusinessUploadPolicy.verified" in business
+assert "book.name.hasPrefix(TestWritePolicy.prefix)" in business
+assert "androidSyncID" in policy_business
+assert "store_daily_record|" in policy_business
+assert "receipt_splits_json" in policy_business
+assert "production-scoped-testbook:" in policy_business
+assert "coordinator.inspect" in view_business
+assert "isolated_business_jobs" in outbox
+assert "businessJob(id: draft.id" in outbox
+assert (root.parent / "Tests" / "BusinessUploadTests.swift").exists()
+print("V0.2.9 PASS: official account read-only; TEST sales/purchases with durable outbox.")
