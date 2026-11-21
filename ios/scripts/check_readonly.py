@@ -432,7 +432,7 @@ assert "TXTestWorkbenchView()" not in shortcuts.split("struct TXQuickOperations:
 assert "功能预留" not in main
 assert "兼容旧版测试工具" not in main
 assert "仅测试账本可提交" not in swift["SettlementTableView.swift"]
-assert "办理当日结算" in swift["SettlementTableView.swift"]
+assert "办理已保存转账" in swift["SettlementTableView.swift"]
 assert "ForEach(TXSettlementTestAction.allCases.filter { $0.canPreviewSavedTransfer })" in swift["SettlementTestPreparation.swift"]
 assert (root.parent / "Tests" / "AndroidMainNavigationTests.swift").exists()
 
@@ -450,3 +450,22 @@ assert "hourlyWeekdayDetails" in customer_ui
 assert "hourlySameWeekday" in customer
 assert '"POST"' not in routing and '"/api/v1/sync/push"' not in routing
 assert (root.parent / "Tests" / "BusinessCustomerRoutingTests.swift").exists()
+
+# Build49: day-to-day actions are visible; cloud write gates and local lock stay intact.
+assert "HomePage(selectedTab: $selectedTab)" in main
+assert 'coreAction("营业"' in main and 'coreAction("采购"' in main
+assert 'coreAction("结算"' in main
+assert "saveThenSync()" in swift["BusinessLocalEntryView.swift"]
+assert "cloudWriteAvailable" in swift["BusinessLocalEntryView.swift"]
+assert "BusinessFormalSubmit.send(model, draft: draft)" in swift["BusinessLocalEntryView.swift"]
+assert "workspace.reserve(" in swift["PurchaseWorkspaceView.swift"]
+assert "showPlanDetails" in swift["PurchaseWorkspaceView.swift"]
+assert 'Label("新增采购"' in swift["PurchaseWorkspaceView.swift"]
+assert 'private var range = "单日"' in swift["SettlementTableView.swift"]
+assert "showFilters" in swift["SettlementTableView.swift"]
+assert '@State private var action: TXSettlementTestAction = .full' in settlement_workbench
+assert "TXSettlementPreparationPolicy.prepare(" in settlement_workbench
+print("V0.8.0 PASS: primary iOS entry flow and safe cloud write restrictions.")
+assert "savedPurchaseToConfirmID" in swift["PurchaseWorkspaceView.swift"]
+assert "workspace.drafts.first(where: { $0.id == id })" in swift["PurchaseWorkspaceView.swift"]
+assert "onDismiss:" in swift["PurchaseWorkspaceView.swift"]

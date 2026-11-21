@@ -114,7 +114,8 @@ extension SettlementTableDay {
 struct SettlementTableView: View {
     @EnvironmentObject private var model: LedgerViewModel
     @State private var selectedDate = Date()
-    @State private var range = "近7天"
+    @State private var range = "单日"
+    @State private var showFilters = false
     @State private var location = ""
     @State private var partner = ""
     @State private var visibleDays = 14
@@ -150,7 +151,7 @@ struct SettlementTableView: View {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("当日结算").font(.title3.bold())
-                        Text("资金结算 · 已保存记录")
+                        Text("云端资金记录 · 已保存方案")
                             .font(.caption2).foregroundColor(.secondary)
                     }
                     Spacer()
@@ -189,7 +190,7 @@ struct SettlementTableView: View {
                                                  offline: model.isUsingCachedAuthorization) {
                     NavigationLink(destination: TXSettlementTestWorkbenchView()) {
                         HStack(spacing: 8) {
-                            Label("办理当日结算", systemImage: "checkmark.circle")
+                            Label("办理已保存转账", systemImage: "checkmark.circle")
                                 .font(.subheadline.bold())
                             Spacer()
                             Text("部分 / 全额 / 恢复未结")
@@ -202,6 +203,7 @@ struct SettlementTableView: View {
                 }
                 TXDayBar(date: $selectedDate, label: "结算日期", allowFuture: false)
                     .onChange(of: selectedDate) { _ in visibleDays = 14 }
+                DisclosureGroup(isExpanded: $showFilters) {
                 Picker("日期范围", selection: $range) {
                     Text("单日").tag("单日")
                     Text("近7天").tag("近7天")
@@ -246,6 +248,11 @@ struct SettlementTableView: View {
                           systemImage: "info.circle")
                         .font(.caption2)
                         .foregroundColor(.orange)
+                }
+
+                } label: {
+                    Label("日期范围与位置筛选", systemImage: "line.3.horizontal.decrease")
+                        .font(.caption)
                 }
 
                 if model.lastSyncAt == nil {

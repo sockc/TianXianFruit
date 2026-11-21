@@ -201,6 +201,21 @@ struct BusinessLocalEntryView: View {
         }
     }
 
+    /// One primary action. Cloud commit is never attempted unless the local
+    /// draft was successfully persisted and the server explicitly allows it.
+    private var cloudWriteAvailable: Bool {
+        editingAllowed && model.businessTestBookAllowed &&
+        model.businessCommitCapabilities?.allowsWrite == true
+    }
+
+    private func saveThenSync() async {
+        if !saved || !formMatchesSavedDraft {
+            save()
+        }
+        guard saved && formMatchesSavedDraft else { return }
+        await commitDraft()
+    }
+
     private func commitDraft() async {
         guard !submitting, attempt == nil, editingAllowed,
               model.businessTestBookAllowed, saved, formMatchesSavedDraft,
@@ -388,13 +403,21 @@ struct BusinessLocalEntryView: View {
                 }
                 Section {
                     Button {
-                        save()
+                        if cloudWriteAvailable {
+                            Task { await saveThenSync() }
+                        } else {
+                            save()
+                        }
                     } label: {
-                        Label("保存本机营业草稿", systemImage: "square.and.arrow.down")
+                        Label(cloudWriteAvailable ? "保存并同步营业" : "保存营业（仅本机）",
+                              systemImage: cloudWriteAvailable ?
+                                  "icloud.and.arrow.up" : "square.and.arrow.down")
+                            .frame(maxWidth: .infinity)
                     }
+                    .buttonStyle(.borderedProminent)
                     .disabled(!editingAllowed || storeID.isEmpty || existingRemote ||
                               attempt != nil || submitting ||
-                              (saved && formMatchesSavedDraft))
+                              (saved && formMatchesSavedDraft && !cloudWriteAvailable))
                     if saved && formMatchesSavedDraft {
                         Label("本机草稿已保存（云端状态见下方）",
                               systemImage: "checkmark.circle")
@@ -435,16 +458,12 @@ struct BusinessLocalEntryView: View {
                             }
                             .disabled(submitting)
                         }
-                    } else {
-                        Button {
-                            Task { await commitDraft() }
-                        } label: {
-                            Label("提交本次营业至测试云端", systemImage: "arrow.up.circle")
+                    } else if saved && formMatchesSavedDraft &&
+                              model.businessTestBookAllowed && !cloudWriteAvailable {
+                        Button("检查同步权限") {
+                            Task { await model.refreshBusinessCommitCapabilities() }
                         }
-                        .disabled(!editingAllowed || !saved || !formMatchesSavedDraft ||
-                                  existingRemote || submitting ||
-                                  (!model.businessTestBookAllowed ||
-                                   model.businessCommitCapabilities?.allowsWrite != true))
+                        .disabled(submitting)
                     }
                     if submitting { ProgressView("正在核对营业事务…") }
                     if let commitMessage {
@@ -453,7 +472,9 @@ struct BusinessLocalEntryView: View {
                     if let warning = model.businessCommitError {
                         Text(warning).font(.caption).foregroundColor(.secondary)
                     }
-                    Text("必须由服务器启用专用原子营业事务才可提交；未开放时只保存本机草稿。发生断网或超时，只能查询原操作，不允许再次发送。")
+                    Text(cloudWriteAvailable
+                         ? "同步成功后安卓端可读取；断线时保留原操作，只查询结果，不生成重复营业。"
+                         : "正式账本尚未开放营业云端写入；本机保存不计入安卓营业额或结算。")
                         .font(.caption2).foregroundColor(.secondary)
                 }
             }
