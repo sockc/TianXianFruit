@@ -76,6 +76,18 @@ final class BusinessDraftWorkflowTests: XCTestCase {
             expense: "6", opening: "100", closing: "40", note: "测试"))
     }
 
+    func testPartialDraftNeverBypassesCloudCompletenessGate() {
+        XCTAssertFalse(BusinessDraftWorkflowPolicy.readyForCloud(
+            lines: lines, expense: "", opening: "", closing: "",
+            startTime: "16:00", endTime: "00:10"))
+        XCTAssertFalse(BusinessDraftWorkflowPolicy.readyForCloud(
+            lines: lines, expense: "5", opening: "100", closing: "40",
+            startTime: "16:00", endTime: ""))
+        XCTAssertTrue(BusinessDraftWorkflowPolicy.readyForCloud(
+            lines: lines, expense: "5", opening: "100", closing: "40",
+            startTime: "16:00", endTime: "00:10"))
+    }
+
     func testPreviewMatchesBusinessAtomicFormulaAndNeverGuessesMissingStock() {
         let p = BusinessDraftWorkflowPolicy.preview(
             lines: lines, expense: "5", opening: "100", closing: "40")
