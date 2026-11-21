@@ -1,4 +1,4 @@
-name: Check iOS V0.4.9 business edit access and sync
+name: Check iOS V0.5.0 daily business workflow and safe drafts
 
 on:
   pull_request:
