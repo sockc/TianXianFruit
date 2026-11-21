@@ -197,13 +197,13 @@ private struct HomePage: View {
     }
 }
 
-private private struct BusinessDraftDisplayRow: Identifiable {
+private struct BusinessDraftDisplayRow: Identifiable {
     let draft: BusinessLocalDraft
     let status: BusinessDraftWorkflowPolicy.CloudState
     var id: String { draft.id }
 }
 
-struct BusinessPage: View {
+private struct BusinessPage: View {
     @EnvironmentObject private var model: LedgerViewModel
     @State private var period = "单日"
     @State private var selectedDate = Date()
