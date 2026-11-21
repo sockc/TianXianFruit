@@ -100,6 +100,10 @@ struct BusinessLocalEntryView: View {
     @State private var commitMessage: String?
     @State private var submitting = false
     @State private var showHours = false
+    @State private var storageError: String?
+    @State private var pendingDate: Date?
+    @State private var pendingStoreID: String?
+    @State private var showSwitchConfirmation = false
 
     init(date: Date, preferredStoreID: String? = nil) {
         _date = State(initialValue: date)
@@ -112,6 +116,66 @@ struct BusinessLocalEntryView: View {
     private var persistedDraft: BusinessLocalDraft? {
         BusinessLocalDraftStore.load(account: account, bookID: bookID)
             .first { $0.date == dateKey && $0.storeID == storeID }
+    }
+
+    private var cloudReady: Bool {
+        BusinessDraftWorkflowPolicy.readyForCloud(
+            lines: lines, expense: expense, opening: openingStock,
+            closing: closingStock, startTime: startTime, endTime: endTime)
+    }
+
+    // Preserve unsaved inputs when switching date or business location.
+    private var hasUnsavedInput: Bool {
+        guard !storeID.isEmpty, !formMatchesSavedDraft else { return false }
+        if persistedDraft != nil { return true }
+        return lines.count > 1 ||
+            lines.contains { $0.wechat != "0" || $0.alipay != "0" ||
+                             $0.cash != "0" } ||
+            !expense.isEmpty || !openingStock.isEmpty ||
+            !closingStock.isEmpty || !note.isEmpty ||
+            !startTime.isEmpty || !endTime.isEmpty
+    }
+
+    private var guardedDate: Binding<Date> {
+        Binding(get: { date }, set: { next in
+            guard BusinessDates.key(next) != dateKey else { return }
+            if hasUnsavedInput {
+                pendingDate = next
+                pendingStoreID = nil
+                showSwitchConfirmation = true
+            } else {
+                date = next
+                loadDraft()
+            }
+        })
+    }
+
+    private var guardedStore: Binding<String> {
+        Binding(get: { storeID }, set: { next in
+            guard next != storeID else { return }
+            if hasUnsavedInput {
+                pendingStoreID = next
+                pendingDate = nil
+                showSwitchConfirmation = true
+            } else {
+                storeID = next
+                loadDraft()
+            }
+        })
+    }
+
+    private func applySwitch() {
+        if let pendingDate { date = pendingDate }
+        if let pendingStoreID { storeID = pendingStoreID }
+        pendingDate = nil
+        pendingStoreID = nil
+        loadDraft()
+    }
+
+    private func saveBeforeSwitch() {
+        save()
+        guard saved, formMatchesSavedDraft else { return }
+        applySwitch()
     }
 
     private var formMatchesSavedDraft: Bool {
@@ -148,7 +212,19 @@ struct BusinessLocalEntryView: View {
 
     private func loadDraft() {
         guard !storeID.isEmpty else { return }
-        if let draft = persistedDraft {
+        let existing: BusinessLocalDraft?
+        do {
+            existing = try BusinessLocalDraftStore.loadChecked(
+                account: account, bookID: bookID)
+                .first { $0.date == dateKey && $0.storeID == storeID }
+            storageError = nil
+        } catch {
+            storageError = error.localizedDescription
+            saved = false
+            commitMessage = storageError
+            return
+        }
+        if let draft = existing {
             lines = draft.collectors
             startTime = draft.startTime
             endTime = draft.endTime
@@ -189,7 +265,7 @@ struct BusinessLocalEntryView: View {
     }
 
     private func save() {
-        guard attempt == nil, !existingRemote,
+        guard storageError == nil, attempt == nil, !existingRemote,
               commitMessage?.hasPrefix("上传保护记录不可读取") != true else {
             errorText = existingRemote
                 ? "云端已有该日该位置营业，请从营业历史查看或更正"
@@ -202,30 +278,19 @@ struct BusinessLocalEntryView: View {
             return
         }
         do {
-            let totals = try BusinessCollectorDraftPolicy.totals(lines)
-            let fields = [
-                "wechat": String(format: "%.2f", Double(totals.wechat) / 100),
-                "alipay": String(format: "%.2f", Double(totals.alipay) / 100),
-                "cash": String(format: "%.2f", Double(totals.cash) / 100),
-                "actual_start_time": startTime.trimmingCharacters(in: .whitespaces),
-                "actual_end_time": endTime.trimmingCharacters(in: .whitespaces)
-            ]
-            try BusinessCollectorDraftPolicy.validate(lines, fields: fields)
-            try BusinessCollectorDraftPolicy.validateTimes(fields)
-            // These three amounts must be explicitly supplied: silently
-            // assuming zero could misstate Android's saved daily profit.
-            guard !expense.isEmpty, !openingStock.isEmpty, !closingStock.isEmpty
-            else { throw BusinessAtomicError.invalidDraft }
-            _ = try BusinessCollectorDraftPolicy.cents(expense, label: "支出")
-            _ = try BusinessCollectorDraftPolicy.cents(openingStock, label: "开摊库存估值")
-            _ = try BusinessCollectorDraftPolicy.cents(closingStock, label: "收摊库存估值")
-            let previous = BusinessLocalDraftStore.load(account: account, bookID: bookID)
+            // Local drafts are allowed before all amounts are complete.
+            // Server upload still requires readyForCloud and the atomic policy.
+            guard !lines.isEmpty, lines.count <= 12 else {
+                throw BusinessAtomicError.invalidDraft
+            }
+            let previous = try BusinessLocalDraftStore.loadChecked(
+                account: account, bookID: bookID)
                 .first(where: { $0.date == dateKey && $0.storeID == storeID })
             let draft = BusinessLocalDraft(
                 id: previous?.id ?? UUID().uuidString, date: dateKey,
                 storeID: store.id, storeName: store.name, collectors: lines,
-                startTime: fields["actual_start_time"] ?? "",
-                endTime: fields["actual_end_time"] ?? "", note: note,
+                startTime: startTime.trimmingCharacters(in: .whitespaces),
+                endTime: endTime.trimmingCharacters(in: .whitespaces), note: note,
                 expense: expense, openingStock: openingStock,
                 closingStock: closingStock, updatedAt: Date())
             try BusinessLocalDraftStore.save(draft, account: account, bookID: bookID)
@@ -246,15 +311,17 @@ struct BusinessLocalEntryView: View {
     }
 
     private func saveThenSync() async {
-        if !saved || !formMatchesSavedDraft {
-            save()
+        guard cloudReady else {
+            errorText = "请补齐有效收款人、收入、支出和库存估值后再同步；未填金额不会当作零。"
+            return
         }
+        if !saved || !formMatchesSavedDraft { save() }
         guard saved && formMatchesSavedDraft else { return }
         await commitDraft()
     }
 
     private func commitDraft() async {
-        guard !submitting, attempt == nil, editingAllowed,
+        guard !submitting, attempt == nil, editingAllowed, cloudReady,
               model.businessTestBookAllowed, saved, formMatchesSavedDraft,
               !existingRemote,
               commitMessage?.hasPrefix("上传保护记录不可读取") != true,
