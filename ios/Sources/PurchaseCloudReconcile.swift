@@ -30,16 +30,7 @@ enum PurchaseCloudReconcilePolicy {
     }
 
     private static func numericID(_ value: JSONValue?) -> Int64? {
-        guard let value else { return nil }
-        let n: Double
-        switch value {
-        case .number(let x): n = x
-        case .string(let s): guard let x = Double(s) else { return nil }; n = x
-        default: return nil
-        }
-        guard n.isFinite, n > 0, n < 9_007_199_254_740_992,
-              n.rounded() == n else { return nil }
-        return Int64(n)
+        AndroidNumericIdentity.exact(value)
     }
 
     static func fingerprint(_ draft: PurchaseWorkspaceDraft) -> String {
