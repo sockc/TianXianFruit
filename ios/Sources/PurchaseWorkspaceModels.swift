@@ -49,17 +49,7 @@ struct PurchasePlanningDay {
 
 enum PurchaseWorkspaceReadPolicy {
     private static func numericID(_ value: JSONValue?) -> Int64? {
-        guard let value else { return nil }
-        let number: Double
-        switch value {
-        case .number(let amount): number = amount
-        case .string(let raw): number = Double(raw) ?? 0
-        default: return nil
-        }
-        guard number.isFinite, number > 0,
-              number < 9_007_199_254_740_992,
-              number.rounded() == number else { return nil }
-        return Int64(number)
+        AndroidNumericIdentity.exact(value)
     }
 
     private static func money(_ value: JSONValue?) -> Double? {
