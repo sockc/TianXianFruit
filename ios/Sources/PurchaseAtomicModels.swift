@@ -134,8 +134,49 @@ enum PurchaseAtomicReadbackPolicy {
                   Self.matches(row["total_cost"]?.decimal, line.lineTotal, digits: 2)
             else { return false }
         }
-        return Self.matches(orders[0].payload["total_cost"]?.decimal,
-                            proposal.totalCost, digits: 2)
+        guard Self.matches(orders[0].payload["total_cost"]?.decimal,
+                           proposal.totalCost, digits: 2) else { return false }
+        if proposal.operation == "complete_plan" {
+            // Completing a plan is not confirmed by an order alone: Android
+            // must receive the plan-item and collaboration transitions too.
+            let buyers = records.filter {
+                $0.tableName == "partner" && !$0.isDeletion &&
+                $0.syncId == proposal.buyerSyncID
+            }
+            guard buyers.count == 1,
+                  let buyerID = AndroidNumericIdentity.exact(
+                      buyers[0].payload["id"]),
+                  AndroidNumericIdentity.unique(buyers[0], in: records)
+            else { return false }
+            let sourceIDs = proposal.lines.compactMap(\.sourcePlanItemSyncID)
+            guard sourceIDs.count == proposal.lines.count,
+                  Set(sourceIDs).count == sourceIDs.count
+            else { return false }
+            for (index, sid) in sourceIDs.enumerated() {
+                let planItems = records.filter {
+                    $0.tableName == "purchase_plan_item" && !$0.isDeletion &&
+                    $0.syncId == sid && $0.payload["status"]?.decimal == 1
+                }
+                let collabs = records.filter {
+                    $0.tableName == "purchase_collaboration" && !$0.isDeletion &&
+                    $0.payload["plan_item_sync_id"]?.text == sid
+                }
+                guard planItems.count == 1, collabs.count == 1 else { return false }
+                let line = proposal.lines[index]
+                let plan = planItems[0].payload
+                let collab = collabs[0].payload
+                guard plan["fruit_name"]?.text == line.fruitName,
+                      plan["unit"]?.text == line.unit,
+                      collab["purchase_order_sync_id"]?.text == receipt.orderSyncID,
+                      AndroidNumericIdentity.exact(collab["buyer_id"]) == buyerID,
+                      Self.matches(collab["actual_quantity"]?.decimal,
+                                   line.quantity, digits: 3),
+                      Self.matches(collab["actual_amount"]?.decimal,
+                                   line.lineTotal, digits: 2)
+                else { return false }
+            }
+        }
+        return true
     }
 
     private static func matches(_ source: Double?, _ value: String,
