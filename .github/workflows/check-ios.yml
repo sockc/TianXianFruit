@@ -1,4 +1,4 @@
-name: Check iOS V0.5.4 settlement detail and period audit
+name: Check iOS V0.6.0 Android-style UI and test workbench
 
 on:
   pull_request:

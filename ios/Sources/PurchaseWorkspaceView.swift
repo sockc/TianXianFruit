@@ -248,33 +248,15 @@ struct PurchaseWorkspaceView: View {
     }
 
     private var dateHeader: some View {
-        HStack(spacing: 10) {
-            Button {
-                shiftDate(-1)
-            } label: {
-                Image(systemName: "chevron.left")
-                    .frame(width: 28, height: 34)
-            }
-            .accessibilityLabel("上一日")
-            DatePicker("采购日期", selection: $date,
-                       displayedComponents: .date)
-                .labelsHidden()
-                .datePickerStyle(.compact)
-                .frame(maxWidth: .infinity)
-            Button {
-                shiftDate(1)
-            } label: {
-                Image(systemName: "chevron.right")
-                    .frame(width: 28, height: 34)
-            }
-            .accessibilityLabel("下一日")
+        HStack(spacing: 6) {
+            TXDayBar(date: $date, label: "采购日期")
             Button {
                 Task { await model.refresh() }
             } label: {
-                if model.isBusy { ProgressView() }
-                else { Text("刷新") }
+                Image(systemName: "arrow.clockwise")
             }
             .disabled(model.isBusy)
+            .accessibilityLabel("同步采购")
         }
     }
 

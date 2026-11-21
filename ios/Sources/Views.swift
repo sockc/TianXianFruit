@@ -11,7 +11,7 @@ struct RootView: View {
                 DashboardView()
             }
         }
-        .tint(.green)
+        .tint(TXTheme.primary)
     }
 }
 
@@ -26,8 +26,8 @@ private struct LoginView: View {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("天鲜账本").font(.largeTitle.bold())
-                        Text("iOS V0.5.2 · 采购计划完成与订单联动").foregroundColor(.secondary)
-                        Label("测试账本可录入及更正营业；正式账本编辑尚未开放", systemImage: "lock.shield")
+                        Text("iOS V0.6.0 · 安卓风格操作台").foregroundColor(.secondary)
+                        Label("测试账本集中测试写入 · 正式账本保持只读", systemImage: "lock.shield")
                             .font(.footnote).foregroundColor(.green)
                     }.padding(.vertical, 10)
                 }
@@ -89,7 +89,7 @@ private struct DashboardView: View {
                         .tabItem { Label("更多", systemImage: "ellipsis.circle") }
                 }
             }
-            .navigationBarTitle("天鲜账本", displayMode: .inline)
+            .navigationBarTitle("天鲜果业", displayMode: .inline)
             .navigationBarItems(trailing: Button {
                 Task { await model.refresh(); await model.refreshCustomer() }
             } label: {
@@ -108,7 +108,10 @@ private struct DashboardView: View {
     private var header: some View {
         VStack(spacing: 6) {
             HStack {
-                Label(model.businessTestBookAllowed ? "测试账本" : "正式账本只读", systemImage: "lock.shield.fill")
+                Label(TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
+                         offline: model.isUsingCachedAuthorization)
+                      ? "测试账本 · 操作可用" : "正式账本 · 云端只读",
+                      systemImage: "lock.shield.fill")
                     .font(.caption.bold()).foregroundColor(.green)
                 Spacer()
                 if model.books.count > 1 {
@@ -135,7 +138,7 @@ private struct DashboardView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(Color(UIColor.secondarySystemBackground))
+        .background(TXTheme.header)
     }
 }
 
@@ -150,8 +153,19 @@ private struct HomePage: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("经营概览")
-                    .font(.title3.bold())
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("天鲜果业").font(.title2.bold())
+                            .foregroundColor(TXTheme.primary)
+                        Text("经营概览 · " + BusinessDates.key(Date()))
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    Text(model.businessTestBookAllowed ? "测试环境" : "正式数据")
+                        .font(.caption.bold())
+                        .foregroundColor(model.businessTestBookAllowed ? .orange : TXTheme.primary)
+                }
+                TXQuickOperations()
                 WeatherHomeSummary()
                 if model.lastSyncAt == nil {
                     EmptyStateView(title: "尚未读取云端账本", icon: "icloud.and.arrow.down",
@@ -281,26 +295,8 @@ private struct BusinessPage: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Button { moveDay(-1) } label: {
-                        Image(systemName: "chevron.left")
-                            .frame(width: 38, height: 36)
-                    }
-                    .accessibilityLabel("上一日")
-                    Spacer(minLength: 0)
-                    DatePicker("营业日期", selection: $selectedDate, in: ...Date(),
-                               displayedComponents: .date)
-                        .datePickerStyle(CompactDatePickerStyle())
-                        .labelsHidden()
-                        .onChange(of: selectedDate) { _ in visibleDays = 14 }
-                    Spacer(minLength: 0)
-                    Button { moveDay(1) } label: {
-                        Image(systemName: "chevron.right")
-                            .frame(width: 38, height: 36)
-                    }
-                    .disabled(selectedKey >= BusinessDates.key(Date()))
-                    .accessibilityLabel("下一日")
-                }
+                TXDayBar(date: $selectedDate, label: "营业日期", allowFuture: false)
+                    .onChange(of: selectedDate) { _ in visibleDays = 14 }
                 Picker("日期范围", selection: $period) {
                     Text("单日").tag("单日")
                     Text("近7天").tag("近7天")
@@ -589,7 +585,21 @@ private struct MorePage: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("经营分析 · 只读").font(.headline)
+                Text("常用功能").font(.headline)
+                if TXTestBookAccess.isCandidate(model.selectedBook,
+                       account: model.account, offline: model.isUsingCachedAuthorization) {
+                    NavigationLink(destination: TXTestWorkbenchView()) {
+                        Label("测试账本工作台 · 可用写入集中管理",
+                              systemImage: "checkmark.shield")
+                            .font(.subheadline.bold())
+                    }
+                    .padding(11)
+                    .background(TXTheme.header,
+                                in: RoundedRectangle(cornerRadius: 12))
+                }
+                NavigationLink(destination: TXInventoryShortcutView()) {
+                    Label("库存盘点 · 同步记录", systemImage: "shippingbox")
+                }
                 NavigationLink(destination: CustomerInsightsView()) {
                     Label("客户分析 · 微信/支付宝逐小时客流", systemImage: "person.2")
                 }
@@ -605,8 +615,26 @@ private struct MorePage: View {
                 NavigationLink(destination: OperatingReportView()) {
                     Label("导出经营报表 · PDF / 图片", systemImage: "square.and.arrow.up")
                 }
-                if model.selectedBook?.name.hasPrefix(TestWritePolicy.prefix) == true {
-                    DisclosureGroup("兼容旧版测试数据（不影响正式账本）") {
+                Divider()
+                Text("功能预留").font(.headline)
+                NavigationLink(destination: TXReservedFeatureView(
+                    title: "库存录入与结转",
+                    detail: "预留安卓库存盘点、损耗和跨日结转；在安全库存事务上线前不写入成本快照。")) {
+                    Label("库存录入与结转", systemImage: "square.and.pencil")
+                }
+                NavigationLink(destination: TXReservedFeatureView(
+                    title: "利润分配和资金结算操作",
+                    detail: "保留安卓现有结算算法；需要服务端资金事务与防重复结算保护。")) {
+                    Label("利润分配 / 资金结算操作", systemImage: "arrow.left.arrow.right")
+                }
+                NavigationLink(destination: TXReservedFeatureView(
+                    title: "客户账单导入及归属",
+                    detail: "预留微信、支付宝账单和收款人位置匹配；当前分析仍然只读。")) {
+                    Label("客户账单导入", systemImage: "person.crop.rectangle.stack")
+                }
+                if TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
+                                                  offline: model.isUsingCachedAuthorization) {
+                    DisclosureGroup("兼容旧版测试工具（高级）") {
                         VStack(alignment: .leading, spacing: 12) {
                             NavigationLink(destination: TestWriteLabView()) {
                                 Label("旧版测试草稿", systemImage: "square.and.pencil")
@@ -651,9 +679,9 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.5.3 · Build 35 · 资金结算表只读")
+                Text("版本：iOS V0.6.0 · Build 37 · 安卓风格统一操作台")
                     .font(.caption).foregroundColor(.secondary)
-                Text("采购支持服务器能力检测、原子事务提交及异常后按操作 ID 查询；后端默认未启用正式写入。资金结算表只读，不执行分配或转账。")
+                Text("测试账本已有写入统一入口，实际提交仍受服务器原子事务、权限和幂等控制；正式账本只读。未实现的功能全部预留入口。")
                     .font(.caption2).foregroundColor(.secondary)
                 Button(role: .destructive) {
                     model.signOut()

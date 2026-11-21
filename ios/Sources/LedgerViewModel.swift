@@ -106,7 +106,20 @@ final class LedgerViewModel: ObservableObject {
     /// V1.0.27 server only accepts business commits to iOS_TEST_ books.
     /// The server is authoritative; this client guard prevents misleading UI.
     var businessTestBookAllowed: Bool {
-        selectedBook?.name.hasPrefix("iOS_TEST_") == true
+        TXTestBookAccess.isCandidate(selectedBook, account: account,
+                                      offline: isUsingCachedAuthorization)
+    }
+
+    /// Check every implemented test-write capability when the book changes.
+    /// Real POSTs still revalidate online server permission and immutable outbox.
+    func refreshAllTestWriteCapabilities() async {
+        guard businessTestBookAllowed else {
+            businessCommitCapabilities = nil
+            purchaseCommitCapabilities = nil
+            return
+        }
+        await refreshBusinessCommitCapabilities()
+        await refreshPurchaseCommitCapabilities()
     }
 
     func refreshBusinessCommitCapabilities() async {
@@ -327,7 +340,11 @@ final class LedgerViewModel: ObservableObject {
             books = cloudBooks
             isUsingCachedAuthorization = false
             if let first = cloudBooks.first { activateBook(first.id) }
-            Task { await self.refresh(); await self.refreshCustomer() }
+            Task {
+                await self.refresh()
+                await self.refreshCustomer()
+                await self.refreshAllTestWriteCapabilities()
+            }
         } catch let error as CloudAPIError where error.status == 401 || error.status == 403 {
             if let cached = cachedProfile() {
                 try? cache?.erase(account: cached.account.username)
@@ -369,7 +386,11 @@ final class LedgerViewModel: ObservableObject {
             books = cloudBooks
             accessToken = token
             if let first = cloudBooks.first { activateBook(first.id) }
-            Task { await self.refresh(); await self.refreshCustomer() }
+            Task {
+                await self.refresh()
+                await self.refreshCustomer()
+                await self.refreshAllTestWriteCapabilities()
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -381,7 +402,11 @@ final class LedgerViewModel: ObservableObject {
         activateBook(bookID)
         // If an earlier refresh is in progress the user may press refresh
         // again after it finishes; stale-book requests never update the cache.
-        Task { await self.refresh(); await self.refreshCustomer() }
+        Task {
+                await self.refresh()
+                await self.refreshCustomer()
+                await self.refreshAllTestWriteCapabilities()
+            }
     }
 
     func refresh(forceFull: Bool = false) async {

@@ -294,3 +294,13 @@ assert '"POST", "/api/v1/sync/push"' not in regular
 assert (root.parent / "Tests" / "PurchaseAtomicWriteTests.swift").exists()
 assert (root.parent / "Tests" / "PurchaseImportAndCommitTests.swift").exists()
 print("V0.4.3 PASS: guarded atomic purchase commits, persistent operation lock and verified readback; legacy raw push remains test-only.")
+
+# V0.6.0: the unified test-book workbench must not bypass server-side gates.
+shell = swift["AndroidStyleShell.swift"]
+assert "book.name.hasPrefix(\"iOS_TEST_\")" in shell
+assert "account != nil, !offline" in shell
+assert ".productionReadOnly" in shell and ".reserved" in shell
+assert "refreshAllTestWriteCapabilities" in swift["LedgerViewModel.swift"]
+assert '"/api/v1/purchases/commit"' in regular
+assert '"/api/v1/business/commit"' in regular
+assert (root.parent / "Tests" / "UnifiedIOSAccessTests.swift").exists()

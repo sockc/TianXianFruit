@@ -314,11 +314,13 @@ private struct PurchaseWorkspaceLineCard: View {
                        editable: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(name).font(.caption2).foregroundColor(.secondary)
-            TextField(name, text: value)
+            TextField(numeric ? "0" : name, text: value)
                 .disabled(!editable)
                 .keyboardType(numeric ? .decimalPad : .default)
+                .multilineTextAlignment(numeric ? .trailing : .leading)
                 .textFieldStyle(.roundedBorder)
                 .font(.subheadline)
+                .accessibilityLabel(name)
         }
         .frame(maxWidth: .infinity)
     }
