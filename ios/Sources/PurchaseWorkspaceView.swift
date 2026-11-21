@@ -154,9 +154,11 @@ struct PurchaseWorkspaceView: View {
             book: book, account: model.account)
     }
 
-    private var canCommitTest: Bool {
-        canEdit && model.selectedBook?.name.hasPrefix("iOS_TEST_") == true &&
-        model.purchaseCommitCapabilities?.enabled == true
+    private var canCommitCloud: Bool {
+        guard canEdit, !model.isUsingCachedAuthorization,
+              let book = model.selectedBook,
+              let caps = model.purchaseCommitCapabilities else { return false }
+        return caps.eligible(book: book)
     }
 
     var body: some View {
@@ -194,9 +196,9 @@ struct PurchaseWorkspaceView: View {
                     Label(message, systemImage: "info.circle")
                         .font(.caption).foregroundColor(.secondary)
                 }
-                Text(model.selectedBook?.name.hasPrefix("iOS_TEST_") == true
-                     ? "本机采购保存后可点“同步采购到云端”；云端确认才计入安卓采购。"
-                     : "正式账本尚未开放采购云端写入；本机录入不计入结算。")
+                Text(canCommitCloud
+                     ? "本机采购保存后可同步，云端回读确认后才计入安卓采购。"
+                     : "当前账本尚未授权采购云端写入；本机录入不计入结算。")
                     .font(.caption2).foregroundColor(.secondary)
                 HStack {
                     Spacer()
@@ -214,7 +216,7 @@ struct PurchaseWorkspaceView: View {
             // Cancel means saved locally only; no HTTP write occurs.
             if let id = savedPurchaseToConfirmID,
                let draft = workspace.drafts.first(where: { $0.id == id }),
-               canCommitTest {
+               canCommitCloud {
                 date = BusinessDates.parse(draft.date) ?? date
                 pendingCommitID = id
                 showConfirm = true
@@ -236,7 +238,7 @@ struct PurchaseWorkspaceView: View {
                         }
                         let persisted = workspace.save(
                             item, account: account, bookID: bookID)
-                        if persisted && canCommitTest,
+                        if persisted && canCommitCloud,
                            let caps = model.purchaseCommitCapabilities,
                            caps.atomic && caps.idempotency &&
                            (!item.lines.contains(where: {
@@ -528,7 +530,7 @@ struct PurchaseWorkspaceView: View {
                             .disabled(model.isPurchaseCommitBusy || submittingID != nil ||
                                       model.isBusy)
                             .font(.caption)
-                        } else if canCommitTest, let caps = model.purchaseCommitCapabilities,
+                        } else if canCommitCloud, let caps = model.purchaseCommitCapabilities,
                                   caps.enabled && caps.atomic && caps.idempotency {
                             if draft.lines.contains(where: { $0.sourcePlanItemSyncID != nil }) &&
                                !caps.supportsCompletePlan {
@@ -547,9 +549,7 @@ struct PurchaseWorkspaceView: View {
                                       model.isBusy || submittingID != nil)
                             }
                         } else {
-                            Text(model.selectedBook?.name.hasPrefix("iOS_TEST_") == true
-                                 ? "服务器采购原子事务尚未启用，草稿暂存在本机"
-                                 : "正式账本采购上传尚未开放，本机草稿不会影响结算")
+                            Text("此账本尚未授权采购云端提交，草稿保留本机，不影响结算")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
@@ -685,7 +685,7 @@ struct PurchaseWorkspaceView: View {
               let book = model.selectedBook,
               account.username.lowercased() == draft.account.lowercased(),
               book.id == draft.bookID,
-              canCommitTest, !model.isBusy else { return }
+              canCommitCloud, !model.isBusy else { return }
         submittingID = draft.id
         defer { submittingID = nil }
         do {
