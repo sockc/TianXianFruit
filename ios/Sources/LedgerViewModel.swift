@@ -113,17 +113,20 @@ final class LedgerViewModel: ObservableObject {
                                       offline: isUsingCachedAuthorization)
     }
 
+    /// Only a live server capability for THIS selected book enables writes.
+    var businessCloudBookAllowed: Bool {
+        guard let book = selectedBook, !isUsingCachedAuthorization,
+              PurchaseWorkspaceDraftPolicy.authorized(book: book, account: account),
+              let caps = businessCommitCapabilities else { return false }
+        return caps.allows(book: book)
+    }
+
     /// Check every implemented test-write capability when the book changes.
     /// Real POSTs still revalidate online server permission and immutable outbox.
     func refreshAllTestWriteCapabilities() async {
-        guard businessTestBookAllowed else {
-            businessCommitCapabilities = nil
-            purchaseCommitCapabilities = nil
-            settlementCommitCapabilities = nil
-            return
-        }
         await refreshBusinessCommitCapabilities()
         await refreshPurchaseCommitCapabilities()
+        // Production funds remain read-only. Original test-book guard applies.
         await refreshSettlementCapabilities()
     }
 
@@ -135,16 +138,16 @@ final class LedgerViewModel: ObservableObject {
             businessCommitError = "账号尚未通过在线授权，正式营业上传不可用"
             return
         }
-        guard businessTestBookAllowed else {
-            businessCommitError = "当前版本只允许 iOS_TEST_ 测试账本上传营业；正式账本保持只读"
-            return
-        }
         do {
             let caps = try await api.businessCapabilities(token: token, bookID: book)
             guard self.account?.username == user.username,
                   self.accessToken == token, self.selectedBookID == book else { return }
-            if caps.allowsWrite { businessCommitCapabilities = caps }
-            else { businessCommitError = "正式营业事务接口未启用；只允许保存本机草稿" }
+            guard let selected = selectedBook else { return }
+            if caps.allows(book: selected) {
+                businessCommitCapabilities = caps
+            } else {
+                businessCommitError = "此账本尚未获得服务端营业写入授权；本机草稿不受影响"
+            }
         } catch {
             businessCommitError = "服务器未提供正式营业事务能力；本机草稿不受影响"
         }
@@ -156,14 +159,14 @@ final class LedgerViewModel: ObservableObject {
               let user = account, let book = selectedBook, let token = accessToken,
               !isUsingCachedAuthorization,
               user.username.lowercased() == proposal.account.lowercased(),
-              book.id == proposal.bookID, book.name.hasPrefix("iOS_TEST_"),
+              book.id == proposal.bookID,
               PurchaseWorkspaceDraftPolicy.authorized(book: book, account: user)
         else { throw BusinessAtomicError.scope }
         isBusinessCommitBusy = true
         defer { isBusinessCommitBusy = false }
         // Never use cached capability to authorize a transaction.
         let caps = try await api.businessCapabilities(token: token, bookID: book.id)
-        guard caps.allowsWrite, self.accessToken == token,
+        guard caps.allows(book: book), self.accessToken == token,
               self.selectedBookID == book.id,
               self.account?.username == user.username else {
             throw BusinessAtomicError.unavailable
@@ -271,18 +274,16 @@ final class LedgerViewModel: ObservableObject {
         guard let account, let token = accessToken,
               let book = selectedBookID,
               !isUsingCachedAuthorization else { return }
-        guard selectedBook?.name.hasPrefix("iOS_TEST_") == true else {
-            purchaseCommitError = "正式账本采购写入暂未开放；可继续保存本机草稿"
-            return
-        }
         do {
             let caps = try await api.purchaseCapabilities(token: token, bookID: book)
             guard self.account?.username == account.username,
                   self.accessToken == token,
                   self.selectedBookID == book else { return }
-            if caps.version == 1 && caps.atomic && caps.idempotency &&
-               caps.feature == "purchase_atomic_commit_v1" {
+            guard let selected = selectedBook else { return }
+            if caps.eligible(book: selected) {
                 purchaseCommitCapabilities = caps
+            } else {
+                purchaseCommitError = "此账本尚未获得服务端采购写入授权；本机草稿不受影响"
             }
         } catch {
             purchaseCommitError = "采购云端写入未启用；本机录入仍可使用"
@@ -298,7 +299,7 @@ final class LedgerViewModel: ObservableObject {
               let token = accessToken,
               !isUsingCachedAuthorization,
               account.username.lowercased() == proposal.account.lowercased(),
-              book.id == proposal.bookID, book.name.hasPrefix("iOS_TEST_"),
+              book.id == proposal.bookID,
               PurchaseWorkspaceDraftPolicy.authorized(book: book, account: account)
         else { throw PurchaseAtomicError.scopeChanged }
         isPurchaseCommitBusy = true
@@ -307,7 +308,7 @@ final class LedgerViewModel: ObservableObject {
         // UI checkbox or a previous server version cannot enable mutation.
         let capabilities = try await api.purchaseCapabilities(
             token: token, bookID: book.id)
-        guard capabilities.allows(proposal),
+        guard capabilities.allows(book: book, proposal: proposal),
               self.accessToken == token,
               self.selectedBookID == book.id,
               self.account?.username == account.username else {
