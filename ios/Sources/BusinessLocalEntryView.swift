@@ -260,16 +260,22 @@ struct BusinessLocalEntryView: View {
                 Section(header: Text("营业日期与位置")) {
                     TXDayBar(date: $date, label: "营业日期", allowFuture: false)
                         .onChange(of: date) { _ in loadDraft() }
-                    Picker("营业位置", selection: $storeID) {
-                        Text("请选择位置").tag("")
-                        ForEach(model.snapshot.testStores) { store in
-                            Text(store.name).tag(store.id)
+                    HStack(spacing: 8) {
+                        Picker("营业位置", selection: $storeID) {
+                            Text("请选择位置").tag("")
+                            ForEach(model.snapshot.testStores) { store in
+                                Text(store.name).tag(store.id)
+                            }
                         }
-                    }
-                    .onChange(of: storeID) { _ in loadDraft() }
-                    if !startTime.isEmpty && !endTime.isEmpty {
-                        Text("实际营业 " + startTime + "—" + endTime)
-                            .font(.caption).foregroundColor(.secondary)
+                        .pickerStyle(MenuPickerStyle())
+                        .accessibilityLabel("营业位置")
+                        .onChange(of: storeID) { _ in loadDraft() }
+                        Spacer(minLength: 4)
+                        Text((startTime.isEmpty || endTime.isEmpty)
+                             ? "实际时间未填" : startTime + "—" + endTime)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1).minimumScaleFactor(0.8)
                     }
                     if let remoteRecord {
                         Label("云端已有该日该位置营业，不能重复新增。",
@@ -472,9 +478,8 @@ struct BusinessLocalEntryView: View {
         HStack {
             Text(title)
             Spacer()
-            TextField("0.00", text: value)
-                .keyboardType(.decimalPad)
-                .multilineTextAlignment(.trailing)
+            TXFastNumericField(text: value, label: title)
+                .frame(width: 138, height: 36)
         }
     }
 }

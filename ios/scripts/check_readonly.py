@@ -312,3 +312,12 @@ assert "TXDayBar(date: $date" in swift["PurchaseWorkspaceEditorView.swift"]
 assert "PurchaseRemarkEditView(" in swift["AndroidEntryComponents.swift"]
 assert "TXTestBookAccess.isCandidate" in swift["AndroidEntryComponents.swift"]
 assert (root.parent / "Tests" / "AndroidEntryParityTests.swift").exists()
+
+# V0.6.2: fast input must not introduce new mutation APIs.
+assert "TXFastNumericField(text: value, label: title)" in swift["BusinessLocalEntryView.swift"]
+assert "TXFastNumericField(text: value, label: name" in swift["PurchaseWorkspaceEditorView.swift"]
+assert "TXFastNumericField(text: $value" in swift["AndroidEntryComponents.swift"]
+assert "PurchaseDraftPolicy.subtotal(line)" in swift["PurchaseWorkspaceEditorView.swift"]
+assert "BusinessFormalSubmit.send" in swift["BusinessLocalEntryView.swift"]
+assert "PurchaseWorkspaceDraftPolicy.validate" in swift["PurchaseWorkspaceEditorView.swift"]
+assert (root.parent / "Tests" / "FastEntryFieldTests.swift").exists()

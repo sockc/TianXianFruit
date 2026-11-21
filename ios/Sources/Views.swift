@@ -679,7 +679,7 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.6.1 · Build 38 · 安卓式收款及采购输入")
+                Text("版本：iOS V0.6.2 · Build 39 · 高效快速录入")
                     .font(.caption).foregroundColor(.secondary)
                 Text("测试账本已有写入统一入口，实际提交仍受服务器原子事务、权限和幂等控制；正式账本只读。未实现的功能全部预留入口。")
                     .font(.caption2).foregroundColor(.secondary)

@@ -33,12 +33,8 @@ struct TXReceiptChannelInput: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(label).font(.caption2).foregroundColor(.secondary)
-            TextField("0.00", text: $value)
-                .keyboardType(.decimalPad)
-                .multilineTextAlignment(.trailing)
-                .textFieldStyle(.roundedBorder)
-                .font(.subheadline)
-                .accessibilityLabel(label + "收款金额")
+            TXFastNumericField(text: $value, label: label + "收款金额")
+                .frame(height: 36)
         }.frame(maxWidth: .infinity)
     }
 }

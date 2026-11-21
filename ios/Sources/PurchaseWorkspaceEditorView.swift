@@ -241,30 +241,28 @@ private struct PurchaseWorkspaceLineCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(line.fruitName.isEmpty ? "商品" : line.fruitName)
-                    .font(.subheadline.bold())
-                Spacer()
+            HStack(spacing: 8) {
+                Picker("商品", selection: $line.fruitSyncID) {
+                    Text("请选择商品").tag("")
+                    ForEach(fruits) { fruit in
+                        Text(fruit.name).tag(fruit.id)
+                    }
+                }
+                .pickerStyle(MenuPickerStyle())
+                .disabled(line.sourcePlanItemSyncID != nil)
+                .onChange(of: line.fruitSyncID) { next in
+                    line.fruitName = fruits.first { $0.id == next }?.name ?? ""
+                    line.sourcePlanItemSyncID = nil
+                }
+                .onChange(of: line.unit) { _ in
+                    line.sourcePlanItemSyncID = nil
+                }
+                Spacer(minLength: 4)
                 Button(role: .destructive, action: onDelete) {
                     Image(systemName: "minus.circle")
                 }
                 .disabled(!canDelete)
                 .accessibilityLabel("移除商品")
-            }
-            Picker("选择商品", selection: $line.fruitSyncID) {
-                Text("请选择商品").tag("")
-                ForEach(fruits) { fruit in
-                    Text(fruit.name).tag(fruit.id)
-                }
-            }
-            .pickerStyle(MenuPickerStyle())
-            .disabled(line.sourcePlanItemSyncID != nil)
-            .onChange(of: line.fruitSyncID) { next in
-                line.fruitName = fruits.first { $0.id == next }?.name ?? ""
-                line.sourcePlanItemSyncID = nil
-            }
-            .onChange(of: line.unit) { _ in
-                line.sourcePlanItemSyncID = nil
             }
             if line.sourcePlanItemSyncID != nil {
                 Text("原计划商品与单位已锁定；填写实际采购数量、单价和重量")
@@ -272,9 +270,19 @@ private struct PurchaseWorkspaceLineCard: View {
                     .foregroundColor(.secondary)
             }
 
-            HStack(spacing: 10) {
+            HStack(alignment: .bottom, spacing: 7) {
                 input("数量", value: $line.quantity)
                 input("单价（元）", value: $line.unitPrice)
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("小计").font(.caption2).foregroundColor(.secondary)
+                    Text(subtotal.map { "¥" + PurchaseDraftPolicy.display($0) } ??
+                         "待核对")
+                        .font(.subheadline.bold())
+                        .foregroundColor(subtotal == nil ? .orange : TXTheme.primary)
+                        .lineLimit(1).minimumScaleFactor(0.65)
+                        .frame(height: 36, alignment: .center)
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
             }
             if let lastPrice {
                 HStack(spacing: 7) {
@@ -296,14 +304,7 @@ private struct PurchaseWorkspaceLineCard: View {
                       editable: line.sourcePlanItemSyncID == nil)
                 input("每件重量（斤）", value: $line.unitWeightJin)
             }
-            HStack {
-                Text("小计").font(.caption).foregroundColor(.secondary)
-                Spacer()
-                Text(subtotal.map { "¥" + PurchaseDraftPolicy.display($0) } ??
-                     "未完成录入")
-                    .font(.subheadline.bold())
-            }
-        }
+         }
         .padding(12)
         .background(Color(UIColor.secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 12))
@@ -314,13 +315,17 @@ private struct PurchaseWorkspaceLineCard: View {
                        editable: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(name).font(.caption2).foregroundColor(.secondary)
-            TextField(numeric ? "0" : name, text: value)
-                .disabled(!editable)
-                .keyboardType(numeric ? .decimalPad : .default)
-                .multilineTextAlignment(numeric ? .trailing : .leading)
-                .textFieldStyle(.roundedBorder)
-                .font(.subheadline)
-                .accessibilityLabel(name)
+            if numeric {
+                TXFastNumericField(text: value, label: name, enabled: editable)
+                    .frame(height: 36)
+            } else {
+                TextField(name, text: value)
+                    .disabled(!editable)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.subheadline)
+                    .frame(height: 36)
+                    .accessibilityLabel(name)
+            }
         }
         .frame(maxWidth: .infinity)
     }
