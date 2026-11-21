@@ -1,4 +1,4 @@
-name: Check iOS V0.8.1 safe business drafts and settlement date
+name: Check iOS V0.8.2 formal write scope authorization
 
 on:
   pull_request:
