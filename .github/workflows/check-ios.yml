@@ -1,4 +1,4 @@
-name: Check iOS V0.5.0 daily business workflow and safe drafts
+name: Check iOS V0.5.1 atomic purchases and exact Android IDs
 
 on:
   pull_request:
