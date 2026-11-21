@@ -104,6 +104,7 @@ struct BusinessLocalEntryView: View {
     @State private var pendingDate: Date?
     @State private var pendingStoreID: String?
     @State private var showSwitchConfirmation = false
+    @State private var showCloseConfirmation = false
 
     init(date: Date, preferredStoreID: String? = nil) {
         _date = State(initialValue: date)
@@ -126,7 +127,7 @@ struct BusinessLocalEntryView: View {
 
     // Preserve unsaved inputs when switching date or business location.
     private var hasUnsavedInput: Bool {
-        guard !storeID.isEmpty, !formMatchesSavedDraft else { return false }
+        guard !formMatchesSavedDraft else { return false }
         if persistedDraft != nil { return true }
         return lines.count > 1 ||
             lines.contains { $0.wechat != "0" || $0.alipay != "0" ||
@@ -595,7 +596,10 @@ struct BusinessLocalEntryView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("关闭") { dismiss() }
+                    Button("关闭") {
+                        if hasUnsavedInput { showCloseConfirmation = true }
+                        else { dismiss() }
+                    }
                 }
             }
             .onAppear {
@@ -604,6 +608,20 @@ struct BusinessLocalEntryView: View {
                     storeID = model.snapshot.testStores[0].id
                 }
                 loadDraft()
+            }
+            .interactiveDismissDisabled(hasUnsavedInput)
+            .confirmationDialog("退出前保存营业草稿？",
+                                isPresented: $showCloseConfirmation,
+                                titleVisibility: .visible) {
+                Button("先保存本机，再关闭") {
+                    save()
+                    if saved && formMatchesSavedDraft { dismiss() }
+                }
+                .disabled(!editingAllowed || storageError != nil)
+                Button("放弃未保存内容并关闭", role: .destructive) { dismiss() }
+                Button("继续编辑", role: .cancel) {}
+            } message: {
+                Text("未保存的收款和成本不会保留。")
             }
             .confirmationDialog("当前营业录入尚未保存",
                                 isPresented: $showSwitchConfirmation,
