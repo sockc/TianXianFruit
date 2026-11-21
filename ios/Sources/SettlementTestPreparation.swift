@@ -172,7 +172,7 @@ struct TXSettlementTestWorkbenchView: View {
     @EnvironmentObject private var model: LedgerViewModel
     @State private var date = Date()
     @State private var transferID = ""
-    @State private var action: TXSettlementTestAction = .partial
+    @State private var action: TXSettlementTestAction = .full
     @State private var amount = ""
     @State private var prepared: TXSettlementLocalPreparation?
     @State private var errorText = ""
@@ -263,7 +263,7 @@ struct TXSettlementTestWorkbenchView: View {
                 } else {
                     TXDayBar(date: $date, label: "结算日期", allowFuture: false)
                         .onChange(of: date) { _ in
-                            transferID = ""
+                            transferID = transfers.count == 1 ? transfers[0].id : ""
                             amount = ""
                             clearPreview()
                         }
@@ -392,7 +392,10 @@ struct TXSettlementTestWorkbenchView: View {
         }
         .navigationTitle("当日结算")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { restoreOperation() }
+        .onAppear {
+            restoreOperation()
+            if transfers.count == 1 { transferID = transfers[0].id }
+        }
         .onChange(of: model.selectedBookID) { _ in
             transferID = ""; amount = ""; clearPreview()
             restoreOperation()

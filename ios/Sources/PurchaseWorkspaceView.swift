@@ -125,6 +125,7 @@ struct PurchaseWorkspaceView: View {
     @State private var date = Date()
     @State private var request: PurchaseWorkspaceEditorRequest?
     @State private var showDrafts = true
+    @State private var showPlanDetails = false
     @State private var reconcilingID: String?
     @State private var reviewedID: String?
     @State private var review: PurchaseCloudReconcileReport?
@@ -162,15 +163,39 @@ struct PurchaseWorkspaceView: View {
             LazyVStack(alignment: .leading, spacing: 10) {
                 dateHeader
                 metrics
-                pendingSection
-                completedSection
+                Button {
+                    request = PurchaseWorkspaceEditorRequest(original: nil)
+                } label: {
+                    Label("新增采购", systemImage: "plus.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canEdit)
                 localDraftSection
+                DisclosureGroup(isExpanded: $showPlanDetails) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        pendingSection
+                        completedSection
+                    }
+                    .padding(.top, 8)
+                } label: {
+                    HStack {
+                        Label("采购计划与完成情况",
+                              systemImage: "list.bullet.clipboard")
+                        Spacer()
+                        Text(String(planning.pendingFruits) + " 种待采购")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    .font(.subheadline)
+                }
                 dailyOrderSection
                 if let message = workspace.message {
                     Label(message, systemImage: "info.circle")
                         .font(.caption).foregroundColor(.secondary)
                 }
-                Text("采购计划、已完成及历史订单来自安卓云同步。iOS_TEST_ 测试账本可安全提交采购到安卓；正式账本继续只存本机草稿。")
+                Text(model.selectedBook?.name.hasPrefix("iOS_TEST_") == true
+                     ? "本机采购保存后可点“同步采购到云端”；云端确认才计入安卓采购。"
+                     : "正式账本尚未开放采购云端写入；本机录入不计入结算。")
                     .font(.caption2).foregroundColor(.secondary)
                 HStack {
                     Spacer()
@@ -269,14 +294,6 @@ struct PurchaseWorkspaceView: View {
                 PurchaseWorkspaceMetric(
                     title: "已完成金额",
                     value: money(planning.completedAmount))
-            }
-            HStack(spacing: 7) {
-                PurchaseWorkspaceMetric(
-                    title: "已采购",
-                    value: String(planning.completedFruits) + " 种")
-                PurchaseWorkspaceMetric(
-                    title: "剩余",
-                    value: String(planning.pendingFruits) + " 种")
             }
         }
     }
@@ -401,7 +418,7 @@ struct PurchaseWorkspaceView: View {
                 showDrafts.toggle()
             } label: {
                 HStack {
-                    Text("本机采购录入 · " + String(localDrafts.count))
+                    Text("采购录入 · " + String(localDrafts.count))
                         .font(.headline)
                     Spacer()
                     Image(systemName: showDrafts ? "chevron.up" : "chevron.down")
@@ -440,7 +457,7 @@ struct PurchaseWorkspaceView: View {
                                         attempt.phase == .confirmed ?
                                         .green : .orange)
                             } else {
-                                Text("本机未提交")
+                                Text("待同步")
                                     .font(.caption.bold()).foregroundColor(.orange)
                             }
                         }
@@ -499,7 +516,7 @@ struct PurchaseWorkspaceView: View {
                                 pendingCommitID = draft.id
                                 showConfirm = true
                             } label: {
-                                Label("上传采购到测试账本", systemImage: "arrow.up.doc.fill")
+                                Label("同步采购到云端", systemImage: "arrow.up.doc.fill")
                             }
                             .buttonStyle(.borderedProminent)
                             .disabled(model.isPurchaseCommitBusy ||
@@ -513,7 +530,7 @@ struct PurchaseWorkspaceView: View {
                                 .foregroundColor(.secondary)
                         }
                         if submittingID == draft.id {
-                            ProgressView("正在检查并提交正式采购")
+                            ProgressView("正在安全提交采购")
                                 .font(.caption)
                         }
                         if reconcilingID == draft.id {

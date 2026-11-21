@@ -77,7 +77,7 @@ private struct DashboardView: View {
                 compactBookBar
                 Group {
                     switch selectedTab {
-                    case .home: HomePage()
+                    case .home: HomePage(selectedTab: $selectedTab)
                     case .inventory: InventoryPage()
                     case .purchase: PurchaseWorkspaceView()
                     case .business: BusinessPage()
@@ -142,6 +142,39 @@ private struct DashboardView: View {
 
 private struct HomePage: View {
     @EnvironmentObject private var model: LedgerViewModel
+    @Binding var selectedTab: TXMainTab
+
+    private func coreAction(_ name: String, _ subtitle: String, _ symbol: String,
+                            to tab: TXMainTab) -> some View {
+        Button {
+            selectedTab = tab
+        } label: {
+            VStack(spacing: 5) {
+                Image(systemName: symbol)
+                    .font(.system(size: 21, weight: .medium))
+                    .foregroundColor(TXTheme.primary)
+                Text(name).font(.subheadline.bold()).foregroundColor(.primary)
+                Text(subtitle).font(.system(size: 10))
+                    .foregroundColor(.secondary).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, minHeight: 78)
+            .background(Color(UIColor.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 12))
+            .contentShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var coreOperations: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("日常操作").font(.headline)
+            HStack(spacing: 8) {
+                coreAction("营业", "录入收款", "square.and.pencil", to: .business)
+                coreAction("采购", "商品采购", "cart", to: .purchase)
+                coreAction("结算", "资金结算", "checkmark.circle", to: .settlement)
+            }
+        }
+    }
 
     private var today: String { BusinessDates.key(Date()) }
     private var week: [StoreDailyRow] { model.snapshot.sales(since: BusinessDates.daysAgo(6), until: today) }
@@ -162,7 +195,7 @@ private struct HomePage: View {
                     Text("今日概览")
                         .font(.caption).foregroundColor(.secondary)
                 }
-                TXQuickOperations()
+                coreOperations
                 WeatherHomeSummary()
                 if model.lastSyncAt == nil {
                     EmptyStateView(title: "尚未读取云端账本", icon: "icloud.and.arrow.down",
@@ -658,7 +691,7 @@ private struct MorePage: View {
                     Label("账号与同步", systemImage: "person.crop.circle")
                         .font(.subheadline.bold())
                 }
-                Text("iOS V0.7.1 · Build 48")
+                Text("iOS V0.8.0 · Build 49")
                     .font(.caption2).foregroundColor(.secondary)
             }
             .padding(12)
