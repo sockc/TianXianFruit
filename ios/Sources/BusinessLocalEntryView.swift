@@ -17,29 +17,66 @@ struct BusinessLocalDraft: Codable, Identifiable {
     var updatedAt: Date
 }
 
+enum BusinessLocalDraftStoreError: LocalizedError {
+    case unreadable, verificationFailed
+    var errorDescription: String? {
+        switch self {
+        case .unreadable:
+            return "本机营业草稿无法读取，已禁止覆盖原数据。请保留 App 数据进行恢复。"
+        case .verificationFailed:
+            return "本机营业草稿保存后未能校验，请勿删除或重新安装 App。"
+        }
+    }
+}
+
 enum BusinessLocalDraftStore {
     private static func key(account: String, bookID: String) -> String {
         "ios.formal.business.drafts.v1." + account.lowercased() + "." + bookID.lowercased()
     }
 
-    static func load(account: String, bookID: String) -> [BusinessLocalDraft] {
-        guard !account.isEmpty, !bookID.isEmpty,
-              let data = UserDefaults.standard.data(forKey: key(account: account, bookID: bookID)),
-              let drafts = try? JSONDecoder().decode([BusinessLocalDraft].self, from: data)
-        else { return [] }
+    /// Never silently overwrite a malformed or unreadable draft collection.
+    static func loadChecked(account: String, bookID: String) throws -> [BusinessLocalDraft] {
+        guard !account.isEmpty, !bookID.isEmpty else {
+            throw TestWriteError.insufficientSchema("未选择账号或账本")
+        }
+        let storageKey = key(account: account, bookID: bookID)
+        guard let value = UserDefaults.standard.object(forKey: storageKey) else { return [] }
+        guard let data = value as? Data,
+              let drafts = try? JSONDecoder().decode([BusinessLocalDraft].self, from: data),
+              Set(drafts.map(\.id)).count == drafts.count else {
+            throw BusinessLocalDraftStoreError.unreadable
+        }
         return drafts
+    }
+
+    static func load(account: String, bookID: String) -> [BusinessLocalDraft] {
+        (try? loadChecked(account: account, bookID: bookID)) ?? []
     }
 
     static func save(_ draft: BusinessLocalDraft, account: String, bookID: String) throws {
         guard !account.isEmpty, !bookID.isEmpty else {
             throw TestWriteError.insufficientSchema("未选择账号或账本")
         }
-        var drafts = load(account: account, bookID: bookID)
-        // One local draft per calendar date and stall. No network side effects.
+        var drafts = try loadChecked(account: account, bookID: bookID)
+        let storageKey = key(account: account, bookID: bookID)
+        // Keep one known-readable backup of preexisting drafts for recovery.
+        if let old = UserDefaults.standard.data(forKey: storageKey) {
+            UserDefaults.standard.set(old, forKey: storageKey + ".backup")
+        }
         drafts.removeAll { ($0.date == draft.date && $0.storeID == draft.storeID) || $0.id == draft.id }
         drafts.append(draft)
-        let data = try JSONEncoder().encode(drafts)
-        UserDefaults.standard.set(data, forKey: key(account: account, bookID: bookID))
+        UserDefaults.standard.set(try JSONEncoder().encode(drafts), forKey: storageKey)
+        let verified = try loadChecked(account: account, bookID: bookID)
+        guard verified.count == drafts.count,
+              verified.contains(where: {
+                  $0.id == draft.id && $0.date == draft.date &&
+                  $0.storeID == draft.storeID && $0.collectors == draft.collectors &&
+                  $0.expense == draft.expense &&
+                  $0.openingStock == draft.openingStock &&
+                  $0.closingStock == draft.closingStock
+              }) else {
+            throw BusinessLocalDraftStoreError.verificationFailed
+        }
     }
 }
 
