@@ -23,6 +23,8 @@ struct PurchaseWorkspaceEditorView: View {
 
     init(original: PurchaseWorkspaceDraft?, date: Date,
          account: String, bookID: String,
+         initialBuyerSyncID: String? = nil,
+         initialLines: [PurchaseDraftLine]? = nil,
          onSave: @escaping (PurchaseWorkspaceDraft) -> Bool) {
         self.original = original
         self.account = account
@@ -31,10 +33,11 @@ struct PurchaseWorkspaceEditorView: View {
         _date = State(initialValue: original.flatMap {
             BusinessDates.parse($0.date)
         } ?? date)
-        _buyerSyncID = State(initialValue: original?.buyerSyncID ?? "")
+        _buyerSyncID = State(initialValue: original?.buyerSyncID ??
+                              initialBuyerSyncID ?? "")
         _purchaseType = State(initialValue: original?.purchaseType ?? "PLANNED")
         _remark = State(initialValue: original?.remark ?? "")
-        _lines = State(initialValue: original?.lines ?? [.blank()])
+        _lines = State(initialValue: original?.lines ?? initialLines ?? [.blank()])
     }
 
     private var canEdit: Bool {
@@ -46,6 +49,9 @@ struct PurchaseWorkspaceEditorView: View {
     }
 
     private var total: Decimal? { try? PurchaseDraftPolicy.total(lines) }
+    private var hasPlanSource: Bool {
+        lines.contains { $0.sourcePlanItemSyncID != nil }
+    }
 
     var body: some View {
         NavigationView {
@@ -66,6 +72,7 @@ struct PurchaseWorkspaceEditorView: View {
                     DatePicker("采购日期", selection: $date,
                                displayedComponents: .date)
                         .font(.subheadline)
+                        .disabled(hasPlanSource)
                     Picker("采购人", selection: $buyerSyncID) {
                         Text("请选择采购人").tag("")
                         ForEach(model.snapshot.testPartners) { buyer in
@@ -73,6 +80,14 @@ struct PurchaseWorkspaceEditorView: View {
                         }
                     }
                     .pickerStyle(MenuPickerStyle())
+                    .disabled(hasPlanSource)
+                    if hasPlanSource {
+                        Label("已关联安卓待采购计划：采购日期与采购人已锁定",
+                              systemImage: "link.circle")
+                            .font(.caption).foregroundColor(.green)
+                        Text("计划数量仅作为初始值，实际数量、单价、重量请按采购结果填写；提交后服务器会同步完成状态。")
+                            .font(.caption2).foregroundColor(.secondary)
+                    }
                     Button {
                         showImportPicker = true
                     } label: {
@@ -89,6 +104,7 @@ struct PurchaseWorkspaceEditorView: View {
                         Text("计划采购").tag("PLANNED")
                         Text("临时采购").tag("TEMPORARY")
                     }.pickerStyle(SegmentedPickerStyle())
+                    .disabled(hasPlanSource)
 
                     HStack {
                         Text("商品明细").font(.subheadline.bold())
@@ -103,7 +119,7 @@ struct PurchaseWorkspaceEditorView: View {
                         } label: {
                             Label("新增商品", systemImage: "plus.circle")
                         }
-                        .disabled(lines.count >= PurchaseDraftPolicy.maxLines)
+                        .disabled(lines.count >= PurchaseDraftPolicy.maxLines || hasPlanSource)
                     }
                     ForEach($lines) { $line in
                         PurchaseWorkspaceLineCard(
@@ -142,7 +158,7 @@ struct PurchaseWorkspaceEditorView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(!canEdit || model.isBusy)
-                    Text("保留当前账号与账本的本机记录；未接通正式服务器的事务级采购写入前，不会把该草稿计入安卓的已完成采购或结算。")
+                    Text("先保存本机草稿，再到采购列表点击上传。计划关联的商品只有服务端原子提交成功后才会变为“已完成”；正式账本仍不允许上传。")
                         .font(.caption2).foregroundColor(.secondary)
                 }
                 .padding(12)
