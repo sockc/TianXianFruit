@@ -58,7 +58,9 @@ struct PurchaseWorkspaceEditorView: View {
                         Text("本机待提交")
                             .font(.caption.bold()).foregroundColor(.orange)
                     }
-                    Text("按照安卓采购的日期、采购人、商品、数量和单价填写。当前先保存在本机，不生成云端采购额或资金结算。")
+                    Text(model.selectedBook?.name.hasPrefix("iOS_TEST_") == true
+                         ? "先保存采购草稿，再由采购页确认上传至测试账本；成功后安卓同步可查看。"
+                         : "正式账本暂只保存本机草稿，不计入云端采购额或资金结算。")
                         .font(.caption).foregroundColor(.secondary)
 
                     DatePicker("采购日期", selection: $date,
