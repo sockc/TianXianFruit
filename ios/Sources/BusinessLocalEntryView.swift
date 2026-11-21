@@ -377,10 +377,9 @@ struct BusinessLocalEntryView: View {
         NavigationView {
             Form {
                 Section(header: Text("营业日期与位置")) {
-                    TXDayBar(date: $date, label: "营业日期", allowFuture: false)
-                        .onChange(of: date) { _ in loadDraft() }
+                    TXDayBar(date: guardedDate, label: "营业日期", allowFuture: false)
                     HStack(spacing: 8) {
-                        Picker("营业位置", selection: $storeID) {
+                        Picker("营业位置", selection: guardedStore) {
                             Text("请选择位置").tag("")
                             ForEach(model.snapshot.testStores) { store in
                                 Text(store.name).tag(store.id)
@@ -388,7 +387,6 @@ struct BusinessLocalEntryView: View {
                         }
                         .pickerStyle(MenuPickerStyle())
                         .accessibilityLabel("营业位置")
-                        .onChange(of: storeID) { _ in loadDraft() }
                         Spacer(minLength: 4)
                         Text((startTime.isEmpty || endTime.isEmpty)
                              ? "实际时间未填" : startTime + "—" + endTime)
@@ -458,7 +456,7 @@ struct BusinessLocalEntryView: View {
                     }
                     TXBusinessReceiptSummaryView(lines: lines)
                 }
-                Section(header: Text("营业成本与利润依据（必填）")) {
+                Section(header: Text("营业成本与利润依据（同步前必填）")) {
                     amount("支出", value: $expense)
                     amount("开摊库存估值", value: $openingStock)
                     amount("收摊库存估值", value: $closingStock)
@@ -477,7 +475,7 @@ struct BusinessLocalEntryView: View {
                         Text("确认每位收款人金额，以及支出、开摊和收摊库存估值后，显示利润预览。")
                             .font(.caption).foregroundColor(.secondary)
                     }
-                    Text("利润按安卓原规则：收款总额＋收摊库存－开摊库存－支出。必须确认实际数据；不能为了上传直接全部填零。")
+                    Text("可以先保存未填完的营业草稿。利润沿用安卓规则；云端提交前必须补齐真实成本，不能把缺失值当作零。")
                         .font(.caption).foregroundColor(.secondary)
                 }
                 Section {
@@ -507,21 +505,23 @@ struct BusinessLocalEntryView: View {
                 }
                 Section {
                     Button {
-                        if cloudWriteAvailable {
+                        if cloudWriteAvailable && cloudReady {
                             Task { await saveThenSync() }
                         } else {
                             save()
                         }
                     } label: {
-                        Label(cloudWriteAvailable ? "保存并同步营业" : "保存营业（仅本机）",
-                              systemImage: cloudWriteAvailable ?
+                        Label(cloudWriteAvailable && cloudReady ?
+                                  "保存并同步营业" : "保存营业草稿",
+                              systemImage: cloudWriteAvailable && cloudReady ?
                                   "icloud.and.arrow.up" : "square.and.arrow.down")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(!editingAllowed || storeID.isEmpty || existingRemote ||
-                              attempt != nil || submitting ||
-                              (saved && formMatchesSavedDraft && !cloudWriteAvailable))
+                              storageError != nil || attempt != nil || submitting ||
+                              (saved && formMatchesSavedDraft &&
+                               !(cloudWriteAvailable && cloudReady)))
                     if saved && formMatchesSavedDraft {
                         Label("本机草稿已保存（云端状态见下方）",
                               systemImage: "checkmark.circle")
@@ -529,6 +529,15 @@ struct BusinessLocalEntryView: View {
                     } else if saved && !formMatchesSavedDraft {
                         Label("当前有未保存的修改，上传前请先保存",
                               systemImage: "exclamationmark.circle")
+                            .font(.caption).foregroundColor(.orange)
+                    }
+                    if let storageError {
+                        Label(storageError, systemImage: "externaldrive.badge.exclamationmark")
+                            .font(.caption).foregroundColor(.red)
+                    }
+                    if cloudWriteAvailable && !cloudReady {
+                        Label("收款或成本尚未补齐；可先保存本机，补齐后再同步。",
+                              systemImage: "info.circle")
                             .font(.caption).foregroundColor(.orange)
                     }
                     if let errorText {
@@ -595,6 +604,21 @@ struct BusinessLocalEntryView: View {
                     storeID = model.snapshot.testStores[0].id
                 }
                 loadDraft()
+            }
+            .confirmationDialog("当前营业录入尚未保存",
+                                isPresented: $showSwitchConfirmation,
+                                titleVisibility: .visible) {
+                Button("先保存在本机，再切换") { saveBeforeSwitch() }
+                    .disabled(!editingAllowed || storageError != nil)
+                Button("放弃本次未保存的修改", role: .destructive) {
+                    applySwitch()
+                }
+                Button("继续编辑", role: .cancel) {
+                    pendingDate = nil
+                    pendingStoreID = nil
+                }
+            } message: {
+                Text("切换日期或位置会替换当前输入。保存只写入本机，不会自动创建云端营业。")
             }
         }
     }
