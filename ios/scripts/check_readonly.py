@@ -148,7 +148,8 @@ assert "TestBusinessEditPolicy.confirmed" in audit_policy
 assert "PurchaseReadbackPolicy.audit" in audit_policy
 assert "PurchaseRemarkEditPolicy.confirmed" in audit_policy
 assert "StagingSyncMaterializer.latest" in audit_policy
-assert "TestSyncAuditView()" in swift["Views.swift"]
+assert "TestSyncAuditView()" not in swift["Views.swift"]
+assert "struct TestSyncAuditView" in swift["TestSyncAuditView.swift"]
 assert "coordinator.refresh()" in audit_view
 assert "api.pushSingle" not in audit_coordinator
 assert "pushSingle" not in audit_policy
