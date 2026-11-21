@@ -307,8 +307,7 @@ struct BusinessLocalEntryView: View {
     /// One primary action. Cloud commit is never attempted unless the local
     /// draft was successfully persisted and the server explicitly allows it.
     private var cloudWriteAvailable: Bool {
-        editingAllowed && model.businessTestBookAllowed &&
-        model.businessCommitCapabilities?.allowsWrite == true
+        editingAllowed && model.businessCloudBookAllowed
     }
 
     private func saveThenSync() async {
@@ -323,7 +322,7 @@ struct BusinessLocalEntryView: View {
 
     private func commitDraft() async {
         guard !submitting, attempt == nil, editingAllowed, cloudReady,
-              model.businessTestBookAllowed, saved, formMatchesSavedDraft,
+              model.businessCloudBookAllowed, saved, formMatchesSavedDraft,
               !existingRemote,
               commitMessage?.hasPrefix("上传保护记录不可读取") != true,
               let draft = persistedDraft else { return }
@@ -561,9 +560,8 @@ struct BusinessLocalEntryView: View {
                                 Label("继续原操作（同一编号，不另建账）",
                                       systemImage: "arrow.clockwise.circle")
                             }
-                            .disabled(submitting || !model.businessTestBookAllowed ||
-                                      model.businessCommitCapabilities?.allowsWrite != true)
-                            Text("仅 iOS_TEST_ 测试账本可使用。服务器需开启营业写入；相同操作编号及金额由服务端幂等保护。")
+                            .disabled(submitting || !model.businessCloudBookAllowed)
+                            Text("服务器需明确授权当前账本；只允许使用原操作编号恢复，不能另建重复记录。")
                                 .font(.caption2).foregroundColor(.secondary)
                         }
                         if model.businessCommitCapabilities?.allowsWrite != true {
@@ -573,7 +571,7 @@ struct BusinessLocalEntryView: View {
                             .disabled(submitting)
                         }
                     } else if saved && formMatchesSavedDraft &&
-                              model.businessTestBookAllowed && !cloudWriteAvailable {
+                              !cloudWriteAvailable {
                         Button("检查同步权限") {
                             Task { await model.refreshBusinessCommitCapabilities() }
                         }
@@ -587,8 +585,8 @@ struct BusinessLocalEntryView: View {
                         Text(warning).font(.caption).foregroundColor(.secondary)
                     }
                     Text(cloudWriteAvailable
-                         ? "同步成功后安卓端可读取；断线时保留原操作，只查询结果，不生成重复营业。"
-                         : "正式账本尚未开放营业云端写入；本机保存不计入安卓营业额或结算。")
+                         ? "当前账本已有服务端写入授权；断线只恢复原操作，安卓端同步后可核对。"
+                         : "当前账本云端营业未授权；本机草稿不计入安卓营业或结算。")
                         .font(.caption2).foregroundColor(.secondary)
                 }
             }
