@@ -170,7 +170,11 @@ enum TXSettlementPreparationPolicy {
 
 struct TXSettlementTestWorkbenchView: View {
     @EnvironmentObject private var model: LedgerViewModel
-    @State private var date = Date()
+    @State private var date: Date
+
+    init(initialDate: Date = Date()) {
+        _date = State(initialValue: initialDate)
+    }
     @State private var transferID = ""
     @State private var action: TXSettlementTestAction = .full
     @State private var amount = ""
