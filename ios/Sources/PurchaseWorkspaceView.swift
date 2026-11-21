@@ -107,6 +107,16 @@ final class PurchaseWorkspaceModel: ObservableObject {
 private struct PurchaseWorkspaceEditorRequest: Identifiable {
     let id = UUID().uuidString
     let original: PurchaseWorkspaceDraft?
+    let initialBuyerSyncID: String?
+    let initialLines: [PurchaseDraftLine]?
+
+    init(original: PurchaseWorkspaceDraft?,
+         buyerSyncID: String? = nil,
+         lines: [PurchaseDraftLine]? = nil) {
+        self.original = original
+        self.initialBuyerSyncID = buyerSyncID
+        self.initialLines = lines
+    }
 }
 
 struct PurchaseWorkspaceView: View {
@@ -121,6 +131,8 @@ struct PurchaseWorkspaceView: View {
     @State private var pendingCommitID: String?
     @State private var showConfirm = false
     @State private var submittingID: String?
+    @State private var selectedPendingPlan: PurchasePlanningRow?
+    @State private var showPlanBuyerChooser = false
 
     private var day: String { BusinessDates.key(date) }
     private var planning: PurchasePlanningDay {
@@ -176,7 +188,9 @@ struct PurchaseWorkspaceView: View {
                let account = model.account?.username {
                 PurchaseWorkspaceEditorView(
                     original: edit.original, date: date,
-                    account: account, bookID: bookID) { item in
+                    account: account, bookID: bookID,
+                    initialBuyerSyncID: edit.initialBuyerSyncID,
+                    initialLines: edit.initialLines) { item in
                         guard model.selectedBookID == bookID,
                               model.account?.username.lowercased()
                                   == account.lowercased(), canEdit else {
@@ -190,7 +204,21 @@ struct PurchaseWorkspaceView: View {
                 Text("请先登录并选择账本")
             }
         }
-        .alert("确认提交正式采购？", isPresented: $showConfirm) {
+        .confirmationDialog("选择本次采购人",
+                            isPresented: $showPlanBuyerChooser,
+                            titleVisibility: .visible) {
+            if let item = selectedPendingPlan {
+                ForEach(PurchasePlanCompletionPolicy.availableBuyers(
+                    for: item, partners: model.snapshot.testPartners)) { buyer in
+                    Button(buyer.name) {
+                        openPlanEntry(item, buyer: buyer)
+                    }
+                }
+            }
+        } message: {
+            Text("只带入所选采购人的待采购计划；实际数量和单价需要确认。")
+        }
+        .alert("确认提交采购计划／订单？", isPresented: $showConfirm) {
             Button("取消", role: .cancel) { pendingCommitID = nil }
             Button("确认提交") {
                 guard let id = pendingCommitID,
@@ -199,7 +227,7 @@ struct PurchaseWorkspaceView: View {
                 Task { await submitPurchase(draft) }
             }
         } message: {
-            Text("提交成功后会生成正式采购订单并同步到安卓。网络异常只查询原操作，不自动重复创建；已结算日不会被修改。")
+            Text("提交成功后服务器一次性保存采购订单和商品明细，关联的待采购计划同步变为已完成。网络异常仅查询原操作，不重复新增。")
         }
         .onAppear {
             reload()
@@ -285,9 +313,39 @@ struct PurchaseWorkspaceView: View {
                 notice(planning.completed.isEmpty ?
                     "这一天暂无待采购商品。" : "✓ 当天采购已全部完成")
             } else {
-                ForEach(planning.pending) { row in
-                    PurchaseWorkspacePlanRow(item: row)
+                let names = Array(Set(planning.pending.map {
+                    $0.buyerName.isEmpty ? "未分配采购人" : $0.buyerName
+                })).sorted()
+                ForEach(names, id: \.self) { name in
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(name).font(.subheadline.bold())
+                        ForEach(planning.pending.filter {
+                            ($0.buyerName.isEmpty ? "未分配采购人" : $0.buyerName) == name
+                        }) { row in
+                            PurchaseWorkspacePlanRow(item: row)
+                            if canEdit {
+                                HStack {
+                                    Spacer()
+                                    Button {
+                                        beginPlanEntry(row)
+                                    } label: {
+                                        Label(PurchasePlanCompletionPolicy.existingDraft(
+                                            for: row.id, drafts: workspace.drafts) == nil
+                                            ? "填写实际采购" : "继续采购草稿",
+                                            systemImage: "square.and.pencil")
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .font(.caption)
+                                }
+                            }
+                        }
+                    }
+                    .padding(8)
+                    .background(Color(UIColor.secondarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 12))
                 }
+                Text("从待采购商品直接带入原计划，填写实际数量、单价和重量后再提交完成；不同采购人分别录入。")
+                    .font(.caption2).foregroundColor(.secondary)
             }
             if !planning.warnings.isEmpty {
                 ForEach(planning.warnings, id: \.self) { warning in
@@ -331,6 +389,20 @@ struct PurchaseWorkspaceView: View {
                             ($0.buyerName.isEmpty ? "未指定采购人" : $0.buyerName) == name
                         }) { item in
                             PurchaseWorkspacePlanRow(item: item)
+                            if item.hasVerifiedOrder,
+                               let order = dailyOrders.first(where: {
+                                   $0.id == item.linkedOrderID
+                               }) {
+                                NavigationLink(destination: PurchaseCloudDetailView(
+                                    order: order, bookID: model.selectedBookID ?? "")) {
+                                    Label("查看关联采购单",
+                                          systemImage: "doc.text.magnifyingglass")
+                                        .font(.caption)
+                                }
+                            } else {
+                                Text("采购计划已标记完成，订单关联待核对")
+                                    .font(.caption2).foregroundColor(.orange)
+                            }
                         }
                     }
                     .padding(10)
@@ -523,6 +595,50 @@ struct PurchaseWorkspaceView: View {
     private func money(_ value: Double?) -> String {
         guard let value else { return "未核对" }
         return value.formatted(.currency(code: "CNY"))
+    }
+
+    private func beginPlanEntry(_ item: PurchasePlanningRow) {
+        guard canEdit else {
+            workspace.message = "当前账号没有录入采购权限"
+            return
+        }
+        if let existing = PurchasePlanCompletionPolicy.existingDraft(
+            for: item.id, drafts: workspace.drafts) {
+            if workspace.attempt(for: existing) != nil {
+                workspace.message = "此计划已有锁定的采购提交操作，请在本机采购录入中查询原操作结果，禁止生成第二笔"
+                return
+            }
+            clearReview()
+            request = PurchaseWorkspaceEditorRequest(original: existing)
+            return
+        }
+        let buyers = PurchasePlanCompletionPolicy.availableBuyers(
+            for: item, partners: model.snapshot.testPartners)
+        if buyers.count == 1, let buyer = buyers.first {
+            openPlanEntry(item, buyer: buyer)
+        } else if buyers.isEmpty {
+            workspace.message = "该计划的采购人已变更或删除，无法安全带入，请先在安卓核对"
+        } else {
+            selectedPendingPlan = item
+            showPlanBuyerChooser = true
+        }
+    }
+
+    private func openPlanEntry(_ item: PurchasePlanningRow, buyer: TestLookup) {
+        guard canEdit, model.account != nil, model.selectedBookID != nil else {
+            workspace.message = "账号或账本已切换，请重新进入采购页面"
+            return
+        }
+        let events = Array(model.snapshot.records.values)
+        guard let line = PurchasePlanCompletionPolicy.preparedItem(
+            item.id, buyerSyncID: buyer.id, date: day, events: events)
+        else {
+            workspace.message = "计划来源未能安全关联（可能已完成、缺少协作记录或采购人不匹配），请同步最新安卓计划"
+            return
+        }
+        clearReview()
+        request = PurchaseWorkspaceEditorRequest(
+            original: nil, buyerSyncID: buyer.id, lines: [line])
     }
 
     private func shiftDate(_ by: Int) {
