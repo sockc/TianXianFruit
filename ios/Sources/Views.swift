@@ -197,7 +197,13 @@ private struct HomePage: View {
     }
 }
 
-private struct BusinessPage: View {
+private private struct BusinessDraftDisplayRow: Identifiable {
+    let draft: BusinessLocalDraft
+    let status: BusinessDraftWorkflowPolicy.CloudState
+    var id: String { draft.id }
+}
+
+struct BusinessPage: View {
     @EnvironmentObject private var model: LedgerViewModel
     @State private var period = "单日"
     @State private var selectedDate = Date()
@@ -205,6 +211,7 @@ private struct BusinessPage: View {
     @State private var searchText = ""
     @State private var visibleDays = 14
     @State private var showLocalEntry = false
+    @State private var preferredStoreID: String?
 
     private var selectedKey: String { BusinessDates.key(selectedDate) }
     private var startingKey: String {
@@ -229,6 +236,32 @@ private struct BusinessPage: View {
         guard let account = model.account?.username, let book = model.selectedBookID else { return [] }
         return BusinessLocalDraftStore.load(account: account, bookID: book)
             .filter { $0.date == selectedKey }
+    }
+
+    private var draftStatusRows: [BusinessDraftDisplayRow] {
+        let drafts = localDrafts
+        guard !drafts.isEmpty else { return [] }
+        let outbox: BusinessCommitOutbox
+        do { outbox = try BusinessCommitOutbox() }
+        catch {
+            return drafts.map {
+                BusinessDraftDisplayRow(draft: $0, status: .unsafeToRead)
+            }
+        }
+        return drafts.map { draft in
+            let state: BusinessDraftWorkflowPolicy.CloudState
+            do {
+                let attempt = try outbox.load(
+                    id: draft.id, account: model.account?.username ?? "",
+                    bookID: model.selectedBookID ?? "")
+                state = BusinessDraftWorkflowPolicy.status(
+                    draft: draft, events: Array(model.snapshot.records.values),
+                    attempt: attempt)
+            } catch {
+                state = .unsafeToRead
+            }
+            return BusinessDraftDisplayRow(draft: draft, status: state)
+        }
     }
 
     private var grouped: [DayRows<StoreDailyRow>] {
@@ -285,6 +318,7 @@ private struct BusinessPage: View {
                 HStack {
                     SearchField(placeholder: "搜索日期或位置", text: $searchText)
                     Button {
+                        preferredStoreID = nil
                         showLocalEntry = true
                     } label: {
                         Label("录入", systemImage: "square.and.pencil")
@@ -292,16 +326,34 @@ private struct BusinessPage: View {
                     .buttonStyle(.bordered)
                     .disabled(model.selectedBookID == nil)
                 }
-                if !localDrafts.isEmpty {
-                    HStack {
-                        Label("本机营业草稿 \(localDrafts.count) 条（未上传）",
+                if draftStatusRows.contains(where: { $0.status.needsAttention }) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        Label("本机营业事项（仅显示待处理）",
                               systemImage: "square.and.pencil")
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                        Spacer()
-                        Button("继续编辑") { showLocalEntry = true }
-                            .font(.caption)
+                            .font(.subheadline.bold()).foregroundColor(.orange)
+                        ForEach(draftStatusRows.filter { $0.status.needsAttention }) { item in
+                            Button {
+                                preferredStoreID = item.draft.storeID
+                                showLocalEntry = true
+                            } label: {
+                                HStack(spacing: 8) {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(item.draft.storeName)
+                                            .foregroundColor(.primary)
+                                        Text(item.status.label)
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
+                    .padding(12)
+                    .background(Color(UIColor.secondarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 12))
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
@@ -373,7 +425,8 @@ private struct BusinessPage: View {
             .padding(12)
         }
         .sheet(isPresented: $showLocalEntry) {
-            BusinessLocalEntryView(date: selectedDate)
+            BusinessLocalEntryView(date: selectedDate,
+                                   preferredStoreID: preferredStoreID)
                 .environmentObject(model)
         }
     }
