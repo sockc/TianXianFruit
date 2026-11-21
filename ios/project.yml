@@ -1,0 +1,48 @@
+name: TianXianFruit
+options:
+  bundleIdPrefix: com.tianxian.fruit
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    CODE_SIGN_STYLE: Automatic
+    OTHER_LDFLAGS: "-lsqlite3"
+targets:
+  TianXianFruit:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tianxian.fruit.ios
+        INFOPLIST_FILE: Config/AppInfo.plist
+        GENERATE_INFOPLIST_FILE: NO
+        MARKETING_VERSION: "0.5.2"
+        CURRENT_PROJECT_VERSION: "34"
+  TianXianFruitTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: Tests
+    dependencies:
+      - target: TianXianFruit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tianxian.fruit.ios.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  TianXianFruit:
+    build:
+      targets:
+        TianXianFruit: all
+    test:
+      targets:
+        - TianXianFruitTests
+    run:
+      config: Debug
+    archive:
+      config: Release
