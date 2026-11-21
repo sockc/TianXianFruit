@@ -1,9 +1,8 @@
 import SwiftUI
 
-/// Build 43 is the first half of settlement write integration: immutable,
-/// locally prepared instructions only. NO HTTP mutation endpoint is exposed.
-/// The Android settlement and fund-ledger algorithms remain authoritative.
-enum TXSettlementTestAction: String, CaseIterable, Identifiable {
+/// Build 44 immutable preparation is accepted only by a dedicated, test-only
+/// V1.0.31 atomic endpoint. The Android settlement algorithms stay authoritative.
+enum TXSettlementTestAction: String, CaseIterable, Identifiable, Codable {
     case partial, full, reset, generate, cutoff, profitShare
     var id: String { rawValue }
     var title: String {
@@ -24,7 +23,7 @@ enum TXSettlementTestAction: String, CaseIterable, Identifiable {
 /// Future server implementation must accept an immutable operation identity
 /// and the expected cloud versions; a network timeout may be recovered only
 /// with an operation GET, never by resubmitting under a different UUID.
-struct TXSettlementLocalPreparation: Equatable, Identifiable {
+struct TXSettlementLocalPreparation: Equatable, Identifiable, Codable {
     let id: String
     let account: String
     let bookID: String
@@ -126,7 +125,10 @@ enum TXSettlementPreparationPolicy {
             throw TXSettlementPreparationError.invalidTransfer
         }
         guard let event = snapshot.records["settlement_transfer|" + transferID],
-              event.rowVersion > 0 else {
+              event.rowVersion > 0,
+              let dailyID = AndroidNumericIdentity.exact(dailyEvent.payload["id"]),
+              AndroidNumericIdentity.exact(event.payload["settlement_id"]) == dailyID,
+              AndroidNumericIdentity.exact(event.payload["id"]) != nil else {
             throw TXSettlementPreparationError.unverifiedSnapshot
         }
         guard let original = persistedCents(transfer.recordedSettled),
@@ -136,7 +138,8 @@ enum TXSettlementPreparationPolicy {
         let target: Int64
         switch action {
         case .partial:
-            guard let parsed = cents(typedAmount), parsed <= maximum else {
+            guard let parsed = cents(typedAmount),
+                  parsed > 0, parsed < maximum else {
                 throw TXSettlementPreparationError.badAmount
             }
             target = parsed
@@ -163,10 +166,6 @@ enum TXSettlementPreparationPolicy {
         )
     }
 
-    /// The installed server does not expose a reviewed atomic settlement
-    /// commit and operations-lookup contract. This is always false in Build 43;
-    /// never retrofit it to raw /sync/push or overwrite SQLite fields.
-    static let serverSettlementCommitAvailable = false
 }
 
 struct TXSettlementTestWorkbenchView: View {
@@ -202,7 +201,7 @@ struct TXSettlementTestWorkbenchView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Label("测试账本 · 资金结算操作准备", systemImage: "checkmark.shield")
                     .font(.headline)
-                Text("本页仅核对现有日结和已保存转账；不会生成实际结算、保存草稿到正式账本或调用资金写入接口。")
+                Text("只允许核对已存在的当日转账。服务器 V1.0.31 启用测试结算事务后，可进入确认页执行；正式账本仍只读。")
                     .font(.caption).foregroundColor(.secondary)
 
                 if !candidate {
@@ -327,11 +326,17 @@ struct TXSettlementTestWorkbenchView: View {
                     }
                 }
 
-                Button("服务器事务尚未开放 · 禁止提交") {}
-                    .buttonStyle(.bordered)
-                    .disabled(!TXSettlementPreparationPolicy.serverSettlementCommitAvailable)
-                    .frame(maxWidth: .infinity)
-                Text("开放实际结算前，需要服务端提供：iOS_TEST_ 专用原子事务、操作 ID 幂等、原始行版本核对、资金中心统一计算、超时操作查询，以及安卓回读验证。不能改用同步推送替代。")
+                if let prepared {
+                    NavigationLink(destination: TXSettlementAtomicSubmitView(proposal: prepared)) {
+                        Label("进入原子事务核对与提交", systemImage: "checkmark.shield")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Text("请先生成核对单，再进入服务器事务提交页。")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                Text("服务端必须支持原子事务、操作ID幂等、版本校验和超时原操作查询；周期结清及利润分配仍为独立预留功能。")
                     .font(.caption2).foregroundColor(.secondary)
                 SyncFooter()
             }.padding(12)

@@ -25,6 +25,8 @@ final class SettlementTestPreparationTests: XCTestCase {
         var events: [SyncEvent] = [
             event("settlement_transfer", id: "transfer-a", date: transferDate,
                   version: 6, values: [
+                    "id": .exactInteger(79152283000000004),
+                    "settlement_id": .exactInteger(79152283000000003),
                     "settlement_kind": .string("DAILY"),
                     "amount": .number(amount),
                     "settled_amount": .number(settled),
@@ -34,7 +36,9 @@ final class SettlementTestPreparationTests: XCTestCase {
         if dailyCount > 0 {
             events.append(event("daily_cash_settlement",
                                 id: "daily-a", date: "2026-11-20",
-                                version: 5, values: ["status": .number(2)]))
+                                version: 5, values: [
+                                    "id": .exactInteger(79152283000000003),
+                                    "status": .number(2)]))
         }
         if dailyCount > 1 {
             events.append(event("daily_cash_settlement",
@@ -75,7 +79,7 @@ final class SettlementTestPreparationTests: XCTestCase {
         XCTAssertTrue(prepared.verificationSummary.contains("未提交"))
         XCTAssertEqual(snapshot.financeTransfers.first?.recordedSettled,
                        previous.recordedSettled, "Preparation cannot mutate cloud snapshot")
-        XCTAssertFalse(TXSettlementPreparationPolicy.serverSettlementCommitAvailable)
+        XCTAssertFalse(try JSONEncoder().encode(prepared).isEmpty)
     }
 
     func testFullResetAndNoopProtectRegisteredAmount() throws {
@@ -138,6 +142,8 @@ final class SettlementTestPreparationTests: XCTestCase {
         snapshot.apply([event("settlement_transfer",
                               id: "transfer-a", date: "2026-11-20",
                               version: 7, values: [
+                                "id": .exactInteger(79152283000000004),
+                                "settlement_id": .exactInteger(79152283000000003),
                                 "settlement_kind": .string("DAILY"),
                                 "amount": .number(300),
                                 "settled_amount": .number(120)])])

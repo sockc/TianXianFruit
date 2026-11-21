@@ -366,13 +366,29 @@ assert (root.parent / "Tests" / "FundHistoryReadOnlyTests.swift").exists()
 
 # V0.6.6: settlement actions are immutable local-only preparations.
 settlement_preview = swift["SettlementTestPreparation.swift"]
-assert "serverSettlementCommitAvailable = false" in settlement_preview
+assert "TXSettlementAtomicSubmitView(proposal: prepared)" in settlement_preview
 assert "TXSettlementPreparationPolicy.prepare" in settlement_preview
 assert "dailyRowVersion" in settlement_preview
 assert "transferRowVersion" in settlement_preview
 assert "TXTestBookAccess.isCandidate" in settlement_preview
 assert "UIPasteboard.general.string" in settlement_preview
 assert '"/api/v1/sync/push"' not in settlement_preview
-assert '"/api/v1/settlements/commit"' not in swift["CloudAPI.swift"]
+assert '"/api/v1/settlements/commit"' in swift["CloudAPI.swift"]
+assert '"/api/v1/settlements/capabilities"' in swift["CloudAPI.swift"]
+assert '"/api/v1/settlements/operations/"' in swift["CloudAPI.swift"]
 assert "TXSettlementTestWorkbenchView()" in swift["AndroidStyleShell.swift"]
 assert (root.parent / "Tests" / "SettlementTestPreparationTests.swift").exists()
+
+
+# Build44 adds only dedicated TEST settlement endpoint and durable idempotency.
+atomic_settlement = swift["SettlementAtomicClient.swift"]
+atomic_submit = swift["SettlementAtomicSubmitView.swift"]
+assert "operationLookup" in atomic_settlement
+assert "scope == \"iOS_TEST_\"" in atomic_settlement
+assert "TXSettlementCommitReadback.confirmed" in atomic_submit
+assert "try store.save(locked)" in atomic_submit
+assert "findSettlementOperation" in swift["LedgerViewModel.swift"]
+assert "refreshSettlementCapabilities" in swift["LedgerViewModel.swift"]
+assert '"/api/v1/sync/push"' not in atomic_settlement
+assert '"/api/v1/sync/push"' not in atomic_submit
+assert (root.parent / "Tests" / "SettlementAtomicClientTests.swift").exists()

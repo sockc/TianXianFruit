@@ -99,10 +99,11 @@ enum TXTestBookAccess {
     }
     static func state(_ feature: TXTestModule, book: CloudBook?, account: Account?,
                       offline: Bool, businessEnabled: Bool,
-                      purchaseEnabled: Bool) -> TXTestWriteState {
+                      purchaseEnabled: Bool,
+                      settlementEnabled: Bool = false) -> TXTestWriteState {
         guard let book, book.name.hasPrefix("iOS_TEST_") else { return .productionReadOnly }
         guard isCandidate(book, account: account, offline: offline) else { return .restricted }
-        if feature == .profitWrite { return .preparationOnly }
+        if feature == .profitWrite { return settlementEnabled ? .live : .preparationOnly }
         if !feature.isImplemented { return .reserved }
         switch feature {
         case .businessCreate: return businessEnabled ? .live : .serverUnavailable
@@ -240,7 +241,9 @@ struct TXTestWorkbenchView: View {
         TXTestBookAccess.state(module, book: model.selectedBook,
                                account: model.account,
                                offline: model.isUsingCachedAuthorization,
-                               businessEnabled: businessEnabled, purchaseEnabled: purchaseEnabled)
+                               businessEnabled: businessEnabled,
+                               purchaseEnabled: purchaseEnabled,
+                               settlementEnabled: model.settlementCommitCapabilities?.allowsWrite == true)
     }
     var body: some View {
         ScrollView {
@@ -284,7 +287,7 @@ struct TXTestWorkbenchView: View {
                                     in: RoundedRectangle(cornerRadius: 12))
                     }.disabled(!allowed)
                 }
-                Text("已实现的营业、采购仍采用专用原子接口；更正操作保留独立测试账号验证。结算操作仅可制作本机核对单，尚不能提交；其他功能保持预留。")
+                Text("营业、采购与已有当日资金转账使用独立原子接口；仅在线可编辑 iOS_TEST_ 账本可提交。生成日结、周期结清和利润分配继续预留。")
                     .font(.caption2).foregroundColor(.secondary)
             }.padding(12)
         }

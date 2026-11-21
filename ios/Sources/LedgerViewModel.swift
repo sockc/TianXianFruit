@@ -26,6 +26,9 @@ final class LedgerViewModel: ObservableObject {
     @Published private(set) var purchaseCommitCapabilities: PurchaseCommitCapabilities?
     @Published private(set) var purchaseCommitError: String?
     @Published private(set) var isPurchaseCommitBusy = false
+    @Published private(set) var settlementCommitCapabilities: TXSettlementCommitCapabilities?
+    @Published private(set) var settlementCommitError: String?
+    @Published private(set) var isSettlementCommitBusy = false
     @Published private(set) var customerSnapshot = CustomerReadSnapshot()
     @Published private(set) var customerCursor: Int64 = 0
     @Published private(set) var customerSyncedAt: Date?
@@ -116,10 +119,12 @@ final class LedgerViewModel: ObservableObject {
         guard businessTestBookAllowed else {
             businessCommitCapabilities = nil
             purchaseCommitCapabilities = nil
+            settlementCommitCapabilities = nil
             return
         }
         await refreshBusinessCommitCapabilities()
         await refreshPurchaseCommitCapabilities()
+        await refreshSettlementCapabilities()
     }
 
     func refreshBusinessCommitCapabilities() async {
@@ -186,6 +191,76 @@ final class LedgerViewModel: ObservableObject {
             throw BusinessAtomicError.scope
         }
         return result
+    }
+
+    /// Capability checked online for the current test ledger and rechecked per POST.
+    func refreshSettlementCapabilities() async {
+        settlementCommitCapabilities = nil
+        settlementCommitError = nil
+        guard let user = account, let token = accessToken,
+              let book = selectedBook, !isUsingCachedAuthorization,
+              TXTestBookAccess.isCandidate(book, account: user, offline: false)
+        else {
+            settlementCommitError = "正式账本、离线授权及只读成员禁止结算"
+            return
+        }
+        do {
+            let capabilities = try await api.settlementCapabilities(
+                token: token, bookID: book.id)
+            guard self.account?.username == user.username,
+                  self.accessToken == token, self.selectedBookID == book.id else { return }
+            if capabilities.allowsWrite { settlementCommitCapabilities = capabilities }
+            else { settlementCommitError = "服务器 V1.0.31 测试账本结算功能未启用" }
+        } catch {
+            settlementCommitError = "无法确认服务端结算原子事务能力"
+        }
+    }
+
+    func commitSettlement(_ prepared: TXSettlementLocalPreparation)
+        async throws -> TXSettlementCommitReceipt {
+        guard !isSettlementCommitBusy, !isBusy,
+              let user = account, let book = selectedBook, let token = accessToken,
+              !isUsingCachedAuthorization,
+              TXTestBookAccess.isCandidate(book, account: user, offline: false),
+              user.username.lowercased() == prepared.account.lowercased(),
+              book.id.lowercased() == prepared.bookID.lowercased()
+        else { throw TXSettlementAtomicError.scope }
+        isSettlementCommitBusy = true
+        defer { isSettlementCommitBusy = false }
+        // Never rely only on a cached capability or an old test-book selection.
+        let capabilities = try await api.settlementCapabilities(
+            token: token, bookID: book.id)
+        guard capabilities.allowsWrite, self.accessToken == token,
+              self.selectedBookID == book.id,
+              self.account?.username == user.username else {
+            throw TXSettlementAtomicError.unavailable
+        }
+        let receipt = try await api.settlementCommit(
+            token: token, prepared: prepared)
+        guard self.accessToken == token, self.selectedBookID == book.id,
+              self.account?.username == user.username else {
+            throw TXSettlementAtomicError.scope
+        }
+        return receipt
+    }
+
+    func findSettlementOperation(_ prepared: TXSettlementLocalPreparation)
+        async throws -> TXSettlementCommitReceipt? {
+        guard !isSettlementCommitBusy, !isUsingCachedAuthorization,
+              let user = account, let book = selectedBook, let token = accessToken,
+              TXTestBookAccess.isCandidate(book, account: user, offline: false),
+              user.username.lowercased() == prepared.account.lowercased(),
+              book.id.lowercased() == prepared.bookID.lowercased()
+        else { throw TXSettlementAtomicError.scope }
+        isSettlementCommitBusy = true
+        defer { isSettlementCommitBusy = false }
+        let receipt = try await api.settlementOperation(
+            token: token, prepared: prepared)
+        guard self.accessToken == token, self.selectedBookID == book.id,
+              self.account?.username == user.username else {
+            throw TXSettlementAtomicError.scope
+        }
+        return receipt
     }
 
     /// Never infer production-write capability from an Android/older server.
@@ -298,6 +373,8 @@ final class LedgerViewModel: ObservableObject {
         customerError = nil
         purchaseCommitCapabilities = nil
         purchaseCommitError = nil
+        settlementCommitCapabilities = nil
+        settlementCommitError = nil
         businessCommitCapabilities = nil
         businessCommitError = nil
         weatherOverview = nil
@@ -499,6 +576,9 @@ final class LedgerViewModel: ObservableObject {
         businessCommitCapabilities = nil
         businessCommitError = nil
         isBusinessCommitBusy = false
+        settlementCommitCapabilities = nil
+        settlementCommitError = nil
+        isSettlementCommitBusy = false
         weatherOverview = nil
         selectedWeatherStoreID = ""
         weatherCheckedAt = nil

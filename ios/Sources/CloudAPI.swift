@@ -45,6 +45,8 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             || path == "/api/v1/weather/overview"
             || path == "/api/v1/purchases/capabilities"
             || path == "/api/v1/business/capabilities"
+            || path == "/api/v1/settlements/capabilities"
+            || path.hasPrefix("/api/v1/settlements/operations/")
             || path.hasPrefix("/api/v1/business/operations/")
             || path.hasPrefix("/api/v1/purchases/operations/")
             || (path.hasPrefix("/api/v1/books/") && (
@@ -54,6 +56,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             || path == "/api/v1/devices/register"
             || path == "/api/v1/purchases/commit"
             || path == "/api/v1/business/commit"
+            || path == "/api/v1/settlements/commit"
         guard (method == "GET" && permittedGET) || (method == "POST" && permittedPOST),
               let base = URL(string: root + path),
               var parts = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
@@ -202,6 +205,48 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         }
     }
 
+    func settlementCapabilities(token: String, bookID: String)
+        async throws -> TXSettlementCommitCapabilities {
+        guard UUID(uuidString: bookID) != nil else { throw TXSettlementAtomicError.scope }
+        let data = try await request("GET", "/api/v1/settlements/capabilities",
+                                     token: token, query: [
+            URLQueryItem(name: "book_id", value: bookID)])
+        return try decode(TXSettlementCommitCapabilities.self, from: data)
+    }
+
+    func settlementCommit(token: String, prepared: TXSettlementLocalPreparation)
+        async throws -> TXSettlementCommitReceipt {
+        let body = try TXSettlementCommitBody(
+            prepared, deviceID: Self.scopedDeviceID(prepared.account))
+        let encoded = try JSONEncoder().encode(body)
+        let data = try await request("POST", "/api/v1/settlements/commit",
+                                     token: token, jsonBody: encoded)
+        let receipt = try decode(TXSettlementCommitReceipt.self, from: data)
+        guard receipt.matches(prepared) else { throw TXSettlementAtomicError.invalidReceipt }
+        return receipt
+    }
+
+    func settlementOperation(token: String, prepared: TXSettlementLocalPreparation)
+        async throws -> TXSettlementCommitReceipt? {
+        guard let operation = UUID(uuidString: prepared.id),
+              UUID(uuidString: prepared.bookID) != nil else {
+            throw TXSettlementAtomicError.scope
+        }
+        do {
+            let data = try await request("GET",
+                "/api/v1/settlements/operations/" + operation.uuidString.lowercased(),
+                token: token, query: [
+                    URLQueryItem(name: "book_id", value: prepared.bookID)])
+            let receipt = try decode(TXSettlementCommitReceipt.self, from: data)
+            guard receipt.matches(prepared) else {
+                throw TXSettlementAtomicError.invalidReceipt
+            }
+            return receipt
+        } catch let error as CloudAPIError where error.status == 404 {
+            return nil
+        }
+    }
+
     func account(token: String) async throws -> Account {
         let data = try await request("GET", "/api/v1/auth/me", token: token)
         return try decode(Account.self, from: data)
@@ -224,7 +269,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             "POST", "/api/v1/auth/login", body: [
                 "username": trimmed, "password": password,
                 "device_id": scopedID, "device_name": deviceName,
-                "platform": "ios", "app_version": "0.6.6"
+                "platform": "ios", "app_version": "0.6.7"
             ])
         let auth: LoginResponse = try decode(LoginResponse.self, from: loginData)
         let me = try await account(token: auth.accessToken)
@@ -232,7 +277,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         _ = try await request("POST", "/api/v1/devices/register",
                               token: auth.accessToken, body: [
             "device_id": scopedID, "name": deviceName,
-            "platform": "ios", "app_version": "0.6.6"
+            "platform": "ios", "app_version": "0.6.7"
         ])
         return (auth.accessToken, me)
     }

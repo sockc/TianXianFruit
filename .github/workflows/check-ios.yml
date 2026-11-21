@@ -1,4 +1,4 @@
-name: Check iOS V0.6.6 settlement test-only preparation guard
+name: Check iOS V0.6.7 dedicated test-book atomic settlement
 
 on:
   pull_request:
