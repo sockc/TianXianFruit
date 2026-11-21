@@ -63,28 +63,54 @@ struct BusinessLocalEntryView: View {
     @State private var commitMessage: String?
     @State private var submitting = false
 
-    init(date: Date) {
+    init(date: Date, preferredStoreID: String? = nil) {
         _date = State(initialValue: date)
+        _storeID = State(initialValue: preferredStoreID ?? "")
     }
 
     private var account: String { model.account?.username ?? "" }
     private var bookID: String { model.selectedBookID ?? "" }
     private var dateKey: String { BusinessDates.key(date) }
+    private var persistedDraft: BusinessLocalDraft? {
+        BusinessLocalDraftStore.load(account: account, bookID: bookID)
+            .first { $0.date == dateKey && $0.storeID == storeID }
+    }
+
+    private var formMatchesSavedDraft: Bool {
+        BusinessDraftWorkflowPolicy.matchesSaved(
+            draft: persistedDraft, date: dateKey, storeID: storeID,
+            lines: lines, startTime: startTime, endTime: endTime,
+            expense: expense, opening: openingStock,
+            closing: closingStock, note: note)
+    }
+
+    private var preview: BusinessDraftWorkflowPolicy.Preview? {
+        BusinessDraftWorkflowPolicy.preview(
+            lines: lines, expense: expense,
+            opening: openingStock, closing: closingStock)
+    }
+
+    private var remoteRecord: SyncEvent? {
+        guard !storeID.isEmpty else { return nil }
+        let selectedName = model.snapshot.testStores.first { $0.id == storeID }?.name
+        return model.snapshot.records.values.first { row in
+            row.tableName == "store_daily_record" && !row.isDeletion &&
+            row.payload["date"]?.text == dateKey &&
+            (row.payload["store_sync_id"]?.text == storeID ||
+             (selectedName != nil && row.payload["store_name"]?.text == selectedName))
+        }
+    }
+
     private var editingAllowed: Bool {
         guard let book = model.selectedBook, book.isAvailable, !account.isEmpty else { return false }
         return ["OWNER", "SUPERADMIN", "EDITOR"].contains(book.role.uppercased())
     }
 
-    private var existingRemote: Bool {
-        model.snapshot.business.contains {
-            $0.date == dateKey && model.snapshot.testStores.first(where: { $0.id == storeID })?.name == $0.storeName
-        }
-    }
+    private var existingRemote: Bool { remoteRecord != nil }
 
     private func loadDraft() {
         guard !storeID.isEmpty else { return }
-        if let draft = BusinessLocalDraftStore.load(account: account, bookID: bookID)
-            .first(where: { $0.date == dateKey && $0.storeID == storeID }) {
+        if let draft = persistedDraft {
             lines = draft.collectors
             startTime = draft.startTime
             endTime = draft.endTime
@@ -93,7 +119,10 @@ struct BusinessLocalEntryView: View {
             openingStock = draft.openingStock ?? ""
             closingStock = draft.closingStock ?? ""
         } else {
-            lines = [BusinessCollectorDraftLine()]
+            lines = [BusinessCollectorDraftLine(
+                partnerSyncID: model.snapshot.testPartners.count == 1
+                    ? model.snapshot.testPartners[0].id : ""
+            )]
             startTime = ""
             endTime = ""
             note = ""
@@ -101,7 +130,7 @@ struct BusinessLocalEntryView: View {
             openingStock = ""
             closingStock = ""
         }
-        saved = false
+        saved = persistedDraft != nil
         canResumeOriginal = false
         commitMessage = nil
         errorText = nil
@@ -109,8 +138,7 @@ struct BusinessLocalEntryView: View {
     }
 
     private func loadAttempt() {
-        let draft = BusinessLocalDraftStore.load(account: account, bookID: bookID)
-            .first { $0.date == dateKey && $0.storeID == storeID }
+        let draft = persistedDraft
         guard let id = draft?.id else { attempt = nil; return }
         do {
             attempt = try BusinessCommitOutbox().load(
@@ -122,7 +150,13 @@ struct BusinessLocalEntryView: View {
     }
 
     private func save() {
-        guard attempt == nil, commitMessage?.hasPrefix("上传保护记录不可读取") != true else { return }
+        guard attempt == nil, !existingRemote,
+              commitMessage?.hasPrefix("上传保护记录不可读取") != true else {
+            errorText = existingRemote
+                ? "云端已有该日该位置营业，请从营业历史查看或更正"
+                : "已有不可重复的提交操作，请先核对结果"
+            return
+        }
         guard editingAllowed,
               let store = model.snapshot.testStores.first(where: { $0.id == storeID }) else {
             errorText = "请选择有效营业位置，并确认账本编辑权限"
@@ -167,8 +201,10 @@ struct BusinessLocalEntryView: View {
 
     private func commitDraft() async {
         guard !submitting, attempt == nil, editingAllowed,
-              let draft = BusinessLocalDraftStore.load(account: account, bookID: bookID)
-                .first(where: { $0.date == dateKey && $0.storeID == storeID }) else { return }
+              model.businessTestBookAllowed, saved, formMatchesSavedDraft,
+              !existingRemote,
+              commitMessage?.hasPrefix("上传保护记录不可读取") != true,
+              let draft = persistedDraft else { return }
         submitting = true
         defer { submitting = false; loadAttempt() }
         do {
@@ -229,10 +265,14 @@ struct BusinessLocalEntryView: View {
                         }
                     }
                     .onChange(of: storeID) { _ in loadDraft() }
-                    if existingRemote {
-                        Label("云端已有此日此位置营业记录。本机草稿不会覆盖已有记录。",
-                              systemImage: "exclamationmark.triangle")
+                    if let remoteRecord {
+                        Label("云端已有该日该位置营业，不能重复新增。",
+                              systemImage: "checkmark.shield")
                             .font(.caption).foregroundColor(.orange)
+                        NavigationLink(destination: BusinessCloudDetailView(
+                            recordSyncID: remoteRecord.syncId, bookID: bookID)) {
+                            Label("查看这笔云端营业", systemImage: "doc.text.magnifyingglass")
+                        }
                     }
                 }
                 Section(header: Text("收款人及金额（元）")) {
@@ -277,6 +317,21 @@ struct BusinessLocalEntryView: View {
                     amount("支出", value: $expense)
                     amount("开摊库存估值", value: $openingStock)
                     amount("收摊库存估值", value: $closingStock)
+                    if let preview {
+                        HStack {
+                            Text("本次营业额").foregroundColor(.secondary)
+                            Spacer()
+                            Text("¥" + preview.revenue).font(.headline.bold())
+                        }
+                        HStack {
+                            Text("按填入数值计算的利润").foregroundColor(.secondary)
+                            Spacer()
+                            Text("¥" + preview.profit).font(.headline.bold())
+                        }
+                    } else {
+                        Text("确认每位收款人金额，以及支出、开摊和收摊库存估值后，显示利润预览。")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
                     Text("利润按安卓原规则：收款总额＋收摊库存－开摊库存－支出。必须确认实际数据；不能为了上传直接全部填零。")
                         .font(.caption).foregroundColor(.secondary)
                 }
@@ -293,16 +348,24 @@ struct BusinessLocalEntryView: View {
                     } label: {
                         Label("保存本机营业草稿", systemImage: "square.and.arrow.down")
                     }
-                    .disabled(!editingAllowed || storeID.isEmpty || attempt != nil || submitting)
-                    if saved {
-                        Label(attempt == nil ? "本机草稿已保存，未提交云端" : "本机草稿已保存（云端状态见下方）", systemImage: "checkmark.circle")
+                    .disabled(!editingAllowed || storeID.isEmpty || existingRemote ||
+                              attempt != nil || submitting ||
+                              (saved && formMatchesSavedDraft))
+                    if saved && formMatchesSavedDraft {
+                        Label("本机草稿已保存（云端状态见下方）",
+                              systemImage: "checkmark.circle")
                             .foregroundColor(.green)
+                    } else if saved && !formMatchesSavedDraft {
+                        Label("当前有未保存的修改，上传前请先保存",
+                              systemImage: "exclamationmark.circle")
+                            .font(.caption).foregroundColor(.orange)
                     }
                     if let errorText {
                         Text(errorText).font(.caption).foregroundColor(.orange)
                     }
                     if let attempt {
-                        Text(attempt.label).font(.caption).foregroundColor(.orange)
+                        Text(attempt.label).font(.caption)
+                            .foregroundColor(attempt.phase == .confirmed ? .green : .orange)
                         Button {
                             Task { await checkOriginalOperation() }
                         } label: {
@@ -332,10 +395,12 @@ struct BusinessLocalEntryView: View {
                         Button {
                             Task { await commitDraft() }
                         } label: {
-                            Label("提交正式营业", systemImage: "arrow.up.circle")
+                            Label("提交本次营业至测试云端", systemImage: "arrow.up.circle")
                         }
-                        .disabled(!editingAllowed || !saved || submitting ||
-                                  (!model.businessTestBookAllowed || model.businessCommitCapabilities?.allowsWrite != true))
+                        .disabled(!editingAllowed || !saved || !formMatchesSavedDraft ||
+                                  existingRemote || submitting ||
+                                  (!model.businessTestBookAllowed ||
+                                   model.businessCommitCapabilities?.allowsWrite != true))
                     }
                     if submitting { ProgressView("正在核对营业事务…") }
                     if let commitMessage {
