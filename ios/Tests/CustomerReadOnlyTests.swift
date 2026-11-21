@@ -96,6 +96,48 @@ final class CustomerReadOnlyTests: XCTestCase {
                                                   platform: "ALIPAY", store: "store-a"))
     }
 
+    func testHourlySameWeekdayUsesObservedHistoricDatesOnly() throws {
+        var snapshot = CustomerReadSnapshot()
+        snapshot.apply([
+            receipt("old1", date: "2026-11-04",
+                    time: "2026-11-04 18:10:00", location: "stall-a"),
+            receipt("old2", date: "2026-11-11",
+                    time: "2026-11-11 18:11:00", location: "stall-a"),
+            receipt("old3", date: "2026-11-11",
+                    time: "2026-11-11 18:20:00", location: "stall-a"),
+            receipt("today", date: "2026-11-18",
+                    time: "2026-11-18 18:22:00", location: "stall-a"),
+            receipt("other-stall", date: "2026-11-18",
+                    time: "2026-11-18 18:23:00", location: "stall-b")
+        ])
+        let comparison = try XCTUnwrap(snapshot.hourlySameWeekday(
+            date: "2026-11-18", platform: "", store: "stall-a"))
+        XCTAssertEqual(comparison.historicalDays, 2)
+        XCTAssertEqual(comparison.hours.count, 24)
+        XCTAssertEqual(comparison.hours[18].currentCount, 1)
+        XCTAssertEqual(comparison.hours[18].previousDailyCount, 1.5)
+        XCTAssertEqual(comparison.hours[18].countDifference, -0.5)
+        XCTAssertEqual(comparison.hours[17].previousDailyCount, 0)
+    }
+
+    func testHourlyComparisonRejectsUnobservedCurrentAndInsufficientHistory() {
+        var snapshot = CustomerReadSnapshot()
+        snapshot.apply([
+            receipt("old1", date: "2026-11-04", location: "stall-a"),
+            receipt("old2", date: "2026-11-11", location: "stall-a")
+        ])
+        XCTAssertNil(snapshot.hourlySameWeekday(
+            date: "2026-11-18", platform: "", store: "stall-a"))
+        XCTAssertNil(snapshot.hourlySameWeekday(
+            date: "2026-11-18", platform: "", store: ""))
+        snapshot.apply([receipt("today", date: "2026-11-18",
+                                location: "stall-a")])
+        XCTAssertNotNil(snapshot.hourlySameWeekday(
+            date: "2026-11-18", platform: "", store: "stall-a"))
+        XCTAssertNil(snapshot.hourlySameWeekday(
+            date: "2026-11-18", platform: "ALIPAY", store: "stall-a"))
+    }
+
     func testAccountBookScopedCustomerCacheAndRevisionTombstones() throws {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("tianxian-customer-" + UUID().uuidString)

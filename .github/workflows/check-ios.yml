@@ -1,4 +1,4 @@
-name: Check iOS V0.7.0 Android-style navigation and clean production UI
+name: Check iOS V0.7.1 business traffic links and weekday hourly comparisons
 
 on:
   pull_request:

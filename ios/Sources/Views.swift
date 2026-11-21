@@ -394,23 +394,34 @@ private struct BusinessPage: View {
                                 .font(.caption2).foregroundColor(.secondary)
                         }
                         ForEach(day.rows) { row in
-                            NavigationLink(destination: BusinessCloudDetailView(
-                                recordSyncID: row.id,
-                                bookID: model.selectedBookID ?? "")) {
-                                HStack {
+                            HStack(spacing: 8) {
+                                NavigationLink(destination: BusinessCloudDetailView(
+                                    recordSyncID: row.id,
+                                    bookID: model.selectedBookID ?? "")) {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(row.storeName).font(.subheadline)
-                                        Text("已存利润：\(row.profit.formatted(.currency(code: "CNY")))")
-                                            .font(.caption).foregroundColor(.secondary)
+                                            .foregroundColor(.primary)
+                                        Text("已存利润：" +
+                                             row.profit.formatted(.currency(code: "CNY")))
+                                            .font(.caption2).foregroundColor(.secondary)
                                     }
-                                    Spacer()
-                                    Text(row.revenue.formatted(.currency(code: "CNY")))
-                                        .font(.subheadline.bold())
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption).foregroundColor(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                                 }
+                                .buttonStyle(.plain)
+                                TXBusinessCustomerShortcut(recordSyncID: row.id)
+                                NavigationLink(destination: BusinessCloudDetailView(
+                                    recordSyncID: row.id,
+                                    bookID: model.selectedBookID ?? "")) {
+                                    HStack(spacing: 4) {
+                                        Text(row.revenue.formatted(.currency(code: "CNY")))
+                                            .font(.subheadline.bold())
+                                            .foregroundColor(.primary)
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption2).foregroundColor(.secondary)
+                                    }
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                             Divider()
                         }
                     }
@@ -647,7 +658,7 @@ private struct MorePage: View {
                     Label("账号与同步", systemImage: "person.crop.circle")
                         .font(.subheadline.bold())
                 }
-                Text("iOS V0.7.0 · Build 47")
+                Text("iOS V0.7.1 · Build 48")
                     .font(.caption2).foregroundColor(.secondary)
             }
             .padding(12)

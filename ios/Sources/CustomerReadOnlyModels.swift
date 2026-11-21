@@ -88,6 +88,24 @@ struct CustomerWeekdayComparison {
     let priorDayAverageAmount: Double
 }
 
+/// Same-weekday *observed* historical customer-payment windows. An observed
+/// date counts once, including hours with zero transactions; dates without
+/// imported payments are NOT added as zero. This is not unique-customer count.
+struct TXCustomerHourlyComparison {
+    let historicalDays: Int
+    let hours: [TXCustomerHourDifference]
+}
+struct TXCustomerHourDifference: Identifiable {
+    let hour: Int
+    let currentCount: Int
+    let currentAmount: Double
+    let previousDailyCount: Double
+    let previousDailyAmount: Double
+    var countDifference: Double { Double(currentCount) - previousDailyCount }
+    var amountDifference: Double { currentAmount - previousDailyAmount }
+    var id: Int { hour }
+}
+
 struct CustomerReadSnapshot: Codable {
     private(set) var events: [String: CustomerChangeEvent] = [:]
 
@@ -186,6 +204,48 @@ struct CustomerReadSnapshot: Codable {
                 Double(groups.count),
             priorDayAverageAmount: groupSummaries.reduce(0) { $0 + $1.amount } /
                 Double(groups.count))
+    }
+
+    /// Android-style same-location, same-weekday hourly comparison.
+    /// Require an observed current date AND >=2 observed prior weekdays;
+    /// never divide by all calendar dates or infer missing imports as zero.
+    func hourlySameWeekday(date: String, platform: String,
+                           store: String, maxPriorDays: Int = 70)
+        -> TXCustomerHourlyComparison? {
+        guard !store.isEmpty, store != "__unmatched__",
+              let target = BusinessDates.parse(date),
+              !selected(dateStart: date, dateEnd: date,
+                        platform: platform, store: store).isEmpty
+        else { return nil }
+        let weekday = BusinessDates.calendar.component(.weekday, from: target)
+        let start = BusinessDates.key(BusinessDates.calendar.date(
+            byAdding: .day, value: -maxPriorDays, to: target) ?? target)
+        let prior = selected(dateStart: start, dateEnd: date,
+                             platform: platform, store: store)
+            .filter { row in
+                guard row.date < date, let d = BusinessDates.parse(row.date) else {
+                    return false
+                }
+                return BusinessDates.calendar.component(.weekday, from: d) == weekday
+            }
+        let observedDays = Set(prior.map(\.date))
+        guard observedDays.count >= 2 else { return nil }
+
+        let current = selected(dateStart: date, dateEnd: date,
+                               platform: platform, store: store)
+        let currentHours = hourly(current)
+        let previousHours = hourly(prior)
+        let divisor = Double(observedDays.count)
+        let result = (0..<24).map { hour in
+            TXCustomerHourDifference(
+                hour: hour,
+                currentCount: currentHours[hour].paymentCount,
+                currentAmount: currentHours[hour].amount,
+                previousDailyCount: Double(previousHours[hour].paymentCount) / divisor,
+                previousDailyAmount: previousHours[hour].amount / divisor)
+        }
+        return TXCustomerHourlyComparison(historicalDays: observedDays.count,
+                                          hours: result)
     }
 
     var observedDates: [String] { Array(Set(receipts.map(\.date))).sorted(by: >) }

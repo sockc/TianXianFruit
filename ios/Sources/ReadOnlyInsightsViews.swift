@@ -4,10 +4,21 @@ import SwiftUI
 /// Never labels a payment as a unique person unless a reliable identity exists.
 struct CustomerInsightsView: View {
     @EnvironmentObject private var model: LedgerViewModel
-    @State private var selectedDate = Date()
+    @State private var selectedDate: Date
     @State private var period = "单日"
     @State private var platform = ""
-    @State private var storeID = ""
+    @State private var storeID: String
+    @State private var showFilters = false
+    @State private var showHourComparison = false
+    let contextNotice: String
+
+    init(initialDate: String? = nil, initialStoreID: String = "",
+         contextNotice: String = "") {
+        _selectedDate = State(initialValue:
+            initialDate.flatMap(BusinessDates.parse) ?? Date())
+        _storeID = State(initialValue: initialStoreID)
+        self.contextNotice = contextNotice
+    }
 
     private var endDate: String { BusinessDates.key(selectedDate) }
     private var startDate: String {
@@ -27,18 +38,10 @@ struct CustomerInsightsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Label("独立账单 · 只读", systemImage: "lock.shield.fill")
-                    .font(.caption).foregroundColor(.green)
-                HStack(spacing: 8) {
-                    DatePicker("日期", selection: $selectedDate, displayedComponents: .date)
-                        .datePickerStyle(CompactDatePickerStyle())
-                        .labelsHidden()
-                    Picker("范围", selection: $period) {
-                        Text("单日").tag("单日")
-                        Text("近7天").tag("近7天")
-                        Text("近30天").tag("近30天")
-                    }
-                    .pickerStyle(SegmentedPickerStyle())
+                TXDayBar(date: $selectedDate, label: "客流日期", allowFuture: false)
+                if !contextNotice.isEmpty {
+                    Label(contextNotice, systemImage: "info.circle")
+                        .font(.caption2).foregroundColor(.secondary)
                 }
                 HStack(spacing: 7) {
                     Picker("渠道", selection: $platform) {
@@ -46,16 +49,57 @@ struct CustomerInsightsView: View {
                         Text("微信").tag("WECHAT")
                         Text("支付宝").tag("ALIPAY")
                     }
-                    .pickerStyle(SegmentedPickerStyle())
-                    Picker("位置", selection: $storeID) {
-                        Text("全部位置").tag("")
-                        Text("未匹配").tag("__unmatched__")
-                        ForEach(model.customerSnapshot.assignedStores, id: \.self) { id in
-                            Text(model.snapshot.storeLabels[id] ?? ("未知位置 " + String(id.prefix(6))))
-                                .tag(id)
+                    .pickerStyle(.segmented)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            showFilters.toggle()
                         }
+                    } label: {
+                        Image(systemName: showFilters ? "line.3.horizontal.decrease.circle.fill"
+                            : "line.3.horizontal.decrease.circle")
+                            .font(.title3)
+                            .foregroundColor(TXTheme.primary)
                     }
-                    .pickerStyle(MenuPickerStyle())
+                    .accessibilityLabel("日期范围和位置筛选")
+                }
+                if showFilters {
+                    VStack(spacing: 8) {
+                        Picker("范围", selection: $period) {
+                            Text("单日").tag("单日")
+                            Text("近7天").tag("近7天")
+                            Text("近30天").tag("近30天")
+                        }
+                        .pickerStyle(.segmented)
+                        Picker("位置", selection: $storeID) {
+                            Text("全部位置").tag("")
+                            Text("未匹配").tag("__unmatched__")
+                            ForEach(model.customerSnapshot.assignedStores, id: \.self) { id in
+                                Text(model.snapshot.storeLabels[id] ??
+                                     ("未知位置 " + String(id.prefix(6)))).tag(id)
+                            }
+                            if !storeID.isEmpty && storeID != "__unmatched__" &&
+                               !model.customerSnapshot.assignedStores.contains(storeID) {
+                                Text(model.snapshot.storeLabels[storeID] ?? "当前未导入该位置账单")
+                                    .tag(storeID)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    }
+                    .padding(9)
+                    .background(Color(UIColor.secondarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 9))
+                }
+                if !storeID.isEmpty && storeID != "__unmatched__" {
+                    HStack {
+                        Label("位置：" +
+                              (model.snapshot.storeLabels[storeID] ?? "已关联位置"),
+                              systemImage: "mappin")
+                            .font(.caption)
+                        Spacer()
+                        Button("切换") { showFilters = true }
+                            .font(.caption2)
+                    }
+                    .foregroundColor(.secondary)
                 }
                 if let error = model.customerError {
                     Text(error).font(.caption).foregroundColor(.orange)
@@ -96,6 +140,7 @@ struct CustomerInsightsView: View {
                     hourly
                     if period == "单日" && !storeID.isEmpty && storeID != "__unmatched__" {
                         historicalComparison
+                        hourlyWeekdayDetails
                     }
                     HStack {
                         Text("微信").font(.caption.bold())
@@ -169,6 +214,53 @@ struct CustomerInsightsView: View {
         .padding(10)
         .background(Color(UIColor.secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var hourlyWeekdayDetails: some View {
+        let compared = model.customerSnapshot.hourlySameWeekday(
+            date: endDate, platform: platform, store: storeID)
+        return Group {
+            if let comparison = compared {
+                DisclosureGroup(isExpanded: $showHourComparison) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 6) {
+                            Text("时段").frame(width: 46, alignment: .leading)
+                            Text("本次").frame(maxWidth: .infinity, alignment: .trailing)
+                            Text("历史日均").frame(maxWidth: .infinity, alignment: .trailing)
+                            Text("差额").frame(maxWidth: .infinity, alignment: .trailing)
+                        }
+                        .font(.caption2.bold()).foregroundColor(.secondary)
+                        ForEach(comparison.hours.filter {
+                            $0.currentCount > 0 || $0.previousDailyCount > 0
+                        }) { hour in
+                            HStack(spacing: 6) {
+                                Text(String(format: "%02d:00", hour.hour))
+                                    .frame(width: 46, alignment: .leading)
+                                Text(String(hour.currentCount))
+                                    .frame(maxWidth: .infinity, alignment: .trailing)
+                                Text(String(format: "%.1f", hour.previousDailyCount))
+                                    .frame(maxWidth: .infinity, alignment: .trailing)
+                                Text(String(format: "%+.1f", hour.countDifference))
+                                    .foregroundColor(hour.countDifference < 0 ? .red : TXTheme.primary)
+                                    .frame(maxWidth: .infinity, alignment: .trailing)
+                            }
+                            .font(.caption)
+                        }
+                        Text("逐小时对比仅统计已导入交易；历史缺少账单的日期不补零。")
+                            .font(.caption2).foregroundColor(.secondary)
+                    }
+                    .padding(.top, 10)
+                } label: {
+                    Label("同位置 · 同星期逐小时对比（历史" +
+                          String(comparison.historicalDays) + "日）",
+                          systemImage: "clock.arrow.circlepath")
+                        .font(.subheadline.bold())
+                }
+                .padding(12)
+                .background(Color(UIColor.secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
     }
 
     private var historicalComparison: some View {

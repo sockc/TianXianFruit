@@ -435,3 +435,18 @@ assert "仅测试账本可提交" not in swift["SettlementTableView.swift"]
 assert "办理当日结算" in swift["SettlementTableView.swift"]
 assert "ForEach(TXSettlementTestAction.allCases.filter { $0.canPreviewSavedTransfer })" in swift["SettlementTestPreparation.swift"]
 assert (root.parent / "Tests" / "AndroidMainNavigationTests.swift").exists()
+
+# Build48: Android-parity per-business traffic shortcut with safe store scope.
+customer_ui = swift["ReadOnlyInsightsViews.swift"]
+business_ui = swift["Views.swift"]
+routing = swift["BusinessCustomerRouting.swift"]
+customer = swift["CustomerReadOnlyModels.swift"]
+assert "TXBusinessCustomerShortcut(recordSyncID: row.id)" in business_ui
+assert "TXBusinessCustomerRouting.route" in routing
+assert "AndroidNumericIdentity.exact" in routing
+assert "CustomerInsightsView(" in routing
+assert "TXDayBar(date: $selectedDate" in customer_ui
+assert "hourlyWeekdayDetails" in customer_ui
+assert "hourlySameWeekday" in customer
+assert '"POST"' not in routing and '"/api/v1/sync/push"' not in routing
+assert (root.parent / "Tests" / "BusinessCustomerRoutingTests.swift").exists()
