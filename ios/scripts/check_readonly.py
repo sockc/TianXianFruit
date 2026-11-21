@@ -469,3 +469,15 @@ print("V0.8.0 PASS: primary iOS entry flow and safe cloud write restrictions.")
 assert "savedPurchaseToConfirmID" in swift["PurchaseWorkspaceView.swift"]
 assert "workspace.drafts.first(where: { $0.id == id })" in swift["PurchaseWorkspaceView.swift"]
 assert "onDismiss:" in swift["PurchaseWorkspaceView.swift"]
+
+# Build50: cloud completeness, storage safety, unsaved-field switching and day scope.
+business_v081 = swift["BusinessLocalEntryView.swift"]
+assert "BusinessLocalDraftStore.loadChecked" in business_v081
+assert "BusinessDraftWorkflowPolicy.readyForCloud(" in business_v081
+assert "cloudReady" in business_v081
+assert "showSwitchConfirmation" in business_v081
+assert "loadChecked(account: String, bookID: String) throws" in business_v081
+assert "TXSettlementTestWorkbenchView(initialDate: selectedDate)" in swift["SettlementTableView.swift"]
+assert "init(initialDate: Date = Date())" in swift["SettlementTestPreparation.swift"]
+assert (root.parent / "Tests" / "BusinessLocalDraftStorageTests.swift").exists()
+print("V0.8.1 PASS: protect partial business drafts and selected settlement day")

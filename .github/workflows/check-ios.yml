@@ -1,4 +1,4 @@
-name: Check iOS V0.8.0 core business, purchase and settlement flow
+name: Check iOS V0.8.1 safe business drafts and settlement date
 
 on:
   pull_request:
