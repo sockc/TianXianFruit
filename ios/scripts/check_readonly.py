@@ -405,3 +405,14 @@ assert "operationLocked" in settlement_workbench
 assert "case verified, waitingForSync, superseded, inconsistent" in settlement_client
 assert '"POST", "/api/v1/sync/push"' not in settlement_confirmation
 assert (root.parent / "Tests" / "SettlementAtomicClientTests.swift").exists()
+
+# Build46: the source audit checks original Android Long associations only.
+audit = swift["FundReconciliationView.swift"]
+assert "TXFundAuditPolicy.audit" in audit
+assert "AndroidNumericIdentity.exact" in audit
+assert "CUTOFF_LEGACY_INVALID" in audit
+assert "累计资金余额：待服务端权威接口" in audit
+assert "TXFundReconciliationView()" in swift["SettlementTableView.swift"]
+assert '"POST"' not in audit and '"PATCH"' not in audit
+assert '"/api/v1/sync/push"' not in audit
+assert (root.parent / "Tests" / "FundReconciliationTests.swift").exists()

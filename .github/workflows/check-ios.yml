@@ -1,4 +1,4 @@
-name: Check iOS V0.6.8 settlement recovery and cross-device readback
+name: Check iOS V0.6.9 fund reconciliation audit
 
 on:
   pull_request:

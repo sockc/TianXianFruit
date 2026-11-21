@@ -269,7 +269,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             "POST", "/api/v1/auth/login", body: [
                 "username": trimmed, "password": password,
                 "device_id": scopedID, "device_name": deviceName,
-                "platform": "ios", "app_version": "0.6.8"
+                "platform": "ios", "app_version": "0.6.9"
             ])
         let auth: LoginResponse = try decode(LoginResponse.self, from: loginData)
         let me = try await account(token: auth.accessToken)
@@ -277,7 +277,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         _ = try await request("POST", "/api/v1/devices/register",
                               token: auth.accessToken, body: [
             "device_id": scopedID, "name": deviceName,
-            "platform": "ios", "app_version": "0.6.8"
+            "platform": "ios", "app_version": "0.6.9"
         ])
         return (auth.accessToken, me)
     }

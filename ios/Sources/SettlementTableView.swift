@@ -182,6 +182,19 @@ struct SettlementTableView: View {
                     .background(Color(UIColor.secondarySystemGroupedBackground),
                                 in: RoundedRectangle(cornerRadius: 11))
                 }
+                NavigationLink(destination: TXFundReconciliationView()) {
+                    HStack {
+                        Label("资金对账检查", systemImage: "checkmark.shield")
+                            .font(.subheadline.bold())
+                        Spacer()
+                        Text("当日方案 · 异常关联")
+                            .font(.caption2).foregroundColor(.secondary)
+                        Image(systemName: "chevron.right").font(.caption)
+                    }
+                    .padding(11)
+                    .background(Color(UIColor.secondarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 11))
+                }
                 if TXTestBookAccess.isCandidate(model.selectedBook,
                                                  account: model.account,
                                                  offline: model.isUsingCachedAuthorization) {
@@ -190,7 +203,7 @@ struct SettlementTableView: View {
                             Label("测试账本结算操作核对单", systemImage: "doc.text.magnifyingglass")
                                 .font(.subheadline.bold())
                             Spacer()
-                            Text("仅核对，不提交").font(.caption2).foregroundColor(.secondary)
+                            Text("仅测试账本可提交").font(.caption2).foregroundColor(.secondary)
                         }
                         .padding(10)
                         .background(TXTheme.header,
