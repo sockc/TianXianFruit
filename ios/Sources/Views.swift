@@ -26,9 +26,7 @@ private struct LoginView: View {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("天鲜账本").font(.largeTitle.bold())
-                        Text("iOS V0.6.0 · 安卓风格操作台").foregroundColor(.secondary)
-                        Label("测试账本集中测试写入 · 正式账本保持只读", systemImage: "lock.shield")
-                            .font(.footnote).foregroundColor(.green)
+                        Text("天鲜果业 · 经营管理").foregroundColor(.secondary)
                     }.padding(.vertical, 10)
                 }
                 Section("云端账号") {
@@ -71,74 +69,74 @@ private struct LoginView: View {
 
 private struct DashboardView: View {
     @EnvironmentObject private var model: LedgerViewModel
+    @State private var selectedTab: TXMainTab = .home
 
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
-                header
-                TabView {
-                    HomePage()
-                        .tabItem { Label("首页", systemImage: "house") }
-                    BusinessPage()
-                        .tabItem { Label("营业", systemImage: "chart.bar") }
-                    PurchaseWorkspaceView()
-                        .tabItem { Label("采购", systemImage: "cart") }
-                    InventoryPage()
-                        .tabItem { Label("库存", systemImage: "shippingbox") }
-                    MorePage()
-                        .tabItem { Label("更多", systemImage: "ellipsis.circle") }
+                compactBookBar
+                Group {
+                    switch selectedTab {
+                    case .home: HomePage()
+                    case .inventory: InventoryPage()
+                    case .purchase: PurchaseWorkspaceView()
+                    case .business: BusinessPage()
+                    case .settlement: SettlementTableView()
+                    case .more: MorePage()
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                TXMainNavigationBar(selected: $selectedTab)
             }
-            .navigationBarTitle("天鲜果业", displayMode: .inline)
-            .navigationBarItems(trailing: Button {
-                Task { await model.refresh(); await model.refreshCustomer() }
-            } label: {
-                if model.isBusy {
-                    ProgressView()
-                } else {
-                    Image(systemName: "arrow.clockwise")
-                }
-            }
-            .disabled(model.isBusy || model.selectedBookID == nil)
-            .accessibilityLabel("增量刷新"))
+            .navigationTitle("天鲜果业")
+            .navigationBarTitleDisplayMode(.inline)
         }
         .navigationViewStyle(StackNavigationViewStyle())
     }
 
-    private var header: some View {
-        VStack(spacing: 6) {
-            HStack {
-                Label(TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
-                         offline: model.isUsingCachedAuthorization)
-                      ? "测试账本 · 操作可用" : "正式账本 · 云端只读",
-                      systemImage: "lock.shield.fill")
-                    .font(.caption.bold()).foregroundColor(.green)
-                Spacer()
-                if model.books.count > 1 {
-                    Picker("账本", selection: Binding(
-                        get: { model.selectedBookID ?? "" },
-                        set: { model.selectBook($0) }
-                    )) {
-                        ForEach(model.books) { Text($0.name).tag($0.id) }
-                    }
-                    .pickerStyle(MenuPickerStyle())
-                } else {
-                    Text(model.selectedBook?.name ?? "无可用账本")
-                        .font(.caption.bold()).lineLimit(1)
+    private var compactBookBar: some View {
+        HStack(spacing: 9) {
+            if model.books.count > 1 {
+                Picker("账本", selection: Binding(
+                    get: { model.selectedBookID ?? "" },
+                    set: { model.selectBook($0) }
+                )) {
+                    ForEach(model.books) { Text($0.name).tag($0.id) }
                 }
-                Spacer(minLength: 4)
-                Text(model.isBusy ? "同步中" : (model.isUsingCachedAuthorization ? "离线授权" : "云端账号"))
+                .pickerStyle(.menu)
+                .font(.subheadline.bold())
+            } else {
+                Text(model.selectedBook?.name ?? "无可用账本")
+                    .font(.subheadline.bold())
+                    .lineLimit(1)
+            }
+            if model.selectedBook?.name.hasPrefix("iOS_TEST_") == true {
+                Text("测试")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.orange)
+            }
+            Spacer(minLength: 4)
+            HStack(spacing: 4) {
+                Circle().fill(model.isUsingCachedAuthorization ? Color.orange : TXTheme.primary)
+                    .frame(width: 6, height: 6)
+                Text(model.isBusy ? "同步中" :
+                     model.isUsingCachedAuthorization ? "离线" :
+                     model.lastSyncAt == nil ? "待同步" : "已同步")
                     .font(.caption2).foregroundColor(.secondary)
             }
-            if let error = model.errorMessage {
-                Text(error).font(.caption2).foregroundColor(.orange)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .lineLimit(3)
+            Button {
+                Task { await model.refresh(); await model.refreshCustomer() }
+            } label: {
+                if model.isBusy { ProgressView().controlSize(.small) }
+                else { Image(systemName: "arrow.clockwise") }
             }
+            .disabled(model.isBusy || model.selectedBookID == nil)
+            .accessibilityLabel("同步账本")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 13)
+        .frame(height: 43)
         .background(TXTheme.header)
+        .overlay(alignment: .bottom) { Divider() }
     }
 }
 
@@ -161,9 +159,8 @@ private struct HomePage: View {
                             .font(.caption).foregroundColor(.secondary)
                     }
                     Spacer()
-                    Text(model.businessTestBookAllowed ? "测试环境" : "正式数据")
-                        .font(.caption.bold())
-                        .foregroundColor(model.businessTestBookAllowed ? .orange : TXTheme.primary)
+                    Text("今日概览")
+                        .font(.caption).foregroundColor(.secondary)
                 }
                 TXQuickOperations()
                 WeatherHomeSummary()
@@ -171,11 +168,14 @@ private struct HomePage: View {
                     EmptyStateView(title: "尚未读取云端账本", icon: "icloud.and.arrow.down",
                                    detail: "点击右上角刷新；首次成功后可离线查看")
                 } else {
-                    HStack(spacing: 10) {
-                        AmountCard(title: "今日营业额", value: sum(daily, \.revenue), color: .green)
+                    HStack(spacing: 6) {
+                        AmountCard(title: "今日营业额", value: sum(daily, \.revenue), color: TXTheme.primary)
+                        AmountCard(title: "今日采购额",
+                                   value: sum(model.snapshot.purchases.filter { $0.date == today },
+                                              \.totalCost), color: .primary)
                         AmountCard(title: "今日已存利润", value: sum(daily, \.profit), color: .primary)
                     }
-                    HStack(spacing: 10) {
+                    HStack(spacing: 8) {
                         AmountCard(title: "近7天营业", value: sum(week, \.revenue), color: .primary)
                         AmountCard(title: "近30天营业", value: sum(month, \.revenue), color: .primary)
                     }
@@ -201,12 +201,7 @@ private struct HomePage: View {
                         Text("今日有 \(daily.count) 条位置营业记录，已分别计入合计。")
                             .font(.caption).foregroundColor(.secondary)
                     }
-                    Text("营业额、利润直接来自 Android 已保存的正式营业记录；无新增结算或预估计算。")
-                        .font(.caption2).foregroundColor(.secondary)
-                }
-                NavigationLink(destination: SettlementTableView()) {
-                    Label("查看资金结算表", systemImage: "arrow.left.arrow.right")
-                        .font(.subheadline.bold())
+                    // Daily figures come from saved cloud records; no estimated settlement.
                 }
                 SyncFooter()
             }
@@ -228,6 +223,7 @@ private struct BusinessPage: View {
     @State private var position = ""
     @State private var searchText = ""
     @State private var visibleDays = 14
+    @State private var showFilters = false
     @State private var showLocalEntry = false
     @State private var preferredStoreID: String?
 
@@ -297,34 +293,43 @@ private struct BusinessPage: View {
             VStack(alignment: .leading, spacing: 12) {
                 TXDayBar(date: $selectedDate, label: "营业日期", allowFuture: false)
                     .onChange(of: selectedDate) { _ in visibleDays = 14 }
-                Picker("日期范围", selection: $period) {
-                    Text("单日").tag("单日")
-                    Text("近7天").tag("近7天")
-                    Text("近30天").tag("近30天")
-                    Text("全部").tag("全部")
-                }
-                .pickerStyle(SegmentedPickerStyle())
-                .onChange(of: period) { _ in visibleDays = 14 }
-                HStack {
+                HStack(spacing: 8) {
                     Picker("位置", selection: $position) {
                         Text("全部位置").tag("")
                         ForEach(model.snapshot.locations, id: \.self) { Text($0).tag($0) }
                     }
-                    .pickerStyle(MenuPickerStyle())
+                    .pickerStyle(.menu)
                     Spacer()
-                    Text("共 \(rows.count) 条位置记录")
-                        .font(.caption).foregroundColor(.secondary)
-                }
-                HStack {
-                    SearchField(placeholder: "搜索日期或位置", text: $searchText)
                     Button {
                         preferredStoreID = nil
                         showLocalEntry = true
                     } label: {
-                        Label("录入", systemImage: "square.and.pencil")
+                        Label("营业录入", systemImage: "plus")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderedProminent)
                     .disabled(model.selectedBookID == nil)
+                }
+                DisclosureGroup(isExpanded: $showFilters) {
+                    VStack(spacing: 8) {
+                        Picker("日期范围", selection: $period) {
+                            Text("单日").tag("单日")
+                            Text("近7天").tag("近7天")
+                            Text("近30天").tag("近30天")
+                            Text("全部").tag("全部")
+                        }
+                        .pickerStyle(.segmented)
+                        .onChange(of: period) { _ in visibleDays = 14 }
+                        SearchField(placeholder: "搜索日期或位置", text: $searchText)
+                    }
+                    .padding(.top, 7)
+                } label: {
+                    HStack {
+                        Label("筛选与历史", systemImage: "line.3.horizontal.decrease")
+                        Spacer()
+                        Text("\(rows.count) 条记录")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                    .font(.caption)
                 }
                 if draftStatusRows.contains(where: { $0.status.needsAttention }) {
                     VStack(alignment: .leading, spacing: 7) {
@@ -418,8 +423,7 @@ private struct BusinessPage: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
                 }
-                Text("点击位置记录查看云端明细；测试账本可进入安全更正，正式账本保持只读，不修改当日结算。")
-                    .font(.caption2).foregroundColor(.secondary)
+                // Detail actions remain scoped by account and server permissions.
                 SyncFooter()
             }
             .padding(12)
@@ -529,7 +533,7 @@ private struct InventoryPage: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Text("库存盘点 · 只读").font(.headline)
+                    Text("库存").font(.headline)
                     Spacer()
                     Toggle("历史", isOn: $showHistory).labelsHidden()
                     Text("全部日期").font(.caption)
@@ -566,8 +570,7 @@ private struct InventoryPage: View {
                                     in: RoundedRectangle(cornerRadius: 12))
                     }
                 }
-                Text("此处仅展示已保存的库存盘点数量和损耗。未同步或未盘点的商品不能推断为零库存；不进行跨日成本反算。")
-                    .font(.caption2).foregroundColor(.secondary)
+                // Only saved stock snapshots are displayed.
                 if rows.count > visibleRows {
                     Button("加载更多库存盘点") { visibleRows += 80 }
                         .frame(maxWidth: .infinity)
@@ -581,121 +584,91 @@ private struct InventoryPage: View {
 
 private struct MorePage: View {
     @EnvironmentObject private var model: LedgerViewModel
+    @State private var showAccountDetails = false
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("常用功能").font(.headline)
-                if TXTestBookAccess.isCandidate(model.selectedBook,
-                       account: model.account, offline: model.isUsingCachedAuthorization) {
-                    NavigationLink(destination: TXTestWorkbenchView()) {
-                        Label("测试账本工作台 · 可用写入集中管理",
-                              systemImage: "checkmark.shield")
-                            .font(.subheadline.bold())
-                    }
-                    .padding(11)
-                    .background(TXTheme.header,
-                                in: RoundedRectangle(cornerRadius: 12))
-                }
-                NavigationLink(destination: TXInventoryShortcutView()) {
-                    Label("库存盘点 · 同步记录", systemImage: "shippingbox")
-                }
+            VStack(alignment: .leading, spacing: 11) {
+                Text("经营与分析").font(.headline)
                 NavigationLink(destination: CustomerInsightsView()) {
-                    Label("客户分析 · 微信/支付宝逐小时客流", systemImage: "person.2")
-                }
-                NavigationLink(destination: SettlementTableView()) {
-                    Label("资金结算表 · 每日汇总与转账", systemImage: "arrow.left.arrow.right")
-                }
-                NavigationLink(destination: TXFundHistoryView()) {
-                    Label("资金余额与历史 · 逐日资金及周期结清", systemImage: "clock.arrow.circlepath")
+                    menuLine("客户分析", "person.2", "微信、支付宝 · 逐小时")
                 }
                 NavigationLink(destination: BusinessStatsView()) {
-                    Label("经营统计 · 位置与趋势", systemImage: "chart.bar.xaxis")
+                    menuLine("经营统计", "chart.bar.xaxis", "位置 · 趋势")
+                }
+                NavigationLink(destination: PurchasesHistoryView()) {
+                    menuLine("采购历史", "clock.arrow.circlepath", "按日期查看")
                 }
                 NavigationLink(destination: WeatherAlertsView()) {
-                    Label("未来7天天气 · 下雨与降温提醒", systemImage: "cloud.rain")
+                    menuLine("天气提醒", "cloud.rain", "未来7天")
+                }
+                Divider().padding(.vertical, 2)
+                Text("资金与报表").font(.headline)
+                NavigationLink(destination: TXFundHistoryView()) {
+                    menuLine("资金余额与结算记录", "banknote", "每日明细 · 历史结清")
                 }
                 NavigationLink(destination: OperatingReportView()) {
-                    Label("导出经营报表 · PDF / 图片", systemImage: "square.and.arrow.up")
+                    menuLine("生成报表", "doc.text", "经营汇总 · PDF / 图片")
                 }
-                Divider()
-                Text("功能预留").font(.headline)
-                NavigationLink(destination: TXReservedFeatureView(
-                    title: "库存录入与结转",
-                    detail: "预留安卓库存盘点、损耗和跨日结转；在安全库存事务上线前不写入成本快照。")) {
-                    Label("库存录入与结转", systemImage: "square.and.pencil")
-                }
-                NavigationLink(destination: TXReservedFeatureView(
-                    title: "利润分配和资金结算操作",
-                    detail: "保留安卓现有结算算法；需要服务端资金事务与防重复结算保护。")) {
-                    Label("利润分配 / 资金结算操作", systemImage: "arrow.left.arrow.right")
-                }
-                NavigationLink(destination: TXReservedFeatureView(
-                    title: "客户账单导入及归属",
-                    detail: "预留微信、支付宝账单和收款人位置匹配；当前分析仍然只读。")) {
-                    Label("客户账单导入", systemImage: "person.crop.rectangle.stack")
-                }
-                if TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
-                                                  offline: model.isUsingCachedAuthorization) {
-                    DisclosureGroup("兼容旧版测试工具（高级）") {
-                        VStack(alignment: .leading, spacing: 12) {
-                            NavigationLink(destination: TestWriteLabView()) {
-                                Label("旧版测试草稿", systemImage: "square.and.pencil")
-                            }
-                            NavigationLink(destination: StagingPurchaseUploadView()) {
-                                Label("旧版测试采购同步", systemImage: "arrow.up.doc")
-                            }
-                            NavigationLink(destination: BusinessUploadView()) {
-                                Label("旧版测试营业同步", systemImage: "arrow.up.right.circle")
-                            }
-                            NavigationLink(destination: TestBusinessEditView()) {
-                                Label("旧版测试营业更正", systemImage: "square.and.pencil")
-                            }
-                            NavigationLink(destination: TestSyncAuditView()) {
-                                Label("旧版测试同步核对", systemImage: "checklist")
-                            }
+                Divider().padding(.vertical, 2)
+                DisclosureGroup(isExpanded: $showAccountDetails) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label(model.account?.displayName ?? "未登录",
+                              systemImage: "person.crop.circle")
+                        Text("账本：" + (model.selectedBook?.name ?? "未选择"))
+                        Text(model.lastSyncAt.map {
+                            "最近同步：\($0.formatted(date: .abbreviated, time: .shortened))"
+                        } ?? "尚未成功同步")
+                        if model.isUsingCachedAuthorization {
+                            Text("当前为离线缓存，数据可能不是最新")
+                                .foregroundColor(.orange)
                         }
-                        .padding(.top, 8)
+                        if let error = model.errorMessage {
+                            Text(error).foregroundColor(.orange)
+                        }
+                        HStack {
+                            Button("立即同步") { Task { await model.refresh() } }
+                                .disabled(model.isBusy)
+                            Spacer()
+                            Button("完整同步") { Task { await model.refresh(forceFull: true) } }
+                                .disabled(model.isBusy)
+                        }
+                        Button(role: .destructive) { model.signOut() } label: {
+                            Label("退出登录", systemImage: "rectangle.portrait.and.arrow.right")
+                        }
+                        .disabled(model.isBusy)
                     }
-                }
-                Divider()
-                Text("账号与同步").font(.headline)
-                VStack(alignment: .leading, spacing: 12) {
-                    Label(model.account?.displayName ?? "未登录", systemImage: "person.crop.circle")
-                    Text("同步游标：\(model.currentCursor)")
-                        .font(.caption).foregroundColor(.secondary)
-                    Text(model.lastSyncAt.map { "上次成功：\($0.formatted(date: .abbreviated, time: .shortened))" } ?? "尚未成功同步")
-                        .font(.caption).foregroundColor(.secondary)
-                    Text(model.cacheAvailable ? "本地只读缓存已启用" : "本地缓存不可用")
-                        .font(.caption).foregroundColor(model.cacheAvailable ? .green : .red)
-                    if model.isUsingCachedAuthorization {
-                        Text("离线展示来自上次已验证账号权限，联网后需重新核验。")
-                            .font(.caption).foregroundColor(.orange)
-                    }
-                    Button("增量同步") { Task { await model.refresh() } }
-                        .disabled(model.isBusy || model.selectedBookID == nil)
-                    Button("重新完整核对云端记录") { Task { await model.refresh(forceFull: true) } }
-                        .disabled(model.isBusy || model.selectedBookID == nil)
-                    Text("完整核对不会先清空缓存，只有全部下载成功才替换数据。")
-                        .font(.caption2).foregroundColor(.secondary)
-                }
-                .padding(12)
-                .background(Color(UIColor.secondarySystemGroupedBackground),
-                            in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.6.9 · Build 46 · 资金对账检查")
-                    .font(.caption).foregroundColor(.secondary)
-                Text("测试账本已有写入统一入口，实际提交仍受服务器原子事务、权限和幂等控制；正式账本只读。未实现的功能全部预留入口。")
-                    .font(.caption2).foregroundColor(.secondary)
-                Button(role: .destructive) {
-                    model.signOut()
+                    .font(.caption)
+                    .padding(12)
+                    .background(Color(UIColor.secondarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 11))
+                    .padding(.top, 8)
                 } label: {
-                    Label("退出登录并清除此账号的本地缓存", systemImage: "rectangle.portrait.and.arrow.right")
+                    Label("账号与同步", systemImage: "person.crop.circle")
+                        .font(.subheadline.bold())
                 }
-                .disabled(model.isBusy)
-                SyncFooter()
+                Text("iOS V0.7.0 · Build 47")
+                    .font(.caption2).foregroundColor(.secondary)
             }
             .padding(12)
         }
+    }
+
+    private func menuLine(_ title: String, _ symbol: String,
+                          _ detail: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: symbol).font(.title3).foregroundColor(TXTheme.primary)
+                .frame(width: 28)
+            Text(title).font(.subheadline.bold()).foregroundColor(.primary)
+            Spacer(minLength: 4)
+            Text(detail).font(.caption2).foregroundColor(.secondary)
+                .lineLimit(1)
+            Image(systemName: "chevron.right").font(.caption2).foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 51)
+        .background(Color(UIColor.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 11))
     }
 }
 
@@ -736,16 +709,16 @@ private struct SearchField: View {
 struct SyncFooter: View {
     @EnvironmentObject private var model: LedgerViewModel
     var body: some View {
-        HStack {
-            Image(systemName: "lock.shield")
-            Text(model.lastSyncAt.map {
-                "读取于 \($0.formatted(date: .abbreviated, time: .shortened))"
-            } ?? "等待首次同步")
-            Spacer()
-            Text("只读")
+        Group {
+            if let time = model.lastSyncAt {
+                HStack(spacing: 5) {
+                    Image(systemName: "checkmark.icloud")
+                    Text("最近同步 " + time.formatted(date: .abbreviated, time: .shortened))
+                }
+                .font(.caption2).foregroundColor(.secondary)
+                .padding(.vertical, 4)
+            }
         }
-        .font(.caption2).foregroundColor(.secondary)
-        .padding(.vertical, 8)
     }
 }
 

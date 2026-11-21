@@ -20,8 +20,8 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.tianxian.fruit.ios
         INFOPLIST_FILE: Config/AppInfo.plist
         GENERATE_INFOPLIST_FILE: NO
-        MARKETING_VERSION: "0.6.9"
-        CURRENT_PROJECT_VERSION: "46"
+        MARKETING_VERSION: "0.7.0"
+        CURRENT_PROJECT_VERSION: "47"
   TianXianFruitTests:
     type: bundle.unit-test
     platform: iOS

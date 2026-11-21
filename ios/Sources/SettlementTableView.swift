@@ -149,13 +149,15 @@ struct SettlementTableView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("资金结算表").font(.title3.bold())
-                        Text("天鲜果业 · 已保存云端数据")
+                        Text("当日结算").font(.title3.bold())
+                        Text("资金结算 · 已保存记录")
                             .font(.caption2).foregroundColor(.secondary)
                     }
                     Spacer()
-                    Label("只读", systemImage: "lock.shield")
-                        .font(.caption.bold()).foregroundColor(TXTheme.primary)
+                    if model.selectedBook?.name.hasPrefix("iOS_TEST_") != true {
+                        Label("只读", systemImage: "lock.shield")
+                            .font(.caption2).foregroundColor(.secondary)
+                    }
                     Button {
                         Task { await model.refresh() }
                     } label: {
@@ -182,28 +184,16 @@ struct SettlementTableView: View {
                     .background(Color(UIColor.secondarySystemGroupedBackground),
                                 in: RoundedRectangle(cornerRadius: 11))
                 }
-                NavigationLink(destination: TXFundReconciliationView()) {
-                    HStack {
-                        Label("资金对账检查", systemImage: "checkmark.shield")
-                            .font(.subheadline.bold())
-                        Spacer()
-                        Text("当日方案 · 异常关联")
-                            .font(.caption2).foregroundColor(.secondary)
-                        Image(systemName: "chevron.right").font(.caption)
-                    }
-                    .padding(11)
-                    .background(Color(UIColor.secondarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 11))
-                }
                 if TXTestBookAccess.isCandidate(model.selectedBook,
                                                  account: model.account,
                                                  offline: model.isUsingCachedAuthorization) {
                     NavigationLink(destination: TXSettlementTestWorkbenchView()) {
                         HStack(spacing: 8) {
-                            Label("测试账本结算操作核对单", systemImage: "doc.text.magnifyingglass")
+                            Label("办理当日结算", systemImage: "checkmark.circle")
                                 .font(.subheadline.bold())
                             Spacer()
-                            Text("仅测试账本可提交").font(.caption2).foregroundColor(.secondary)
+                            Text("部分 / 全额 / 恢复未结")
+                                .font(.caption2).foregroundColor(.secondary)
                         }
                         .padding(10)
                         .background(TXTheme.header,
@@ -289,12 +279,11 @@ struct SettlementTableView: View {
                     }
                 }
 
-                Text("仅显示云端保存的原始状态及逐笔转账登记金额。安卓的最终有效结清状态还取决于资金中心、周期结清及历史调整，本版不会在 iOS 重新计算；登记金额不等于银行到账。")
-                    .font(.caption2).foregroundColor(.secondary)
+                // Recorded transfers are not effective fund balances.
                 SyncFooter()
             }.padding(12)
         }
-        .navigationBarTitle("资金结算表", displayMode: .inline)
+        .navigationBarTitle("结算", displayMode: .inline)
     }
 }
 

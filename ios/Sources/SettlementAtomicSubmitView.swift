@@ -118,10 +118,26 @@ struct TXSettlementAtomicSubmitView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Label("测试账本 · 原子结算", systemImage: "checkmark.shield.fill")
+                Label("确认当日结算", systemImage: "checkmark.shield.fill")
                     .font(.headline).foregroundColor(TXTheme.primary)
-                Text(proposal.verificationSummary)
-                    .font(.caption).textSelection(.enabled)
+                HStack {
+                    Text("当前已登记").foregroundColor(.secondary)
+                    Spacer()
+                    Text("¥" + TXSettlementPreparationPolicy.yuan(
+                        proposal.expectedSettledCents)).bold()
+                }.font(.subheadline)
+                HStack {
+                    Text("修改后登记").foregroundColor(.secondary)
+                    Spacer()
+                    Text("¥" + TXSettlementPreparationPolicy.yuan(
+                        proposal.targetSettledCents)).bold()
+                        .foregroundColor(TXTheme.primary)
+                }.font(.subheadline)
+                DisclosureGroup("操作详情") {
+                    Text(proposal.verificationSummary)
+                        .font(.caption2).textSelection(.enabled)
+                }
+                .font(.caption).foregroundColor(.secondary)
                 if !matchingTestBook {
                     Label("账号或测试账本已变化，资金操作禁止执行。",
                           systemImage: "lock.shield.fill")
@@ -145,7 +161,7 @@ struct TXSettlementAtomicSubmitView: View {
                 Button {
                     Task { await coordinator.submit(proposal, model: model) }
                 } label: {
-                    Label("确认登记测试账本结算", systemImage: "checkmark.shield")
+                    Label("确认结算", systemImage: "checkmark.shield")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -155,7 +171,7 @@ struct TXSettlementAtomicSubmitView: View {
                 Button {
                     Task { await coordinator.recover(model: model) }
                 } label: {
-                    Label("查询原操作 / 同步回读", systemImage: "arrow.clockwise")
+                    Label("重新核对结算结果", systemImage: "arrow.clockwise")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
@@ -167,8 +183,7 @@ struct TXSettlementAtomicSubmitView: View {
                     Text(coordinator.message)
                         .font(.caption).foregroundColor(.secondary)
                 }
-                Text("已完成操作ID禁止再次提交；超时只查原ID。若其他设备随后改写转账金额，会提示版本已变更并保持锁定。周期结清与利润分配仍未开放，正式账本只读。")
-                    .font(.caption2).foregroundColor(.secondary)
+                // Recover the original operation before any new financial write.
                 SyncFooter()
             }.padding(12)
         }

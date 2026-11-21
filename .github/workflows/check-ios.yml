@@ -1,4 +1,4 @@
-name: Check iOS V0.6.9 fund reconciliation audit
+name: Check iOS V0.7.0 Android-style navigation and clean production UI
 
 on:
   pull_request:

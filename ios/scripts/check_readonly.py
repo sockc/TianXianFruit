@@ -412,7 +412,25 @@ assert "TXFundAuditPolicy.audit" in audit
 assert "AndroidNumericIdentity.exact" in audit
 assert "CUTOFF_LEGACY_INVALID" in audit
 assert "累计资金余额：待服务端权威接口" in audit
-assert "TXFundReconciliationView()" in swift["SettlementTableView.swift"]
+assert "TXFundReconciliationView()" not in swift["SettlementTableView.swift"]  # diagnostic no longer in routine UI
 assert '"POST"' not in audit and '"PATCH"' not in audit
 assert '"/api/v1/sync/push"' not in audit
 assert (root.parent / "Tests" / "FundReconciliationTests.swift").exists()
+
+# Build47: Android-parity primary navigation, streamlined business screens.
+main = swift["Views.swift"]
+nav = swift["TXMainNavigation.swift"]
+shortcuts = swift["AndroidStyleShell.swift"]
+assert "TXMainNavigationBar(selected: $selectedTab)" in main
+assert "case .settlement: SettlementTableView()" in main
+assert "case home, inventory, purchase, business, settlement, more" in nav
+assert "frame(maxWidth: .infinity, minHeight: 52)" in nav
+assert "Array(repeating: GridItem(.flexible(), spacing: 7), count: 4)" in shortcuts
+assert "TXTestWorkbenchView()" not in main
+assert "TXTestWorkbenchView()" not in shortcuts.split("struct TXQuickOperations: View {")[1].split("struct TXInventoryShortcutView: View {")[0]
+assert "功能预留" not in main
+assert "兼容旧版测试工具" not in main
+assert "仅测试账本可提交" not in swift["SettlementTableView.swift"]
+assert "办理当日结算" in swift["SettlementTableView.swift"]
+assert "ForEach(TXSettlementTestAction.allCases.filter { $0.canPreviewSavedTransfer })" in swift["SettlementTestPreparation.swift"]
+assert (root.parent / "Tests" / "AndroidMainNavigationTests.swift").exists()

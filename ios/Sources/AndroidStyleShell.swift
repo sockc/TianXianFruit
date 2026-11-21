@@ -116,58 +116,58 @@ enum TXTestBookAccess {
 
 /// Shared home shortcuts mirror the existing Android business vocabulary.
 struct TXQuickOperations: View {
-    @EnvironmentObject private var model: LedgerViewModel
-    private let columns = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
+    /// Mirrors Android's short 4-column shortcut grid. No developer modules.
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 7), count: 4)
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("常用操作").font(.headline)
-                Spacer()
-                Text("安卓同名业务入口").font(.caption2).foregroundColor(.secondary)
-            }
-            LazyVGrid(columns: columns, spacing: 9) {
-                NavigationLink(destination: BusinessLocalEntryView(
-                    date: Date(), preferredStoreID: nil)) {
-                    tile("营业录入", "square.and.pencil")
+        VStack(alignment: .leading, spacing: 9) {
+            Text("快捷操作").font(.headline)
+            LazyVGrid(columns: columns, spacing: 7) {
+                NavigationLink(destination: PurchasesHistoryView()) {
+                    tile("历史记录", "clock.arrow.circlepath", 0)
                 }
                 NavigationLink(destination: PurchaseWorkspaceView()) {
-                    tile("采购管理", "cart")
-                }
-                NavigationLink(destination: TXInventoryShortcutView()) {
-                    tile("库存", "shippingbox")
-                }
-                NavigationLink(destination: SettlementTableView()) {
-                    tile("资金结算", "arrow.left.arrow.right")
-                }
-                NavigationLink(destination: CustomerInsightsView()) {
-                    tile("客户分析", "person.2")
+                    tile("协作采购", "cart", 1)
                 }
                 NavigationLink(destination: BusinessStatsView()) {
-                    tile("经营统计", "chart.bar.xaxis")
+                    tile("经营统计", "chart.bar.xaxis", 2)
                 }
-            }
-            if TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
-                                            offline: model.isUsingCachedAuthorization) {
-                NavigationLink(destination: TXTestWorkbenchView()) {
-                    Label("测试账本 · 全部模块与写入状态",
-                          systemImage: "checkmark.shield")
-                        .font(.subheadline)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                        .background(TXTheme.header, in: RoundedRectangle(cornerRadius: 10))
+                NavigationLink(destination: CustomerInsightsView()) {
+                    tile("客户分析", "person.2", 3)
+                }
+                NavigationLink(destination: TXFundHistoryView()) {
+                    tile("资金余额", "banknote", 1)
+                }
+                NavigationLink(destination: OperatingReportView()) {
+                    tile("生成报表", "doc.text", 2)
+                }
+                NavigationLink(destination: SettlementTableView()) {
+                    tile("结算记录", "arrow.left.arrow.right", 0)
+                }
+                NavigationLink(destination: WeatherAlertsView()) {
+                    tile("天气提醒", "cloud.rain", 3)
                 }
             }
         }
     }
-    private func tile(_ title: String, _ icon: String) -> some View {
-        VStack(spacing: 7) {
-            Image(systemName: icon).font(.title3).foregroundColor(TXTheme.primary)
-            Text(title).font(.caption.bold()).foregroundColor(.primary)
-                .lineLimit(1).minimumScaleFactor(0.8)
+
+    private func tile(_ title: String, _ symbol: String, _ palette: Int) -> some View {
+        let shades: [Color] = [
+            Color(red: 0.91, green: 0.97, blue: 0.93),
+            Color(red: 1.00, green: 0.96, blue: 0.90),
+            Color(red: 0.91, green: 0.95, blue: 1.00),
+            Color(red: 0.96, green: 0.93, blue: 1.00)
+        ]
+        return VStack(spacing: 7) {
+            Image(systemName: symbol)
+                .font(.system(size: 19)).foregroundColor(TXTheme.primary)
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.primary)
+                .lineLimit(1).minimumScaleFactor(0.75)
         }
-        .frame(maxWidth: .infinity, minHeight: 66)
-        .background(Color(UIColor.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 12))
+        .frame(maxWidth: .infinity, minHeight: 64)
+        .background(shades[palette], in: RoundedRectangle(cornerRadius: 12))
     }
 }
 

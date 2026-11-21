@@ -223,10 +223,8 @@ struct TXSettlementTestWorkbenchView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Label("测试账本 · 资金结算操作准备", systemImage: "checkmark.shield")
+                Label("当日结算", systemImage: "checkmark.shield")
                     .font(.headline)
-                Text("只允许核对已存在的当日转账。服务器 V1.0.31 启用测试结算事务后，可进入确认页执行；正式账本仍只读。")
-                    .font(.caption).foregroundColor(.secondary)
 
                 if let previous = activeOperation {
                     VStack(alignment: .leading, spacing: 8) {
@@ -259,18 +257,10 @@ struct TXSettlementTestWorkbenchView: View {
                         .font(.caption).foregroundColor(.red)
                 }
                 if !candidate {
-                    Label("当前不是在线授权的 iOS_TEST_ 可编辑测试账本；操作已锁定。",
+                    Label("当前账本仅可查看结算记录，不能修改。",
                           systemImage: "lock.shield.fill")
                         .foregroundColor(.orange)
                 } else {
-                    HStack {
-                        Text(model.selectedBook?.name ?? "").font(.subheadline.bold())
-                        Spacer()
-                        Label("准备模式", systemImage: "doc.text.magnifyingglass")
-                            .font(.caption2).foregroundColor(.secondary)
-                    }.padding(10)
-                        .background(TXTheme.header,
-                                    in: RoundedRectangle(cornerRadius: 10))
                     TXDayBar(date: $date, label: "结算日期", allowFuture: false)
                         .onChange(of: date) { _ in
                             transferID = ""
@@ -278,7 +268,7 @@ struct TXSettlementTestWorkbenchView: View {
                             clearPreview()
                         }
                     Picker("结算操作", selection: $action) {
-                        ForEach(TXSettlementTestAction.allCases) { item in
+                        ForEach(TXSettlementTestAction.allCases.filter { $0.canPreviewSavedTransfer }) { item in
                             Text(item.title).tag(item)
                         }
                     }
@@ -341,7 +331,7 @@ struct TXSettlementTestWorkbenchView: View {
                             .background(Color(UIColor.secondarySystemGroupedBackground),
                                         in: RoundedRectangle(cornerRadius: 11))
                         }
-                        Button("生成本机核对单") {
+                        Button("核对本次结算") {
                             clearPreview()
                             do {
                                 prepared = try TXSettlementPreparationPolicy.prepare(
@@ -364,15 +354,25 @@ struct TXSettlementTestWorkbenchView: View {
                     }
                     if let prepared {
                         VStack(alignment: .leading, spacing: 9) {
-                            Label("核对单 · 未提交", systemImage: "doc.text")
+                            Label("待确认 · 尚未提交", systemImage: "doc.text")
                                 .font(.subheadline.bold())
-                            Text(prepared.verificationSummary)
-                                .font(.caption)
-                                .textSelection(.enabled)
-                            Button(copied ? "已复制核对单" : "复制核对单") {
-                                UIPasteboard.general.string = prepared.verificationSummary
-                                copied = true
-                            }.font(.caption)
+                            Text("登记金额：" +
+                                 TXSettlementPreparationPolicy.yuan(
+                                    prepared.expectedSettledCents) +
+                                 " → " +
+                                 TXSettlementPreparationPolicy.yuan(
+                                    prepared.targetSettledCents) + " 元")
+                                .font(.subheadline.bold())
+                            DisclosureGroup("查看详细核对信息") {
+                                Text(prepared.verificationSummary)
+                                    .font(.caption2)
+                                    .textSelection(.enabled)
+                                Button(copied ? "已复制" : "复制详情") {
+                                    UIPasteboard.general.string = prepared.verificationSummary
+                                    copied = true
+                                }.font(.caption)
+                            }
+                            .font(.caption).foregroundColor(.secondary)
                         }
                         .padding(12)
                         .background(TXTheme.header,
@@ -382,20 +382,15 @@ struct TXSettlementTestWorkbenchView: View {
 
                 if let prepared, !operationLocked {
                     NavigationLink(destination: TXSettlementAtomicSubmitView(proposal: prepared)) {
-                        Label("进入原子事务核对与提交", systemImage: "checkmark.shield")
+                        Label("确认结算", systemImage: "checkmark.shield")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                } else {
-                    Text("请先生成核对单，再进入服务器事务提交页。")
-                        .font(.caption).foregroundColor(.secondary)
                 }
-                Text("服务端必须支持原子事务、操作ID幂等、版本校验和超时原操作查询；周期结清及利润分配仍为独立预留功能。")
-                    .font(.caption2).foregroundColor(.secondary)
                 SyncFooter()
             }.padding(12)
         }
-        .navigationTitle("结算操作准备")
+        .navigationTitle("当日结算")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { restoreOperation() }
         .onChange(of: model.selectedBookID) { _ in
