@@ -170,4 +170,71 @@ final class PurchaseAtomicWriteTests: XCTestCase {
         XCTAssertFalse(PurchaseAtomicReadbackPolicy.confirmed(
             proposed, receipt: receipt(proposed), records: history))
     }
+    func testPlanCompletionMustReadBackOrderItemsAndAtomicStatus() {
+        let initial = proposal()
+        let linkedLine = PurchaseCommitItem(
+            fruitSyncID: "fruit-1", fruitName: "苹果",
+            unit: "件", quantity: "2", unitPrice: "15.00",
+            lineTotal: "30.00", unitWeightJin: "20",
+            sourcePlanItemSyncID: "plan-item-a")
+        let plan = PurchaseCommitProposal(
+            protocolVersion: initial.protocolVersion,
+            bookID: initial.bookID, account: initial.account,
+            draftID: initial.draftID, date: initial.date,
+            buyerSyncID: initial.buyerSyncID,
+            purchaseType: initial.purchaseType,
+            remark: initial.remark,
+            operation: "complete_plan",
+            totalCost: initial.totalCost,
+            lines: [linkedLine],
+            expectedVersions: [], payloadHash: initial.payloadHash)
+        let remoteID: Int64 = 79152283000000002
+        let orderID: Int64 = 79152283000000004
+        let cloud = [
+            event("partner", "buyer-1", [
+                "id": .exactInteger(remoteID), "name": .string("头脑")]),
+            event("purchase_order", "order-cloud-1", [
+                "id": .exactInteger(orderID), "date": .string("2026-11-20"),
+                "buyer_id": .exactInteger(remoteID),
+                "total_cost": .number(30)]),
+            event("purchase_item", "item-cloud-1", [
+                "id": .exactInteger(79152283000000005),
+                "order_id": .exactInteger(orderID),
+                "fruit_name": .string("苹果"),
+                "unit": .string("件"), "quantity": .number(2),
+                "unit_price": .number(15), "total_cost": .number(30)]),
+            event("purchase_plan_item", "plan-item-a", [
+                "status": .number(1), "fruit_name": .string("苹果"),
+                "unit": .string("件")]),
+            event("purchase_collaboration", "collab-a", [
+                "plan_item_sync_id": .string("plan-item-a"),
+                "buyer_id": .exactInteger(remoteID),
+                "actual_quantity": .number(2),
+                "actual_amount": .number(30),
+                "purchase_order_sync_id": .string("order-cloud-1")])
+        ]
+        let receipt = receipt(plan)
+        XCTAssertTrue(PurchaseAtomicReadbackPolicy.confirmed(
+            plan, receipt: receipt, records: cloud))
+        XCTAssertFalse(PurchaseAtomicReadbackPolicy.confirmed(
+            plan, receipt: receipt,
+            records: cloud.filter { $0.tableName != "purchase_collaboration" }))
+        let notCompleted = cloud.map { item -> SyncEvent in
+            if item.syncId != "plan-item-a" { return item }
+            var p = item.payload
+            p["status"] = .number(0)
+            return event(item.tableName, item.syncId, p)
+        }
+        XCTAssertFalse(PurchaseAtomicReadbackPolicy.confirmed(
+            plan, receipt: receipt, records: notCompleted))
+        let wrongOrder = cloud.map { item -> SyncEvent in
+            if item.syncId != "collab-a" { return item }
+            var p = item.payload
+            p["purchase_order_sync_id"] = .string("another-order")
+            return event(item.tableName, item.syncId, p)
+        }
+        XCTAssertFalse(PurchaseAtomicReadbackPolicy.confirmed(
+            plan, receipt: receipt, records: wrongOrder))
+    }
+
 }
