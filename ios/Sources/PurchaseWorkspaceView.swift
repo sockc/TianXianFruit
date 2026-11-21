@@ -140,6 +140,11 @@ struct PurchaseWorkspaceView: View {
             book: book, account: model.account)
     }
 
+    private var canCommitTest: Bool {
+        canEdit && model.selectedBook?.name.hasPrefix("iOS_TEST_") == true &&
+        model.purchaseCommitCapabilities?.enabled == true
+    }
+
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 10) {
@@ -153,7 +158,7 @@ struct PurchaseWorkspaceView: View {
                     Label(message, systemImage: "info.circle")
                         .font(.caption).foregroundColor(.secondary)
                 }
-                Text("采购计划、已完成及历史订单来自安卓云同步；本机新增采购暂不发送，正式采购/结算不会被草稿重复计入。")
+                Text("采购计划、已完成及历史订单来自安卓云同步。iOS_TEST_ 测试账本可安全提交采购到安卓；正式账本继续只存本机草稿。")
                     .font(.caption2).foregroundColor(.secondary)
                 HStack {
                     Spacer()
@@ -416,19 +421,21 @@ struct PurchaseWorkspaceView: View {
                             .disabled(model.isPurchaseCommitBusy || submittingID != nil ||
                                       model.isBusy)
                             .font(.caption)
-                        } else if canEdit, let caps = model.purchaseCommitCapabilities,
+                        } else if canCommitTest, let caps = model.purchaseCommitCapabilities,
                                   caps.enabled && caps.atomic && caps.idempotency {
                             Button {
                                 pendingCommitID = draft.id
                                 showConfirm = true
                             } label: {
-                                Label("提交正式采购", systemImage: "arrow.up.doc.fill")
+                                Label("上传采购到测试账本", systemImage: "arrow.up.doc.fill")
                             }
                             .buttonStyle(.borderedProminent)
                             .disabled(model.isPurchaseCommitBusy ||
                                       model.isBusy || submittingID != nil)
                         } else {
-                            Text("服务端采购写入尚未启用，本机草稿不会影响安卓结算")
+                            Text(model.selectedBook?.name.hasPrefix("iOS_TEST_") == true
+                                 ? "服务器采购原子事务尚未启用，草稿暂存在本机"
+                                 : "正式账本采购上传尚未开放，本机草稿不会影响结算")
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
@@ -520,7 +527,7 @@ struct PurchaseWorkspaceView: View {
               let book = model.selectedBook,
               account.username.lowercased() == draft.account.lowercased(),
               book.id == draft.bookID,
-              canEdit, !model.isBusy else { return }
+              canCommitTest, !model.isBusy else { return }
         submittingID = draft.id
         defer { submittingID = nil }
         do {
