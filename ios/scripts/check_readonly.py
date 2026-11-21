@@ -466,3 +466,6 @@ assert "showFilters" in swift["SettlementTableView.swift"]
 assert '@State private var action: TXSettlementTestAction = .full' in settlement_workbench
 assert "TXSettlementPreparationPolicy.prepare(" in settlement_workbench
 print("V0.8.0 PASS: primary iOS entry flow and safe cloud write restrictions.")
+assert "savedPurchaseToConfirmID" in swift["PurchaseWorkspaceView.swift"]
+assert "workspace.drafts.first(where: { $0.id == id })" in swift["PurchaseWorkspaceView.swift"]
+assert "onDismiss:" in swift["PurchaseWorkspaceView.swift"]

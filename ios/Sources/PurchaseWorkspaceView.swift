@@ -132,6 +132,7 @@ struct PurchaseWorkspaceView: View {
     @State private var pendingCommitID: String?
     @State private var showConfirm = false
     @State private var submittingID: String?
+    @State private var savedPurchaseToConfirmID: String?
     @State private var selectedPendingPlan: PurchasePlanningRow?
     @State private var showPlanBuyerChooser = false
 
@@ -208,7 +209,18 @@ struct PurchaseWorkspaceView: View {
             }
             .padding(12)
         }
-        .sheet(item: $request) { edit in
+        .sheet(item: $request, onDismiss: {
+            // Offer the cloud confirmation only AFTER the editor has closed.
+            // Cancel means saved locally only; no HTTP write occurs.
+            if let id = savedPurchaseToConfirmID,
+               let draft = workspace.drafts.first(where: { $0.id == id }),
+               canCommitTest {
+                date = BusinessDates.parse(draft.date) ?? date
+                pendingCommitID = id
+                showConfirm = true
+            }
+            savedPurchaseToConfirmID = nil
+        }) { edit in
             if let bookID = model.selectedBookID,
                let account = model.account?.username {
                 PurchaseWorkspaceEditorView(
@@ -222,7 +234,17 @@ struct PurchaseWorkspaceView: View {
                             workspace.message = "账号或账本已切换，草稿未保存"
                             return false
                         }
-                        return workspace.save(item, account: account, bookID: bookID)
+                        let persisted = workspace.save(
+                            item, account: account, bookID: bookID)
+                        if persisted && canCommitTest,
+                           let caps = model.purchaseCommitCapabilities,
+                           caps.atomic && caps.idempotency &&
+                           (!item.lines.contains(where: {
+                               $0.sourcePlanItemSyncID != nil
+                           }) || caps.supportsCompletePlan) {
+                            savedPurchaseToConfirmID = item.id
+                        }
+                        return persisted
                     }
                     .environmentObject(model)
             } else {
@@ -247,7 +269,7 @@ struct PurchaseWorkspaceView: View {
             Button("取消", role: .cancel) { pendingCommitID = nil }
             Button("确认提交") {
                 guard let id = pendingCommitID,
-                      let draft = localDrafts.first(where: { $0.id == id })
+                      let draft = workspace.drafts.first(where: { $0.id == id })
                 else { return }
                 Task { await submitPurchase(draft) }
             }
@@ -260,12 +282,14 @@ struct PurchaseWorkspaceView: View {
         }
         .onChange(of: model.selectedBookID) { _ in
             request = nil
+            savedPurchaseToConfirmID = nil
             clearReview()
             reload()
             Task { await model.refreshPurchaseCommitCapabilities() }
         }
         .onChange(of: model.account?.username) { _ in
             request = nil
+            savedPurchaseToConfirmID = nil
             clearReview()
             reload()
             Task { await model.refreshPurchaseCommitCapabilities() }

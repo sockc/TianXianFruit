@@ -153,12 +153,17 @@ struct PurchaseWorkspaceEditorView: View {
                             .font(.caption).foregroundColor(.orange)
                     }
                     Button(action: save) {
-                        Label("保存采购录入", systemImage: "square.and.arrow.down")
+                        Label(model.selectedBook?.name.hasPrefix("iOS_TEST_") == true &&
+                              model.purchaseCommitCapabilities?.enabled == true
+                              ? "保存并准备同步" : "保存采购录入",
+                              systemImage: "square.and.arrow.down")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(!canEdit || model.isBusy)
-                    Text("先保存本机草稿，再到采购列表点击上传。计划关联的商品只有服务端原子提交成功后才会变为“已完成”；正式账本仍不允许上传。")
+                    Text(model.selectedBook?.name.hasPrefix("iOS_TEST_") == true
+                         ? "保存后将提示确认同步；只有服务器原子提交且回读成功，安卓才显示已完成。"
+                         : "本机录入不改变安卓采购与结算；正式云端采购写入尚未开放。")
                         .font(.caption2).foregroundColor(.secondary)
                 }
                 .padding(12)
