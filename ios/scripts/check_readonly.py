@@ -362,3 +362,17 @@ assert '"PUT"' not in fund_history and '"DELETE"' not in fund_history
 assert "batchKey" in swift["FinanceReadOnlyModels.swift"]
 assert "NavigationLink(destination: TXFundHistoryView())" in swift["SettlementTableView.swift"]
 assert (root.parent / "Tests" / "FundHistoryReadOnlyTests.swift").exists()
+
+
+# V0.6.6: settlement actions are immutable local-only preparations.
+settlement_preview = swift["SettlementTestPreparation.swift"]
+assert "serverSettlementCommitAvailable = false" in settlement_preview
+assert "TXSettlementPreparationPolicy.prepare" in settlement_preview
+assert "dailyRowVersion" in settlement_preview
+assert "transferRowVersion" in settlement_preview
+assert "TXTestBookAccess.isCandidate" in settlement_preview
+assert "UIPasteboard.general.string" in settlement_preview
+assert '"/api/v1/sync/push"' not in settlement_preview
+assert '"/api/v1/settlements/commit"' not in swift["CloudAPI.swift"]
+assert "TXSettlementTestWorkbenchView()" in swift["AndroidStyleShell.swift"]
+assert (root.parent / "Tests" / "SettlementTestPreparationTests.swift").exists()

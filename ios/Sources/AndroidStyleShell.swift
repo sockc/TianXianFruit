@@ -77,7 +77,7 @@ enum TXTestModule: String, CaseIterable, Identifiable {
 }
 
 enum TXTestWriteState: Equatable {
-    case productionReadOnly, restricted, live, separateVerification, serverUnavailable, reserved
+    case productionReadOnly, restricted, live, separateVerification, serverUnavailable, preparationOnly, reserved
     var label: String {
         switch self {
         case .productionReadOnly: return "正式账本只读"
@@ -85,6 +85,7 @@ enum TXTestWriteState: Equatable {
         case .live: return "服务器能力已开放"
         case .separateVerification: return "可进入独立验证"
         case .serverUnavailable: return "服务器未启用"
+        case .preparationOnly: return "仅本机核对单 · 禁止提交"
         case .reserved: return "功能预留"
         }
     }
@@ -101,6 +102,7 @@ enum TXTestBookAccess {
                       purchaseEnabled: Bool) -> TXTestWriteState {
         guard let book, book.name.hasPrefix("iOS_TEST_") else { return .productionReadOnly }
         guard isCandidate(book, account: account, offline: offline) else { return .restricted }
+        if feature == .profitWrite { return .preparationOnly }
         if !feature.isImplemented { return .reserved }
         switch feature {
         case .businessCreate: return businessEnabled ? .live : .serverUnavailable
@@ -282,7 +284,7 @@ struct TXTestWorkbenchView: View {
                                     in: RoundedRectangle(cornerRadius: 12))
                     }.disabled(!allowed)
                 }
-                Text("已实现的营业、采购仍采用专用原子接口；更正操作保留独立测试账号验证。其余为预留功能，不执行网络写入。")
+                Text("已实现的营业、采购仍采用专用原子接口；更正操作保留独立测试账号验证。结算操作仅可制作本机核对单，尚不能提交；其他功能保持预留。")
                     .font(.caption2).foregroundColor(.secondary)
             }.padding(12)
         }
@@ -307,7 +309,7 @@ struct TXTestWorkbenchView: View {
         case .inventoryEdit:
             TXReservedFeatureView(title: module.title, detail: "库存盘点、损耗及跨日结转服务端接口尚未准备好。")
         case .profitWrite:
-            TXReservedFeatureView(title: module.title, detail: "利润分配及资金结算执行需独立服务端事务，不能从已同步报表反写。")
+            TXSettlementTestWorkbenchView()
         case .customerImport:
             TXReservedFeatureView(title: module.title, detail: "客户账单导入及收款人归属需要事务接口与重复导入保护。")
         case .overnightReceipt:

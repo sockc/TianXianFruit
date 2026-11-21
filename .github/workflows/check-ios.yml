@@ -1,4 +1,4 @@
-name: Check iOS V0.6.5 read-only partner funds and period history
+name: Check iOS V0.6.6 settlement test-only preparation guard
 
 on:
   pull_request:

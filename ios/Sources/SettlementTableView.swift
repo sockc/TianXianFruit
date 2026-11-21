@@ -182,6 +182,21 @@ struct SettlementTableView: View {
                     .background(Color(UIColor.secondarySystemGroupedBackground),
                                 in: RoundedRectangle(cornerRadius: 11))
                 }
+                if TXTestBookAccess.isCandidate(model.selectedBook,
+                                                 account: model.account,
+                                                 offline: model.isUsingCachedAuthorization) {
+                    NavigationLink(destination: TXSettlementTestWorkbenchView()) {
+                        HStack(spacing: 8) {
+                            Label("测试账本结算操作核对单", systemImage: "doc.text.magnifyingglass")
+                                .font(.subheadline.bold())
+                            Spacer()
+                            Text("仅核对，不提交").font(.caption2).foregroundColor(.secondary)
+                        }
+                        .padding(10)
+                        .background(TXTheme.header,
+                                    in: RoundedRectangle(cornerRadius: 10))
+                    }
+                }
                 TXDayBar(date: $selectedDate, label: "结算日期", allowFuture: false)
                     .onChange(of: selectedDate) { _ in visibleDays = 14 }
                 Picker("日期范围", selection: $range) {

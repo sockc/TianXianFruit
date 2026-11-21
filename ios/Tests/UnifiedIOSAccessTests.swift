@@ -32,6 +32,18 @@ final class UnifiedIOSAccessTests: XCTestCase {
         }
     }
 
+    func testSettlementPreviewOnlyForOnlineTestBooks() {
+        XCTAssertEqual(TXTestBookAccess.state(.profitWrite, book: testBook,
+            account: account, offline: false, businessEnabled: true,
+            purchaseEnabled: true), .preparationOnly)
+        XCTAssertEqual(TXTestBookAccess.state(.profitWrite, book: realBook,
+            account: account, offline: false, businessEnabled: true,
+            purchaseEnabled: true), .productionReadOnly)
+        XCTAssertEqual(TXTestBookAccess.state(.profitWrite, book: testBook,
+            account: account, offline: true, businessEnabled: true,
+            purchaseEnabled: true), .restricted)
+    }
+
     func testViewerDeletedBookAndAnonymousRejected() {
         let viewer = CloudBook(id: "a", name: "iOS_TEST_A", role: "VIEWER",
                                deleted: false, purged: false)
@@ -43,7 +55,8 @@ final class UnifiedIOSAccessTests: XCTestCase {
     }
 
     func testAllUnimplementedFeaturesRemainReservedEvenWithCapabilities() {
-        for module in TXTestModule.allCases where !module.isImplemented {
+        for module in TXTestModule.allCases
+            where !module.isImplemented && module != .profitWrite {
             XCTAssertEqual(TXTestBookAccess.state(module,
                 book: testBook, account: account, offline: false,
                 businessEnabled: true, purchaseEnabled: true), .reserved)
