@@ -155,4 +155,41 @@ final class PurchaseCloudReconcileTests: XCTestCase {
             records: catalog() + [alias])
         XCTAssertNil(last)
     }
+    func testSeventeenDigitBuyerFruitAndParentIDsAreComparedExactly() {
+        let buyer: Int64 = 79152283000000002
+        let fruitA: Int64 = 79152283000000001
+        let fruitB: Int64 = 79152283000000003
+        let parent: Int64 = 79152283000000004
+        let events = catalog().map { source -> SyncEvent in
+            var p = source.payload
+            switch source.syncId {
+            case "buyer-sync":
+                p["id"] = .exactInteger(buyer)
+            case "fruit-a":
+                p["id"] = .exactInteger(fruitA)
+            case "fruit-b":
+                p["id"] = .exactInteger(fruitB)
+            case "order-1":
+                p["id"] = .exactInteger(parent)
+                p["buyer_id"] = .exactInteger(buyer)
+            case "item-1":
+                p["order_id"] = .exactInteger(parent)
+                p["fruit_id"] = .exactInteger(fruitA)
+            case "item-2":
+                p["order_id"] = .exactInteger(parent)
+                p["fruit_id"] = .exactInteger(fruitB)
+            default: break
+            }
+            return event(source.tableName, source.syncId, p,
+                         operation: source.operation)
+        }
+        let report = PurchaseCloudReconcilePolicy.inspect(draft(), events: events)
+        XCTAssertEqual(report.status, .matchingCloudOrder)
+        XCTAssertEqual(report.matchingOrderID, "order-1")
+        XCTAssertEqual(AndroidNumericIdentity.exact(.exactInteger(buyer)), buyer)
+        XCTAssertNil(AndroidNumericIdentity.exact(.number(Double(buyer))))
+        XCTAssertFalse(AndroidNumericIdentity.same(
+            .exactInteger(fruitA), .exactInteger(fruitB)))
+    }
+
 }
