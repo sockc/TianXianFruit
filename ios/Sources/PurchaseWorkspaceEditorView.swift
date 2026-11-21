@@ -94,7 +94,7 @@ struct PurchaseWorkspaceEditorView: View {
                         Label("导入库存 / 待采购计划", systemImage: "square.and.arrow.down.on.square")
                     }
                     .font(.subheadline)
-                    .disabled(!canEdit)
+                    .disabled(!canEdit || hasPlanSource)
                     if let importNotice {
                         Text(importNotice)
                             .font(.caption)
@@ -258,6 +258,7 @@ private struct PurchaseWorkspaceLineCard: View {
                 }
             }
             .pickerStyle(MenuPickerStyle())
+            .disabled(line.sourcePlanItemSyncID != nil)
             .onChange(of: line.fruitSyncID) { next in
                 line.fruitName = fruits.first { $0.id == next }?.name ?? ""
                 line.sourcePlanItemSyncID = nil
@@ -266,7 +267,7 @@ private struct PurchaseWorkspaceLineCard: View {
                 line.sourcePlanItemSyncID = nil
             }
             if line.sourcePlanItemSyncID != nil {
-                Text("来自当天待采购计划 · 仅本机草稿，尚未完成采购")
+                Text("原计划商品与单位已锁定；填写实际采购数量、单价和重量")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
@@ -291,7 +292,8 @@ private struct PurchaseWorkspaceLineCard: View {
                 }
             }
             HStack(spacing: 10) {
-                input("单位", value: $line.unit, numeric: false)
+                input("单位", value: $line.unit, numeric: false,
+                      editable: line.sourcePlanItemSyncID == nil)
                 input("每件重量（斤）", value: $line.unitWeightJin)
             }
             HStack {
@@ -308,10 +310,12 @@ private struct PurchaseWorkspaceLineCard: View {
     }
 
     private func input(_ name: String, value: Binding<String>,
-                       numeric: Bool = true) -> some View {
+                       numeric: Bool = true,
+                       editable: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(name).font(.caption2).foregroundColor(.secondary)
             TextField(name, text: value)
+                .disabled(!editable)
                 .keyboardType(numeric ? .decimalPad : .default)
                 .textFieldStyle(.roundedBorder)
                 .font(.subheadline)
