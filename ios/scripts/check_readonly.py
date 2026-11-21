@@ -348,3 +348,17 @@ assert "SettlementTransferDetailRow" in settlement_ui
 assert "云端已登记结算" in settlement_ui
 assert '"POST"' not in stage1 and '"PATCH"' not in stage1
 assert (root.parent / "Tests" / "SettlementRecordedStatusTests.swift").exists()
+
+
+# V0.6.5: fund history uses only cloud evidence, not a guessed current balance.
+fund_history = swift["FundHistoryReadOnly.swift"]
+assert "cumulativeBalanceIsAuthoritative = false" in fund_history
+assert "settlement_partner.balance" in fund_history
+assert "TXFundHistoryPolicy.days" in fund_history
+assert "TXFundHistoryPolicy.batches" in fund_history
+assert "已撤销（原登记清零）" in fund_history
+assert '"POST"' not in fund_history and '"PATCH"' not in fund_history
+assert '"PUT"' not in fund_history and '"DELETE"' not in fund_history
+assert "batchKey" in swift["FinanceReadOnlyModels.swift"]
+assert "NavigationLink(destination: TXFundHistoryView())" in swift["SettlementTableView.swift"]
+assert (root.parent / "Tests" / "FundHistoryReadOnlyTests.swift").exists()

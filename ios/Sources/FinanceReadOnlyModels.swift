@@ -31,6 +31,7 @@ struct FinanceTransferRow: Identifiable {
     let amount: Double
     let recordedSettled: Double
     let kind: String
+    let batchKey: String
     let rangeStartDate: String
     let rangeEndDate: String
     let businessDayCount: Int
@@ -64,6 +65,7 @@ struct FinanceTransferRow: Identifiable {
         amount = event.payload["amount"]?.decimal ?? 0
         recordedSettled = event.payload["settled_amount"]?.decimal ?? 0
         kind = event.payload["settlement_kind"]?.text ?? "DAILY"
+        batchKey = event.payload["batch_key"]?.text ?? ""
         rangeStartDate = event.payload["range_start_date"]?.text ?? ""
         rangeEndDate = event.payload["range_end_date"]?.text ?? ""
         businessDayCount = Int(event.payload["business_day_count"]?.decimal ?? 0)

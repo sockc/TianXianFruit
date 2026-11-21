@@ -606,6 +606,9 @@ private struct MorePage: View {
                 NavigationLink(destination: SettlementTableView()) {
                     Label("资金结算表 · 每日汇总与转账", systemImage: "arrow.left.arrow.right")
                 }
+                NavigationLink(destination: TXFundHistoryView()) {
+                    Label("资金余额与历史 · 逐日资金及周期结清", systemImage: "clock.arrow.circlepath")
+                }
                 NavigationLink(destination: BusinessStatsView()) {
                     Label("经营统计 · 位置与趋势", systemImage: "chart.bar.xaxis")
                 }
@@ -679,7 +682,7 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.6.4 · Build 41 · 结算状态与转账登记")
+                Text("版本：iOS V0.6.5 · Build 42 · 逐日资金与周期结清历史")
                     .font(.caption).foregroundColor(.secondary)
                 Text("测试账本已有写入统一入口，实际提交仍受服务器原子事务、权限和幂等控制；正式账本只读。未实现的功能全部预留入口。")
                     .font(.caption2).foregroundColor(.secondary)

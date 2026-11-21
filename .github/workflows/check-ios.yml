@@ -1,4 +1,4 @@
-name: Check iOS V0.6.4 settlement status and transfer registration
+name: Check iOS V0.6.5 read-only partner funds and period history
 
 on:
   pull_request:

@@ -169,6 +169,19 @@ struct SettlementTableView: View {
                 .background(TXTheme.header,
                             in: RoundedRectangle(cornerRadius: 12))
 
+                NavigationLink(destination: TXFundHistoryView()) {
+                    HStack {
+                        Label("资金余额与结清历史", systemImage: "clock.arrow.circlepath")
+                            .font(.subheadline.bold())
+                        Spacer()
+                        Text("逐日明细 · 周期记录").font(.caption2)
+                            .foregroundColor(.secondary)
+                        Image(systemName: "chevron.right").font(.caption)
+                    }
+                    .padding(11)
+                    .background(Color(UIColor.secondarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 11))
+                }
                 TXDayBar(date: $selectedDate, label: "结算日期", allowFuture: false)
                     .onChange(of: selectedDate) { _ in visibleDays = 14 }
                 Picker("日期范围", selection: $range) {
