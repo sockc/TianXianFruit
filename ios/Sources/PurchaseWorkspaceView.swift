@@ -507,6 +507,12 @@ struct PurchaseWorkspaceView: View {
                             .font(.caption)
                         } else if canCommitTest, let caps = model.purchaseCommitCapabilities,
                                   caps.enabled && caps.atomic && caps.idempotency {
+                            if draft.lines.contains(where: { $0.sourcePlanItemSyncID != nil }) &&
+                               !caps.supportsCompletePlan {
+                                Label("当前账号没有采购计划完成权限；请检查测试账本的采购计划编辑权限",
+                                      systemImage: "lock.shield")
+                                    .font(.caption).foregroundColor(.orange)
+                            } else {
                             Button {
                                 pendingCommitID = draft.id
                                 showConfirm = true
@@ -516,6 +522,7 @@ struct PurchaseWorkspaceView: View {
                             .buttonStyle(.borderedProminent)
                             .disabled(model.isPurchaseCommitBusy ||
                                       model.isBusy || submittingID != nil)
+                            }
                         } else {
                             Text(model.selectedBook?.name.hasPrefix("iOS_TEST_") == true
                                  ? "服务器采购原子事务尚未启用，草稿暂存在本机"
@@ -670,7 +677,16 @@ struct PurchaseWorkspaceView: View {
             let events = Array(model.snapshot.records.values)
             let review = PurchaseCloudReconcilePolicy.inspect(
                 draft, events: events)
-            guard review.status == .absentFromLatestCloud else {
+            // Multiple valid orders by one buyer are normal. When completing
+            // DISTINCT pending plan sources, an unrelated existing order must
+            // not block their atomic CAS completion. The server still prevents
+            // same-amount duplicates and all actual plan version conflicts.
+            let anotherOrderIsUnrelated =
+                review.status == .potentialDuplicate &&
+                PurchasePlanCompletionPolicy.pendingSources(
+                    draft, events: events)
+            guard review.status == .absentFromLatestCloud ||
+                  anotherOrderIsUnrelated else {
                 workspace.message = review.message
                 return
             }
@@ -749,7 +765,9 @@ struct PurchaseWorkspaceView: View {
         do {
             try workspace.transition(last, to: .confirmed,
                 receipt: receipt, account: account, bookID: bookID)
-            workspace.message = "采购已完整同步至云端，安卓刷新后可查看"
+            workspace.message = proposal.operation == "complete_plan"
+                ? "采购单、商品明细及待采购计划完成状态已全部核对；安卓刷新后可查看"
+                : "采购已完整同步至云端，安卓刷新后可查看"
         } catch {
             workspace.message = error.localizedDescription
         }
