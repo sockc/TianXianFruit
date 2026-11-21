@@ -277,7 +277,7 @@ assert "func purchaseCommit(" in regular
 assert "func purchaseOperation(" in regular
 assert "PurchaseCommitCapabilities" in regular
 assert "api.purchaseCapabilities" in vm
-assert "capabilities.allows(proposal)" in vm
+assert "capabilities.allows(book: book, proposal: proposal)" in vm
 assert "api.purchaseCommit(" in vm
 assert "model.commitPurchase(proposal)" in main_ui
 assert "workspace.reserve(" in main_ui
@@ -481,3 +481,13 @@ assert "TXSettlementTestWorkbenchView(initialDate: selectedDate)" in swift["Sett
 assert "init(initialDate: Date = Date())" in swift["SettlementTestPreparation.swift"]
 assert (root.parent / "Tests" / "BusinessLocalDraftStorageTests.swift").exists()
 print("V0.8.1 PASS: protect partial business drafts and selected settlement day")
+
+# V0.8.2: server must explicitly authorize production via scope=formal.
+assert 'scope == "formal"' in swift["BusinessAtomicCommit.swift"]
+assert 'scope == "formal"' in swift["PurchaseAtomicModels.swift"]
+assert "caps.allows(book: book)" in swift["LedgerViewModel.swift"]
+assert "capabilities.allows(book: book, proposal: proposal)" in swift["LedgerViewModel.swift"]
+assert "model.businessCloudBookAllowed" in swift["BusinessLocalEntryView.swift"]
+assert "canCommitCloud" in swift["PurchaseWorkspaceView.swift"]
+assert (root.parent / "Tests" / "FormalWriteScopeTests.swift").exists()
+print("V0.8.2 PASS: formal capability scope; production settlement stays read-only")

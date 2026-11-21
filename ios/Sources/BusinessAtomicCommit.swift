@@ -29,15 +29,23 @@ struct BusinessCommitCapabilities: Decodable {
     let idempotency: Bool
     let feature: String
     let supportsCollectorSplits: Bool
+    let scope: String?
 
     enum CodingKeys: String, CodingKey {
-        case version, enabled, atomic, idempotency, feature
+        case version, enabled, atomic, idempotency, feature, scope
         case supportsCollectorSplits = "supports_collector_splits"
     }
 
     var allowsWrite: Bool {
         version == 1 && enabled && atomic && idempotency &&
         supportsCollectorSplits && feature == "business_atomic_commit_v1"
+    }
+
+    func allows(book: CloudBook) -> Bool {
+        guard allowsWrite && book.isAvailable else { return false }
+        // Old servers do not report scope; only test ledgers may use them.
+        return book.name.hasPrefix("iOS_TEST_")
+            ? (scope == nil || scope == "test") : scope == "formal"
     }
 }
 

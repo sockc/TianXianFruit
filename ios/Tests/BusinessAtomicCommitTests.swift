@@ -30,11 +30,11 @@ final class BusinessAtomicCommitTests: XCTestCase {
     func testCapabilityRequiresAllExplicitAtomicFlags() {
         let disabled = BusinessCommitCapabilities(
             version: 1, enabled: false, atomic: true, idempotency: true,
-            feature: "business_atomic_commit_v1", supportsCollectorSplits: true)
+            feature: "business_atomic_commit_v1", supportsCollectorSplits: true, scope: nil)
         XCTAssertFalse(disabled.allowsWrite)
         let unexpected = BusinessCommitCapabilities(
             version: 1, enabled: true, atomic: true, idempotency: true,
-            feature: "generic_sync_push", supportsCollectorSplits: true)
+            feature: "generic_sync_push", supportsCollectorSplits: true, scope: nil)
         XCTAssertFalse(unexpected.allowsWrite)
     }
 

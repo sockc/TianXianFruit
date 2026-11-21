@@ -64,9 +64,11 @@ struct PurchaseWorkspaceEditorView: View {
                         Text("本机待提交")
                             .font(.caption.bold()).foregroundColor(.orange)
                     }
-                    Text(model.selectedBook?.name.hasPrefix("iOS_TEST_") == true
-                         ? "填写实际数量、单价后保存；采购页将通过原子接口提交至测试账本，安卓可同步查看。"
-                         : "正式账本仅保留本机草稿，不计入采购和结算。")
+                    Text(model.selectedBook.map { book in
+                            model.purchaseCommitCapabilities?.eligible(book: book) == true
+                                ? "先保存本机采购，再确认原子提交；安卓回读后才记为已采购。"
+                                : "此账本云端采购未授权；本机录入不会影响资金结算。"
+                         } ?? "请先选择账本")
                         .font(.caption).foregroundColor(.secondary)
 
                     TXDayBar(date: $date, label: "采购日期")
@@ -153,17 +155,20 @@ struct PurchaseWorkspaceEditorView: View {
                             .font(.caption).foregroundColor(.orange)
                     }
                     Button(action: save) {
-                        Label(model.selectedBook?.name.hasPrefix("iOS_TEST_") == true &&
-                              model.purchaseCommitCapabilities?.enabled == true
+                        Label(model.selectedBook.map { book in
+                                  model.purchaseCommitCapabilities?.eligible(book: book) == true
+                              } == true
                               ? "保存并准备同步" : "保存采购录入",
                               systemImage: "square.and.arrow.down")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(!canEdit || model.isBusy)
-                    Text(model.selectedBook?.name.hasPrefix("iOS_TEST_") == true
-                         ? "保存后将提示确认同步；只有服务器原子提交且回读成功，安卓才显示已完成。"
-                         : "本机录入不改变安卓采购与结算；正式云端采购写入尚未开放。")
+                    Text(model.selectedBook.map { book in
+                            model.purchaseCommitCapabilities?.eligible(book: book) == true
+                                ? "保存后提示确认同步；服务器原子提交并回读成功才算已完成。"
+                                : "本机录入不改变安卓采购与结算，此账本尚未授权云端写入。"
+                         } ?? "请先选择账本")
                         .font(.caption2).foregroundColor(.secondary)
                 }
                 .padding(12)
