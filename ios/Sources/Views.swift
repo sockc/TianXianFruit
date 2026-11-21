@@ -26,7 +26,7 @@ private struct LoginView: View {
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("天鲜账本").font(.largeTitle.bold())
-                        Text("iOS V0.5.0 · 营业录入与双端同步").foregroundColor(.secondary)
+                        Text("iOS V0.5.1 · 采购原子上传与双端同步").foregroundColor(.secondary)
                         Label("测试账本可录入及更正营业；正式账本编辑尚未开放", systemImage: "lock.shield")
                             .font(.footnote).foregroundColor(.green)
                     }.padding(.vertical, 10)
