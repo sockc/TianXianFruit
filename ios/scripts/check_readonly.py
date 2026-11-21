@@ -277,7 +277,7 @@ assert "func purchaseCommit(" in regular
 assert "func purchaseOperation(" in regular
 assert "PurchaseCommitCapabilities" in regular
 assert "api.purchaseCapabilities" in vm
-assert "capabilities.allows(proposal)" in vm
+assert "capabilities.allows(book: book, proposal: proposal)" in vm
 assert "api.purchaseCommit(" in vm
 assert "model.commitPurchase(proposal)" in main_ui
 assert "workspace.reserve(" in main_ui
