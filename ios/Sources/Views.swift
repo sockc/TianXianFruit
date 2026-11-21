@@ -190,6 +190,10 @@ private struct HomePage: View {
                     Text("营业额、利润直接来自 Android 已保存的正式营业记录；无新增结算或预估计算。")
                         .font(.caption2).foregroundColor(.secondary)
                 }
+                NavigationLink(destination: SettlementTableView()) {
+                    Label("查看资金结算表", systemImage: "arrow.left.arrow.right")
+                        .font(.subheadline.bold())
+                }
                 SyncFooter()
             }
             .padding(12)
@@ -589,8 +593,8 @@ private struct MorePage: View {
                 NavigationLink(destination: CustomerInsightsView()) {
                     Label("客户分析 · 微信/支付宝逐小时客流", systemImage: "person.2")
                 }
-                NavigationLink(destination: FinanceReadOnlyView()) {
-                    Label("资金结算 · 已保存分配与转账", systemImage: "arrow.left.arrow.right")
+                NavigationLink(destination: SettlementTableView()) {
+                    Label("资金结算表 · 每日汇总与转账", systemImage: "arrow.left.arrow.right")
                 }
                 NavigationLink(destination: BusinessStatsView()) {
                     Label("经营统计 · 位置与趋势", systemImage: "chart.bar.xaxis")
@@ -647,9 +651,9 @@ private struct MorePage: View {
                 .padding(12)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 12))
-                Text("版本：iOS V0.4.3 · 采购事务提交与回读")
+                Text("版本：iOS V0.5.3 · Build 35 · 资金结算表只读")
                     .font(.caption).foregroundColor(.secondary)
-                Text("采购支持服务器能力检测、原子事务提交及异常后按操作 ID 查询；后端默认未启用正式写入。资金结算保持锁定。")
+                Text("采购支持服务器能力检测、原子事务提交及异常后按操作 ID 查询；后端默认未启用正式写入。资金结算表只读，不执行分配或转账。")
                     .font(.caption2).foregroundColor(.secondary)
                 Button(role: .destructive) {
                     model.signOut()

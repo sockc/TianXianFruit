@@ -1,4 +1,4 @@
-name: Check iOS V0.5.2 purchase plan completion and cloud readback
+name: Check iOS V0.5.3 read-only settlement table
 
 on:
   pull_request:
