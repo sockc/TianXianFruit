@@ -10,17 +10,8 @@ struct PurchaseLastPrice: Equatable {
 }
 
 enum PurchaseLastPricePolicy {
-    private static func numericID(_ raw: JSONValue?) -> Int64? {
-        guard let raw else { return nil }
-        let n: Double
-        switch raw {
-        case .number(let value): n = value
-        case .string(let value): guard let v = Double(value) else { return nil }; n = v
-        default: return nil
-        }
-        guard n.isFinite, n > 0, n < 9_007_199_254_740_992,
-              n.rounded() == n else { return nil }
-        return Int64(n)
+    private static func numericID(_ value: JSONValue?) -> Int64? {
+        AndroidNumericIdentity.exact(value)
     }
 
     static func latest(
