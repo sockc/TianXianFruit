@@ -385,10 +385,23 @@ atomic_settlement = swift["SettlementAtomicClient.swift"]
 atomic_submit = swift["SettlementAtomicSubmitView.swift"]
 assert "operationLookup" in atomic_settlement
 assert "scope == \"iOS_TEST_\"" in atomic_settlement
-assert "TXSettlementCommitReadback.confirmed" in atomic_submit
+assert "TXSettlementCommitReadback.assessment" in atomic_submit
 assert "try store.save(locked)" in atomic_submit
 assert "findSettlementOperation" in swift["LedgerViewModel.swift"]
 assert "refreshSettlementCapabilities" in swift["LedgerViewModel.swift"]
 assert '"/api/v1/sync/push"' not in atomic_settlement
 assert '"/api/v1/sync/push"' not in atomic_submit
+assert (root.parent / "Tests" / "SettlementAtomicClientTests.swift").exists()
+
+# Build45: restart-safe operation recovery, old-ID replay guard, cross-device states.
+settlement_client = swift["SettlementAtomicClient.swift"]
+settlement_workbench = swift["SettlementTestPreparation.swift"]
+settlement_confirmation = swift["SettlementAtomicSubmitView.swift"]
+assert "TXSettlementSubmissionPolicy.canBegin" in settlement_confirmation
+assert "TXSettlementCommitReadback.assessment" in settlement_confirmation
+assert "restoreOperation()" in settlement_workbench
+assert "恢复原操作 / 查询同步结果" in settlement_workbench
+assert "operationLocked" in settlement_workbench
+assert "case verified, waitingForSync, superseded, inconsistent" in settlement_client
+assert '"POST", "/api/v1/sync/push"' not in settlement_confirmation
 assert (root.parent / "Tests" / "SettlementAtomicClientTests.swift").exists()

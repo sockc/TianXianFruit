@@ -177,6 +177,30 @@ struct TXSettlementTestWorkbenchView: View {
     @State private var prepared: TXSettlementLocalPreparation?
     @State private var errorText = ""
     @State private var copied = false
+    @State private var activeOperation: TXSettlementCommitAttempt?
+    @State private var operationLockError = ""
+
+    /// Restore the saved immutable intent without generating a new operation UUID.
+    private func restoreOperation() {
+        guard let book = model.selectedBook, let account = model.account else {
+            activeOperation = nil
+            operationLockError = ""
+            return
+        }
+        do {
+            activeOperation = try TXSettlementCommitStore().load(
+                account: account.username, book: book.id)
+            operationLockError = ""
+        } catch {
+            activeOperation = nil
+            operationLockError = "本机结算操作锁读取失败；禁止新结算，请保留数据核对原操作"
+        }
+    }
+
+    private var operationLocked: Bool {
+        !operationLockError.isEmpty ||
+        (activeOperation != nil && activeOperation?.phase != .confirmed)
+    }
 
     private var candidate: Bool {
         TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
@@ -204,6 +228,36 @@ struct TXSettlementTestWorkbenchView: View {
                 Text("只允许核对已存在的当日转账。服务器 V1.0.31 启用测试结算事务后，可进入确认页执行；正式账本仍只读。")
                     .font(.caption).foregroundColor(.secondary)
 
+                if let previous = activeOperation {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(previous.phase == .confirmed ? "上次结算已核对" : "存在待核对结算",
+                              systemImage: previous.phase == .confirmed ?
+                                "checkmark.circle" : "lock.shield")
+                            .font(.subheadline.bold())
+                            .foregroundColor(previous.phase == .confirmed ?
+                                             TXTheme.primary : .orange)
+                        Text(previous.label).font(.caption)
+                        Text("营业日：" + previous.proposal.date +
+                             " · 目标：" +
+                             TXSettlementPreparationPolicy.yuan(
+                                previous.proposal.targetSettledCents) + " 元")
+                            .font(.caption)
+                        NavigationLink(
+                            destination: TXSettlementAtomicSubmitView(
+                                proposal: previous.proposal)) {
+                            Label(previous.phase == .confirmed ?
+                                  "查看上次结算记录" : "恢复原操作 / 查询同步结果",
+                                  systemImage: "arrow.clockwise.circle")
+                        }.font(.caption)
+                    }
+                    .padding(12)
+                    .background(Color(UIColor.secondarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 11))
+                }
+                if !operationLockError.isEmpty {
+                    Label(operationLockError, systemImage: "exclamationmark.shield")
+                        .font(.caption).foregroundColor(.red)
+                }
                 if !candidate {
                     Label("当前不是在线授权的 iOS_TEST_ 可编辑测试账本；操作已锁定。",
                           systemImage: "lock.shield.fill")
@@ -302,7 +356,7 @@ struct TXSettlementTestWorkbenchView: View {
                             } catch { errorText = error.localizedDescription }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(chosen == nil)
+                        .disabled(chosen == nil || operationLocked)
                     }
 
                     if !errorText.isEmpty {
@@ -326,7 +380,7 @@ struct TXSettlementTestWorkbenchView: View {
                     }
                 }
 
-                if let prepared {
+                if let prepared, !operationLocked {
                     NavigationLink(destination: TXSettlementAtomicSubmitView(proposal: prepared)) {
                         Label("进入原子事务核对与提交", systemImage: "checkmark.shield")
                             .frame(maxWidth: .infinity)
@@ -343,11 +397,14 @@ struct TXSettlementTestWorkbenchView: View {
         }
         .navigationTitle("结算操作准备")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { restoreOperation() }
         .onChange(of: model.selectedBookID) { _ in
             transferID = ""; amount = ""; clearPreview()
+            restoreOperation()
         }
         .onChange(of: model.currentCursor) { _ in
             clearPreview()
+            restoreOperation()
         }
     }
 

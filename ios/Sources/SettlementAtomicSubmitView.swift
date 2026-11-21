@@ -24,8 +24,9 @@ final class TXSettlementAtomicCoordinator: ObservableObject {
         defer { busy = false }
         do {
             guard let store else { throw TXSettlementAtomicError.storage }
-            if let prior = try store.load(account: proposal.account, book: proposal.bookID),
-               prior.phase != .confirmed { throw TXSettlementAtomicError.locked }
+            let prior = try store.load(account: proposal.account, book: proposal.bookID)
+            guard TXSettlementSubmissionPolicy.canBegin(proposal, prior: prior)
+            else { throw TXSettlementAtomicError.locked }
             guard TXSettlementCommitReadback.original(proposal, in: model.snapshot)
             else { throw TXSettlementAtomicError.stale }
             // Save immutable account/book/UUID/expected versions BEFORE any POST.
@@ -84,11 +85,11 @@ final class TXSettlementAtomicCoordinator: ObservableObject {
         guard let store, var saved = attempt, let receipt = saved.receipt else {
             throw TXSettlementAtomicError.storage
         }
-        guard TXSettlementCommitReadback.confirmed(
+        let assessment = TXSettlementCommitReadback.assessment(
             saved.proposal, receipt: receipt,
             snap: model.snapshot, cursor: model.currentCursor)
-        else {
-            message = "云端事务已登记，但尚未回读两条资金记录；仅可查询原操作"
+        guard assessment == .verified else {
+            message = assessment.explanation
             return
         }
         saved.phase = .confirmed
@@ -149,8 +150,8 @@ struct TXSettlementAtomicSubmitView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!canSubmit || coordinator.busy ||
-                          (coordinator.attempt != nil &&
-                           coordinator.attempt?.phase != .confirmed))
+                          !TXSettlementSubmissionPolicy.canBegin(
+                            proposal, prior: coordinator.attempt))
                 Button {
                     Task { await coordinator.recover(model: model) }
                 } label: {
@@ -166,7 +167,7 @@ struct TXSettlementAtomicSubmitView: View {
                     Text(coordinator.message)
                         .font(.caption).foregroundColor(.secondary)
                 }
-                Text("一次提交对应不可变的操作ID；超时、回执异常和同步冲突均禁止自动重发。跨日结清与利润分配仍需另行实现服务端权威事务。正式账本始终只读。")
+                Text("已完成操作ID禁止再次提交；超时只查原ID。若其他设备随后改写转账金额，会提示版本已变更并保持锁定。周期结清与利润分配仍未开放，正式账本只读。")
                     .font(.caption2).foregroundColor(.secondary)
                 SyncFooter()
             }.padding(12)

@@ -194,6 +194,31 @@ struct TXSettlementCommitStore {
     }
 }
 
+/// A receipt may have been superseded by a subsequent Android/device edit.
+/// Do not mistake newer cloud data for the original operation being absent.
+enum TXSettlementSyncAssessment: Equatable {
+    case verified, waitingForSync, superseded, inconsistent
+    var explanation: String {
+        switch self {
+        case .verified: return "云端日结和转账两条记录已按原事务回读确认"
+        case .waitingForSync: return "操作已登记，尚未同步到两条资金记录；仅可查询原操作"
+        case .superseded: return "原操作已登记，但安卓或其他设备随后更新了资金记录；请核对最新金额，禁止重复提交"
+        case .inconsistent: return "同步数据与结算回执不一致；保留操作锁，禁止重新提交"
+        }
+    }
+}
+
+/// Previous operation IDs are one-shot. A new operation is allowed only after
+/// the earlier one has been verified and uses a distinct identity.
+enum TXSettlementSubmissionPolicy {
+    static func canBegin(_ proposal: TXSettlementLocalPreparation,
+                         prior: TXSettlementCommitAttempt?) -> Bool {
+        guard let prior else { return true }
+        return prior.phase == .confirmed &&
+            prior.proposal.id.lowercased() != proposal.id.lowercased()
+    }
+}
+
 enum TXSettlementCommitReadback {
     static func original(_ prep: TXSettlementLocalPreparation,
                          in snap: ReadOnlySnapshot) -> Bool {
@@ -209,22 +234,41 @@ enum TXSettlementCommitReadback {
         else { return false }
         return cents == prep.expectedSettledCents
     }
+    static func assessment(_ prep: TXSettlementLocalPreparation,
+                           receipt: TXSettlementCommitReceipt,
+                           snap: ReadOnlySnapshot,
+                           cursor: Int64) -> TXSettlementSyncAssessment {
+        guard receipt.matches(prep) else { return .inconsistent }
+        guard cursor >= receipt.syncCursor else { return .waitingForSync }
+        let dayKey = "daily_cash_settlement|" + prep.dailySyncID
+        let transferKey = "settlement_transfer|" + prep.transferSyncID
+        guard let day = snap.records[dayKey], let transfer = snap.records[transferKey] else {
+            if (snap.versions[dayKey] ?? 0) >= receipt.dailyRowVersion ||
+               (snap.versions[transferKey] ?? 0) >= receipt.transferRowVersion {
+                return .superseded
+            }
+            return .waitingForSync
+        }
+        if day.rowVersion > receipt.dailyRowVersion ||
+           transfer.rowVersion > receipt.transferRowVersion { return .superseded }
+        guard day.rowVersion == receipt.dailyRowVersion,
+              transfer.rowVersion == receipt.transferRowVersion else {
+            return .waitingForSync
+        }
+        guard day.payload["date"]?.text == prep.date,
+              transfer.payload["date"]?.text == prep.date,
+              transfer.payload["settlement_kind"]?.text == "DAILY",
+              let cents = TXSettlementPreparationPolicy.persistedCents(
+                transfer.payload["settled_amount"]?.decimal ?? -1),
+              cents == prep.targetSettledCents,
+              Int(day.payload["status"]?.decimal ?? -1) == receipt.dailyStatus
+        else { return .inconsistent }
+        return .verified
+    }
+
     static func confirmed(_ prep: TXSettlementLocalPreparation,
                           receipt: TXSettlementCommitReceipt,
                           snap: ReadOnlySnapshot, cursor: Int64) -> Bool {
-        guard receipt.matches(prep), cursor >= receipt.syncCursor,
-              let daily = snap.records["daily_cash_settlement|" + prep.dailySyncID],
-              let row = snap.records["settlement_transfer|" + prep.transferSyncID],
-              daily.rowVersion == receipt.dailyRowVersion,
-              row.rowVersion == receipt.transferRowVersion,
-              daily.payload["date"]?.text == prep.date,
-              row.payload["date"]?.text == prep.date,
-              row.payload["settlement_kind"]?.text == "DAILY",
-              let cents = TXSettlementPreparationPolicy.persistedCents(
-                row.payload["settled_amount"]?.decimal ?? -1),
-              cents == prep.targetSettledCents,
-              Int(daily.payload["status"]?.decimal ?? -1) == receipt.dailyStatus
-        else { return false }
-        return true
+        assessment(prep, receipt: receipt, snap: snap, cursor: cursor) == .verified
     }
 }

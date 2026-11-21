@@ -135,4 +135,79 @@ final class SettlementAtomicClientTests: XCTestCase {
         XCTAssertTrue(TXSettlementCommitReadback.confirmed(draft, receipt: receipt,
             snap: updated, cursor: 10))
     }
+    func testOneShotOperationIdentityNeverReplaysAfterConfirmation() throws {
+        let prepared = try prep()
+        XCTAssertTrue(TXSettlementSubmissionPolicy.canBegin(prepared, prior: nil))
+        for phase: TXSettlementCommitAttempt.Phase in [.unknown, .accepted, .confirmed] {
+            let attempt = TXSettlementCommitAttempt(
+                proposal: prepared, phase: phase, receipt: nil, updatedAt: Date())
+            XCTAssertFalse(TXSettlementSubmissionPolicy.canBegin(prepared, prior: attempt))
+        }
+        let another = try TXSettlementPreparationPolicy.prepare(
+            book: book, account: account, offline: false,
+            snapshot: snapshot(), date: "2026-11-20",
+            transferID: "transfer", action: .partial, typedAmount: "36.00",
+            operationID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        let confirmed = TXSettlementCommitAttempt(
+            proposal: prepared, phase: .confirmed, receipt: nil, updatedAt: Date())
+        XCTAssertTrue(TXSettlementSubmissionPolicy.canBegin(another, prior: confirmed))
+        let pending = TXSettlementCommitAttempt(
+            proposal: prepared, phase: .accepted, receipt: nil, updatedAt: Date())
+        XCTAssertFalse(TXSettlementSubmissionPolicy.canBegin(another, prior: pending))
+    }
+
+    func testCrossDeviceReadbackClassifiesPendingSupersessionAndConflict() throws {
+        let prepared = try prep()
+        let receipt = TXSettlementCommitReceipt(
+            status: "committed", operationID: prepared.id, bookID: prepared.bookID,
+            date: prepared.date, dailySyncID: prepared.dailySyncID,
+            dailyRowVersion: 6, transferSyncID: prepared.transferSyncID,
+            transferRowVersion: 7, settledAmount: "35.50",
+            dailyStatus: 2, syncCursor: 100,
+            requestHash: String(repeating: "c", count: 64))
+        XCTAssertEqual(TXSettlementCommitReadback.assessment(
+            prepared, receipt: receipt, snap: snapshot(), cursor: 99), .waitingForSync)
+        XCTAssertEqual(TXSettlementCommitReadback.assessment(
+            prepared, receipt: receipt, snap: snapshot(), cursor: 100), .waitingForSync)
+
+        var verified = snapshot()
+        verified.apply([
+            event("daily_cash_settlement", "daily", version: 6, [
+                "date": .string("2026-11-20"), "status": .number(2)]),
+            event("settlement_transfer", "transfer", version: 7, [
+                "date": .string("2026-11-20"),
+                "settlement_kind": .string("DAILY"),
+                "settled_amount": .number(35.50)])
+        ])
+        XCTAssertEqual(TXSettlementCommitReadback.assessment(
+            prepared, receipt: receipt, snap: verified, cursor: 100), .verified)
+        var superseded = verified
+        superseded.apply([event("settlement_transfer", "transfer", version: 8, [
+            "date": .string("2026-11-20"),
+            "settlement_kind": .string("DAILY"),
+            "settled_amount": .number(41.00)])])
+        XCTAssertEqual(TXSettlementCommitReadback.assessment(
+            prepared, receipt: receipt, snap: superseded, cursor: 105), .superseded)
+        XCTAssertFalse(TXSettlementCommitReadback.confirmed(
+            prepared, receipt: receipt, snap: superseded, cursor: 105))
+
+        var mismatch = snapshot()
+        mismatch.apply([
+            event("daily_cash_settlement", "daily", version: 6, [
+                "date": .string("2026-11-20"), "status": .number(2)]),
+            event("settlement_transfer", "transfer", version: 7, [
+                "date": .string("2026-11-20"),
+                "settlement_kind": .string("DAILY"),
+                "settled_amount": .number(34.99)])
+        ])
+        XCTAssertEqual(TXSettlementCommitReadback.assessment(
+            prepared, receipt: receipt, snap: mismatch, cursor: 100), .inconsistent)
+
+        var deleted = verified
+        deleted.apply([SyncEvent(tableName: "settlement_transfer",
+            syncId: "transfer", rowVersion: 8, operation: "DELETE", payload: [:])])
+        XCTAssertEqual(TXSettlementCommitReadback.assessment(
+            prepared, receipt: receipt, snap: deleted, cursor: 101), .superseded)
+    }
+
 }
