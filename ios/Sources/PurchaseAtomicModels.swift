@@ -10,9 +10,10 @@ struct PurchaseCommitCapabilities: Decodable {
     let atomic: Bool
     let idempotency: Bool
     let feature: String
+    let scope: String?
 
     enum CodingKeys: String, CodingKey {
-        case version, enabled, atomic, idempotency, feature
+        case version, enabled, atomic, idempotency, feature, scope
         case supportsCompletePlan = "supports_complete_plan"
     }
 
@@ -20,6 +21,17 @@ struct PurchaseCommitCapabilities: Decodable {
         version == 1 && enabled && atomic && idempotency &&
         feature == "purchase_atomic_commit_v1" &&
         (proposal.operation != "complete_plan" || supportsCompletePlan)
+    }
+
+    func eligible(book: CloudBook) -> Bool {
+        guard book.isAvailable && version == 1 && enabled && atomic && idempotency &&
+              feature == "purchase_atomic_commit_v1" else { return false }
+        return book.name.hasPrefix("iOS_TEST_")
+            ? (scope == nil || scope == "test") : scope == "formal"
+    }
+
+    func allows(book: CloudBook, proposal: PurchaseCommitProposal) -> Bool {
+        eligible(book: book) && allows(proposal)
     }
 }
 
