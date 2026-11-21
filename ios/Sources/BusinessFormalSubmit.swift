@@ -9,7 +9,7 @@ enum BusinessFormalSubmit {
         guard let account = model.account, let book = model.selectedBook,
               !model.isUsingCachedAuthorization else { throw BusinessAtomicError.scope }
         await model.refreshBusinessCommitCapabilities()
-        guard model.businessCommitCapabilities?.allowsWrite == true else {
+        guard model.businessCommitCapabilities?.allows(book: book) == true else {
             throw BusinessAtomicError.unavailable
         }
         try await freshPull(model)
@@ -77,14 +77,14 @@ enum BusinessFormalSubmit {
     /// A 404 for the original operation is NOT permission to allocate a new
     /// operation ID. On V1.0.27 the exact original ID + payload hash is
     /// idempotent under a book-row lock. Only an explicit user action may
-    /// resume that same immutable operation, and only in iOS_TEST_ books.
+    /// resume that same immutable operation within the live authorized book.
     static func resumeOriginal(_ model: LedgerViewModel,
                                attempt: BusinessCommitAttempt) async throws -> BusinessCommitAttempt {
         guard attempt.phase == .unknown || attempt.phase == .prepared,
               let account = model.account, let book = model.selectedBook,
               book.id.lowercased() == attempt.bookID.lowercased(),
               account.username.lowercased() == attempt.account.lowercased(),
-              book.name.hasPrefix("iOS_TEST_"), !model.isUsingCachedAuthorization
+              model.businessCloudBookAllowed, !model.isUsingCachedAuthorization
         else { throw BusinessAtomicError.scope }
         let outbox = try BusinessCommitOutbox()
         guard let persisted = try outbox.load(id: attempt.proposal.operationID,
