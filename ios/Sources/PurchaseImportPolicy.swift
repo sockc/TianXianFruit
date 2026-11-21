@@ -36,17 +36,7 @@ struct PurchaseImportResult {
 
 enum PurchaseImportPolicy {
     private static func numericID(_ raw: JSONValue?) -> Int64? {
-        guard let raw else { return nil }
-        let value: Double
-        switch raw {
-        case .number(let n): value = n
-        case .string(let s): guard let v = Double(s) else { return nil }; value = v
-        default: return nil
-        }
-        guard value.isFinite, value > 0,
-              value < 9_007_199_254_740_992,
-              value.rounded() == value else { return nil }
-        return Int64(value)
+        AndroidNumericIdentity.exact(raw)
     }
 
     private static func quantity(_ raw: JSONValue?) -> String? {
@@ -172,10 +162,17 @@ enum PurchaseImportPolicy {
                 $0.tableName == "purchase_collaboration" &&
                 $0.payload["plan_item_sync_id"]?.text == item.syncId
             }
-            guard links.count <= 1 else { continue }
-            if let owner = links.first,
-               let boundBuyer = numericID(owner.payload["buyer_id"]),
+            // The backend requires exactly one active collaboration row to
+            // atomically complete the plan. An orphan is not safe to import.
+            guard links.count == 1, let owner = links.first,
+                  (owner.payload["purchase_order_sync_id"]?.text ?? "").isEmpty
+            else { continue }
+            if let boundBuyer = numericID(owner.payload["buyer_id"]),
                boundBuyer != buyerID { continue }
+            if let rawBuyer = owner.payload["buyer_id"],
+               rawBuyer.decimal != 0 && numericID(rawBuyer) == nil {
+                continue
+            }
             guard let fid = numericID(item.payload["fruit_id"]),
                   let name = item.payload["fruit_name"]?.text,
                   let product = fruit(fid, name: name, active: source),
