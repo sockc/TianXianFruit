@@ -65,13 +65,11 @@ struct PurchaseWorkspaceEditorView: View {
                             .font(.caption.bold()).foregroundColor(.orange)
                     }
                     Text(model.selectedBook?.name.hasPrefix("iOS_TEST_") == true
-                         ? "先保存采购草稿，再由采购页确认上传至测试账本；成功后安卓同步可查看。"
-                         : "正式账本暂只保存本机草稿，不计入云端采购额或资金结算。")
+                         ? "填写实际数量、单价后保存；采购页将通过原子接口提交至测试账本，安卓可同步查看。"
+                         : "正式账本仅保留本机草稿，不计入采购和结算。")
                         .font(.caption).foregroundColor(.secondary)
 
-                    DatePicker("采购日期", selection: $date,
-                               displayedComponents: .date)
-                        .font(.subheadline)
+                    TXDayBar(date: $date, label: "采购日期")
                         .disabled(hasPlanSource)
                     Picker("采购人", selection: $buyerSyncID) {
                         Text("请选择采购人").tag("")
@@ -109,9 +107,11 @@ struct PurchaseWorkspaceEditorView: View {
                     HStack {
                         Text("商品明细").font(.subheadline.bold())
                         Spacer()
-                        Text(String(lines.count) + "/" +
-                             String(PurchaseDraftPolicy.maxLines))
+                        Text("共 " + String(lines.count) + " 种")
                             .font(.caption).foregroundColor(.secondary)
+                        Text(total.map { "¥" + PurchaseDraftPolicy.display($0) } ?? "金额待核对")
+                            .font(.caption.bold())
+                            .foregroundColor(total == nil ? .orange : TXTheme.primary)
                         Button {
                             if lines.count < PurchaseDraftPolicy.maxLines {
                                 lines.append(.blank())

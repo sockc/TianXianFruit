@@ -304,3 +304,11 @@ assert "refreshAllTestWriteCapabilities" in swift["LedgerViewModel.swift"]
 assert '"/api/v1/purchases/commit"' in regular
 assert '"/api/v1/business/commit"' in regular
 assert (root.parent / "Tests" / "UnifiedIOSAccessTests.swift").exists()
+
+# V0.6.1: compact UI is display-only; original write safety contracts remain.
+assert "TXBusinessReceiptSummaryView(lines: lines)" in swift["BusinessLocalEntryView.swift"]
+assert "TXBusinessReceiptPolicy.individual(line)" in swift["BusinessLocalEntryView.swift"]
+assert "TXDayBar(date: $date" in swift["PurchaseWorkspaceEditorView.swift"]
+assert "PurchaseRemarkEditView(" in swift["AndroidEntryComponents.swift"]
+assert "TXTestBookAccess.isCandidate" in swift["AndroidEntryComponents.swift"]
+assert (root.parent / "Tests" / "AndroidEntryParityTests.swift").exists()

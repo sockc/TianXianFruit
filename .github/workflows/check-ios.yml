@@ -1,4 +1,4 @@
-name: Check iOS V0.6.0 Android-style UI and test workbench
+name: Check iOS V0.6.1 compact business and purchase entry
 
 on:
   pull_request:

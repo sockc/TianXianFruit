@@ -62,6 +62,7 @@ struct BusinessLocalEntryView: View {
     @State private var canResumeOriginal = false
     @State private var commitMessage: String?
     @State private var submitting = false
+    @State private var showHours = false
 
     init(date: Date, preferredStoreID: String? = nil) {
         _date = State(initialValue: date)
@@ -131,6 +132,7 @@ struct BusinessLocalEntryView: View {
             closingStock = ""
         }
         saved = persistedDraft != nil
+        showHours = !startTime.isEmpty || !endTime.isEmpty
         canResumeOriginal = false
         commitMessage = nil
         errorText = nil
@@ -256,7 +258,7 @@ struct BusinessLocalEntryView: View {
         NavigationView {
             Form {
                 Section(header: Text("营业日期与位置")) {
-                    DatePicker("营业日期", selection: $date, displayedComponents: .date)
+                    TXDayBar(date: $date, label: "营业日期", allowFuture: false)
                         .onChange(of: date) { _ in loadDraft() }
                     Picker("营业位置", selection: $storeID) {
                         Text("请选择位置").tag("")
@@ -265,6 +267,10 @@ struct BusinessLocalEntryView: View {
                         }
                     }
                     .onChange(of: storeID) { _ in loadDraft() }
+                    if !startTime.isEmpty && !endTime.isEmpty {
+                        Text("实际营业 " + startTime + "—" + endTime)
+                            .font(.caption).foregroundColor(.secondary)
+                    }
                     if let remoteRecord {
                         Label("云端已有该日该位置营业，不能重复新增。",
                               systemImage: "checkmark.shield")
@@ -279,24 +285,44 @@ struct BusinessLocalEntryView: View {
                     ForEach($lines) { $line in
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
-                                Picker("收款人", selection: $line.partnerSyncID) {
-                                    Text("请选择收款人").tag("")
-                                    ForEach(model.snapshot.testPartners) { person in
-                                        Text(person.name).tag(person.id)
+                                if model.snapshot.testPartners.count == 1,
+                                   let person = model.snapshot.testPartners.first {
+                                    Text(person.name).font(.subheadline.bold())
+                                } else {
+                                    Picker("收款人", selection: $line.partnerSyncID) {
+                                        Text("请选择收款人").tag("")
+                                        ForEach(model.snapshot.testPartners) { person in
+                                            Text(person.name).tag(person.id)
+                                        }
                                     }
                                 }
+                                Spacer(minLength: 4)
                                 if lines.count > 1 {
                                     Button(role: .destructive) {
                                         lines.removeAll { $0.id == line.id }
                                     } label: {
                                         Image(systemName: "minus.circle")
-                                    }
+                                    }.accessibilityLabel("移除收款人")
                                 }
                             }
-                            amount("微信", value: $line.wechat)
-                            amount("支付宝", value: $line.alipay)
-                            amount("现金", value: $line.cash)
+                            HStack(spacing: 7) {
+                                TXReceiptChannelInput(label: "微信", value: $line.wechat)
+                                TXReceiptChannelInput(label: "支付宝", value: $line.alipay)
+                                TXReceiptChannelInput(label: "现金", value: $line.cash)
+                            }
+                            if lines.count > 1,
+                               let subtotal = TXBusinessReceiptPolicy.individual(line) {
+                                HStack {
+                                    Text("该收款人小计")
+                                        .font(.caption2).foregroundColor(.secondary)
+                                    Spacer()
+                                    Text((Double(subtotal) / 100.0)
+                                         .formatted(.currency(code: "CNY")))
+                                        .font(.caption.bold())
+                                }
+                            }
                         }
+                        .padding(.vertical, 4)
                     }
                     if lines.count < 12 {
                         Button {
@@ -305,13 +331,7 @@ struct BusinessLocalEntryView: View {
                             Label("增加收款人", systemImage: "person.badge.plus")
                         }
                     }
-                    if let totals = try? BusinessCollectorDraftPolicy.totals(lines) {
-                        Text(String(format: "微信 ¥%.2f · 支付宝 ¥%.2f · 现金 ¥%.2f",
-                                    Double(totals.wechat)/100,
-                                    Double(totals.alipay)/100,
-                                    Double(totals.cash)/100))
-                            .font(.caption.bold())
-                    }
+                    TXBusinessReceiptSummaryView(lines: lines)
                 }
                 Section(header: Text("营业成本与利润依据（必填）")) {
                     amount("支出", value: $expense)
@@ -335,12 +355,30 @@ struct BusinessLocalEntryView: View {
                     Text("利润按安卓原规则：收款总额＋收摊库存－开摊库存－支出。必须确认实际数据；不能为了上传直接全部填零。")
                         .font(.caption).foregroundColor(.secondary)
                 }
-                Section(header: Text("实际营业时间")) {
-                    TextField("开摊 HH:mm，例如 16:00", text: $startTime)
-                    TextField("收摊 HH:mm，例如 00:10", text: $endTime)
-                    Text("两项同时填写或同时留空；跨午夜仅表示营业时段，不自动生成凌晨收款扣减。")
-                        .font(.caption).foregroundColor(.secondary)
-                    TextField("本机备注（不参与结算）", text: $note)
+                Section {
+                    DisclosureGroup(isExpanded: $showHours) {
+                        HStack {
+                            Text("开摊")
+                            Spacer()
+                            TextField("16:00", text: $startTime)
+                                .keyboardType(.numbersAndPunctuation)
+                                .multilineTextAlignment(.trailing)
+                                .frame(maxWidth: 105)
+                        }
+                        HStack {
+                            Text("收摊")
+                            Spacer()
+                            TextField("00:10", text: $endTime)
+                                .keyboardType(.numbersAndPunctuation)
+                                .multilineTextAlignment(.trailing)
+                                .frame(maxWidth: 105)
+                        }
+                        Text("格式 HH:mm；可跨午夜。这里只记录实际营业时间，不自动扣减凌晨收款。")
+                            .font(.caption2).foregroundColor(.secondary)
+                        TextField("营业备注（仅本机，不参与结算）", text: $note)
+                    } label: {
+                        Label("实际营业时间与备注", systemImage: "clock")
+                    }
                 }
                 Section {
                     Button {

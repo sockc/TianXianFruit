@@ -303,7 +303,7 @@ struct TXTestWorkbenchView: View {
         case .businessEdit:
             TestBusinessEditView()
         case .purchaseRemark:
-            PurchasesHistoryView()
+            TXPurchaseRemarkPickerView()
         case .inventoryEdit:
             TXReservedFeatureView(title: module.title, detail: "库存盘点、损耗及跨日结转服务端接口尚未准备好。")
         case .profitWrite:
