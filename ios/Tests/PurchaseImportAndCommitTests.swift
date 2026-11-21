@@ -67,7 +67,7 @@ final class PurchaseImportAndCommitTests: XCTestCase {
 
     private let account = Account(username: "seller",
         displayName: "店主", systemRole: "USER")
-    private let book = CloudBook(id: "book-1", name: "正式账本",
+    private let book = CloudBook(id: "book-1", name: "iOS_TEST_采购",
         role: "OWNER", deleted: false, purged: false)
 
     func testImportLastInventoryNeverTreatsRemainingAsPurchasedQuantity() {
@@ -218,4 +218,44 @@ final class PurchaseImportAndCommitTests: XCTestCase {
                 displayName: "外部账号", systemRole: "USER"),
             book: book, records: records()))
     }
+    func testFormalBookCannotBuildPurchaseWriteProposal() {
+        var item = PurchaseDraftLine.blank()
+        item.fruitSyncID = "fruit-1"
+        item.fruitName = "苹果"
+        item.quantity = "2"
+        item.unit = "件"
+        item.unitPrice = "15"
+        let prod = CloudBook(id: "book-1", name: "正式账本",
+                             role: "OWNER", deleted: false, purged: false)
+        XCTAssertThrowsError(try PurchaseCommitPlanningPolicy.prepare(
+            makeDraft([item]), account: account, book: prod, records: records()))
+    }
+
+    func testSeventeenDigitBuyerAndFruitAreLinkedWithoutDoubleRounding() throws {
+        let bigBuyer: Int64 = 79152283000000002
+        let bigFruit: Int64 = 79152283000000001
+        let modified = records().map { row -> SyncEvent in
+            guard row.syncId == "buyer-1" || row.syncId == "fruit-1" else {
+                return row
+            }
+            var payload = row.payload
+            payload["id"] = .exactInteger(row.syncId == "buyer-1" ? bigBuyer : bigFruit)
+            return event(row.tableName, row.syncId, payload, version: row.rowVersion)
+        }
+        var item = PurchaseDraftLine.blank()
+        item.fruitSyncID = "fruit-1"
+        item.fruitName = "苹果"
+        item.quantity = "2"
+        item.unit = "件"
+        item.unitPrice = "15"
+        let proposal = try PurchaseCommitPlanningPolicy.prepare(
+            makeDraft([item]), account: account, book: book, records: modified)
+        XCTAssertEqual(proposal.totalCost, "30.00")
+        XCTAssertEqual(proposal.buyerSyncID, "buyer-1")
+        XCTAssertEqual(proposal.lines.first?.fruitSyncID, "fruit-1")
+        XCTAssertEqual(AndroidNumericIdentity.exact(.exactInteger(bigBuyer)), bigBuyer)
+        XCTAssertEqual(AndroidNumericIdentity.exact(.exactInteger(bigFruit)), bigFruit)
+        XCTAssertNil(AndroidNumericIdentity.exact(.number(Double(bigBuyer))))
+    }
+
 }
