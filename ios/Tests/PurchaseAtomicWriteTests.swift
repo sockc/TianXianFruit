@@ -48,12 +48,12 @@ final class PurchaseAtomicWriteTests: XCTestCase {
         let supported = PurchaseCommitCapabilities(
             version: 1, enabled: true, supportsCompletePlan: false,
             atomic: true, idempotency: true,
-            feature: "purchase_atomic_commit_v1")
+            feature: "purchase_atomic_commit_v1", scope: nil)
         XCTAssertTrue(supported.allows(proposed))
         let disabled = PurchaseCommitCapabilities(
             version: 1, enabled: false, supportsCompletePlan: false,
             atomic: true, idempotency: true,
-            feature: "purchase_atomic_commit_v1")
+            feature: "purchase_atomic_commit_v1", scope: nil)
         XCTAssertFalse(disabled.allows(proposed))
         var plan = proposed
         plan = PurchaseCommitProposal(
