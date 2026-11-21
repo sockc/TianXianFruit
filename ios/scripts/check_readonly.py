@@ -321,3 +321,13 @@ assert "PurchaseDraftPolicy.subtotal(line)" in swift["PurchaseWorkspaceEditorVie
 assert "BusinessFormalSubmit.send" in swift["BusinessLocalEntryView.swift"]
 assert "PurchaseWorkspaceDraftPolicy.validate" in swift["PurchaseWorkspaceEditorView.swift"]
 assert (root.parent / "Tests" / "FastEntryFieldTests.swift").exists()
+
+# V0.6.3 settlement visual presentation: zero new financial write routes.
+settlement_ui = swift["SettlementTableView.swift"]
+assert "TXDayBar(date: $selectedDate" in settlement_ui
+assert "snapshotState" in settlement_ui
+assert "day.uniqueSnapshot" in settlement_ui
+assert "day.savedDaily.count > 1" in settlement_ui
+assert "SettlementDateDetail(day: day)" in settlement_ui
+assert "await model.refresh()" in settlement_ui
+assert (root.parent / "Tests" / "SettlementCompactPresentationTests.swift").exists()

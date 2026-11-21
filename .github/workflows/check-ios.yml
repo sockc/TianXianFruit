@@ -1,4 +1,4 @@
-name: Check iOS V0.6.2 Android-style fast number entry
+name: Check iOS V0.6.3 compact read-only settlement UI
 
 on:
   pull_request:
