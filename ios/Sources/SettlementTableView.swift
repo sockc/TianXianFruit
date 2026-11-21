@@ -188,12 +188,12 @@ struct SettlementTableView: View {
                 if TXTestBookAccess.isCandidate(model.selectedBook,
                                                  account: model.account,
                                                  offline: model.isUsingCachedAuthorization) {
-                    NavigationLink(destination: TXSettlementTestWorkbenchView()) {
+                    NavigationLink(destination: TXSettlementTestWorkbenchView(initialDate: selectedDate)) {
                         HStack(spacing: 8) {
                             Label("办理已保存转账", systemImage: "checkmark.circle")
                                 .font(.subheadline.bold())
                             Spacer()
-                            Text("部分 / 全额 / 恢复未结")
+                            Text("已保存方案")
                                 .font(.caption2).foregroundColor(.secondary)
                         }
                         .padding(10)

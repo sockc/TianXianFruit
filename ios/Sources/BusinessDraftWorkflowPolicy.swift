@@ -115,6 +115,19 @@ enum BusinessDraftWorkflowPolicy {
                        revenueCents: revenue, profitCents: revenue + c - o - e)
     }
 
+    /// Incomplete local drafts must never become zero-cost cloud records.
+    static func readyForCloud(lines: [BusinessCollectorDraftLine],
+                              expense: String, opening: String, closing: String,
+                              startTime: String, endTime: String) -> Bool {
+        guard preview(lines: lines, expense: expense,
+                      opening: opening, closing: closing) != nil else { return false }
+        let fields = [
+            "actual_start_time": startTime.trimmingCharacters(in: .whitespaces),
+            "actual_end_time": endTime.trimmingCharacters(in: .whitespaces)
+        ]
+        return (try? BusinessCollectorDraftPolicy.validateTimes(fields)) != nil
+    }
+
     private static func totalsFields(_ lines: [BusinessCollectorDraftLine]) -> [String: String] {
         guard let t = try? BusinessCollectorDraftPolicy.totals(lines) else { return [:] }
         return ["wechat": BusinessCommitPolicy.money(t.wechat),

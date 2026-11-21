@@ -17,29 +17,66 @@ struct BusinessLocalDraft: Codable, Identifiable {
     var updatedAt: Date
 }
 
+enum BusinessLocalDraftStoreError: LocalizedError {
+    case unreadable, verificationFailed
+    var errorDescription: String? {
+        switch self {
+        case .unreadable:
+            return "本机营业草稿无法读取，已禁止覆盖原数据。请保留 App 数据进行恢复。"
+        case .verificationFailed:
+            return "本机营业草稿保存后未能校验，请勿删除或重新安装 App。"
+        }
+    }
+}
+
 enum BusinessLocalDraftStore {
     private static func key(account: String, bookID: String) -> String {
         "ios.formal.business.drafts.v1." + account.lowercased() + "." + bookID.lowercased()
     }
 
-    static func load(account: String, bookID: String) -> [BusinessLocalDraft] {
-        guard !account.isEmpty, !bookID.isEmpty,
-              let data = UserDefaults.standard.data(forKey: key(account: account, bookID: bookID)),
-              let drafts = try? JSONDecoder().decode([BusinessLocalDraft].self, from: data)
-        else { return [] }
+    /// Never silently overwrite a malformed or unreadable draft collection.
+    static func loadChecked(account: String, bookID: String) throws -> [BusinessLocalDraft] {
+        guard !account.isEmpty, !bookID.isEmpty else {
+            throw TestWriteError.insufficientSchema("未选择账号或账本")
+        }
+        let storageKey = key(account: account, bookID: bookID)
+        guard let value = UserDefaults.standard.object(forKey: storageKey) else { return [] }
+        guard let data = value as? Data,
+              let drafts = try? JSONDecoder().decode([BusinessLocalDraft].self, from: data),
+              Set(drafts.map(\.id)).count == drafts.count else {
+            throw BusinessLocalDraftStoreError.unreadable
+        }
         return drafts
+    }
+
+    static func load(account: String, bookID: String) -> [BusinessLocalDraft] {
+        (try? loadChecked(account: account, bookID: bookID)) ?? []
     }
 
     static func save(_ draft: BusinessLocalDraft, account: String, bookID: String) throws {
         guard !account.isEmpty, !bookID.isEmpty else {
             throw TestWriteError.insufficientSchema("未选择账号或账本")
         }
-        var drafts = load(account: account, bookID: bookID)
-        // One local draft per calendar date and stall. No network side effects.
+        var drafts = try loadChecked(account: account, bookID: bookID)
+        let storageKey = key(account: account, bookID: bookID)
+        // Keep one known-readable backup of preexisting drafts for recovery.
+        if let old = UserDefaults.standard.data(forKey: storageKey) {
+            UserDefaults.standard.set(old, forKey: storageKey + ".backup")
+        }
         drafts.removeAll { ($0.date == draft.date && $0.storeID == draft.storeID) || $0.id == draft.id }
         drafts.append(draft)
-        let data = try JSONEncoder().encode(drafts)
-        UserDefaults.standard.set(data, forKey: key(account: account, bookID: bookID))
+        UserDefaults.standard.set(try JSONEncoder().encode(drafts), forKey: storageKey)
+        let verified = try loadChecked(account: account, bookID: bookID)
+        guard verified.count == drafts.count,
+              verified.contains(where: {
+                  $0.id == draft.id && $0.date == draft.date &&
+                  $0.storeID == draft.storeID && $0.collectors == draft.collectors &&
+                  $0.expense == draft.expense &&
+                  $0.openingStock == draft.openingStock &&
+                  $0.closingStock == draft.closingStock
+              }) else {
+            throw BusinessLocalDraftStoreError.verificationFailed
+        }
     }
 }
 
@@ -63,6 +100,11 @@ struct BusinessLocalEntryView: View {
     @State private var commitMessage: String?
     @State private var submitting = false
     @State private var showHours = false
+    @State private var storageError: String?
+    @State private var pendingDate: Date?
+    @State private var pendingStoreID: String?
+    @State private var showSwitchConfirmation = false
+    @State private var showCloseConfirmation = false
 
     init(date: Date, preferredStoreID: String? = nil) {
         _date = State(initialValue: date)
@@ -75,6 +117,66 @@ struct BusinessLocalEntryView: View {
     private var persistedDraft: BusinessLocalDraft? {
         BusinessLocalDraftStore.load(account: account, bookID: bookID)
             .first { $0.date == dateKey && $0.storeID == storeID }
+    }
+
+    private var cloudReady: Bool {
+        BusinessDraftWorkflowPolicy.readyForCloud(
+            lines: lines, expense: expense, opening: openingStock,
+            closing: closingStock, startTime: startTime, endTime: endTime)
+    }
+
+    // Preserve unsaved inputs when switching date or business location.
+    private var hasUnsavedInput: Bool {
+        guard !formMatchesSavedDraft else { return false }
+        if persistedDraft != nil { return true }
+        return lines.count > 1 ||
+            lines.contains { $0.wechat != "0" || $0.alipay != "0" ||
+                             $0.cash != "0" } ||
+            !expense.isEmpty || !openingStock.isEmpty ||
+            !closingStock.isEmpty || !note.isEmpty ||
+            !startTime.isEmpty || !endTime.isEmpty
+    }
+
+    private var guardedDate: Binding<Date> {
+        Binding(get: { date }, set: { next in
+            guard BusinessDates.key(next) != dateKey else { return }
+            if hasUnsavedInput {
+                pendingDate = next
+                pendingStoreID = nil
+                showSwitchConfirmation = true
+            } else {
+                date = next
+                loadDraft()
+            }
+        })
+    }
+
+    private var guardedStore: Binding<String> {
+        Binding(get: { storeID }, set: { next in
+            guard next != storeID else { return }
+            if hasUnsavedInput {
+                pendingStoreID = next
+                pendingDate = nil
+                showSwitchConfirmation = true
+            } else {
+                storeID = next
+                loadDraft()
+            }
+        })
+    }
+
+    private func applySwitch() {
+        if let pendingDate { date = pendingDate }
+        if let pendingStoreID { storeID = pendingStoreID }
+        pendingDate = nil
+        pendingStoreID = nil
+        loadDraft()
+    }
+
+    private func saveBeforeSwitch() {
+        save()
+        guard saved, formMatchesSavedDraft else { return }
+        applySwitch()
     }
 
     private var formMatchesSavedDraft: Bool {
@@ -111,7 +213,19 @@ struct BusinessLocalEntryView: View {
 
     private func loadDraft() {
         guard !storeID.isEmpty else { return }
-        if let draft = persistedDraft {
+        let existing: BusinessLocalDraft?
+        do {
+            existing = try BusinessLocalDraftStore.loadChecked(
+                account: account, bookID: bookID)
+                .first { $0.date == dateKey && $0.storeID == storeID }
+            storageError = nil
+        } catch {
+            storageError = error.localizedDescription
+            saved = false
+            commitMessage = storageError
+            return
+        }
+        if let draft = existing {
             lines = draft.collectors
             startTime = draft.startTime
             endTime = draft.endTime
@@ -152,7 +266,7 @@ struct BusinessLocalEntryView: View {
     }
 
     private func save() {
-        guard attempt == nil, !existingRemote,
+        guard storageError == nil, attempt == nil, !existingRemote,
               commitMessage?.hasPrefix("上传保护记录不可读取") != true else {
             errorText = existingRemote
                 ? "云端已有该日该位置营业，请从营业历史查看或更正"
@@ -165,30 +279,19 @@ struct BusinessLocalEntryView: View {
             return
         }
         do {
-            let totals = try BusinessCollectorDraftPolicy.totals(lines)
-            let fields = [
-                "wechat": String(format: "%.2f", Double(totals.wechat) / 100),
-                "alipay": String(format: "%.2f", Double(totals.alipay) / 100),
-                "cash": String(format: "%.2f", Double(totals.cash) / 100),
-                "actual_start_time": startTime.trimmingCharacters(in: .whitespaces),
-                "actual_end_time": endTime.trimmingCharacters(in: .whitespaces)
-            ]
-            try BusinessCollectorDraftPolicy.validate(lines, fields: fields)
-            try BusinessCollectorDraftPolicy.validateTimes(fields)
-            // These three amounts must be explicitly supplied: silently
-            // assuming zero could misstate Android's saved daily profit.
-            guard !expense.isEmpty, !openingStock.isEmpty, !closingStock.isEmpty
-            else { throw BusinessAtomicError.invalidDraft }
-            _ = try BusinessCollectorDraftPolicy.cents(expense, label: "支出")
-            _ = try BusinessCollectorDraftPolicy.cents(openingStock, label: "开摊库存估值")
-            _ = try BusinessCollectorDraftPolicy.cents(closingStock, label: "收摊库存估值")
-            let previous = BusinessLocalDraftStore.load(account: account, bookID: bookID)
+            // Local drafts are allowed before all amounts are complete.
+            // Server upload still requires readyForCloud and the atomic policy.
+            guard !lines.isEmpty, lines.count <= 12 else {
+                throw BusinessAtomicError.invalidDraft
+            }
+            let previous = try BusinessLocalDraftStore.loadChecked(
+                account: account, bookID: bookID)
                 .first(where: { $0.date == dateKey && $0.storeID == storeID })
             let draft = BusinessLocalDraft(
                 id: previous?.id ?? UUID().uuidString, date: dateKey,
                 storeID: store.id, storeName: store.name, collectors: lines,
-                startTime: fields["actual_start_time"] ?? "",
-                endTime: fields["actual_end_time"] ?? "", note: note,
+                startTime: startTime.trimmingCharacters(in: .whitespaces),
+                endTime: endTime.trimmingCharacters(in: .whitespaces), note: note,
                 expense: expense, openingStock: openingStock,
                 closingStock: closingStock, updatedAt: Date())
             try BusinessLocalDraftStore.save(draft, account: account, bookID: bookID)
@@ -209,15 +312,17 @@ struct BusinessLocalEntryView: View {
     }
 
     private func saveThenSync() async {
-        if !saved || !formMatchesSavedDraft {
-            save()
+        guard cloudReady else {
+            errorText = "请补齐有效收款人、收入、支出和库存估值后再同步；未填金额不会当作零。"
+            return
         }
+        if !saved || !formMatchesSavedDraft { save() }
         guard saved && formMatchesSavedDraft else { return }
         await commitDraft()
     }
 
     private func commitDraft() async {
-        guard !submitting, attempt == nil, editingAllowed,
+        guard !submitting, attempt == nil, editingAllowed, cloudReady,
               model.businessTestBookAllowed, saved, formMatchesSavedDraft,
               !existingRemote,
               commitMessage?.hasPrefix("上传保护记录不可读取") != true,
@@ -273,10 +378,9 @@ struct BusinessLocalEntryView: View {
         NavigationView {
             Form {
                 Section(header: Text("营业日期与位置")) {
-                    TXDayBar(date: $date, label: "营业日期", allowFuture: false)
-                        .onChange(of: date) { _ in loadDraft() }
+                    TXDayBar(date: guardedDate, label: "营业日期", allowFuture: false)
                     HStack(spacing: 8) {
-                        Picker("营业位置", selection: $storeID) {
+                        Picker("营业位置", selection: guardedStore) {
                             Text("请选择位置").tag("")
                             ForEach(model.snapshot.testStores) { store in
                                 Text(store.name).tag(store.id)
@@ -284,7 +388,6 @@ struct BusinessLocalEntryView: View {
                         }
                         .pickerStyle(MenuPickerStyle())
                         .accessibilityLabel("营业位置")
-                        .onChange(of: storeID) { _ in loadDraft() }
                         Spacer(minLength: 4)
                         Text((startTime.isEmpty || endTime.isEmpty)
                              ? "实际时间未填" : startTime + "—" + endTime)
@@ -354,7 +457,7 @@ struct BusinessLocalEntryView: View {
                     }
                     TXBusinessReceiptSummaryView(lines: lines)
                 }
-                Section(header: Text("营业成本与利润依据（必填）")) {
+                Section(header: Text("营业成本与利润依据（同步前必填）")) {
                     amount("支出", value: $expense)
                     amount("开摊库存估值", value: $openingStock)
                     amount("收摊库存估值", value: $closingStock)
@@ -373,7 +476,7 @@ struct BusinessLocalEntryView: View {
                         Text("确认每位收款人金额，以及支出、开摊和收摊库存估值后，显示利润预览。")
                             .font(.caption).foregroundColor(.secondary)
                     }
-                    Text("利润按安卓原规则：收款总额＋收摊库存－开摊库存－支出。必须确认实际数据；不能为了上传直接全部填零。")
+                    Text("可以先保存未填完的营业草稿。利润沿用安卓规则；云端提交前必须补齐真实成本，不能把缺失值当作零。")
                         .font(.caption).foregroundColor(.secondary)
                 }
                 Section {
@@ -403,21 +506,23 @@ struct BusinessLocalEntryView: View {
                 }
                 Section {
                     Button {
-                        if cloudWriteAvailable {
+                        if cloudWriteAvailable && cloudReady {
                             Task { await saveThenSync() }
                         } else {
                             save()
                         }
                     } label: {
-                        Label(cloudWriteAvailable ? "保存并同步营业" : "保存营业（仅本机）",
-                              systemImage: cloudWriteAvailable ?
+                        Label(cloudWriteAvailable && cloudReady ?
+                                  "保存并同步营业" : "保存营业草稿",
+                              systemImage: cloudWriteAvailable && cloudReady ?
                                   "icloud.and.arrow.up" : "square.and.arrow.down")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(!editingAllowed || storeID.isEmpty || existingRemote ||
-                              attempt != nil || submitting ||
-                              (saved && formMatchesSavedDraft && !cloudWriteAvailable))
+                              storageError != nil || attempt != nil || submitting ||
+                              (saved && formMatchesSavedDraft &&
+                               !(cloudWriteAvailable && cloudReady)))
                     if saved && formMatchesSavedDraft {
                         Label("本机草稿已保存（云端状态见下方）",
                               systemImage: "checkmark.circle")
@@ -425,6 +530,15 @@ struct BusinessLocalEntryView: View {
                     } else if saved && !formMatchesSavedDraft {
                         Label("当前有未保存的修改，上传前请先保存",
                               systemImage: "exclamationmark.circle")
+                            .font(.caption).foregroundColor(.orange)
+                    }
+                    if let storageError {
+                        Label(storageError, systemImage: "externaldrive.badge.exclamationmark")
+                            .font(.caption).foregroundColor(.red)
+                    }
+                    if cloudWriteAvailable && !cloudReady {
+                        Label("收款或成本尚未补齐；可先保存本机，补齐后再同步。",
+                              systemImage: "info.circle")
                             .font(.caption).foregroundColor(.orange)
                     }
                     if let errorText {
@@ -482,7 +596,10 @@ struct BusinessLocalEntryView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("关闭") { dismiss() }
+                    Button("关闭") {
+                        if hasUnsavedInput { showCloseConfirmation = true }
+                        else { dismiss() }
+                    }
                 }
             }
             .onAppear {
@@ -491,6 +608,34 @@ struct BusinessLocalEntryView: View {
                     storeID = model.snapshot.testStores[0].id
                 }
                 loadDraft()
+            }
+            .interactiveDismissDisabled(hasUnsavedInput)
+            .alert("退出前保存营业草稿？",
+                   isPresented: $showCloseConfirmation) {
+                Button("先保存本机，再关闭") {
+                    save()
+                    if saved && formMatchesSavedDraft { dismiss() }
+                }
+                .disabled(!editingAllowed || storageError != nil)
+                Button("放弃未保存内容并关闭", role: .destructive) { dismiss() }
+                Button("继续编辑", role: .cancel) {}
+            } message: {
+                Text("未保存的收款和成本不会保留。")
+            }
+            .confirmationDialog("当前营业录入尚未保存",
+                                isPresented: $showSwitchConfirmation,
+                                titleVisibility: .visible) {
+                Button("先保存在本机，再切换") { saveBeforeSwitch() }
+                    .disabled(!editingAllowed || storageError != nil)
+                Button("放弃本次未保存的修改", role: .destructive) {
+                    applySwitch()
+                }
+                Button("继续编辑", role: .cancel) {
+                    pendingDate = nil
+                    pendingStoreID = nil
+                }
+            } message: {
+                Text("切换日期或位置会替换当前输入。保存只写入本机，不会自动创建云端营业。")
             }
         }
     }
