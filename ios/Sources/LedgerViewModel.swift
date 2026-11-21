@@ -183,6 +183,10 @@ final class LedgerViewModel: ObservableObject {
         guard let account, let token = accessToken,
               let book = selectedBookID,
               !isUsingCachedAuthorization else { return }
+        guard selectedBook?.name.hasPrefix("iOS_TEST_") == true else {
+            purchaseCommitError = "正式账本采购写入暂未开放；可继续保存本机草稿"
+            return
+        }
         do {
             let caps = try await api.purchaseCapabilities(token: token, bookID: book)
             guard self.account?.username == account.username,
@@ -206,7 +210,7 @@ final class LedgerViewModel: ObservableObject {
               let token = accessToken,
               !isUsingCachedAuthorization,
               account.username.lowercased() == proposal.account.lowercased(),
-              book.id == proposal.bookID,
+              book.id == proposal.bookID, book.name.hasPrefix("iOS_TEST_"),
               PurchaseWorkspaceDraftPolicy.authorized(book: book, account: account)
         else { throw PurchaseAtomicError.scopeChanged }
         isPurchaseCommitBusy = true
