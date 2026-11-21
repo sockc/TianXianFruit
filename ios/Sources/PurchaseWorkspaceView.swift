@@ -354,6 +354,18 @@ struct PurchaseWorkspaceView: View {
                 }
             }
             .buttonStyle(.plain)
+            if canEdit, model.selectedBook?.name.hasPrefix("iOS_TEST_") == true,
+               model.purchaseCommitCapabilities?.enabled != true {
+                HStack {
+                    Text("测试账本采购写入尚未启用")
+                        .font(.caption).foregroundColor(.secondary)
+                    Spacer()
+                    Button("刷新权限") {
+                        Task { await model.refreshPurchaseCommitCapabilities() }
+                    }
+                    .font(.caption)
+                }
+            }
             if showDrafts {
                 if localDrafts.isEmpty {
                     notice("当前日期没有本机待提交采购")
