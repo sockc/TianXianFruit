@@ -331,3 +331,20 @@ assert "day.savedDaily.count > 1" in settlement_ui
 assert "SettlementDateDetail(day: day)" in settlement_ui
 assert "await model.refresh()" in settlement_ui
 assert (root.parent / "Tests" / "SettlementCompactPresentationTests.swift").exists()
+
+
+# V0.6.4: registered transfer progress is read-only; never execute settlement.
+stage1 = swift["SettlementStatusPolicy.swift"]
+settlement_ui = swift["SettlementTableView.swift"]
+finance = swift["FinanceReadOnlyModels.swift"]
+assert "TXRecordedSettlementState" in stage1
+assert "TXTransferRegistration" in stage1
+assert "isPotentialCutoff" in stage1
+assert "settlement_kind" in finance
+assert "CUTOFF_LEGACY_INVALID" in finance
+assert "confirmedAt" in finance
+assert "coveringCutoffs" in settlement_ui
+assert "SettlementTransferDetailRow" in settlement_ui
+assert "云端已登记结算" in settlement_ui
+assert '"POST"' not in stage1 and '"PATCH"' not in stage1
+assert (root.parent / "Tests" / "SettlementRecordedStatusTests.swift").exists()

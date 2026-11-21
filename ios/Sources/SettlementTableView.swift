@@ -11,7 +11,10 @@ struct SettlementTableDay: Identifiable {
     let shares: [FinanceProfitRow]
     let funds: [FinanceSettlementPartnerRow]
     let transfers: [FinanceTransferRow]
+    /// Later period settlements that may cover this date. Not effective status.
+    let coveringCutoffs: [FinanceTransferRow]
 
+    var hasPotentialPeriodCoverage: Bool { !coveringCutoffs.isEmpty }
     var id: String { date }
     var savedSalesTotal: Double? {
         sales.isEmpty ? nil : sales.reduce(0) { $0 + $1.revenue }
@@ -65,7 +68,11 @@ enum SettlementTablePolicy {
                 savedDaily: daily.filter { $0.date == date }.sorted { $0.id < $1.id },
                 shares: shares.filter { $0.date == date }.sorted { $0.id < $1.id },
                 funds: funds.filter { $0.date == date }.sorted { $0.id < $1.id },
-                transfers: transfers.filter { $0.date == date }.sorted { $0.id < $1.id }
+                transfers: transfers.filter { $0.date == date }.sorted { $0.id < $1.id },
+                coveringCutoffs: snapshot.financeTransfers.filter {
+                    TXSettlementRecordPolicy.isPotentialCutoff(
+                        $0, on: date, partner: partner)
+                }.sorted { $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date }
             )
         }
     }
@@ -241,7 +248,7 @@ struct SettlementTableView: View {
                     }
                 }
 
-                Text("只读展示已同步的营业、日结、合伙人利润分配和转账原始记录。日结状态指记录存在，不代表资金已结清；跨日转账不会按覆盖日期重复计入当天。")
+                Text("仅显示云端保存的原始状态及逐笔转账登记金额。安卓的最终有效结清状态还取决于资金中心、周期结清及历史调整，本版不会在 iOS 重新计算；登记金额不等于银行到账。")
                     .font(.caption2).foregroundColor(.secondary)
                 SyncFooter()
             }.padding(12)
@@ -281,6 +288,14 @@ private struct SettlementDateCard: View {
                             SettlementSummaryTile(label: "利润", amount: snapshot.profit,
                                                   emphasize: true)
                         }
+                        HStack(spacing: 5) {
+                            Image(systemName: "doc.text")
+                            Text("云端" + TXRecordedSettlementState.of(snapshot).label)
+                            Spacer()
+                            Text("非最终有效状态")
+                        }
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
                     } else {
                         HStack(spacing: 8) {
                             Image(systemName: "exclamationmark.circle")
@@ -299,8 +314,14 @@ private struct SettlementDateCard: View {
                     }
                     .font(.caption2).foregroundColor(.secondary)
                     if day.includesPeriodTransfers {
-                        Label("含周期或资金中心转账，展开核对覆盖日期",
+                        Label("本日有周期或资金中心转账记录，需核对覆盖日期",
                               systemImage: "calendar.badge.clock")
+                            .font(.caption2).foregroundColor(.orange)
+                    }
+                    if day.hasPotentialPeriodCoverage {
+                        Label("另有 " + String(day.coveringCutoffs.count) +
+                              " 笔已登记周期结清可能覆盖本日，最终状态以安卓有效状态为准",
+                              systemImage: "exclamationmark.circle")
                             .font(.caption2).foregroundColor(.orange)
                     }
                 }
@@ -401,6 +422,14 @@ private struct SettlementDateDetail: View {
                         SettlementValueLine(label: "采购金额", amount: row.purchase)
                         SettlementValueLine(label: "其他费用", amount: row.expense)
                         SettlementValueLine(label: "保存的利润", amount: row.profit)
+                        HStack {
+                            Text("原始结算状态")
+                                .font(.caption).foregroundColor(.secondary)
+                            Spacer()
+                            Text(TXRecordedSettlementState.of(row).label)
+                                .font(.caption.bold())
+                                .foregroundColor(.secondary)
+                        }
                     }
                     .padding(9)
                     .background(Color(UIColor.tertiarySystemGroupedBackground),
@@ -462,35 +491,97 @@ private struct SettlementDateDetail: View {
             }
 
             Divider()
-            Text("转账方案及登记记录 · 原始记录").font(.subheadline.bold())
-            if day.transfers.isEmpty {
-                Text("没有已同步转账记录，不自行计算最少转账或已结清。")
+            Text("当日转账方案 · 逐笔登记进度").font(.subheadline.bold())
+            let dailyTransfers = day.transfers.filter {
+                $0.kind.uppercased() == "DAILY"
+            }
+            if dailyTransfers.isEmpty {
+                Text("没有已同步的当日转账方案，不能据此判断已结清。")
                     .font(.caption).foregroundColor(.secondary)
             } else {
-                ForEach(day.transfers) { item in
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(item.from + " → " + item.to)
-                            .font(.subheadline.bold())
-                        Text(item.kindLabel + " · 记录日 " + item.date)
-                            .font(.caption2).foregroundColor(.secondary)
-                        if let period = item.periodLabel {
-                            Text(period + (item.businessDayCount > 0
-                                 ? " · \(item.businessDayCount) 个营业日" : ""))
-                                .font(.caption2).foregroundColor(.secondary)
-                        } else if item.kind.uppercased() != "DAILY" {
-                            Text("没有完整覆盖日期，不应视为单日转账。")
-                                .font(.caption2).foregroundColor(.orange)
-                        }
-                        SettlementValueLine(label: "方案金额", amount: item.amount)
-                        SettlementValueLine(label: "已登记结算（不代表银行到账）",
-                                            amount: item.recordedSettled)
-                    }
-                    .padding(9)
-                    .background(Color(UIColor.tertiarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 9))
+                ForEach(dailyTransfers) { item in
+                    SettlementTransferDetailRow(item: item)
                 }
             }
+
+            Divider()
+            Text("周期 / 历史转账记录").font(.subheadline.bold())
+            let standalone = day.transfers.filter {
+                $0.kind.uppercased() != "DAILY"
+            }
+            if standalone.isEmpty {
+                Text("本日没有已同步的周期或历史转账。")
+                    .font(.caption).foregroundColor(.secondary)
+            } else {
+                ForEach(standalone) { item in
+                    SettlementTransferDetailRow(item: item)
+                }
+            }
+            if day.hasPotentialPeriodCoverage {
+                Divider()
+                Label("可能覆盖本日的已登记跨日结清（仅作核对提醒）",
+                      systemImage: "calendar.badge.exclamationmark")
+                    .font(.subheadline.bold()).foregroundColor(.orange)
+                ForEach(day.coveringCutoffs) { cutoff in
+                    HStack(alignment: .top) {
+                        Text(cutoff.date + " · " + cutoff.from + " → " + cutoff.to)
+                            .font(.caption)
+                        Spacer(minLength: 4)
+                        Text("登记 " + settleYuan(cutoff.recordedSettled))
+                            .font(.caption.bold())
+                    }
+                }
+                Text("这里只显示符合日期与登记证据的可能关联，不表示该日所有合伙人已结清。最终有效状态仍由安卓资金中心与周期结清算法决定。")
+                    .font(.caption2).foregroundColor(.secondary)
+            }
         }
+    }
+}
+
+private struct SettlementTransferDetailRow: View {
+    let item: FinanceTransferRow
+
+    private var registration: TXTransferRegistration {
+        TXSettlementRecordPolicy.transferRegistration(item)
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(item.from + " → " + item.to)
+                    .font(.subheadline.bold()).lineLimit(2)
+                Spacer(minLength: 3)
+                Text(registration.label)
+                    .font(.caption2.bold())
+                    .foregroundColor(registration == .inconsistent ? .red : .secondary)
+            }
+            Text(item.kindLabel + " · 记录日期 " + item.date)
+                .font(.caption2).foregroundColor(.secondary)
+            if let period = item.periodLabel {
+                Text(period + (item.businessDayCount > 0
+                     ? " · \(item.businessDayCount) 个营业日" : ""))
+                    .font(.caption2).foregroundColor(.secondary)
+            } else if item.kind.uppercased() != "DAILY" {
+                Text("此笔记录未提供完整覆盖日期，不能当作单日结清。")
+                    .font(.caption2).foregroundColor(.orange)
+            }
+            SettlementValueLine(label: "方案金额", amount: item.amount)
+            SettlementValueLine(label: "云端已登记结算", amount: item.recordedSettled)
+            if item.recordedSettled > 0.005 && item.confirmedAt <= 0 {
+                Text("存在登记金额但未附确认时间；可能为旧数据，请在安卓核对。")
+                    .font(.caption2).foregroundColor(.orange)
+            }
+            if registration == .inconsistent {
+                Text("原始登记金额超出方案或格式异常，不自行调整金额。")
+                    .font(.caption2).foregroundColor(.red)
+            }
+            if item.kind.uppercased() == "CUTOFF_LEGACY_INVALID" {
+                Text("旧版无效结清记录：安卓不会将其计入当前资金余额。")
+                    .font(.caption2).foregroundColor(.orange)
+            }
+        }
+        .padding(9)
+        .background(Color(UIColor.tertiarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 9))
     }
 }
 

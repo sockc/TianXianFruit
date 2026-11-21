@@ -1,4 +1,4 @@
-name: Check iOS V0.6.3 compact read-only settlement UI
+name: Check iOS V0.6.4 settlement status and transfer registration
 
 on:
   pull_request:

@@ -34,10 +34,14 @@ struct FinanceTransferRow: Identifiable {
     let rangeStartDate: String
     let rangeEndDate: String
     let businessDayCount: Int
+    let confirmedAt: Double
+    let focusPartnerName: String
     var kindLabel: String {
         switch kind.uppercased() {
         case "DAILY": return "当日资金方案"
         case "CUTOFF": return "周期资金结算"
+        case "CUTOFF_CENTER": return "资金中心周期结清"
+        case "CUTOFF_LEGACY_INVALID": return "旧版无效转账（不计入资金余额）"
         case "CENTER": return "资金中心结算"
         case "LEGACY": return "历史资金记录"
         default: return "资金记录（\(kind)）"
@@ -63,6 +67,8 @@ struct FinanceTransferRow: Identifiable {
         rangeStartDate = event.payload["range_start_date"]?.text ?? ""
         rangeEndDate = event.payload["range_end_date"]?.text ?? ""
         businessDayCount = Int(event.payload["business_day_count"]?.decimal ?? 0)
+        confirmedAt = event.payload["confirmed_at"]?.decimal ?? 0
+        focusPartnerName = event.payload["focus_partner_name"]?.text ?? ""
     }
 }
 
@@ -102,6 +108,7 @@ struct FinanceDailyRow: Identifiable {
     let expense: Double
     let profit: Double
     let status: Int
+    let statusProvided: Bool
     init?(_ event: SyncEvent) {
         guard event.tableName == "daily_cash_settlement", !event.isDeletion,
               let date = event.payload["date"]?.text, !date.isEmpty else { return nil }
@@ -111,6 +118,7 @@ struct FinanceDailyRow: Identifiable {
         purchase = event.payload["purchase_cost"]?.decimal ?? 0
         expense = event.payload["expense"]?.decimal ?? 0
         profit = event.payload["profit"]?.decimal ?? 0
+        statusProvided = event.payload["status"]?.decimal != nil
         status = Int(event.payload["status"]?.decimal ?? 0)
     }
 }
