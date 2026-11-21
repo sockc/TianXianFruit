@@ -610,9 +610,8 @@ struct BusinessLocalEntryView: View {
                 loadDraft()
             }
             .interactiveDismissDisabled(hasUnsavedInput)
-            .confirmationDialog("退出前保存营业草稿？",
-                                isPresented: $showCloseConfirmation,
-                                titleVisibility: .visible) {
+            .alert("退出前保存营业草稿？",
+                   isPresented: $showCloseConfirmation) {
                 Button("先保存本机，再关闭") {
                     save()
                     if saved && formMatchesSavedDraft { dismiss() }
