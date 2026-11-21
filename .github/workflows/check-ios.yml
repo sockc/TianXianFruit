@@ -1,4 +1,4 @@
-name: Check iOS V0.5.1 atomic purchases and exact Android IDs
+name: Check iOS V0.5.2 purchase plan completion and cloud readback
 
 on:
   pull_request:
