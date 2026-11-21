@@ -9,6 +9,7 @@ struct SettlementTableDay: Identifiable {
     let purchases: [PurchaseOrderRow]
     let savedDaily: [FinanceDailyRow]
     let shares: [FinanceProfitRow]
+    let funds: [FinanceSettlementPartnerRow]
     let transfers: [FinanceTransferRow]
 
     var id: String { date }
@@ -38,17 +39,22 @@ enum SettlementTablePolicy {
         let shares = snapshot.financeProfitRows.filter {
             inRange($0.date) && (partner.isEmpty || $0.partner == partner)
         }
+        let funds = snapshot.financeSettlementPartners.filter {
+            inRange($0.date) && (partner.isEmpty || $0.partner == partner)
+        }
         let transfers = snapshot.financeTransfers.filter {
             inRange($0.date) && (partner.isEmpty || $0.from == partner || $0.to == partner)
         }
 
         var dates = Set(sales.map(\.date) + purchases.map(\.date) +
-                        daily.map(\.date) + shares.map(\.date) + transfers.map(\.date))
+                        daily.map(\.date) + shares.map(\.date) +
+                        funds.map(\.date) + transfers.map(\.date))
         if !location.isEmpty {
             dates.formIntersection(Set(sales.map(\.date)))
         }
         if !partner.isEmpty {
-            dates.formIntersection(Set(shares.map(\.date) + transfers.map(\.date)))
+            dates.formIntersection(Set(shares.map(\.date) +
+                                       funds.map(\.date) + transfers.map(\.date)))
         }
         return dates.sorted(by: >).map { date in
             SettlementTableDay(
@@ -58,6 +64,7 @@ enum SettlementTablePolicy {
                 purchases: purchases.filter { $0.date == date }.sorted { $0.id < $1.id },
                 savedDaily: daily.filter { $0.date == date }.sorted { $0.id < $1.id },
                 shares: shares.filter { $0.date == date }.sorted { $0.id < $1.id },
+                funds: funds.filter { $0.date == date }.sorted { $0.id < $1.id },
                 transfers: transfers.filter { $0.date == date }.sorted { $0.id < $1.id }
             )
         }
@@ -83,6 +90,7 @@ struct SettlementTableView: View {
     }
     private var partnerNames: [String] {
         Array(Set(model.snapshot.financeProfitRows.map(\.partner) +
+                  model.snapshot.financeSettlementPartners.map(\.partner) +
                   model.snapshot.financeTransfers.flatMap { [$0.from, $0.to] }))
             .filter { !$0.isEmpty && $0 != "未知" && $0 != "未知合伙人" }
             .sorted()
@@ -146,7 +154,7 @@ struct SettlementTableView: View {
                             .frame(maxWidth: .infinity)
                     }
                 }
-                Text("营业和采购合计仅汇总已保存的原始记录；正式结算金额、利润分配与资金转账只显示同步的原始值。不会重新计算利润、轧差、最少转账或改变已结算资金。")
+                Text("营业与采购合计仅汇总已保存的原始记录；资金轧差、合伙人分配及转账记录直接展示同步值。不同类型的转账可能覆盖多个营业日，不能按记录日期理解为本日发生。不会重新计算结算或修改资金。")
                     .font(.caption2).foregroundColor(.secondary)
                 SyncFooter()
             }
@@ -184,8 +192,12 @@ private struct SettlementDateCard: View {
                     }
                 }
                 Divider()
-                SettlementValueLine(label: "已保存营业额合计", amount: day.savedSalesTotal!)
-                SettlementValueLine(label: "已保存位置利润合计", amount: day.savedStoreProfitTotal!)
+                if let total = day.savedSalesTotal {
+                    SettlementValueLine(label: "已保存营业额合计", amount: total)
+                }
+                if let profit = day.savedStoreProfitTotal {
+                    SettlementValueLine(label: "已保存位置利润合计", amount: profit)
+                }
             }
             if let purchase = day.savedPurchaseTotal {
                 SettlementValueLine(label: "当日采购订单合计（全账本）", amount: purchase)
@@ -205,6 +217,7 @@ private struct SettlementDateCard: View {
                     VStack(alignment: .leading, spacing: 3) {
                         SettlementValueLine(label: "营业额", amount: row.revenue)
                         SettlementValueLine(label: "采购金额", amount: row.purchase)
+                        SettlementValueLine(label: "其他费用", amount: row.expense)
                         SettlementValueLine(label: "正式记录利润", amount: row.profit)
                     }
                     .padding(9)
@@ -213,14 +226,54 @@ private struct SettlementDateCard: View {
                 }
             }
             Divider()
+            Text("合伙人资金轧差明细 · 同步原始值").font(.subheadline.bold())
+            if day.funds.isEmpty {
+                Text("本日暂无已同步合伙人日结明细；不能据营业额补算资金余额。")
+                    .font(.caption).foregroundColor(.secondary)
+            } else {
+                ForEach(day.funds) { item in
+                    DisclosureGroup {
+                        VStack(alignment: .leading, spacing: 6) {
+                            SettlementValueLine(label: "实际收款", amount: item.revenueReceived)
+                            SettlementValueLine(label: "采购垫付", amount: item.purchasePaid)
+                            SettlementValueLine(label: "费用垫付", amount: item.expensePaid)
+                            SettlementValueLine(label: "已保存利润份额", amount: item.profitShare)
+                            SettlementValueLine(label: "应留存款", amount: item.shouldKeep)
+                            SettlementValueLine(label: "本日资金差额", amount: item.balance)
+                        }
+                        .padding(.top, 6)
+                    } label: {
+                        HStack {
+                            Text(item.partner).font(.subheadline.bold())
+                            Spacer()
+                            Text("资金差额 " + settleYuan(item.balance))
+                                .font(.caption).foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(9)
+                    .background(Color(UIColor.tertiarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 9))
+                }
+                Text("资金差额是各日结记录的原始值，不等于该合伙人当前可提现余额。")
+                    .font(.caption2).foregroundColor(.secondary)
+            }
+            Divider()
             Text("已保存实际利润分配").font(.subheadline.bold())
             if day.shares.isEmpty {
                 Text("暂无已同步分配记录，不自行推算分配。")
                     .font(.caption).foregroundColor(.secondary)
             } else {
                 ForEach(day.shares) { item in
-                    SettlementValueLine(label: item.partner, amount: item.allocated)
+                    VStack(alignment: .leading, spacing: 3) {
+                        SettlementValueLine(label: item.partner, amount: item.allocated)
+                        Text("原始分配比例值：" + item.ratio.formatted() +
+                             (item.role.isEmpty ? "" : "  ·  角色：" + item.role))
+                            .font(.caption2).foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 2)
                 }
+                Text("分配比例原样显示云端 ratio 字段，不擅自转换百分比。")
+                    .font(.caption2).foregroundColor(.secondary)
             }
             Divider()
             Text("云端已保存转账方案及登记记录").font(.subheadline.bold())
@@ -232,6 +285,16 @@ private struct SettlementDateCard: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(item.from + " → " + item.to)
                             .font(.subheadline.bold()).lineLimit(2)
+                        Text(item.kindLabel + " · 记录日期 " + item.date)
+                            .font(.caption2).foregroundColor(.secondary)
+                        if let period = item.periodLabel {
+                            Text(period + (item.businessDayCount > 0
+                                 ? " · \(item.businessDayCount) 个营业日" : ""))
+                                .font(.caption2).foregroundColor(.secondary)
+                        } else if item.kind.uppercased() != "DAILY" {
+                            Text("原始记录未提供完整覆盖日期，不能视作本日单独发生的转账。")
+                                .font(.caption2).foregroundColor(.orange)
+                        }
                         SettlementValueLine(label: "方案金额", amount: item.amount)
                         SettlementValueLine(label: "已登记结算（非银行到账证明）",
                                             amount: item.recordedSettled)

@@ -104,4 +104,88 @@ final class SettlementTableTests: XCTestCase {
         XCTAssertTrue(SettlementTablePolicy.rows(snapshot, since: "2026-11-20",
                                                  until: "2026-11-20").isEmpty)
     }
+
+    func testPartnerSettlementOriginalFieldsAndNegativeBalance() {
+        var snapshot = ReadOnlySnapshot()
+        snapshot.apply([
+            row("settlement_partner", "fp-1", "2026-11-20", [
+                "partner_name": .string("张"), "purchase_paid": .number(145),
+                "expense_paid": .number(12), "revenue_received": .number(300),
+                "profit_share": .number(31.15), "should_keep": .number(176.15),
+                "balance": .number(-23.85)]),
+            row("settlement_partner", "fp-2", "2026-11-20", [
+                "partner_name": .string("李"), "balance": .number(23.85)])
+        ])
+        let days = SettlementTablePolicy.rows(snapshot, since: "2026-11-20",
+                                              until: "2026-11-20")
+        XCTAssertEqual(days.count, 1)
+        XCTAssertEqual(days[0].funds.count, 2)
+        let first = days[0].funds.first { $0.partner == "张" }
+        XCTAssertEqual(first?.revenueReceived, 300)
+        XCTAssertEqual(first?.purchasePaid, 145)
+        XCTAssertEqual(first?.expensePaid, 12)
+        XCTAssertEqual(first?.profitShare, 31.15)
+        XCTAssertEqual(first?.shouldKeep, 176.15)
+        XCTAssertEqual(first?.balance, -23.85)
+        XCTAssertTrue(days[0].savedDaily.isEmpty,
+                      "Partner funds must not create a synthetic daily settlement")
+        let selected = SettlementTablePolicy.rows(snapshot,
+            since: "2026-11-20", until: "2026-11-20", partner: "张")
+        XCTAssertEqual(selected.count, 1)
+        XCTAssertEqual(selected[0].funds.count, 1)
+        XCTAssertEqual(selected[0].funds[0].partner, "张")
+        XCTAssertTrue(SettlementTablePolicy.rows(snapshot,
+            since: "2026-11-20", until: "2026-11-20", partner: "王").isEmpty)
+    }
+
+    func testPeriodTransferNotMistakenForSingleDailyTransaction() throws {
+        var snapshot = ReadOnlySnapshot()
+        snapshot.apply([
+            row("settlement_transfer", "period-1", "2026-11-21", [
+                "from_partner_name": .string("李"), "to_partner_name": .string("张"),
+                "settlement_kind": .string("CUTOFF"),
+                "range_start_date": .string("2026-11-15"),
+                "range_end_date": .string("2026-11-21"),
+                "business_day_count": .number(4),
+                "amount": .number(500), "settled_amount": .number(200)]),
+            row("daily_cash_settlement", "f1", "2026-11-21", [
+                "expense": .number(12.5), "profit": .number(-30)]),
+            row("profit_distribution", "p1", "2026-11-21", [
+                "partner_name": .string("张"), "ratio": .number(0.4),
+                "role": .string("PARTNER"), "source_profit": .number(-30),
+                "allocated_profit": .number(-12)])
+        ])
+        let day = try XCTUnwrap(SettlementTablePolicy.rows(snapshot,
+            since: "2026-11-21", until: "2026-11-21").first)
+        XCTAssertEqual(day.savedDaily[0].expense, 12.5)
+        XCTAssertEqual(day.savedDaily[0].profit, -30)
+        XCTAssertEqual(day.shares[0].ratio, 0.4)
+        XCTAssertEqual(day.shares[0].role, "PARTNER")
+        XCTAssertEqual(day.shares[0].allocated, -12)
+        XCTAssertEqual(day.transfers[0].kindLabel, "周期资金结算")
+        XCTAssertEqual(day.transfers[0].periodLabel,
+            "覆盖营业期间 2026-11-15 至 2026-11-21")
+        XCTAssertEqual(day.transfers[0].businessDayCount, 4)
+        XCTAssertEqual(day.transfers[0].recordedSettled, 200)
+        XCTAssertTrue(SettlementTablePolicy.rows(snapshot,
+            since: "2026-11-20", until: "2026-11-20").isEmpty,
+            "A period transfer appears under its saved record date, not each covered day")
+    }
+
+    func testFinancePartnerVersionDeletionCannotResurrect() {
+        var snapshot = ReadOnlySnapshot()
+        let original = row("settlement_partner", "p", "2026-11-21", [
+            "partner_name": .string("张"), "balance": .number(88)])
+        snapshot.apply([original, original])
+        XCTAssertEqual(snapshot.financeSettlementPartners.count, 1)
+        snapshot.apply([
+            row("settlement_partner", "p", "2026-11-21", version: 2,
+                operation: "DELETE"),
+            original
+        ])
+        XCTAssertTrue(snapshot.financeSettlementPartners.isEmpty)
+        XCTAssertTrue(SettlementTablePolicy.rows(snapshot,
+            since: "2026-11-21", until: "2026-11-21").isEmpty)
+    }
+
 }

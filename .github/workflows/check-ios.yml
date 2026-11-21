@@ -1,4 +1,4 @@
-name: Check iOS V0.5.3 read-only settlement table
+name: Check iOS V0.5.4 settlement detail and period audit
 
 on:
   pull_request:
