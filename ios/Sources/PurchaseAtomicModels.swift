@@ -110,12 +110,14 @@ enum PurchaseAtomicReadbackPolicy {
             $0.payload["total_cost"]?.decimal.isFinite == true
         }
         guard orders.count == 1 else { return false }
-        let orderID = orders[0].payload["id"]?.decimal
-        guard let orderID, orderID.isFinite, orderID > 0 else { return false }
+        guard let orderID = AndroidNumericIdentity.exact(
+            orders[0].payload["id"]),
+              AndroidNumericIdentity.unique(orders[0], in: records)
+        else { return false }
         let items = records.filter {
             $0.tableName == "purchase_item" && !$0.isDeletion &&
             receipt.itemSyncIDs.contains($0.syncId) &&
-            $0.payload["order_id"]?.decimal == orderID
+            AndroidNumericIdentity.exact($0.payload["order_id"]) == orderID
         }
         guard items.count == proposal.lines.count,
               Set(items.map(\.syncId)).count == items.count else {
