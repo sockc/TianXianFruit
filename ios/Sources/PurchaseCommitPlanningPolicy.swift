@@ -104,18 +104,16 @@ enum PurchaseCommitPlanningPolicy {
                         records: [SyncEvent]) throws -> PurchaseCommitProposal {
         guard account.username.lowercased() == draft.account.lowercased(),
               book.id == draft.bookID,
+              book.name.hasPrefix("iOS_TEST_"),
               PurchaseWorkspaceDraftPolicy.authorized(book: book, account: account)
         else { throw PurchaseCommitPlanningError.wrongAccount }
 
         let buyer = visible(records, table: "partner", id: draft.buyerSyncID)
         guard buyer.count == 1,
               buyer[0].payload["name"]?.text == draft.buyerName,
-              let buyerNumericID = buyer[0].payload["id"]?.decimal,
-              buyerNumericID > 0, buyerNumericID.rounded() == buyerNumericID,
-              records.filter({
-                  !$0.isDeletion && $0.tableName == "partner" &&
-                  $0.payload["id"]?.decimal == buyerNumericID
-              }).count == 1 else {
+              let buyerNumericID = AndroidNumericIdentity.exact(
+                  buyer[0].payload["id"]),
+              AndroidNumericIdentity.unique(buyer[0], in: records) else {
             throw PurchaseCommitPlanningError.staleBuyer
         }
         try PurchaseWorkspaceDraftPolicy.validate(draft, buyers: [
@@ -137,12 +135,9 @@ enum PurchaseCommitPlanningPolicy {
             let fruit = visible(records, table: "fruit", id: line.fruitSyncID)
             guard fruit.count == 1,
                   fruit[0].payload["name"]?.text == line.fruitName,
-                  let fruitNumericID = fruit[0].payload["id"]?.decimal,
-                  fruitNumericID > 0, fruitNumericID.rounded() == fruitNumericID,
-                  records.filter({
-                      !$0.isDeletion && $0.tableName == "fruit" &&
-                      $0.payload["id"]?.decimal == fruitNumericID
-                  }).count == 1 else {
+                  let fruitNumericID = AndroidNumericIdentity.exact(
+                      fruit[0].payload["id"]),
+                  AndroidNumericIdentity.unique(fruit[0], in: records) else {
                 throw PurchaseCommitPlanningError.staleFruit
             }
             let quantity = try PurchaseDraftPolicy.quantity(line.quantity)
@@ -155,7 +150,8 @@ enum PurchaseCommitPlanningPolicy {
                 guard items.count == 1,
                       items[0].payload["status"]?.decimal == 0,
                       items[0].payload["fruit_name"]?.text == line.fruitName,
-                      items[0].payload["fruit_id"]?.decimal == fruitNumericID,
+                      AndroidNumericIdentity.exact(
+                      items[0].payload["fruit_id"]) == fruitNumericID,
                       items[0].payload["unit"]?.text == line.unit,
                       items[0].rowVersion > 0 else {
                     throw PurchaseCommitPlanningError.stalePlan
@@ -163,15 +159,11 @@ enum PurchaseCommitPlanningPolicy {
                 let plans = records.filter {
                     !$0.isDeletion && $0.tableName == "purchase_plan" &&
                     $0.payload["plan_date"]?.text == draft.date &&
-                    $0.payload["id"]?.decimal ==
-                        items[0].payload["plan_id"]?.decimal
+                    AndroidNumericIdentity.same(
+                        $0.payload["id"], items[0].payload["plan_id"])
                 }
                 guard plans.count == 1, plans[0].rowVersion > 0,
-                      let planID = plans[0].payload["id"]?.decimal,
-                      records.filter({
-                          !$0.isDeletion && $0.tableName == "purchase_plan" &&
-                          $0.payload["id"]?.decimal == planID
-                      }).count == 1 else {
+                      AndroidNumericIdentity.unique(plans[0], in: records) else {
                     throw PurchaseCommitPlanningError.stalePlan
                 }
                 versions.append(PurchaseExpectedVersion(
@@ -188,7 +180,8 @@ enum PurchaseCommitPlanningPolicy {
                 guard collabs.count == 1,
                       collabs[0].rowVersion > 0,
                       ((collabs[0].payload["buyer_id"]?.decimal ?? 0) == 0 ||
-                       collabs[0].payload["buyer_id"]?.decimal == buyerNumericID) else {
+                       AndroidNumericIdentity.exact(
+                           collabs[0].payload["buyer_id"]) == buyerNumericID) else {
                     throw PurchaseCommitPlanningError.missingCollaboration
                 }
                 versions.append(PurchaseExpectedVersion(
