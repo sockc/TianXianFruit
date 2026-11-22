@@ -378,6 +378,114 @@ internal object CustomerCloudBridge {
             if (it.moveToFirst()) it.getLong(0) else 0L
         }
 
+    /**
+     * Compare only server-versioned manual business fields. Overnight
+     * store_sync_id is a legacy transport fallback; natural-day store_sync_id
+     * is the real provenance and must remain part of the comparison.
+     */
+    private fun sameManualBusinessPayload(
+        kind: String, local: JSONObject, remote: JSONObject
+    ): Boolean {
+        if (kind !in setOf("OVERNIGHT", "NATURAL")) return false
+        if (local.optString("date") != remote.optString("date") ||
+            local.optString("partner_sync_id") != remote.optString("partner_sync_id")) return false
+        if (kind == "NATURAL" &&
+            local.optString("store_sync_id") != remote.optString("store_sync_id")) return false
+
+        fun equalMoney(key: String): Boolean {
+            val a = local.optDouble(key, Double.NaN)
+            val b = remote.optDouble(key, Double.NaN)
+            return a.isFinite() && b.isFinite() && a == b
+        }
+        fun equalNullableMoney(key: String): Boolean =
+            if (local.isNull(key) && remote.isNull(key)) true
+            else if (local.isNull(key) || remote.isNull(key)) false
+            else equalMoney(key)
+
+        if (!listOf("wechat", "alipay", "cash").all(::equalMoney)) return false
+        return if (kind == "OVERNIGHT") {
+            listOf("wechat_recorded", "alipay_recorded", "cash_recorded")
+                .all { local.optBoolean(it) == remote.optBoolean(it) }
+        } else {
+            listOf("deduct_wechat", "deduct_alipay")
+                .all { local.optBoolean(it) == remote.optBoolean(it) } &&
+                // A legacy server that lacks deduct_cash cannot prove equality.
+                local.has("deduct_cash") == remote.has("deduct_cash") &&
+                (!local.has("deduct_cash") ||
+                    local.optBoolean("deduct_cash") == remote.optBoolean("deduct_cash")) &&
+                listOf("saved_wechat", "saved_alipay", "saved_cash")
+                    .all(::equalNullableMoney)
+        }
+    }
+
+    /**
+     * One-shot repair for a client whose earlier download cursor already
+     * advanced past a harmless transport-only difference. Replay events
+     * read-only; never roll back the live cursor, mutate money, or force
+     * overwrite a true concurrent edit. Full replay must complete before
+     * using any candidate revision (a later event may supersede it).
+     */
+    private fun reconcileIdenticalManualConflict(
+        database: SQLiteDatabase,
+        endpoint: String,
+        batch: List<SyncItem>,
+        request: (String, String, JSONObject?) -> JSONObject
+    ): Int {
+        val candidates = batch.filter { it.kind in setOf("OVERNIGHT", "NATURAL") }
+            .associateBy { it.kind to it.key }
+        if (candidates.isEmpty()) return 0
+        val latest = mutableMapOf<Pair<String, String>, JSONObject>()
+        var cursor = 0L
+        var complete = false
+        for (page in 0 until 100) {
+            val response = runCatching {
+                request("GET",
+                    "$endpoint/changes?cursor=$cursor&limit=200&include_assignments=true&" +
+                        "include_overnight=true", null)
+            }.getOrElse { return 0 }
+            val changes = response.optJSONArray("changes") ?: return 0
+            val next = response.optLong("next_cursor", -1L)
+            val more = response.optBoolean("has_more")
+            if (!CustomerSyncCursorPolicy.progresses(cursor, next, changes.length(), more))
+                return 0
+            for (index in 0 until changes.length()) {
+                val event = changes.optJSONObject(index) ?: continue
+                val kind = event.optString("kind")
+                val key = event.optString("key")
+                val pair = kind to key
+                if (pair in candidates && event.optLong("revision") > 0 &&
+                    event.optJSONObject("payload") != null) latest[pair] = event
+            }
+            cursor = next
+            if (!more) {
+                complete = true
+                break
+            }
+        }
+        if (!complete) return 0
+        val matching = candidates.mapNotNull { (pair, item) ->
+            val event = latest[pair] ?: return@mapNotNull null
+            val payload = event.optJSONObject("payload") ?: return@mapNotNull null
+            val revision = event.optLong("revision", 0L)
+            if (revision <= 0L || !sameManualBusinessPayload(item.kind, item.payload, payload))
+                null
+            else item to revision
+        }
+        if (matching.isEmpty()) return 0
+        database.beginTransaction()
+        try {
+            // An ACK covers the exact pre-upload local payload hash. If the UI
+            // edited it while history was fetched, the new hash remains dirty.
+            matching.forEach { (item, revision) ->
+                ack(database, item.kind, item.key, item.hash, revision)
+            }
+            database.setTransactionSuccessful()
+        } finally {
+            database.endTransaction()
+        }
+        return matching.size
+    }
+
     private fun applyRemote(context: Context, db: AppDatabase, bookId: String, changes: JSONArray, next: Long) {
         val database = db.writableDatabase
         // Mutable within one downloaded event page: a single key may have
@@ -634,8 +742,20 @@ internal object CustomerCloudBridge {
                                 digest(overnightPayload(it,
                                     localStore.ifBlank { stableStore },stablePartner).toString())
                             }
-                            // Keep unsent changes; report CAS conflict rather than
-                            // silently overwriting another device's midnight entry.
+                            // A legacy transport location is NOT the collector's
+                            // morning owner. The amounts and flags can be equal even
+                            // if storeId differs (including locally unset storeId=0).
+                            // Acknowledge the server revision without rewriting local
+                            // transport metadata or pushing an imaginary edit.
+                            if (local != null && CustomerManualSyncPolicy.sameOvernightBusinessValues(local, incoming)) {
+                                val verifiedHash = localHash
+                                    ?: throw IllegalStateException("凌晨记录本机摘要缺失：$date")
+                                ack(database, kind, key, verifiedHash, version)
+                                knownAck[kind to key] = Ack(verifiedHash, version)
+                                continue
+                            }
+                            // True changes still require CAS; never silently
+                            // overwrite the value on either device.
                             if(local!=null && local!=incoming &&
                                 (previous==null || previous.hash!=localHash) &&
                                 !(local.storeId != resolvedStore &&
@@ -899,6 +1019,7 @@ internal object CustomerCloudBridge {
         pull()
         var uploaded = 0
         var existingBatchMetadata = 0
+        var manualReplayAttempted = false
         if (canWrite) {
             val importBatchSnapshot = db.getPaymentImportBatches(1_000_000)
             for (page in 0 until 400) {
@@ -909,14 +1030,40 @@ internal object CustomerCloudBridge {
                 val body = JSONObject().put("items", JSONArray().apply {
                     batch.forEach { put(it.json()) }
                 })
-                val response = runCatching { request("POST", "$endpoint/push", body) }
-                    .getOrElse {
-                        throw IllegalStateException(
-                            "客流同步上传失败（批次${page + 1}，本机待上传记录保留）：${it.message}", it)
+                val uploadAttempt = runCatching { request("POST", "$endpoint/push", body) }
+                if (uploadAttempt.isFailure) {
+                    val failure = uploadAttempt.exceptionOrNull()
+                        ?: IllegalStateException("未知客流上传错误")
+                    val description = failure.message.orEmpty()
+                    val isVersionConflict = description.contains("409") ||
+                        description.contains("其他设备修改") ||
+                        description.contains("conflict", ignoreCase = true)
+                    if (!manualReplayAttempted && isVersionConflict) {
+                        manualReplayAttempted = true
+                        val recovered = reconcileIdenticalManualConflict(
+                            database, endpoint, batch, request)
+                        if (recovered > 0) continue
                     }
+                    throw IllegalStateException(
+                        "客流同步上传失败（批次${page + 1}，本机待上传记录保留）：${failure.message}", failure)
+                }
+                val response = uploadAttempt.getOrThrow()
                 pushBatches++
                 val confirmed = response.getJSONArray("items")
                 if (confirmed.length() != batch.size) throw IllegalStateException("服务器账单确认笔数异常")
+                // Some servers report CAS conflicts per item rather than HTTP 409.
+                // Resolve only business-identical manual rows, then retry the
+                // whole batch idempotently; other conflict types still fail.
+                val hasManualConflict = batch.indices.any { index ->
+                    confirmed.getJSONObject(index).optString("status") == "conflict" &&
+                        batch[index].kind in setOf("OVERNIGHT", "NATURAL")
+                }
+                if (hasManualConflict && !manualReplayAttempted) {
+                    manualReplayAttempted = true
+                    val recovered = reconcileIdenticalManualConflict(
+                        database, endpoint, batch, request)
+                    if (recovered > 0) continue
+                }
                 database.beginTransaction()
                 try {
                     for (index in batch.indices) {
