@@ -2,7 +2,7 @@
 
 用于水果经营的 Android 账本：采购、库存盘点、营业收款、合伙人资金结算、统计、天气和云同步。
 
-当前 Android 正式发布版本：**V1.4.7.130**，versionCode **168**（以 `app/build.gradle` 为准）。正式 APK 必须经自动测试、签名验证和 GitHub Release 发布；跨设备并发冲突仍需持续监测。
+当前 Android 正式发布版本：**V1.4.7.131**，versionCode **169**（以 `app/build.gradle` 为准）。正式 APK 必须经自动测试、签名验证和 GitHub Release 发布；跨设备并发冲突仍需持续监测。
 
 ## 经营口径
 
