@@ -434,11 +434,11 @@ internal object CustomerCloudBridge {
     }
 
     /**
-     * One-shot repair for a client whose earlier download cursor already
-     * advanced past a harmless transport-only difference. Replay events
-     * read-only; never roll back the live cursor, mutate money, or force
-     * overwrite a true concurrent edit. Full replay must complete before
-     * using any candidate revision (a later event may supersede it).
+     * One-shot, read-only recovery for an existing manual CAS conflict.
+     * Start near the already downloaded cloud head and scan each candidate
+     * window fully to the end. If the key is found in a complete tail, its
+     * newest event there is authoritative; otherwise widen or fail closed.
+     * Never move the normal cursor or overwrite a true financial edit.
      */
 
     private data class ManualReplayResult(val recovered: Int, val reason: String)
