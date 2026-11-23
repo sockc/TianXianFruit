@@ -2,7 +2,7 @@
 
 用于水果经营的 Android 账本：采购、库存盘点、营业收款、合伙人资金结算、统计、天气和云同步。
 
-当前 Git 分支待发布候选版本：**V1.4.7.133**，versionCode **171**（以 `app/build.gradle` 为准）。目前最近正式发布版本仍为 **V1.4.7.132**，versionCode **170**；正式 APK 必须经自动测试、签名验证和 GitHub Release 发布；跨设备并发冲突仍需持续监测。
+当前 Git 分支待发布候选版本：**V1.4.7.134**，versionCode **172**（以 `app/build.gradle` 为准）。目前最近正式发布版本仍为 **V1.4.7.133**，versionCode **171**；正式 APK 必须经自动测试、签名验证和 GitHub Release 发布；跨设备并发冲突仍需持续监测。
 
 ## 经营口径
 
