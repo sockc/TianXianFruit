@@ -41,13 +41,11 @@ class CustomerManualSyncPolicyTest {
     }
     @Test fun businessFingerprintIgnoresTransportStore() {
         val first = CustomerManualSyncPolicy.overnightBusinessFingerprint(
-            "2026-11-16", "stable-collector-1", 78.25, 12.0, 5.0,
-            true, true, true
+            original, "stable-collector-1"
         )
-        // Different store IDs intentionally have no input to the fingerprint.
+        // A different transport store is not a manual customer edit.
         val second = CustomerManualSyncPolicy.overnightBusinessFingerprint(
-            "2026-11-16", "stable-collector-1", 78.25, 12.0, 5.0,
-            true, true, true
+            original.copy(storeId = 301L), "stable-collector-1"
         )
         assertTrue(first == second)
     }

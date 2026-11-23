@@ -21,6 +21,7 @@ internal object CustomerManualSyncPolicy {
             local.wechatRecorded == cloud.wechatRecorded &&
             local.alipayRecorded == cloud.alipayRecorded &&
             local.cashRecorded == cloud.cashRecorded
+
     /**
      * Stable identity for the monetary/confirmation fields of a collector's
      * natural-calendar-morning entry. The transport-only store ID can change
@@ -29,6 +30,16 @@ internal object CustomerManualSyncPolicy {
      * This is a client-side ACK fingerprint only; it does not change the
      * payload sent to the server or its authoritative row revisions.
      */
+    fun overnightBusinessFingerprint(
+        snapshot: OvernightReceiptSnapshot,
+        partnerSyncId: String
+    ): String = overnightBusinessFingerprint(
+        snapshot.calendarDate, partnerSyncId,
+        snapshot.wechat, snapshot.alipay, snapshot.cash,
+        snapshot.wechatRecorded, snapshot.alipayRecorded,
+        snapshot.cashRecorded
+    )
+
     fun overnightBusinessFingerprint(
         date: String,
         partnerSyncId: String,
