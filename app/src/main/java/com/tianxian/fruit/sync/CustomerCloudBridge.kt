@@ -71,8 +71,23 @@ internal object CustomerCloudBridge {
             }
         }
 
+    private fun payloadFingerprint(kind: String, payload: JSONObject): String =
+        if (kind == "OVERNIGHT") {
+            digest(CustomerManualSyncPolicy.overnightBusinessFingerprint(
+                date = payload.optString("date"),
+                partnerSyncId = payload.optString("partner_sync_id"),
+                wechat = payload.optDouble("wechat", Double.NaN),
+                alipay = payload.optDouble("alipay", Double.NaN),
+                cash = payload.optDouble("cash", Double.NaN),
+                wechatRecorded = payload.optBoolean("wechat_recorded"),
+                alipayRecorded = payload.optBoolean("alipay_recorded"),
+                cashRecorded = payload.optBoolean("cash_recorded")
+            ))
+        } else digest(payload.toString())
+
     private fun jsonItem(kind: String, key: String, payload: JSONObject, ack: Ack?): SyncItem =
-        SyncItem(kind, key, payload, digest(payload.toString()), ack?.revision ?: 0L)
+        SyncItem(kind, key, payload, payloadFingerprint(kind, payload),
+            ack?.revision ?: 0L)
 
     private fun officialPayload(date: String, stats: OfficialWechatDailyCount?): JSONObject =
         JSONObject().put("date", date).put("new_customers", stats?.newCustomers ?: 0)
@@ -425,15 +440,60 @@ internal object CustomerCloudBridge {
      * overwrite a true concurrent edit. Full replay must complete before
      * using any candidate revision (a later event may supersede it).
      */
+
+    private data class ManualReplayResult(val recovered: Int, val reason: String)
+
+    private fun manualDifference(kind: String, local: JSONObject, cloud: JSONObject): String {
+        if (local.optString("date") != cloud.optString("date") ||
+            local.optString("partner_sync_id") != cloud.optString("partner_sync_id"))
+            return "日期或收款人不同"
+        if (kind == "NATURAL" &&
+            local.optString("store_sync_id") != cloud.optString("store_sync_id"))
+            return "自然日来源位置不同"
+        for (field in listOf("wechat", "alipay", "cash")) {
+            if (!local.has(field) || !cloud.has(field) ||
+                local.optDouble(field, Double.NaN) != cloud.optDouble(field, Double.NaN)) {
+                return "${field}原值不同"
+            }
+        }
+        val flags = if (kind == "OVERNIGHT")
+            listOf("wechat_recorded", "alipay_recorded", "cash_recorded")
+        else listOf("deduct_wechat", "deduct_alipay", "deduct_cash")
+        for (field in flags) {
+            if (local.has(field) != cloud.has(field) ||
+                (local.has(field) && local.optBoolean(field) != cloud.optBoolean(field))) {
+                return "${field}确认或扣减状态不同"
+            }
+        }
+        if (kind == "NATURAL") {
+            for (field in listOf("saved_wechat", "saved_alipay", "saved_cash")) {
+                val sameNull = local.isNull(field) && cloud.isNull(field)
+                val sameNumber = !local.isNull(field) && !cloud.isNull(field) &&
+                    local.optDouble(field, Double.NaN) == cloud.optDouble(field, Double.NaN)
+                if (!sameNull && !sameNumber) return "${field}来源快照不同"
+            }
+        }
+        return "业务字段不一致，需核对服务端协议"
+    }
+
+    /**
+     * Read-only recovery of a precisely identified CAS conflict. Never advance
+     * the normal download cursor. Remote event history must be complete: a
+     * partial page sequence cannot prove which revision is latest.
+     */
     private fun reconcileIdenticalManualConflict(
         database: SQLiteDatabase,
         endpoint: String,
         batch: List<SyncItem>,
-        request: (String, String, JSONObject?) -> JSONObject
-    ): Int {
-        val candidates = batch.filter { it.kind in setOf("OVERNIGHT", "NATURAL") }
-            .associateBy { it.kind to it.key }
-        if (candidates.isEmpty()) return 0
+        request: (String, String, JSONObject?) -> JSONObject,
+        targetKeys: Set<String> = emptySet()
+    ): ManualReplayResult {
+        val candidates = batch.filter {
+            it.kind in setOf("OVERNIGHT", "NATURAL") &&
+                (targetKeys.isEmpty() || it.key in targetKeys)
+        }.associateBy { it.kind to it.key }
+        if (candidates.isEmpty())
+            return ManualReplayResult(0, "冲突批次没有可核对的凌晨或自然日记录")
         val latest = mutableMapOf<Pair<String, String>, JSONObject>()
         var cursor = 0L
         var complete = false
@@ -442,12 +502,15 @@ internal object CustomerCloudBridge {
                 request("GET",
                     "$endpoint/changes?cursor=$cursor&limit=200&include_assignments=true&" +
                         "include_overnight=true", null)
-            }.getOrElse { return 0 }
-            val changes = response.optJSONArray("changes") ?: return 0
+            }.getOrElse {
+                return ManualReplayResult(0, "云端历史读取失败，记录保持未上传")
+            }
+            val changes = response.optJSONArray("changes")
+                ?: return ManualReplayResult(0, "服务器没有返回客流历史事件")
             val next = response.optLong("next_cursor", -1L)
             val more = response.optBoolean("has_more")
             if (!CustomerSyncCursorPolicy.progresses(cursor, next, changes.length(), more))
-                return 0
+                return ManualReplayResult(0, "云端历史游标异常，拒绝确认")
             for (index in 0 until changes.length()) {
                 val event = changes.optJSONObject(index) ?: continue
                 val kind = event.optString("kind")
@@ -462,20 +525,32 @@ internal object CustomerCloudBridge {
                 break
             }
         }
-        if (!complete) return 0
+        if (!complete) return ManualReplayResult(0, "云端历史超过核对上限，不能判定最新版本")
+        val mismatches = mutableListOf<String>()
         val matching = candidates.mapNotNull { (pair, item) ->
-            val event = latest[pair] ?: return@mapNotNull null
-            val payload = event.optJSONObject("payload") ?: return@mapNotNull null
+            val event = latest[pair]
+            if (event == null) {
+                mismatches += "${item.kind}未在服务端历史中找到"
+                return@mapNotNull null
+            }
+            val payload = event.optJSONObject("payload")
             val revision = event.optLong("revision", 0L)
-            if (revision <= 0L || !sameManualBusinessPayload(item.kind, item.payload, payload))
-                null
-            else item to revision
+            if (payload == null || revision <= 0L) {
+                mismatches += "${item.kind}云端版本信息无效"
+                return@mapNotNull null
+            }
+            if (!sameManualBusinessPayload(item.kind, item.payload, payload)) {
+                mismatches += "${item.kind}：${manualDifference(item.kind, item.payload, payload)}"
+                return@mapNotNull null
+            }
+            item to revision
         }
-        if (matching.isEmpty()) return 0
+        if (matching.isEmpty())
+            return ManualReplayResult(0, mismatches.firstOrNull() ?: "记录内容尚未核实一致")
         database.beginTransaction()
         try {
-            // An ACK covers the exact pre-upload local payload hash. If the UI
-            // edited it while history was fetched, the new hash remains dirty.
+            // This ACK covers only the exact snapshot submitted above. A
+            // concurrent UI modification remains dirty on the next pending().
             matching.forEach { (item, revision) ->
                 ack(database, item.kind, item.key, item.hash, revision)
             }
@@ -483,7 +558,7 @@ internal object CustomerCloudBridge {
         } finally {
             database.endTransaction()
         }
-        return matching.size
+        return ManualReplayResult(matching.size, "确认本机与云端业务字段相同")
     }
 
     private fun applyRemote(context: Context, db: AppDatabase, bookId: String, changes: JSONArray, next: Long) {
@@ -739,8 +814,8 @@ internal object CustomerCloudBridge {
                             val local=storage.findSnapshot(date,resolvedPartner)
                             val localHash=local?.let {
                                 val localStore=stableRowId(database,"store",it.storeId)
-                                digest(overnightPayload(it,
-                                    localStore.ifBlank { stableStore },stablePartner).toString())
+                                payloadFingerprint("OVERNIGHT", overnightPayload(it,
+                                    localStore.ifBlank { stableStore },stablePartner))
                             }
                             // A legacy transport location is NOT the collector's
                             // morning owner. The amounts and flags can be equal even
@@ -762,7 +837,8 @@ internal object CustomerCloudBridge {
                                     OvernightReceiptDeletionPolicy.isClearedSnapshot(local))) continue
                             if(!storage.saveSnapshot(incoming))
                                 throw IllegalStateException("恢复跨日收款失败：$date")
-                            val hash=digest(overnightPayload(incoming,stableStore,stablePartner).toString())
+                            val hash=payloadFingerprint("OVERNIGHT", overnightPayload(
+                                incoming,stableStore,stablePartner))
                             ack(database,kind,key,hash,version)
                             knownAck[kind to key]=Ack(hash,version)
                         } else {
@@ -1038,14 +1114,21 @@ internal object CustomerCloudBridge {
                     val isVersionConflict = description.contains("409") ||
                         description.contains("其他设备修改") ||
                         description.contains("conflict", ignoreCase = true)
+                    var replayReason = ""
                     if (!manualReplayAttempted && isVersionConflict) {
                         manualReplayAttempted = true
-                        val recovered = reconcileIdenticalManualConflict(
-                            database, endpoint, batch, request)
-                        if (recovered > 0) continue
+                        val targetKeys = batch.filter {
+                            it.kind in setOf("OVERNIGHT", "NATURAL") &&
+                                description.contains(it.key)
+                        }.map { it.key }.toSet()
+                        val report = reconcileIdenticalManualConflict(
+                            database, endpoint, batch, request, targetKeys)
+                        if (report.recovered > 0) continue
+                        replayReason = "自动核对：${report.reason}；"
                     }
                     throw IllegalStateException(
-                        "客流同步上传失败（批次${page + 1}，本机待上传记录保留）：${failure.message}", failure)
+                        "${replayReason}客流同步上传失败（批次${page + 1}，本机待上传记录保留）：" +
+                            "${failure.message}", failure)
                 }
                 val response = uploadAttempt.getOrThrow()
                 pushBatches++
@@ -1060,9 +1143,14 @@ internal object CustomerCloudBridge {
                 }
                 if (hasManualConflict && !manualReplayAttempted) {
                     manualReplayAttempted = true
-                    val recovered = reconcileIdenticalManualConflict(
-                        database, endpoint, batch, request)
-                    if (recovered > 0) continue
+                    val targetKeys = batch.indices.filter { index ->
+                        confirmed.getJSONObject(index).optString("status") == "conflict"
+                    }.map { batch[it].key }.toSet()
+                    val report = reconcileIdenticalManualConflict(
+                        database, endpoint, batch, request, targetKeys)
+                    if (report.recovered > 0) continue
+                    throw IllegalStateException(
+                        "客流自动核对未解决：${report.reason}（本机数据保留）")
                 }
                 database.beginTransaction()
                 try {

@@ -39,4 +39,43 @@ class CustomerManualSyncPolicyTest {
         assertFalse(CustomerManualSyncPolicy.sameOvernightBusinessValues(
             original, original.copy(partnerId = 9L)))
     }
+    @Test fun businessFingerprintIgnoresTransportStore() {
+        val first = CustomerManualSyncPolicy.overnightBusinessFingerprint(
+            original, "stable-collector-1"
+        )
+        // A different transport store is not a manual customer edit.
+        val second = CustomerManualSyncPolicy.overnightBusinessFingerprint(
+            original.copy(storeId = 301L), "stable-collector-1"
+        )
+        assertTrue(first == second)
+    }
+
+    @Test fun businessFingerprintProtectsAmountsAndFlags() {
+        val original = CustomerManualSyncPolicy.overnightBusinessFingerprint(
+            "2026-11-16", "stable-collector-1", 78.25, 12.0, 5.0,
+            true, true, true
+        )
+        val changedMoney = CustomerManualSyncPolicy.overnightBusinessFingerprint(
+            "2026-11-16", "stable-collector-1", 78.26, 12.0, 5.0,
+            true, true, true
+        )
+        val changedFlag = CustomerManualSyncPolicy.overnightBusinessFingerprint(
+            "2026-11-16", "stable-collector-1", 78.25, 12.0, 5.0,
+            true, true, false
+        )
+        assertFalse(original == changedMoney)
+        assertFalse(original == changedFlag)
+    }
+
+    @Test fun businessFingerprintNormalizesSignedZero() {
+        val positive = CustomerManualSyncPolicy.overnightBusinessFingerprint(
+            "2026-11-16", "stable-collector-1", 0.0, 0.0, 0.0,
+            true, false, false
+        )
+        val negative = CustomerManualSyncPolicy.overnightBusinessFingerprint(
+            "2026-11-16", "stable-collector-1", -0.0, 0.0, 0.0,
+            true, false, false
+        )
+        assertTrue(positive == negative)
+    }
 }

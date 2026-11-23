@@ -30,7 +30,7 @@ class CustomerManualConflictRecoveryTest(unittest.TestCase):
     def test_real_changes_still_fail_closed(self):
         self.assertIn("if (local != null && CustomerManualSyncPolicy.sameOvernightBusinessValues", BRIDGE)
         self.assertIn("if(local!=null && local!=incoming &&", BRIDGE)
-        self.assertIn("if (recovered > 0) continue", BRIDGE)
+        self.assertIn("if (report.recovered > 0) continue", BRIDGE)
         self.assertIn("客流同步上传失败", BRIDGE)
 
 
