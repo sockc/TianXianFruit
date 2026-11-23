@@ -13,6 +13,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tianxian.fruit.data.*
+import com.tianxian.fruit.sync.NaturalCashFlagPresence
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
@@ -75,6 +76,28 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
         }
     }.getOrElse { emptyList() }
 
+    /**
+     * Read the original JSON field presence, not the defaulted data-class
+     * value. Old persisted natural-day receipts omit deduct_cash entirely.
+     * Missing/duplicate/unreadable rows are not evidence of an explicit edit.
+     */
+    fun cashFlagPresence(date: String, partnerId: Long): NaturalCashFlagPresence =
+        runCatching {
+            val rows = JSONArray(prefs.getString("natural", "[]"))
+            val matches = mutableListOf<JSONObject>()
+            for (i in 0 until rows.length()) {
+                val row = rows.optJSONObject(i) ?: continue
+                if (row.optString("date") == date && row.optLong("partner") == partnerId) {
+                    matches.add(row)
+                }
+            }
+            when {
+                matches.size != 1 -> NaturalCashFlagPresence.UNKNOWN
+                matches[0].has("deduct_cash") -> NaturalCashFlagPresence.EXPLICIT
+                else -> NaturalCashFlagPresence.LEGACY_ABSENT
+            }
+        }.getOrDefault(NaturalCashFlagPresence.UNKNOWN)
+
     // Review markers are auxiliary UI metadata. They never alter a saved
     // business value, and are refreshed independently from ledger settlement.
     private fun reviewKey(date: String, partner: Long) = "$date|$partner"
@@ -135,6 +158,19 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
             s.storeId<=0 || s.partnerId<=0 ||
             listOf(s.wechat,s.alipay,s.cash).any { !it.isFinite() || it<0.0 }) return false
         val before=naturalDrafts()
+        // Preserve field absence for unrelated pre-V123 drafts. Rewriting a
+        // whole SharedPreferences array must not silently turn an old implicit
+        // cash=false into an explicit user choice. A true edit is persisted.
+        val legacyMissingCashKeys = mutableSetOf<Pair<String, Long>>()
+        val originalRows = runCatching {
+            JSONArray(prefs.getString("natural", "[]"))
+        }.getOrDefault(JSONArray())
+        for (i in 0 until originalRows.length()) {
+            val old = originalRows.optJSONObject(i) ?: continue
+            if (!old.has("deduct_cash")) {
+                legacyMissingCashKeys.add(old.optString("date") to old.optLong("partner"))
+            }
+        }
         // An unchanged snapshot is not a new manual edit. Avoid waking the UI
         // and creating a new local write on repeated pulls/recompositions.
         val matching = before.filter {
@@ -153,7 +189,12 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
                 .put("wechat",row.wechat).put("alipay",row.alipay).put("cash",row.cash)
                 .put("deduct_wechat",row.deductWechat)
                 .put("deduct_alipay",row.deductAlipay)
-                .put("deduct_cash",row.deductCash)
+                .apply {
+                    if (row.deductCash ||
+                        (row.businessDate to row.partnerId) !in legacyMissingCashKeys) {
+                        put("deduct_cash", row.deductCash)
+                    }
+                }
                 .put("saved_wechat",row.savedWechat)
                 .put("saved_alipay",row.savedAlipay)
                 .put("saved_cash",row.savedCash))
