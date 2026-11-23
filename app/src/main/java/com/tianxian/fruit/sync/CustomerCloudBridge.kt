@@ -494,38 +494,53 @@ internal object CustomerCloudBridge {
         }.associateBy { it.kind to it.key }
         if (candidates.isEmpty())
             return ManualReplayResult(0, "冲突批次没有可核对的凌晨或自然日记录")
+        // A complete scan of a recent tail proves the latest revision for any
+        // candidate found in that tail. Do NOT replay every historical receipt:
+        // large books may have >57,000 events while only one manual key conflicts.
+        // Widen the tail if the key was not found. Never ACK a missing key.
+        val headCursor = serverCursor(database)
         val latest = mutableMapOf<Pair<String, String>, JSONObject>()
-        var cursor = 0L
         var complete = false
-        for (page in 0 until 100) {
-            val response = runCatching {
-                request("GET",
-                    "$endpoint/changes?cursor=$cursor&limit=200&include_assignments=true&" +
-                        "include_overnight=true", null)
-            }.getOrElse {
-                return ManualReplayResult(0, "云端历史读取失败，记录保持未上传")
+        for (startCursor in CustomerManualReplayWindowPolicy.startCursors(headCursor)) {
+            val tail = mutableMapOf<Pair<String, String>, JSONObject>()
+            var cursor = startCursor
+            complete = false
+            for (page in 0 until 100) {
+                val response = runCatching {
+                    request("GET",
+                        "$endpoint/changes?cursor=$cursor&limit=200&include_assignments=true&" +
+                            "include_overnight=true", null)
+                }.getOrElse {
+                    return ManualReplayResult(0, "云端近期历史读取失败，记录保持未上传")
+                }
+                val changes = response.optJSONArray("changes")
+                    ?: return ManualReplayResult(0, "服务器没有返回客流历史事件")
+                val next = response.optLong("next_cursor", -1L)
+                val more = response.optBoolean("has_more")
+                if (!CustomerSyncCursorPolicy.progresses(cursor, next, changes.length(), more))
+                    return ManualReplayResult(0, "云端历史游标异常，拒绝确认")
+                for (index in 0 until changes.length()) {
+                    val event = changes.optJSONObject(index) ?: continue
+                    val pair = event.optString("kind") to event.optString("key")
+                    if (pair in candidates && event.optLong("revision") > 0 &&
+                        event.optJSONObject("payload") != null) tail[pair] = event
+                }
+                cursor = next
+                if (!more) {
+                    complete = true
+                    break
+                }
             }
-            val changes = response.optJSONArray("changes")
-                ?: return ManualReplayResult(0, "服务器没有返回客流历史事件")
-            val next = response.optLong("next_cursor", -1L)
-            val more = response.optBoolean("has_more")
-            if (!CustomerSyncCursorPolicy.progresses(cursor, next, changes.length(), more))
-                return ManualReplayResult(0, "云端历史游标异常，拒绝确认")
-            for (index in 0 until changes.length()) {
-                val event = changes.optJSONObject(index) ?: continue
-                val kind = event.optString("kind")
-                val key = event.optString("key")
-                val pair = kind to key
-                if (pair in candidates && event.optLong("revision") > 0 &&
-                    event.optJSONObject("payload") != null) latest[pair] = event
-            }
-            cursor = next
-            if (!more) {
-                complete = true
+            if (!complete) return ManualReplayResult(
+                0, "云端近期历史超过核对上限，不能判定最新版本")
+            if (tail.isNotEmpty()) {
+                latest.putAll(tail)
                 break
             }
         }
-        if (!complete) return ManualReplayResult(0, "云端历史超过核对上限，不能判定最新版本")
+        if (!complete) return ManualReplayResult(0, "云端历史未完成，拒绝确认")
+        if (latest.isEmpty()) return ManualReplayResult(
+            0, "最近16000个游标范围内未找到冲突记录，需服务端按键查询当前版本；本机数据保留")
         val mismatches = mutableListOf<String>()
         val matching = candidates.mapNotNull { (pair, item) ->
             val event = latest[pair]
