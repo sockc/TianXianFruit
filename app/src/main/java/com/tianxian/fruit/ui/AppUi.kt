@@ -74,6 +74,8 @@ import com.tianxian.fruit.sync.CloudAuditInfo
 import com.tianxian.fruit.sync.CloudBookInfo
 import com.tianxian.fruit.sync.LedgerManagementAccessPolicy
 import com.tianxian.fruit.sync.CloudSyncManager
+import com.tianxian.fruit.sync.CustomerCloudBridge
+import com.tianxian.fruit.sync.CustomerCashConflictStore
 import com.tianxian.fruit.sync.WeatherAlert
 import com.tianxian.fruit.sync.WeatherClient
 import com.tianxian.fruit.sync.WeatherOverview
@@ -574,6 +576,10 @@ private fun PageSyncStatus(
         }
 
     var showDetails by remember { mutableStateOf(false) }
+    var showCashChoiceDialog by remember { mutableStateOf(false) }
+    var cashChoiceError by remember { mutableStateOf("") }
+    val appContext = LocalContext.current
+    val cashConflict = CustomerCashConflictStore.read(appContext, syncContext.currentBook.id)
     var showConflictDialog by remember { mutableStateOf(false) }
     var conflictBusy by remember { mutableStateOf(false) }
     var conflictMessage by remember { mutableStateOf("") }
@@ -632,6 +638,28 @@ private fun PageSyncStatus(
                             }
                         }
                     }
+                    if (cashConflict != null) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFFFFF4E8)
+                        ) {
+                            Column(Modifier.fillMaxWidth().padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Text("现金扣减设置存在跨设备冲突 · ${cashConflict.date}",
+                                    color = MaterialTheme.colorScheme.error)
+                                Text("只在双方原始金额与其他字段一致时可选择云端设置；不会修改已保存的营业额或结算。",
+                                    style = MaterialTheme.typography.bodySmall)
+                                OutlinedButton(
+                                    onClick = {
+                                        showDetails = false
+                                        cashChoiceError = ""
+                                        showCashChoiceDialog = true
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("核对并选择现金扣减设置 ›") }
+                            }
+                        }
+                    }
                     Text("当前页面：$pageTitle")
                     Text("最近同步：${formatDateTime(cloudStatus.lastSyncAt)}")
                     Text("当前页面待上传：$pendingCount 条")
@@ -670,6 +698,63 @@ private fun PageSyncStatus(
             dismissButton = {
                 TextButton(onClick = { showDetails = false }) {
                     Text("关闭")
+                }
+            }
+        )
+    }
+
+    if (showCashChoiceDialog) {
+        val choice = CustomerCashConflictStore.read(appContext, syncContext.currentBook.id)
+        AlertDialog(
+            onDismissRequest = { showCashChoiceDialog = false },
+            title = { Text("核对历史现金扣减冲突") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (choice != null) {
+                        Text("自然日：${choice.date} · 收款人尾号 ${choice.partnerSyncId.takeLast(4)}")
+                        Text("本机：${if (choice.localCash) "扣减" else "不扣减"}")
+                        Text("云端：${if (choice.cloudCash) "扣减" else "不扣减"}")
+                        Text(when (choice.localOrigin) {
+                            com.tianxian.fruit.sync.NaturalCashFlagPresence.LEGACY_ABSENT ->
+                                "本机旧版记录原本没有这个字段；历史默认不扣减。"
+                            com.tianxian.fruit.sync.NaturalCashFlagPresence.EXPLICIT ->
+                                "本机已经明确保存过该扣减设置。"
+                            else -> "本机历史字段来源不明确，请谨慎核对。"
+                        }, style = MaterialTheme.typography.bodySmall)
+                        Text("采用云端只会修改本机该收款人的自然日扣减开关，不会修改正式营业额、采购、利润或结算；随后会重新同步核对。若云端已再次改变，仍会提示冲突。",
+                            style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        Text("冲突记录已经变化，请重新同步后再核对。")
+                    }
+                    if (cashChoiceError.isNotBlank()) {
+                        Text(cashChoiceError, color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = choice != null && !syncContext.syncing &&
+                        syncContext.currentBook.permission != "REVOKED",
+                    onClick = {
+                        val current = CustomerCashConflictStore.read(
+                            appContext, syncContext.currentBook.id)
+                        val success = current != null && current == choice &&
+                            CustomerCloudBridge.adoptCloudCashChoice(
+                                appContext, syncContext.db, syncContext.currentBook.id, current)
+                        if (success) {
+                            cashChoiceError = ""
+                            showCashChoiceDialog = false
+                            syncContext.requestSync()
+                        } else {
+                            cashChoiceError = "本机记录已变化或不满足安全核对条件。未修改任何金额，请重新同步后再核对。"
+                        }
+                    }
+                ) { Text("采用云端设置") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCashChoiceDialog = false }) {
+                    Text("保留本机（不覆盖云端）")
                 }
             }
         )
