@@ -135,6 +135,12 @@ internal class OvernightReceiptDraftStore(context: Context, bookId: String) {
             s.storeId<=0 || s.partnerId<=0 ||
             listOf(s.wechat,s.alipay,s.cash).any { !it.isFinite() || it<0.0 }) return false
         val before=naturalDrafts()
+        // An unchanged snapshot is not a new manual edit. Avoid waking the UI
+        // and creating a new local write on repeated pulls/recompositions.
+        val matching = before.filter {
+            it.businessDate == s.businessDate && it.partnerId == s.partnerId
+        }
+        if (matching.size == 1 && matching.first() == s) return true
         // The position shown here is where the collector's one adjusted
         // natural-day source was first saved, not the collector's identity.
         val next=before.filterNot {
