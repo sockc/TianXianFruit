@@ -443,7 +443,10 @@ internal object CustomerCloudBridge {
 
     private data class ManualReplayResult(val recovered: Int, val reason: String)
 
-    private fun manualDifference(kind: String, local: JSONObject, cloud: JSONObject): String {
+    private fun manualDifference(
+        kind: String, local: JSONObject, cloud: JSONObject,
+        cashPresence: NaturalCashFlagPresence = NaturalCashFlagPresence.UNKNOWN
+    ): String {
         if (local.optString("date") != cloud.optString("date") ||
             local.optString("partner_sync_id") != cloud.optString("partner_sync_id"))
             return "日期或收款人不同"
@@ -462,6 +465,13 @@ internal object CustomerCloudBridge {
         for (field in flags) {
             if (local.has(field) != cloud.has(field) ||
                 (local.has(field) && local.optBoolean(field) != cloud.optBoolean(field))) {
+                if (field == "deduct_cash" && kind == "NATURAL") {
+                    return CustomerCashDeductionConflictPolicy.describe(
+                        local.optBoolean(field).takeIf { local.has(field) },
+                        cloud.optBoolean(field).takeIf { cloud.has(field) },
+                        cashPresence
+                    )
+                }
                 return "${field}确认或扣减状态不同"
             }
         }
@@ -482,6 +492,8 @@ internal object CustomerCloudBridge {
      * partial page sequence cannot prove which revision is latest.
      */
     private fun reconcileIdenticalManualConflict(
+        context: Context,
+        bookId: String,
         database: SQLiteDatabase,
         endpoint: String,
         batch: List<SyncItem>,
@@ -555,7 +567,15 @@ internal object CustomerCloudBridge {
                 return@mapNotNull null
             }
             if (!sameManualBusinessPayload(item.kind, item.payload, payload)) {
-                mismatches += "${item.kind}：${manualDifference(item.kind, item.payload, payload)}"
+                val cashPresence = if (item.kind == "NATURAL") {
+                    val partnerId = localRowId(database, "partner",
+                        item.payload.optString("partner_sync_id"))
+                    if (partnerId > 0L) OvernightReceiptDraftStore(context, bookId)
+                        .cashFlagPresence(item.payload.optString("date"), partnerId)
+                    else NaturalCashFlagPresence.UNKNOWN
+                } else NaturalCashFlagPresence.UNKNOWN
+                mismatches += "${item.kind} ${item.payload.optString("date")}：" +
+                    manualDifference(item.kind, item.payload, payload, cashPresence)
                 return@mapNotNull null
             }
             item to revision
@@ -1137,7 +1157,7 @@ internal object CustomerCloudBridge {
                                 description.contains(it.key)
                         }.map { it.key }.toSet()
                         val report = reconcileIdenticalManualConflict(
-                            database, endpoint, batch, request, targetKeys)
+                            context, bookId, database, endpoint, batch, request, targetKeys)
                         if (report.recovered > 0) continue
                         replayReason = "自动核对：${report.reason}；"
                     }
@@ -1162,7 +1182,7 @@ internal object CustomerCloudBridge {
                         confirmed.getJSONObject(index).optString("status") == "conflict"
                     }.map { batch[it].key }.toSet()
                     val report = reconcileIdenticalManualConflict(
-                        database, endpoint, batch, request, targetKeys)
+                        context, bookId, database, endpoint, batch, request, targetKeys)
                     if (report.recovered > 0) continue
                     throw IllegalStateException(
                         "客流自动核对未解决：${report.reason}（本机数据保留）")
