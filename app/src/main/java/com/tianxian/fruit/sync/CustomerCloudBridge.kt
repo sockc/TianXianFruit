@@ -434,6 +434,44 @@ internal object CustomerCloudBridge {
     }
 
     /**
+     * Only the cash-deduction choice differs; all monetary amounts, original
+     * snapshots, collector/date identity, provenance store and other switches
+     * match. Only in this case may we offer the user a sidecar-only choice.
+     */
+    private fun naturalCashOnlyDifference(local: JSONObject, cloud: JSONObject): Boolean {
+        if (!local.has("deduct_cash") || !cloud.has("deduct_cash") ||
+            local.optBoolean("deduct_cash") == cloud.optBoolean("deduct_cash")) return false
+        val asCloud = JSONObject(local.toString())
+            .put("deduct_cash", cloud.optBoolean("deduct_cash"))
+        return sameManualBusinessPayload("NATURAL", asCloud, cloud)
+    }
+
+    /**
+     * Explicitly adopt the already shown cloud cash setting *locally*.
+     * The next ordinary sync must independently verify latest cloud version.
+     * No official business row, settlement or cloud revision is touched here.
+     */
+    fun adoptCloudCashChoice(
+        context: Context, db: AppDatabase, bookId: String,
+        choice: CustomerCashConflict
+    ): Boolean {
+        val pending = CustomerCashConflictStore.read(context, bookId) ?: return false
+        if (pending != choice || pending.localCash == pending.cloudCash) return false
+        val database = db.readableDatabase
+        val partnerId = localRowId(database, "partner", pending.partnerSyncId)
+        val storeId = localRowId(database, "store", pending.storeSyncId)
+        if (partnerId <= 0L || storeId <= 0L) return false
+        val storage = OvernightReceiptDraftStore(context, bookId)
+        val local = storage.findNatural(pending.date, storeId, partnerId) ?: return false
+        if (local.deductCash != pending.localCash) return false
+        val actual = naturalPayload(local, pending.storeSyncId, pending.partnerSyncId, true)
+        if (payloadFingerprint("NATURAL", actual) != pending.localHash) return false
+        if (!storage.saveNatural(local.copy(deductCash = pending.cloudCash))) return false
+        CustomerCashConflictStore.clear(context, bookId)
+        return true
+    }
+
+    /**
      * One-shot, read-only recovery for an existing manual CAS conflict.
      * Start near the already downloaded cloud head and scan each candidate
      * window fully to the end. If the key is found in a complete tail, its
@@ -574,6 +612,20 @@ internal object CustomerCloudBridge {
                         .cashFlagPresence(item.payload.optString("date"), partnerId)
                     else NaturalCashFlagPresence.UNKNOWN
                 } else NaturalCashFlagPresence.UNKNOWN
+                if (item.kind == "NATURAL" &&
+                    naturalCashOnlyDifference(item.payload, payload)) {
+                    // This local UI marker is not a server ACK or a money edit.
+                    CustomerCashConflictStore.save(context, bookId, CustomerCashConflict(
+                        date = item.payload.optString("date"),
+                        partnerSyncId = item.payload.optString("partner_sync_id"),
+                        storeSyncId = item.payload.optString("store_sync_id"),
+                        localHash = item.hash,
+                        cloudRevision = revision,
+                        localCash = item.payload.optBoolean("deduct_cash"),
+                        cloudCash = payload.optBoolean("deduct_cash"),
+                        localOrigin = cashPresence
+                    ))
+                }
                 mismatches += "${item.kind} ${item.payload.optString("date")}：" +
                     manualDifference(item.kind, item.payload, payload, cashPresence)
                 return@mapNotNull null
@@ -1270,6 +1322,7 @@ internal object CustomerCloudBridge {
             if(local.snapshots().isNotEmpty() || local.naturalDrafts().isNotEmpty())
                 issues += "服务器尚未升级跨日收款同步 V1.0.23，凌晨记录仍仅保存在本机"
         }
+        if (canWrite) CustomerCashConflictStore.clear(context, bookId)
         status.edit().putLong("last_$bookId", System.currentTimeMillis())
             .putInt("uploaded_$bookId", uploaded)
             .putString("error_$bookId", issues.joinToString("；"))
