@@ -9,6 +9,7 @@ enum BusinessDraftWorkflowPolicy {
         case waitingForResult
         case acceptedPendingReadback
         case confirmed
+        case confirmedRemoteMissing
         case cloudRecordExists
         case unsafeToRead
 
@@ -18,6 +19,8 @@ enum BusinessDraftWorkflowPolicy {
             case .waitingForResult: return "原操作待核对，请勿重新提交"
             case .acceptedPendingReadback: return "服务端已接收，等待云端核对"
             case .confirmed: return "云端已确认"
+            case .confirmedRemoteMissing:
+                return "本机曾确认，但最新云端未找到营业记录，请核对安卓删除或修改"
             case .cloudRecordExists: return "云端已有该日该位置营业，请勿重复录入"
             case .unsafeToRead: return "无法核对上传保护记录，禁止提交"
             }
@@ -26,7 +29,8 @@ enum BusinessDraftWorkflowPolicy {
         var needsAttention: Bool {
             switch self {
             case .localOnly, .waitingForResult,
-                 .acceptedPendingReadback, .cloudRecordExists, .unsafeToRead:
+                 .acceptedPendingReadback, .confirmedRemoteMissing,
+                 .cloudRecordExists, .unsafeToRead:
                 return true
             case .confirmed: return false
             }
@@ -57,7 +61,9 @@ enum BusinessDraftWorkflowPolicy {
                 return .unsafeToRead
             }
             switch attempt.phase {
-            case .confirmed: return .confirmed
+            case .confirmed:
+                return cloudRecord(for: draft, events: events) == nil
+                    ? .confirmedRemoteMissing : .confirmed
             case .accepted: return .acceptedPendingReadback
             case .prepared, .unknown: return .waitingForResult
             }
