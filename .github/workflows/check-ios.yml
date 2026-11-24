@@ -1,4 +1,4 @@
-name: Check iOS V0.9.3 settlement operations
+name: Check iOS V0.9.4 inventory
 
 on:
   pull_request:
