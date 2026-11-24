@@ -199,7 +199,11 @@ struct TXSettlementTestWorkbenchView: View {
     @EnvironmentObject private var model: LedgerViewModel
     @State private var date: Date
 
-    init(initialDate: Date = Date(), initialTransferID: String = "",
+    init(initialDate: Date = Date()) {
+        _date = State(initialValue: initialDate)
+    }
+
+    init(initialDate: Date, initialTransferID: String,
          initialAction: TXSettlementTestAction = .full) {
         _date = State(initialValue: initialDate)
         _transferID = State(initialValue: initialTransferID)
