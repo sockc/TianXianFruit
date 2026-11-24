@@ -197,7 +197,7 @@ struct SettlementTableView: View {
                     .disabled(model.isBusy)
                     .accessibilityLabel("同步资金数据")
                 }
-                .padding(12)
+                .padding(9)
                 .background(TXTheme.header,
                             in: RoundedRectangle(cornerRadius: 12))
 
