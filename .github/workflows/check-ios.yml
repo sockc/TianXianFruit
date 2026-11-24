@@ -1,4 +1,4 @@
-name: Check iOS V0.8.3 daily business, purchase, settlement
+name: Check iOS V0.8.4 cloud reconciliation and daily experience
 
 on:
   pull_request:

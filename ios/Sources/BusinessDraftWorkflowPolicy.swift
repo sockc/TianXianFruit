@@ -9,6 +9,8 @@ enum BusinessDraftWorkflowPolicy {
         case waitingForResult
         case acceptedPendingReadback
         case confirmed
+        case confirmedRemoteMissing
+        case confirmedRemoteChanged
         case cloudRecordExists
         case unsafeToRead
 
@@ -18,6 +20,10 @@ enum BusinessDraftWorkflowPolicy {
             case .waitingForResult: return "原操作待核对，请勿重新提交"
             case .acceptedPendingReadback: return "服务端已接收，等待云端核对"
             case .confirmed: return "云端已确认"
+            case .confirmedRemoteMissing:
+                return "本机曾确认，但当前同步数据没有该营业，请核对安卓删除记录"
+            case .confirmedRemoteChanged:
+                return "本机曾确认，但云端营业金额已变化，请核对安卓历史修改"
             case .cloudRecordExists: return "云端已有该日该位置营业，请勿重复录入"
             case .unsafeToRead: return "无法核对上传保护记录，禁止提交"
             }
@@ -26,7 +32,8 @@ enum BusinessDraftWorkflowPolicy {
         var needsAttention: Bool {
             switch self {
             case .localOnly, .waitingForResult,
-                 .acceptedPendingReadback, .cloudRecordExists, .unsafeToRead:
+                 .acceptedPendingReadback, .confirmedRemoteMissing,
+                 .confirmedRemoteChanged, .cloudRecordExists, .unsafeToRead:
                 return true
             case .confirmed: return false
             }
@@ -46,7 +53,8 @@ enum BusinessDraftWorkflowPolicy {
 
     static func status(draft: BusinessLocalDraft, events: [SyncEvent],
                        attempt: BusinessCommitAttempt?,
-                       outboxReadable: Bool = true) -> CloudState {
+                       outboxReadable: Bool = true,
+                       cloudSnapshotReady: Bool = true) -> CloudState {
         guard outboxReadable else { return .unsafeToRead }
         if let attempt {
             guard attempt.proposal.operationID.lowercased() == draft.id.lowercased(),
@@ -57,7 +65,17 @@ enum BusinessDraftWorkflowPolicy {
                 return .unsafeToRead
             }
             switch attempt.phase {
-            case .confirmed: return .confirmed
+            case .confirmed:
+                guard cloudSnapshotReady else { return .confirmed }
+                guard cloudRecord(for: draft, events: events) != nil else {
+                    return .confirmedRemoteMissing
+                }
+                if let receipt = attempt.receipt,
+                   !BusinessCommitPolicy.readback(attempt.proposal,
+                        receipt: receipt, records: events) {
+                    return .confirmedRemoteChanged
+                }
+                return .confirmed
             case .accepted: return .acceptedPendingReadback
             case .prepared, .unknown: return .waitingForResult
             }

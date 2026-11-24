@@ -504,3 +504,20 @@ assert 'dailyTransferReadout' in swift["SettlementTableView.swift"]
 assert 'TXTestBookAccess.isCandidate' in swift["SettlementTableView.swift"]
 assert 'scope == "formal"' in swift["BusinessAtomicCommit.swift"]
 print("V0.8.3 PASS: formal purchase, business recovery and settlement readout")
+
+# V0.8.4: visible pull status and integrity checks never grant write access.
+assert "confirmedRemoteMissing" in swift["BusinessDraftWorkflowPolicy.swift"]
+assert "confirmedRemoteChanged" in swift["BusinessDraftWorkflowPolicy.swift"]
+assert "BusinessCommitPolicy.readback" in swift["BusinessDraftWorkflowPolicy.swift"]
+assert "confirmedPurchaseChanged" in swift["PurchaseWorkspaceView.swift"]
+assert "PurchaseAtomicReadbackPolicy.confirmed" in swift["PurchaseWorkspaceView.swift"]
+assert 'onOrBefore: purchaseDate' in swift["PurchaseWorkspaceEditorView.swift"]
+assert 'line.unitPrice = "0"' in swift["PurchaseWorkspaceEditorView.swift"]
+assert "TXCloudSyncStatusBar" in swift["Views.swift"]
+assert '"近90天"' in swift["TXPurchaseHistoryPolicy.swift"]
+assert "TXPurchaseHistoryPolicy.filter" in swift["Views.swift"]
+assert "day.shares.prefix(2)" in swift["SettlementTableView.swift"]
+assert "day.funds.prefix(2)" in swift["SettlementTableView.swift"]
+assert "TXTestBookAccess.isCandidate" in swift["SettlementTableView.swift"]
+assert (root.parent / "Tests" / "DailyPurchaseHistoryAndPriceTests.swift").exists()
+print("V0.8.4 PASS: Android cloud drift, cost-safe prices, history dates and saved settlement values")

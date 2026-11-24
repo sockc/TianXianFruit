@@ -14,10 +14,20 @@ enum PurchaseLastPricePolicy {
         AndroidNumericIdentity.exact(value)
     }
 
+    /// When changing goods, a previous fruit's price must never leak
+    /// into the new line. Existing manually entered prices are preserved
+    /// whenever the fruit identity remains the same.
+    static func priceAfterFruitChange(previousFruitID: String,
+                                      nextFruitID: String,
+                                      currentPrice: String) -> String {
+        previousFruitID == nextFruitID ? currentPrice : "0"
+    }
+
     static func latest(
         fruitSyncID: String,
         unit: String,
-        records: [SyncEvent]
+        records: [SyncEvent],
+        onOrBefore dateLimit: String? = nil
     ) -> PurchaseLastPrice? {
         let matches = records.filter {
             $0.tableName == "fruit" && !$0.isDeletion &&
@@ -52,6 +62,7 @@ enum PurchaseLastPricePolicy {
                   numericID(event.payload["fruit_id"]) == fruitID,
                   let orderID = numericID(event.payload["order_id"]),
                   let date = parentDates[orderID], !date.isEmpty,
+                  (dateLimit == nil || date <= dateLimit!),
                   let price = event.payload["unit_price"]?.decimal,
                   price.isFinite, price > 0, price <= 1_000_000,
                   let childUnit = event.payload["unit"]?.text,

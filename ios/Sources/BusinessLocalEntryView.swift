@@ -216,6 +216,15 @@ struct BusinessLocalEntryView: View {
 
     private var existingRemote: Bool { remoteRecord != nil }
 
+    private var currentCloudState: BusinessDraftWorkflowPolicy.CloudState? {
+        guard let draft = persistedDraft, let attempt else { return nil }
+        return BusinessDraftWorkflowPolicy.status(
+            draft: draft, events: Array(model.snapshot.records.values),
+            attempt: attempt,
+            cloudSnapshotReady: model.lastSyncAt != nil &&
+                !model.isUsingCachedAuthorization)
+    }
+
     private func loadDraft() {
         guard !storeID.isEmpty else { return }
         let existing: BusinessLocalDraft?
@@ -553,8 +562,20 @@ struct BusinessLocalEntryView: View {
                         Text(errorText).font(.caption).foregroundColor(.orange)
                     }
                     if let attempt {
-                        Text(attempt.label).font(.caption)
-                            .foregroundColor(attempt.phase == .confirmed ? .green : .orange)
+                        if let state = currentCloudState,
+                           state == .confirmedRemoteMissing ||
+                           state == .confirmedRemoteChanged {
+                            Label(state.label, systemImage: "exclamationmark.triangle")
+                                .font(.caption).foregroundColor(.orange)
+                            Button("刷新云端并复核原营业") {
+                                Task { await model.refresh(forceFull: true) }
+                            }
+                            .disabled(submitting || model.isBusy)
+                        } else {
+                            Text(attempt.label).font(.caption)
+                                .foregroundColor(attempt.phase == .confirmed
+                                                 ? .green : .orange)
+                        }
                         Button {
                             Task { await checkOriginalOperation() }
                         } label: {
