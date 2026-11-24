@@ -1,4 +1,4 @@
-name: Check iOS V0.8.4 cloud reconciliation and daily experience
+name: Check iOS V0.8.5 small-screen shell and AppIcon
 
 on:
   pull_request:
@@ -29,6 +29,8 @@ jobs:
         run: python3 ios/scripts/check_readonly.py
       - name: Install XcodeGen
         run: brew install xcodegen
+      - name: Generate complete iPhone and iPad app icon catalog
+        run: bash ios/scripts/generate_app_icon.sh
       - name: Generate Xcode project
         run: cd ios && xcodegen generate
       - name: Build for iOS Simulator (unsigned)

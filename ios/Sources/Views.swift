@@ -737,7 +737,7 @@ private struct MorePage: View {
                     Label("账号与同步", systemImage: "person.crop.circle")
                         .font(.subheadline.bold())
                 }
-                Text("iOS V0.8.4 · Build 53")
+                Text("iOS V0.8.5 · Build 54")
                     .font(.caption2).foregroundColor(.secondary)
             }
             .padding(12)
