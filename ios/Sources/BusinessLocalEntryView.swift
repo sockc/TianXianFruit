@@ -483,7 +483,9 @@ struct BusinessLocalEntryView: View {
                             Label("增加收款人", systemImage: "person.badge.plus")
                         }
                     }
-                    TXBusinessReceiptSummaryView(lines: lines)
+                    if lines.count > 1 {
+                        TXBusinessReceiptSummaryView(lines: lines)
+                    }
                 }
                 Section(header: Text("营业成本与利润依据（同步前必填）")) {
                     amount("支出", value: $expense)
@@ -508,24 +510,6 @@ struct BusinessLocalEntryView: View {
                         .font(.caption).foregroundColor(.secondary)
                 }
                 Section {
-                    Button {
-                        if cloudWriteAvailable && cloudReady {
-                            Task { await saveThenSync() }
-                        } else {
-                            save()
-                        }
-                    } label: {
-                        Label(cloudWriteAvailable && cloudReady ?
-                                  "保存并同步营业" : "保存营业草稿",
-                              systemImage: cloudWriteAvailable && cloudReady ?
-                                  "icloud.and.arrow.up" : "square.and.arrow.down")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!editingAllowed || storeID.isEmpty || existingRemote ||
-                              storageError != nil || attempt != nil || submitting ||
-                              (saved && formMatchesSavedDraft &&
-                               !(cloudWriteAvailable && cloudReady)))
                     if saved && formMatchesSavedDraft {
                         Label("本机草稿已保存（云端状态见下方）",
                               systemImage: "checkmark.circle")
@@ -606,6 +590,32 @@ struct BusinessLocalEntryView: View {
                          : "当前账本云端营业未授权；本机草稿不计入安卓营业或结算。")
                         .font(.caption2).foregroundColor(.secondary)
                 }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    Button {
+                        if cloudWriteAvailable && cloudReady {
+                            Task { await saveThenSync() }
+                        } else {
+                            save()
+                        }
+                    } label: {
+                        Label(cloudWriteAvailable && cloudReady ?
+                                  "保存并同步营业" : "保存营业草稿",
+                              systemImage: cloudWriteAvailable && cloudReady ?
+                                  "icloud.and.arrow.up" : "square.and.arrow.down")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!editingAllowed || storeID.isEmpty || existingRemote ||
+                              storageError != nil || attempt != nil || submitting ||
+                              (saved && formMatchesSavedDraft &&
+                               !(cloudWriteAvailable && cloudReady)))
+
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color(UIColor.systemGroupedBackground))
             }
             .navigationTitle("营业录入")
             .navigationBarTitleDisplayMode(.inline)
