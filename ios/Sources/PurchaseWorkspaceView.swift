@@ -700,9 +700,11 @@ struct PurchaseWorkspaceView: View {
         submittingID = draft.id
         defer { submittingID = nil }
         do {
+            let oldSyncTime = model.lastSyncAt
             await model.refresh(forceFull: true)
             guard model.errorMessage == nil,
-                  model.lastSyncAt != nil,
+                  let newSyncTime = model.lastSyncAt,
+                  oldSyncTime == nil || newSyncTime > oldSyncTime!,
                   model.selectedBookID == book.id,
                   model.account?.username == account.username,
                   !model.isUsingCachedAuthorization else {
@@ -864,12 +866,13 @@ private struct PurchaseWorkspaceMetric: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.caption).foregroundColor(.secondary)
-            Text(value).font(.subheadline.bold()).minimumScaleFactor(0.8)
+            Text(title).font(.caption2).foregroundColor(.secondary)
+                .lineLimit(1).minimumScaleFactor(0.8)
+            Text(value).font(.subheadline.bold()).minimumScaleFactor(0.65)
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(11)
+        .padding(8)
         .background(Color(UIColor.secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 11))
     }
