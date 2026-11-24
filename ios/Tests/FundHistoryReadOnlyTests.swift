@@ -133,4 +133,42 @@ final class FundHistoryReadOnlyTests: XCTestCase {
         XCTAssertEqual(TXFundHistoryPolicy.batches(snapshot,
             since: "2026-11-21", until: "2026-11-21").count, 1)
     }
+    func testFundOverviewLatestRecordAndDuplicateGuard() {
+        var snapshot = ReadOnlySnapshot()
+        snapshot.apply([
+            event("settlement_partner", "p1", "2026-11-19",
+                  ["partner_name": .string("甲"), "balance": .number(100)]),
+            event("settlement_partner", "p2", "2026-11-20",
+                  ["partner_name": .string("甲"), "balance": .number(-30)]),
+            event("settlement_partner", "p3", "2026-11-20",
+                  ["partner_name": .string("乙"), "balance": .number(20)]),
+            event("settlement_partner", "p4", "2026-11-20",
+                  ["partner_name": .string("乙"), "balance": .number(25)]),
+            event("settlement_partner", "p5", "2026-11-22",
+                  ["partner_name": .string("丙"), "balance": .number(50)])
+        ])
+        let rows = snapshot.financeSettlementPartners
+        let latest = TXFundOverviewPolicy.latestRows(rows, until: "2026-11-20")
+        XCTAssertEqual(latest.count, 1)
+        XCTAssertEqual(latest.first?.partner, "甲")
+        XCTAssertEqual(latest.first?.balance, -30)
+        XCTAssertEqual(TXFundOverviewPolicy.conflictingPartners(rows,
+            until: "2026-11-20"), ["乙"])
+        XCTAssertFalse(TXFundHistoryPolicy.cumulativeBalanceIsAuthoritative)
+    }
+
+    func testFundOverviewDoesNotUseFutureDatedSnapshots() {
+        var snapshot = ReadOnlySnapshot()
+        snapshot.apply([
+            event("settlement_partner", "old", "2026-11-10",
+                  ["partner_name": .string("甲"), "balance": .number(5)]),
+            event("settlement_partner", "future", "2026-11-26",
+                  ["partner_name": .string("甲"), "balance": .number(99)])
+        ])
+        let rows = TXFundOverviewPolicy.latestRows(snapshot.financeSettlementPartners,
+                                                   until: "2026-11-25")
+        XCTAssertEqual(rows.first?.date, "2026-11-10")
+        XCTAssertEqual(rows.first?.balance, 5)
+    }
+
 }
