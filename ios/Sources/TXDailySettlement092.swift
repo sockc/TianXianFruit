@@ -66,6 +66,57 @@ enum TXDailySettlement092Policy {
         }
     }
 
+    /// Match the current Android UI's per-partner daily fund registration.
+    /// This is not an independently settled purchase flag.
+    struct PurchaseProgress: Identifiable {
+        let id: String
+        let name: String
+        let purchase: Double
+        let need: Double
+        let registered: Double
+        var remaining: Double { max(0, TXFundAccumulator.roundMoney(need - registered)) }
+    }
+
+    static func purchaseProgress(_ snapshot: ReadOnlySnapshot, date: String) -> [PurchaseProgress]? {
+        let all = Array(snapshot.records.values)
+        let parents = all.filter { $0.tableName == "daily_cash_settlement" &&
+            $0.payload["date"]?.text == date }
+        guard parents.count == 1, let parent = parents.first,
+              let parentID = AndroidNumericIdentity.exact(parent.payload["id"]),
+              AndroidNumericIdentity.unique(parent, in: all) else { return nil }
+        let children = all.filter { $0.tableName == "settlement_partner" &&
+            $0.payload["date"]?.text == date }
+        let transfers = all.filter { $0.tableName == "settlement_transfer" &&
+            $0.payload["date"]?.text == date }
+        var paid: [(Int64, Int64, Double)] = []
+        for e in transfers {
+            let p = e.payload
+            if number(p["settlement_id"]) == 0 { continue }
+            guard AndroidNumericIdentity.exact(p["settlement_id"]) == parentID,
+                  let from = AndroidNumericIdentity.exact(p["from_partner_id"]),
+                  let to = AndroidNumericIdentity.exact(p["to_partner_id"]),
+                  let amount = number(p["amount"]), let registered = number(p["settled_amount"]),
+                  amount >= 0, registered >= 0, registered <= amount + 0.005 else { return nil }
+            paid.append((from, to, registered))
+        }
+        var result: [PurchaseProgress] = []
+        var seen = Set<Int64>()
+        for e in children {
+            let p = e.payload
+            guard AndroidNumericIdentity.exact(p["settlement_id"]) == parentID,
+                  let id = AndroidNumericIdentity.exact(p["partner_id"]),
+                  seen.insert(id).inserted,
+                  let purchase = number(p["purchase_paid"]), purchase >= 0,
+                  let balance = number(p["balance"]) else { return nil }
+            if purchase <= 0.005 { continue }
+            let related = paid.filter { balance >= 0 ? $0.1 == id : $0.0 == id }
+            result.append(PurchaseProgress(id: e.syncId, name: p["partner_name"]?.text ?? "未知",
+                purchase: purchase, need: abs(balance),
+                registered: TXFundAccumulator.roundMoney(related.reduce(0) { $0 + $1.2 })))
+        }
+        return children.isEmpty ? nil : result.sorted { $0.id < $1.id }
+    }
+
     private static func calculate(_ snapshot: ReadOnlySnapshot, date: String) throws -> Report {
         let all = Array(snapshot.records.values)
         let events = all.filter { $0.payload["date"]?.text == date }
@@ -327,12 +378,28 @@ struct TXDailySettlement092Panel: View {
                                 Text(t.amount.formatted(.currency(code: "CNY"))).bold()
                             }.font(.caption)
                         }
-                    } label: { Text("资金中心转账方案 · \(result.transfers.count)笔").font(.subheadline.bold()) }
+                    } label: { Text("最少转账方案 · \(result.transfers.count)笔").font(.subheadline.bold()) }
                     Text("这是待跨端核对的计算预览，不代表已结清；不是已保存结算单。")
                         .font(.caption2).foregroundColor(.secondary)
                 }
             }
-            Text("当日采购资金是否已结算：尚未确认同步字段，不自动推断。")
+            if let progress = TXDailySettlement092Policy.purchaseProgress(model.snapshot, date: date),
+               !progress.isEmpty {
+                DisclosureGroup {
+                    ForEach(progress) { row in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(row.name).font(.caption.bold())
+                            amount("采购垫付", row.purchase)
+                            amount("当日资金已登记", row.registered)
+                            amount("当日资金未登记", row.remaining)
+                            Text(row.remaining <= 0.005 ? "当日资金原始方案无剩余" :
+                                (row.registered <= 0.005 ? "当日资金未登记" : "当日资金部分登记"))
+                                .font(.caption2).foregroundColor(.secondary)
+                        }
+                    }
+                } label: { Text("采购垫付与当日资金登记").font(.caption.bold()) }
+            }
+            Text("采购垫付随当日转账逐笔结算；不会单独推断采购款已结清。")
                 .font(.caption2).foregroundColor(.secondary)
         }
         .padding(10)
