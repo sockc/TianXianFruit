@@ -326,18 +326,16 @@ struct SettlementTableView: View {
                     }
                 }
 
+                } else if settlementSection == "资金余额" {
+                    TXFundOverviewPanel()
                 } else {
                     VStack(alignment: .leading, spacing: 10) {
-                        Label(settlementSection == "资金余额" ? "资金余额（逐步移植）" : "结算记录（逐步移植）",
-                              systemImage: settlementSection == "资金余额" ? "wallet.pass" : "clock.arrow.circlepath")
+                        Label("结算记录（逐步移植）", systemImage: "clock.arrow.circlepath")
                             .font(.headline)
-                        Text(settlementSection == "资金余额"
-                             ? "当前累计资金余额仍需要安卓权威计算口径，不能将逐日差额相加。可先进入已同步的合伙人逐日资金明细核对。"
-                             : "可先查看已同步的当日转账、周期结清和历史登记。登记状态并不等于实际到账或最终结清。")
+                        Text("可查看已同步的当日转账、周期结清和历史登记；已登记不等于最终结清。")
                             .font(.subheadline).foregroundColor(.secondary)
                         NavigationLink(destination: TXFundHistoryView()) {
-                            Label(settlementSection == "资金余额" ? "查看已有资金明细" : "查看已有结算历史", systemImage: "arrow.right.circle")
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Label("查看已有结算历史", systemImage: "arrow.right.circle")
                         }
                         .buttonStyle(.bordered)
                     }
