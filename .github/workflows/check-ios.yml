@@ -1,4 +1,4 @@
-name: Check iOS V0.9.0 fund data parity
+name: Check iOS V0.9.1 settlement history
 
 on:
   pull_request:
