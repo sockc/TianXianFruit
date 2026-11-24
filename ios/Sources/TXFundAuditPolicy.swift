@@ -3,7 +3,7 @@ import Foundation
 /// Cross-device accounting evidence, not a replacement for Android's
 /// AppDatabase.buildPartnerFundLedger / getPartnerFundBalances.
 /// This audit never calculates a withdrawable or cumulative fund balance.
-struct TXFundAuditFinding: Identifiable, Equatable {
+struct TXCumulativeFundAuditFinding: Identifiable, Equatable {
     enum Severity: String {
         case information
         case blocked
@@ -14,12 +14,12 @@ struct TXFundAuditFinding: Identifiable, Equatable {
     let severity: Severity
 }
 
-struct TXFundAuditReport {
+struct TXCumulativeFundAuditReport {
     let cutoff: String
     let dailyRecordCount: Int
     let partnerRecordCount: Int
     let transferCount: Int
-    let findings: [TXFundAuditFinding]
+    let findings: [TXCumulativeFundAuditFinding]
 
     /// A true value means the saved source records are worth manually
     /// comparing, never that the current fund balance is verified.
@@ -29,9 +29,9 @@ struct TXFundAuditReport {
     var hasBlocker: Bool { findings.contains { $0.severity == .blocked } }
 }
 
-enum TXFundAuditPolicy {
+enum TXCumulativeFundAuditPolicy {
     static func inspect(_ snapshot: ReadOnlySnapshot, cutoff: String,
-                        partner: String = "") -> TXFundAuditReport {
+                        partner: String = "") -> TXCumulativeFundAuditReport {
         // Inspect the full cloud snapshot through the cutoff. The history
         // visible range (7/30 days) must never restrict accounting evidence.
         let daily = snapshot.financeDaily.filter { $0.date <= cutoff }
@@ -43,10 +43,10 @@ enum TXFundAuditPolicy {
             (partner.isEmpty || $0.from == partner || $0.to == partner ||
              $0.focusPartnerName == partner)
         }
-        var issues: [TXFundAuditFinding] = []
+        var issues: [TXCumulativeFundAuditFinding] = []
         func add(_ id: String, _ title: String, _ detail: String,
-                 _ severity: TXFundAuditFinding.Severity = .blocked) {
-            issues.append(TXFundAuditFinding(id: id, title: title,
+                 _ severity: TXCumulativeFundAuditFinding.Severity = .blocked) {
+            issues.append(TXCumulativeFundAuditFinding(id: id, title: title,
                                              detail: detail, severity: severity))
         }
 
@@ -108,7 +108,7 @@ enum TXFundAuditPolicy {
         add("authoritative", "缺少安卓版累计资金余额权威结果",
             "现有云端事件没有 getPartnerFundBalances 截止日结果、完整结清断点与资金中心镜像；即使无其他异常也不能证明余额一致。")
 
-        return TXFundAuditReport(
+        return TXCumulativeFundAuditReport(
             cutoff: cutoff, dailyRecordCount: daily.count,
             partnerRecordCount: partnerRows.count, transferCount: transfers.count,
             findings: issues

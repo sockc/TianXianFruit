@@ -83,7 +83,7 @@ final class TXFundAccumulatorTests: XCTestCase {
             event("settlement_transfer", "future", "2026-11-26",
                   ["settlement_kind": .string("DAILY"), "amount": .number(30)])
         ])
-        let audit = TXFundAuditPolicy.inspect(snapshot, cutoff: "2026-11-25")
+        let audit = TXCumulativeFundAuditPolicy.inspect(snapshot, cutoff: "2026-11-25")
         XCTAssertEqual(audit.dailyRecordCount, 2)
         XCTAssertEqual(audit.transferCount, 1)
         XCTAssertTrue(audit.hasBlocker)

@@ -63,8 +63,8 @@ jobs:
           ldid -S "$TARGET/TianXianFruit"
           cd "$RUNNER_TEMP/trollstore"
           ditto -c -k --sequesterRsrc --keepParent Payload \
-            "$RUNNER_TEMP/TianXianFruit-iOS-v0.8.9-Build58-TrollStore.ipa"
-          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v0.8.9-Build58-TrollStore.ipa"
+            "$RUNNER_TEMP/TianXianFruit-iOS-v0.9.0-Build59-TrollStore.ipa"
+          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v0.9.0-Build59-TrollStore.ipa"
       - name: Verify app bundle structure and deployment target
         shell: bash
         run: |
@@ -72,7 +72,7 @@ jobs:
           python3 - <<'PY'
           import os, plistlib, zipfile
           from pathlib import Path
-          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v0.8.9-Build58-TrollStore.ipa"
+          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v0.9.0-Build59-TrollStore.ipa"
           with zipfile.ZipFile(p) as z:
               names = set(z.namelist())
               base = "Payload/TianXianFruit.app/"
@@ -86,7 +86,7 @@ jobs:
           print("Verified arm64 TrollStore IPA, iOS minimum 15.0, no Apple profile")
           PY
       - name: Run iOS XCTest before beta publication
-        if: github.ref == 'refs/heads/feature/ios-fund-audit-v0.8.9'
+        if: github.ref == 'refs/heads/feature/ios-fund-data-v0.9.0'
         shell: bash
         run: |
           set -euo pipefail
@@ -105,24 +105,24 @@ jobs:
       - name: Upload installable-by-TrollStore test IPA
         uses: actions/upload-artifact@v4
         with:
-          name: TianXianFruit-iOS-v0.8.9-Build58-TrollStore
-          path: ${{ runner.temp }}/TianXianFruit-iOS-v0.8.9-Build58-TrollStore.ipa
+          name: TianXianFruit-iOS-v0.9.0-Build59-TrollStore
+          path: ${{ runner.temp }}/TianXianFruit-iOS-v0.9.0-Build59-TrollStore.ipa
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish iOS v0.8.9 beta prerelease
-        if: github.ref == 'refs/heads/feature/ios-fund-audit-v0.8.9'
+      - name: Publish iOS v0.9.0 beta prerelease
+        if: github.ref == 'refs/heads/feature/ios-fund-data-v0.9.0'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          FILE="$RUNNER_TEMP/TianXianFruit-iOS-v0.8.9-Build58-TrollStore.ipa"
+          FILE="$RUNNER_TEMP/TianXianFruit-iOS-v0.9.0-Build59-TrollStore.ipa"
           test -s "$FILE"
-          gh release create "ios-v0.8.9-beta" "$FILE" \
+          gh release create "ios-v0.9.0-beta" "$FILE" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --prerelease \
-            --title "天鲜账本 iOS V0.8.9 Beta (Build 58)" \
-            --notes "资金余额第二阶段：移植安卓逐日资金残余累积、部分结算、结清归零断点及资金中心镜像的独立运算核心，新增全历史核对报告和专项测试。实际累计金额仍待权威数据接入，现有正式账本只读展示，不改安卓结算及服务端。" \
+            --title "天鲜账本 iOS V0.9.0 Beta (Build 59)" \
+            --notes "资金余额支持云端完整历史条件式重建，接入合伙人身份、收款采购费用、利润份额、有效转账、结清断点及资金中心；缺失字段或身份冲突时阻断计算。累计金额仍需与安卓实机同账本同截止日期核对，不用于正式转账。修复版本及 Beta 发布条件，不修改安卓结算或服务端。" \
             --latest=false

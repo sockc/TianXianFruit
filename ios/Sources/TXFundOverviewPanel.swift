@@ -35,6 +35,7 @@ struct TXFundOverviewPanel: View {
     @State private var period = "近7天"
     @State private var selectedPartner = ""
     @State private var expandedDay = ""
+    @State private var candidate: TXFundDataAdapter.Report?
 
     private var endDate: String { BusinessDates.key(cutoff) }
     private var startDate: String {
@@ -69,7 +70,7 @@ struct TXFundOverviewPanel: View {
             VStack(alignment: .leading, spacing: 6) {
                 Label("资金余额 · 合伙人明细", systemImage: "wallet.pass")
                     .font(.headline)
-                Text("当前累计资金余额：待接入安卓权威计算。以下为每日已保存资金差额，不能累加作为应收、应付或可结算余额。")
+                Text("累计余额已支持按云端完整历史进行条件式核算。结果须与安卓同账本、同截止日核对；未验证前不得用于实际转账。以下原始日差额仍保留。")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -80,7 +81,52 @@ struct TXFundOverviewPanel: View {
 
             TXDayBar(date: $cutoff, label: "资金截止日期", allowFuture: false)
             if model.lastSyncAt != nil {
-                let audit = TXFundAuditPolicy.inspect(model.snapshot, cutoff: endDate,
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack {
+                        Text("累计资金余额 · 跨端核对").font(.subheadline.bold())
+                        Spacer()
+                        Button("计算核对") {
+                            candidate = TXFundDataAdapter.evaluate(model.snapshot, until: endDate)
+                        }
+                        .disabled(model.isBusy || model.isUsingCachedAuthorization)
+                    }
+                    Text("计算范围为全部历史至 " + endDate + "，与下方近7天筛选无关。")
+                        .font(.caption2).foregroundColor(.secondary)
+                    if let candidate {
+                        if let blocker = candidate.blocker {
+                            Label(blocker, systemImage: "exclamationmark.triangle")
+                                .font(.caption).foregroundColor(.orange)
+                        } else {
+                            Text("云端重建结果 · 尚未与安卓实机确认")
+                                .font(.caption.bold()).foregroundColor(.orange)
+                            ForEach(candidate.rows) { row in
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(row.name).font(.subheadline.bold())
+                                        if row.isCenter {
+                                            Text("资金中心").font(.caption2).foregroundColor(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                    VStack(alignment: .trailing, spacing: 3) {
+                                        Text(row.balance.formatted(.currency(code: "CNY")))
+                                            .font(.subheadline.bold())
+                                            .foregroundColor(row.balance < -0.005 ? .red : TXTheme.primary)
+                                        Text(row.balance > 0.005 ? "应收" :
+                                             (row.balance < -0.005 ? "应补" : "无差额"))
+                                            .font(.caption2).foregroundColor(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(10)
+                .background(Color(UIColor.secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: 10))
+            }
+            if model.lastSyncAt != nil {
+                let audit = TXCumulativeFundAuditPolicy.inspect(model.snapshot, cutoff: endDate,
                                                       partner: selectedPartner)
                 DisclosureGroup {
                     VStack(alignment: .leading, spacing: 8) {
@@ -212,6 +258,10 @@ struct TXFundOverviewPanel: View {
             }
             .buttonStyle(.bordered)
         }
+        .onChange(of: endDate) { _ in candidate = nil }
+        .onChange(of: model.selectedBookID) { _ in candidate = nil }
+        .onChange(of: model.lastSyncAt) { _ in candidate = nil }
+        .onChange(of: model.isUsingCachedAuthorization) { _ in candidate = nil }
     }
 
     private func metric(_ title: String, _ value: Double) -> some View {
