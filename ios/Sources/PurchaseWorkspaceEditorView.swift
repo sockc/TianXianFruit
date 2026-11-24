@@ -315,6 +315,10 @@ private struct PurchaseWorkspaceLineCard: View {
                     line.sourcePlanItemSyncID = nil
                 }
                 .onChange(of: line.unit) { _ in
+                    // "件" and "箱" may have completely different unit costs.
+                    // Retain quantity and weight, but require the new price
+                    // to be explicitly entered or selected from its own unit.
+                    line.unitPrice = "0"
                     line.sourcePlanItemSyncID = nil
                 }
                 Spacer(minLength: 4)
