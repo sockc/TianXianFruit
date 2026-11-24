@@ -88,10 +88,13 @@ private struct DashboardView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 TXMainNavigationBar(selected: $selectedTab)
             }
-            .navigationTitle("天鲜果业")
-            .navigationBarTitleDisplayMode(.inline)
+            // The dashboard owns its own compact header. Do not reserve
+            // a second iOS navigation bar / white safe-area region above it.
+            .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
+            .navigationBarHidden(true)
         }
         .navigationViewStyle(StackNavigationViewStyle())
+        .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
     }
 
     private var compactBookBar: some View {
@@ -111,9 +114,12 @@ private struct DashboardView: View {
                     .lineLimit(1)
             }
             if model.selectedBook?.name.hasPrefix("iOS_TEST_") == true {
-                Text("测试")
+                Text("测试账本")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.orange)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(Color.orange.opacity(0.12),
+                                in: Capsule())
             }
             Spacer(minLength: 4)
             HStack(spacing: 4) {
@@ -133,9 +139,9 @@ private struct DashboardView: View {
             .disabled(model.isBusy || model.selectedBookID == nil)
             .accessibilityLabel("同步账本")
         }
-        .padding(.horizontal, 13)
-        .frame(height: 43)
-        .background(TXTheme.header)
+        .padding(.horizontal, 12)
+        .frame(height: 36)
+        .background(Color(UIColor.systemGroupedBackground))
         .overlay(alignment: .bottom) { Divider() }
     }
 }
@@ -149,7 +155,7 @@ private struct HomePage: View {
         Button {
             selectedTab = tab
         } label: {
-            VStack(spacing: 5) {
+            VStack(spacing: 4) {
                 Image(systemName: symbol)
                     .font(.system(size: 21, weight: .medium))
                     .foregroundColor(TXTheme.primary)
@@ -157,7 +163,7 @@ private struct HomePage: View {
                 Text(subtitle).font(.system(size: 10))
                     .foregroundColor(.secondary).lineLimit(1)
             }
-            .frame(maxWidth: .infinity, minHeight: 78)
+            .frame(maxWidth: .infinity, minHeight: 68)
             .background(Color(UIColor.secondarySystemGroupedBackground),
                         in: RoundedRectangle(cornerRadius: 12))
             .contentShape(RoundedRectangle(cornerRadius: 12))
@@ -166,7 +172,7 @@ private struct HomePage: View {
     }
 
     private var coreOperations: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 7) {
             Text("日常操作").font(.headline)
             HStack(spacing: 8) {
                 coreAction("营业", "录入收款", "square.and.pencil", to: .business)
@@ -183,17 +189,17 @@ private struct HomePage: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("天鲜果业").font(.title2.bold())
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("天鲜果业").font(.headline.bold())
                             .foregroundColor(TXTheme.primary)
                         Text("经营概览 · " + BusinessDates.key(Date()))
-                            .font(.caption).foregroundColor(.secondary)
+                            .font(.caption2).foregroundColor(.secondary)
                     }
-                    Spacer()
+                    Spacer(minLength: 4)
                     Text("今日概览")
-                        .font(.caption).foregroundColor(.secondary)
+                        .font(.caption2).foregroundColor(.secondary)
                 }
                 coreOperations
                 WeatherHomeSummary()
@@ -238,8 +244,10 @@ private struct HomePage: View {
                 }
                 SyncFooter()
             }
-            .padding(12)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
         }
+        .background(Color(UIColor.systemGroupedBackground))
     }
 }
 
