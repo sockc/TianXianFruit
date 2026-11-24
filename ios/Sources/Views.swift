@@ -88,54 +88,81 @@ private struct DashboardView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 TXMainNavigationBar(selected: $selectedTab)
             }
-            .navigationTitle("天鲜果业")
-            .navigationBarTitleDisplayMode(.inline)
+            // A stock navigation bar was reserving a second, light-colored
+            // header above our own book selector on iPhone X.
+            .background(Color(UIColor.systemGroupedBackground)
+                            .ignoresSafeArea(edges: .top))
+            .navigationBarHidden(true)
         }
         .navigationViewStyle(StackNavigationViewStyle())
+        .background(Color(UIColor.systemGroupedBackground)
+                        .ignoresSafeArea(edges: .top))
     }
 
     private var compactBookBar: some View {
-        HStack(spacing: 9) {
-            if model.books.count > 1 {
-                Picker("账本", selection: Binding(
-                    get: { model.selectedBookID ?? "" },
-                    set: { model.selectBook($0) }
-                )) {
-                    ForEach(model.books) { Text($0.name).tag($0.id) }
-                }
-                .pickerStyle(.menu)
-                .font(.subheadline.bold())
-            } else {
-                Text(model.selectedBook?.name ?? "无可用账本")
-                    .font(.subheadline.bold())
+        VStack(spacing: 3) {
+            HStack(spacing: 8) {
+                Text("天鲜果业")
+                    .font(.system(size: 19, weight: .bold))
+                    .foregroundColor(TXTheme.primary)
                     .lineLimit(1)
+                Spacer(minLength: 4)
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(model.errorMessage != nil ||
+                              model.isUsingCachedAuthorization
+                              ? Color.orange : TXTheme.primary)
+                        .frame(width: 6, height: 6)
+                    Text(model.isBusy ? "同步中" :
+                         model.isUsingCachedAuthorization ? "离线" :
+                         model.errorMessage != nil ? "同步异常" :
+                         model.lastSyncAt == nil ? "待同步" : "已同步")
+                        .font(.system(size: 11)).foregroundColor(.secondary)
+                }
+                Button {
+                    Task {
+                        await model.refresh()
+                        await model.refreshCustomer()
+                    }
+                } label: {
+                    if model.isBusy { ProgressView().controlSize(.small) }
+                    else { Image(systemName: "arrow.clockwise") }
+                }
+                .disabled(model.isBusy || model.selectedBookID == nil)
+                .accessibilityLabel("同步账本")
             }
-            if model.selectedBook?.name.hasPrefix("iOS_TEST_") == true {
-                Text("测试")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.orange)
+            HStack(spacing: 6) {
+                if model.books.count > 1 {
+                    Picker("账本", selection: Binding(
+                        get: { model.selectedBookID ?? "" },
+                        set: { model.selectBook($0) }
+                    )) {
+                        ForEach(model.books) { Text($0.name).tag($0.id) }
+                    }
+                    .pickerStyle(.menu)
+                    .font(.caption2)
+                } else {
+                    Text(model.selectedBook?.name ?? "无可用账本")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                if model.selectedBook?.name.hasPrefix("iOS_TEST_") == true {
+                    Text("测试账本")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.orange)
+                        .padding(.horizontal, 5).padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.10),
+                                    in: Capsule())
+                }
+                Spacer(minLength: 4)
+                Text(BusinessDates.key(Date()))
+                    .font(.system(size: 11)).foregroundColor(.secondary)
             }
-            Spacer(minLength: 4)
-            HStack(spacing: 4) {
-                Circle().fill(model.isUsingCachedAuthorization ? Color.orange : TXTheme.primary)
-                    .frame(width: 6, height: 6)
-                Text(model.isBusy ? "同步中" :
-                     model.isUsingCachedAuthorization ? "离线" :
-                     model.lastSyncAt == nil ? "待同步" : "已同步")
-                    .font(.caption2).foregroundColor(.secondary)
-            }
-            Button {
-                Task { await model.refresh(); await model.refreshCustomer() }
-            } label: {
-                if model.isBusy { ProgressView().controlSize(.small) }
-                else { Image(systemName: "arrow.clockwise") }
-            }
-            .disabled(model.isBusy || model.selectedBookID == nil)
-            .accessibilityLabel("同步账本")
         }
-        .padding(.horizontal, 13)
-        .frame(height: 43)
-        .background(TXTheme.header)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Color(UIColor.systemGroupedBackground))
         .overlay(alignment: .bottom) { Divider() }
     }
 }
@@ -157,7 +184,7 @@ private struct HomePage: View {
                 Text(subtitle).font(.system(size: 10))
                     .foregroundColor(.secondary).lineLimit(1)
             }
-            .frame(maxWidth: .infinity, minHeight: 78)
+            .frame(maxWidth: .infinity, minHeight: 67)
             .background(Color(UIColor.secondarySystemGroupedBackground),
                         in: RoundedRectangle(cornerRadius: 12))
             .contentShape(RoundedRectangle(cornerRadius: 12))
@@ -166,8 +193,8 @@ private struct HomePage: View {
     }
 
     private var coreOperations: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Text("日常操作").font(.headline)
+        VStack(alignment: .leading, spacing: 6) {
+            Text("日常操作").font(.subheadline.bold())
             HStack(spacing: 8) {
                 coreAction("营业", "录入收款", "square.and.pencil", to: .business)
                 coreAction("采购", "商品采购", "cart", to: .purchase)
@@ -183,18 +210,7 @@ private struct HomePage: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("天鲜果业").font(.title2.bold())
-                            .foregroundColor(TXTheme.primary)
-                        Text("经营概览 · " + BusinessDates.key(Date()))
-                            .font(.caption).foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    Text("今日概览")
-                        .font(.caption).foregroundColor(.secondary)
-                }
+            VStack(alignment: .leading, spacing: 9) {
                 coreOperations
                 WeatherHomeSummary()
                 if model.lastSyncAt == nil {
@@ -238,8 +254,10 @@ private struct HomePage: View {
                 }
                 SyncFooter()
             }
-            .padding(12)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
         }
+        .background(Color(UIColor.systemGroupedBackground))
     }
 }
 
