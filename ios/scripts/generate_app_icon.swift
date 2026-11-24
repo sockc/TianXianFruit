@@ -31,7 +31,7 @@ func stroke(_ points: [(CGFloat, CGFloat)], color: NSColor, width: CGFloat) {
 }
 func drawArtwork() {
     rgba(0, 91, 55).setFill()
-    NSRect(x: 0, y: 0, width: 1024, height: 1024).fill()
+    NSBezierPath(rect: NSRect(x: 0, y: 0, width: 1024, height: 1024)).fill()
     // Gentle background lighting.
     let glow = NSBezierPath(ovalIn: NSRect(x: 95, y: 105, width: 820, height: 820))
     NSGradient(starting: rgba(12, 131, 81, 0.65),
