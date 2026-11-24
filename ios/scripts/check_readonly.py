@@ -521,3 +521,21 @@ assert "day.funds.prefix(2)" in swift["SettlementTableView.swift"]
 assert "TXTestBookAccess.isCandidate" in swift["SettlementTableView.swift"]
 assert (root.parent / "Tests" / "DailyPurchaseHistoryAndPriceTests.swift").exists()
 print("V0.8.4 PASS: Android cloud drift, cost-safe prices, history dates and saved settlement values")
+
+# V0.8.5: iPhone X-safe compact root, pinned saves and no new ledger writes.
+root_view = swift["Views.swift"]
+assert '.navigationBarHidden(true)' in root_view
+assert 'Color(UIColor.systemGroupedBackground)' in root_view
+assert 'Text("测试账本")' in root_view
+assert 'VStack(alignment: .leading, spacing: 9)' in root_view
+business = swift["BusinessLocalEntryView.swift"]
+purchase = swift["PurchaseWorkspaceEditorView.swift"]
+assert 'Text("开").font(.caption2)' in business
+assert 'Text("收").font(.caption2)' in business
+assert 'if lines.count > 1' in business
+assert '.safeAreaInset(edge: .bottom' in business
+assert '.safeAreaInset(edge: .bottom' in purchase
+assert "ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon" in (root.parent / "project.yml").read_text()
+assert (root.parent / "scripts" / "draw_app_icon.swift").exists()
+assert (root.parent / "Resources" / "Assets.xcassets" / "AppIcon.appiconset" / "Contents.json").exists()
+print("V0.8.5 PASS: compact safe-area root, pinned entry actions and AppIcon source")

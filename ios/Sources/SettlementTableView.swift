@@ -176,13 +176,11 @@ struct SettlementTableView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("当日结算").font(.title3.bold())
-                        Text("云端资金记录 · 已保存方案")
-                            .font(.caption2).foregroundColor(.secondary)
-                    }
+                    Text("当日结算 · 云端已保存")
+                        .font(.subheadline.bold())
+                        .lineLimit(1).minimumScaleFactor(0.8)
                     Spacer()
                     if model.selectedBook?.name.hasPrefix("iOS_TEST_") != true {
                         Label("只读", systemImage: "lock.shield")
@@ -197,9 +195,9 @@ struct SettlementTableView: View {
                     .disabled(model.isBusy)
                     .accessibilityLabel("同步资金数据")
                 }
-                .padding(12)
-                .background(TXTheme.header,
-                            in: RoundedRectangle(cornerRadius: 12))
+                .padding(8)
+                .background(Color(UIColor.secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: 11))
 
                 NavigationLink(destination: TXFundHistoryView()) {
                     HStack {
@@ -210,7 +208,7 @@ struct SettlementTableView: View {
                             .foregroundColor(.secondary)
                         Image(systemName: "chevron.right").font(.caption)
                     }
-                    .padding(11)
+                    .padding(8)
                     .background(Color(UIColor.secondarySystemGroupedBackground),
                                 in: RoundedRectangle(cornerRadius: 11))
                 }

@@ -26,6 +26,8 @@ jobs:
         run: python3 ios/scripts/check_readonly.py
       - name: Install iOS build utilities
         run: brew install xcodegen ldid
+      - name: Generate complete iPhone and iPad app icon catalog
+        run: bash ios/scripts/generate_app_icon.sh
       - name: Generate Xcode project
         run: cd ios && xcodegen generate
       - name: Build iPhoneOS app without Apple certificate
@@ -48,6 +50,8 @@ jobs:
           APP="$RUNNER_TEMP/tianxian-derived/Build/Products/Release-iphoneos/TianXianFruit.app"
           test -d "$APP"
           test -f "$APP/TianXianFruit"
+          test -s "$APP/Assets.car"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName" "$APP/Info.plist" | grep -Fx AppIcon
           ARCHS="$(lipo -archs "$APP/TianXianFruit")"
           echo "$ARCHS" | grep -qw arm64
           mkdir -p "$RUNNER_TEMP/trollstore/Payload"
@@ -58,8 +62,8 @@ jobs:
           ldid -S "$TARGET/TianXianFruit"
           cd "$RUNNER_TEMP/trollstore"
           ditto -c -k --sequesterRsrc --keepParent Payload \
-            "$RUNNER_TEMP/TianXianFruit-iOS-v0.8.4-Build53-TrollStore.ipa"
-          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v0.8.4-Build53-TrollStore.ipa"
+            "$RUNNER_TEMP/TianXianFruit-iOS-v0.8.5-Build54-TrollStore.ipa"
+          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v0.8.5-Build54-TrollStore.ipa"
       - name: Verify app bundle structure and deployment target
         shell: bash
         run: |
@@ -67,7 +71,7 @@ jobs:
           python3 - <<'PY'
           import os, plistlib, zipfile
           from pathlib import Path
-          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v0.8.4-Build53-TrollStore.ipa"
+          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v0.8.5-Build54-TrollStore.ipa"
           with zipfile.ZipFile(p) as z:
               names = set(z.namelist())
               base = "Payload/TianXianFruit.app/"
@@ -83,7 +87,7 @@ jobs:
       - name: Upload installable-by-TrollStore test IPA
         uses: actions/upload-artifact@v4
         with:
-          name: TianXianFruit-iOS-v0.8.4-Build53-TrollStore
-          path: ${{ runner.temp }}/TianXianFruit-iOS-v0.8.4-Build53-TrollStore.ipa
+          name: TianXianFruit-iOS-v0.8.5-Build54-TrollStore
+          path: ${{ runner.temp }}/TianXianFruit-iOS-v0.8.5-Build54-TrollStore.ipa
           if-no-files-found: error
           retention-days: 14
