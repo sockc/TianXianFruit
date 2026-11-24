@@ -521,3 +521,20 @@ assert "day.funds.prefix(2)" in swift["SettlementTableView.swift"]
 assert "TXTestBookAccess.isCandidate" in swift["SettlementTableView.swift"]
 assert (root.parent / "Tests" / "DailyPurchaseHistoryAndPriceTests.swift").exists()
 print("V0.8.4 PASS: Android cloud drift, cost-safe prices, history dates and saved settlement values")
+
+# V0.8.5: dashboard safe-area is adaptive, AppIcon is actually wired to CI.
+assert '.navigationBarHidden(true)' in swift["Views.swift"]
+assert 'Color(UIColor.systemGroupedBackground).ignoresSafeArea()' in swift["Views.swift"]
+assert 'frame(height: 36)' in swift["Views.swift"]
+assert 'static let header = Color(UIColor.secondarySystemGroupedBackground)' in swift["AndroidStyleShell.swift"]
+assert 'TXBusinessReceiptSummaryView(lines: lines)' in swift["BusinessLocalEntryView.swift"]
+assert 'Section(header: Text("营业日期、位置与时间"))' in swift["BusinessLocalEntryView.swift"]
+assert 'Picker("类型", selection: $purchaseType)' in swift["PurchaseWorkspaceEditorView.swift"]
+assert (root.parent / "scripts" / "generate_app_icon.swift").exists()
+assert (root.parent / "Assets.xcassets" / "AppIcon.appiconset" / "Contents.json").exists()
+import json
+icon_manifest = json.loads((root.parent / "Assets.xcassets" / "AppIcon.appiconset" / "Contents.json").read_text())
+assert any(x.get("size") == "1024x1024" for x in icon_manifest["images"])
+project = (root.parent / "project.yml").read_text()
+assert "ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon" in project
+print("V0.8.5 PASS: adaptive dashboard and complete CI-generated AppIcon asset registration")
