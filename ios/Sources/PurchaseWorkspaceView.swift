@@ -160,6 +160,16 @@ struct PurchaseWorkspaceView: View {
             book: book, account: model.account)
     }
 
+    private func confirmedPurchaseChanged(_ attempt: PurchaseCommitAttempt) -> Bool {
+        guard attempt.phase == .confirmed,
+              let receipt = attempt.receipt,
+              model.lastSyncAt != nil,
+              !model.isUsingCachedAuthorization else { return false }
+        return !PurchaseAtomicReadbackPolicy.confirmed(
+            attempt.proposal, receipt: receipt,
+            records: Array(model.snapshot.records.values))
+    }
+
     private var canCommitCloud: Bool {
         guard canEdit, !model.isUsingCachedAuthorization,
               let book = model.selectedBook,
@@ -171,6 +181,7 @@ struct PurchaseWorkspaceView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 10) {
                 dateHeader
+                TXCloudSyncStatusBar()
                 metrics
                 Button {
                     request = PurchaseWorkspaceEditorRequest(original: nil)
@@ -487,12 +498,15 @@ struct PurchaseWorkspaceView: View {
                                 .font(.subheadline.bold())
                             Spacer()
                             if let attempt = workspace.attempt(for: draft) {
-                                Text(attempt.phase == .confirmed ?
-                                    "云端已确认" : "提交待核对")
+                                Text(confirmedPurchaseChanged(attempt) ?
+                                    "云端记录已变化" :
+                                    (attempt.phase == .confirmed
+                                     ? "云端已确认" : "提交待核对"))
                                     .font(.caption.bold())
                                     .foregroundColor(
-                                        attempt.phase == .confirmed ?
-                                        .green : .orange)
+                                        attempt.phase == .confirmed &&
+                                        !confirmedPurchaseChanged(attempt)
+                                        ? .green : .orange)
                             } else {
                                 Text("待同步")
                                     .font(.caption.bold()).foregroundColor(.orange)
@@ -531,16 +545,24 @@ struct PurchaseWorkspaceView: View {
                         .font(.caption)
 
                         if let attempt = workspace.attempt(for: draft) {
-                            Text(attempt.label)
-                                .font(.caption2)
-                                .foregroundColor(.orange)
-                            Button(attempt.phase == .accepted ?
-                                   "核对订单同步" : "查询原提交结果") {
-                                Task { await recoverPurchase(attempt) }
+                            if confirmedPurchaseChanged(attempt) {
+                                Label("本机曾确认，但当前云端订单、商品或计划已变化；请核对安卓原始记录，不要重复提交。",
+                                      systemImage: "exclamationmark.triangle")
+                                    .font(.caption).foregroundColor(.orange)
+                            } else {
+                                Text(attempt.label)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
                             }
-                            .disabled(model.isPurchaseCommitBusy || submittingID != nil ||
-                                      model.isBusy)
-                            .font(.caption)
+                            if attempt.phase != .confirmed {
+                                Button(attempt.phase == .accepted ?
+                                       "核对订单同步" : "查询原提交结果") {
+                                    Task { await recoverPurchase(attempt) }
+                                }
+                                .disabled(model.isPurchaseCommitBusy || submittingID != nil ||
+                                          model.isBusy)
+                                .font(.caption)
+                            }
                         } else if canCommitCloud, let caps = model.purchaseCommitCapabilities,
                                   caps.enabled && caps.atomic && caps.idempotency {
                             if draft.lines.contains(where: { $0.sourcePlanItemSyncID != nil }) &&
@@ -848,6 +870,21 @@ struct PurchaseWorkspaceView: View {
         }
         // A full refresh can make a referenced fruit/partner invalid. Never
         // reuse earlier cached lookup status or claim successful cloud write.
+        if let attempt = workspace.attempt(for: draft),
+           attempt.phase == .confirmed {
+            guard let receipt = attempt.receipt else {
+                workspace.message = "原始采购回执缺失；请勿重新提交，请在安卓核对原订单"
+                return
+            }
+            let matched = PurchaseAtomicReadbackPolicy.confirmed(
+                attempt.proposal, receipt: receipt,
+                records: Array(model.snapshot.records.values))
+            workspace.message = matched
+                ? "原采购订单、商品明细及计划完成状态已与云端核对一致"
+                : "原采购订单、商品明细或计划状态与云端不一致；请核对安卓修改记录，禁止重复上传"
+            clearReview()
+            return
+        }
         let report = PurchaseCloudReconcilePolicy.inspect(
             draft, events: Array(model.snapshot.records.values))
         review = report
