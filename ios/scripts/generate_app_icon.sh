@@ -2,12 +2,15 @@
 # Prepare self-contained icon resources before XcodeGen runs.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOURCE="$ROOT/Config/AppIconSource.jpg"
 OUT="$ROOT/Resources/Assets.xcassets/AppIcon.appiconset"
-test -s "$SOURCE"
+MASTER="${RUNNER_TEMP:-$ROOT}/tianxian-app-icon-master.png"
 test -s "$OUT/Contents.json"
 mkdir -p "$OUT"
+command -v swift >/dev/null
 command -v sips >/dev/null
+swift "$ROOT/scripts/draw_app_icon.swift" "$MASTER"
+test -s "$MASTER"
+SOURCE="$MASTER"
 sips -s format png -z 40 40 "$SOURCE" --out "$OUT/Icon-iphone-20x20-2x.png" >/dev/null
 sips -s format png -z 60 60 "$SOURCE" --out "$OUT/Icon-iphone-20x20-3x.png" >/dev/null
 sips -s format png -z 58 58 "$SOURCE" --out "$OUT/Icon-iphone-29x29-2x.png" >/dev/null
