@@ -152,6 +152,7 @@ struct PurchaseWorkspaceEditorView: View {
                         PurchaseWorkspaceLineCard(
                             line: $line,
                             fruits: model.snapshot.testFruits,
+                            purchaseDate: BusinessDates.key(date),
                             canDelete: lines.count > 1,
                             onDelete: {
                                 lines.removeAll { $0.id == line.id }
@@ -278,6 +279,7 @@ private struct PurchaseWorkspaceLineCard: View {
     @EnvironmentObject private var model: LedgerViewModel
     @Binding var line: PurchaseDraftLine
     let fruits: [TestLookup]
+    let purchaseDate: String
     let canDelete: Bool
     let onDelete: () -> Void
 
@@ -289,7 +291,8 @@ private struct PurchaseWorkspaceLineCard: View {
         guard !line.fruitSyncID.isEmpty else { return nil }
         return PurchaseLastPricePolicy.latest(
             fruitSyncID: line.fruitSyncID, unit: line.unit,
-            records: Array(model.snapshot.records.values))
+            records: Array(model.snapshot.records.values),
+            onOrBefore: purchaseDate)
     }
 
     var body: some View {
@@ -304,6 +307,13 @@ private struct PurchaseWorkspaceLineCard: View {
                 .pickerStyle(MenuPickerStyle())
                 .disabled(line.sourcePlanItemSyncID != nil)
                 .onChange(of: line.fruitSyncID) { next in
+                    // Different goods must not inherit the previous goods'
+                    // unit price. A valid historical price is optional and
+                    // only copied via the explicit "填入" action below.
+                    line.unitPrice = PurchaseLastPricePolicy.priceAfterFruitChange(
+                        previousFruitID: line.fruitName,
+                        nextFruitID: fruits.first { $0.id == next }?.name ?? "",
+                        currentPrice: line.unitPrice)
                     line.fruitName = fruits.first { $0.id == next }?.name ?? ""
                     line.sourcePlanItemSyncID = nil
                 }
@@ -339,7 +349,7 @@ private struct PurchaseWorkspaceLineCard: View {
             }
             if let lastPrice {
                 HStack(spacing: 7) {
-                    Text("历史有效进价 ¥" +
+                    Text("截至采购日的历史有效进价 ¥" +
                          String(format: "%.2f", lastPrice.price) +
                          "/" + lastPrice.unit + " · " + lastPrice.date)
                         .font(.caption2).foregroundColor(.secondary)
