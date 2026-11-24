@@ -158,6 +158,10 @@ enum BusinessDraftWorkflowPolicy {
             "actual_start_time": startTime.trimmingCharacters(in: .whitespaces),
             "actual_end_time": endTime.trimmingCharacters(in: .whitespaces)
         ]
+        // The Android storage validator permits two missing times, but this
+        // explicit iOS upload workflow requires both actual operating times.
+        guard fields["actual_start_time"]?.isEmpty == false,
+              fields["actual_end_time"]?.isEmpty == false else { return false }
         return (try? BusinessCollectorDraftPolicy.validateTimes(fields)) != nil
     }
 
