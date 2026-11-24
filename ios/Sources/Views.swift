@@ -502,34 +502,40 @@ private struct BusinessPage: View {
 struct PurchasesHistoryView: View {
     @EnvironmentObject private var model: LedgerViewModel
     @State private var period = "近30天"
+    @State private var selectedDate = Date()
     @State private var buyer = ""
     @State private var searchText = ""
     @State private var visibleDays = 14
 
     private var rows: [PurchaseOrderRow] {
-        model.snapshot.purchases.filter { row in
-            (period == "全部" || row.date >= BusinessDates.daysAgo(period == "近7天" ? 6 : 29)) &&
-            (buyer.isEmpty || row.buyer == buyer) &&
-            (searchText.isEmpty || row.buyer.localizedCaseInsensitiveContains(searchText) ||
-             row.date.contains(searchText))
-        }
+        TXPurchaseHistoryPolicy.filter(model.snapshot.purchases,
+            range: period, selectedDate: selectedDate,
+            buyer: buyer, search: searchText)
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
+                TXDayBar(date: $selectedDate, label: "采购历史截止日",
+                         allowFuture: false)
+                    .onChange(of: selectedDate) { _ in visibleDays = 14 }
                 HStack(spacing: 8) {
-                    Picker("日期", selection: $period) {
-                        Text("近7天").tag("近7天")
-                        Text("近30天").tag("近30天")
-                        Text("全部").tag("全部")
-                    }.pickerStyle(SegmentedPickerStyle())
+                    Picker("日期范围", selection: $period) {
+                        ForEach(TXPurchaseHistoryPolicy.ranges, id: \.self) { value in
+                            Text(value).tag(value)
+                        }
+                    }
+                    .pickerStyle(MenuPickerStyle())
+                    .onChange(of: period) { _ in visibleDays = 14 }
                     Picker("采购人", selection: $buyer) {
                         Text("全部采购人").tag("")
                         ForEach(model.snapshot.buyers, id: \.self) { Text($0).tag($0) }
-                    }.pickerStyle(MenuPickerStyle())
+                    }
+                    .pickerStyle(MenuPickerStyle())
+                    .onChange(of: buyer) { _ in visibleDays = 14 }
                 }
                 SearchField(placeholder: "搜索日期或采购人", text: $searchText)
+                    .onChange(of: searchText) { _ in visibleDays = 14 }
                 HStack {
                     Text("采购订单 · \(rows.count) 条").font(.headline)
                     Spacer()
