@@ -372,6 +372,40 @@ private struct SettlementDateCard: View {
                                 .font(.caption).foregroundColor(.secondary)
                         }
                     }
+                    if !day.shares.isEmpty || !day.funds.isEmpty {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("合伙人已保存明细（不是跨日余额）")
+                                .font(.caption2.bold()).foregroundColor(.secondary)
+                            ForEach(Array(day.shares.prefix(2))) { row in
+                                HStack {
+                                    Text(row.partner + " · 实际利润分配")
+                                        .lineLimit(1).minimumScaleFactor(0.8)
+                                    Spacer(minLength: 4)
+                                    Text(settleYuan(row.allocated))
+                                        .fontWeight(.medium)
+                                }
+                                .font(.caption2).foregroundColor(.primary)
+                            }
+                            ForEach(Array(day.funds.prefix(2))) { row in
+                                HStack {
+                                    Text(row.partner + " · 本日资金差额")
+                                        .lineLimit(1).minimumScaleFactor(0.8)
+                                    Spacer(minLength: 4)
+                                    Text(settleYuan(row.balance))
+                                        .fontWeight(.medium)
+                                        .foregroundColor(row.balance < 0 ? .red : .primary)
+                                }
+                                .font(.caption2)
+                            }
+                            if day.shares.count > 2 || day.funds.count > 2 {
+                                Text("其余合伙人明细请展开查看")
+                                    .font(.caption2).foregroundColor(.secondary)
+                            }
+                        }
+                        .padding(8)
+                        .background(Color(UIColor.tertiarySystemGroupedBackground),
+                                    in: RoundedRectangle(cornerRadius: 9))
+                    }
                     HStack(spacing: 9) {
                         Text("\(day.sales.count) 条位置营业")
                         Text("\(day.funds.count) 条资金明细")
