@@ -81,7 +81,7 @@ struct PurchaseWorkspaceEditorView: View {
     var body: some View {
         NavigationView {
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text(original == nil ? "新增采购" : "修改采购")
                             .font(.headline)
@@ -89,12 +89,13 @@ struct PurchaseWorkspaceEditorView: View {
                         Text("本机待提交")
                             .font(.caption.bold()).foregroundColor(.orange)
                     }
-                    Text(model.selectedBook.map { book in
-                            model.purchaseCommitCapabilities?.eligible(book: book) == true
-                                ? "先保存本机采购，再确认原子提交；安卓回读后才记为已采购。"
-                                : "此账本云端采购未授权；本机录入不会影响资金结算。"
-                         } ?? "请先选择账本")
-                        .font(.caption).foregroundColor(.secondary)
+                    if model.selectedBook.map({ book in
+                        model.purchaseCommitCapabilities?.eligible(book: book) != true
+                    }) ?? true {
+                        Label("云端采购尚未授权，本机录入不会影响结算",
+                              systemImage: "lock.shield")
+                            .font(.caption2).foregroundColor(.secondary)
+                    }
 
                     TXDayBar(date: $date, label: "采购日期")
                         .disabled(hasPlanSource)
@@ -158,7 +159,7 @@ struct PurchaseWorkspaceEditorView: View {
                                 lines.removeAll { $0.id == line.id }
                             })
                     }
-                    VStack(spacing: 10) {
+                    VStack(spacing: 6) {
                         HStack {
                             Text("已录入金额").font(.subheadline.bold())
                             Spacer()
@@ -180,6 +181,17 @@ struct PurchaseWorkspaceEditorView: View {
                         Label(errorText, systemImage: "exclamationmark.triangle")
                             .font(.caption).foregroundColor(.orange)
                     }
+                    Text(model.selectedBook.map { book in
+                            model.purchaseCommitCapabilities?.eligible(book: book) == true
+                                ? "保存后提示确认同步；服务器原子提交并回读成功才算已完成。"
+                                : "本机录入不改变安卓采购与结算，此账本尚未授权云端写入。"
+                         } ?? "请先选择账本")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+                .padding(12)
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
                     Button(action: save) {
                         Label(model.selectedBook.map { book in
                                   model.purchaseCommitCapabilities?.eligible(book: book) == true
@@ -190,14 +202,11 @@ struct PurchaseWorkspaceEditorView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(!canEdit || model.isBusy)
-                    Text(model.selectedBook.map { book in
-                            model.purchaseCommitCapabilities?.eligible(book: book) == true
-                                ? "保存后提示确认同步；服务器原子提交并回读成功才算已完成。"
-                                : "本机录入不改变安卓采购与结算，此账本尚未授权云端写入。"
-                         } ?? "请先选择账本")
-                        .font(.caption2).foregroundColor(.secondary)
+
                 }
-                .padding(12)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color(UIColor.systemGroupedBackground))
             }
             .navigationBarTitle("采购录入", displayMode: .inline)
             .navigationBarItems(leading: Button("取消") {
