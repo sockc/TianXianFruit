@@ -1,4 +1,4 @@
-name: Check iOS V0.8.9 Android-parity recent business and purchase days
+name: Check iOS V0.9.0 fund data parity
 
 on:
   pull_request:
