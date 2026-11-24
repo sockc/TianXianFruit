@@ -393,7 +393,7 @@ struct BusinessLocalEntryView: View {
     var body: some View {
         NavigationView {
             Form {
-                Section(header: Text("营业日期与位置")) {
+                Section(header: Text("营业日期、位置与时间")) {
                     TXDayBar(date: guardedDate, label: "营业日期", allowFuture: false)
                     HStack(spacing: 8) {
                         Picker("营业位置", selection: guardedStore) {
@@ -404,12 +404,23 @@ struct BusinessLocalEntryView: View {
                         }
                         .pickerStyle(MenuPickerStyle())
                         .accessibilityLabel("营业位置")
-                        Spacer(minLength: 4)
-                        Text((startTime.isEmpty || endTime.isEmpty)
-                             ? "实际时间未填" : startTime + "—" + endTime)
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1).minimumScaleFactor(0.8)
+                    }
+                    HStack(spacing: 5) {
+                        Text("营业时间").font(.caption)
+                        Spacer(minLength: 6)
+                        TextField("16:00", text: $startTime)
+                            .keyboardType(.numbersAndPunctuation)
+                            .multilineTextAlignment(.center)
+                            .frame(width: 61)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityLabel("实际开摊时间")
+                        Text("—").foregroundColor(.secondary)
+                        TextField("00:10", text: $endTime)
+                            .keyboardType(.numbersAndPunctuation)
+                            .multilineTextAlignment(.center)
+                            .frame(width: 61)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityLabel("实际收摊时间")
                     }
                     if let remoteRecord {
                         Label("云端已有该日该位置营业，不能重复新增。",
@@ -471,7 +482,11 @@ struct BusinessLocalEntryView: View {
                             Label("增加收款人", systemImage: "person.badge.plus")
                         }
                     }
-                    TXBusinessReceiptSummaryView(lines: lines)
+                    // One collector already sees all three channel amounts.
+                    // A second totals card only repeats those same figures.
+                    if lines.count > 1 {
+                        TXBusinessReceiptSummaryView(lines: lines)
+                    }
                 }
                 Section(header: Text("营业成本与利润依据（同步前必填）")) {
                     amount("支出", value: $expense)
@@ -496,29 +511,9 @@ struct BusinessLocalEntryView: View {
                         .font(.caption).foregroundColor(.secondary)
                 }
                 Section {
-                    DisclosureGroup(isExpanded: $showHours) {
-                        HStack {
-                            Text("开摊")
-                            Spacer()
-                            TextField("16:00", text: $startTime)
-                                .keyboardType(.numbersAndPunctuation)
-                                .multilineTextAlignment(.trailing)
-                                .frame(maxWidth: 105)
-                        }
-                        HStack {
-                            Text("收摊")
-                            Spacer()
-                            TextField("00:10", text: $endTime)
-                                .keyboardType(.numbersAndPunctuation)
-                                .multilineTextAlignment(.trailing)
-                                .frame(maxWidth: 105)
-                        }
-                        Text("格式 HH:mm；可跨午夜。这里只记录实际营业时间，不自动扣减凌晨收款。")
-                            .font(.caption2).foregroundColor(.secondary)
-                        TextField("营业备注（仅本机，不参与结算）", text: $note)
-                    } label: {
-                        Label("实际营业时间与备注", systemImage: "clock")
-                    }
+                    TextField("营业备注（仅本机，不参与结算）", text: $note)
+                    Text("营业时间可跨午夜，格式 HH:mm；不自动扣减凌晨收款。")
+                        .font(.caption2).foregroundColor(.secondary)
                 }
                 Section {
                     Button {
