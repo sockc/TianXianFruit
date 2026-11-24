@@ -29,7 +29,7 @@ internal fun CollaborationInlineCompletionEditor(
 ) {
     val partners = remember(db) { db.getPartners() }
     var buyerId by remember(item.id) {
-        mutableStateOf(item.buyerId.takeIf { it > 0L } ?: partners.firstOrNull()?.id)
+        mutableStateOf(item.buyerId.takeIf { it > 0L })
     }
     var buyerMenu by remember(item.id) { mutableStateOf(false) }
     var quantity by remember(item.id) { mutableStateOf(compactPurchaseNumber(item.quantity)) }
