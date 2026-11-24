@@ -1,4 +1,4 @@
-name: Check iOS V0.8.2 formal write scope authorization
+name: Check iOS V0.8.3 daily business, purchase, settlement
 
 on:
   pull_request:

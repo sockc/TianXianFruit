@@ -1,8 +1,8 @@
 import Foundation
 import CryptoKit
 
-/// Canonical *local* purchase commit proposal. No network code uses this
-/// request until the production backend implements the matching atomic API.
+/// Canonical local purchase proposal. A production ledger requires explicit
+/// scoped server capability plus a fresh preflight; this policy never sends HTTP.
 struct PurchaseCommitItem: Codable, Equatable {
     let fruitSyncID: String
     let fruitName: String
