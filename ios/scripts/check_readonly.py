@@ -546,7 +546,9 @@ assert "before: selectedDate" in recent
 assert 'Text("营业历史")' in recent
 assert 'Text("采购历史")' in recent
 assert 'Text("最近7个营业日")' in recent
-assert 'Text("当天 + 前7个采购日")' in recent
+assert '"当天 + 前7个采购日"' in recent
+assert '"最近7个采购日"' in recent
+assert 'hasSelectedDayOrders' in recent
 assert "TXRecentBusinessDaysView(selectedDate: selectedKey)" in swift["Views.swift"]
 assert 'if period == "单日"' in swift["Views.swift"]
 assert "TXRecentPurchaseDaysView(selectedDate: day)" in swift["PurchaseWorkspaceView.swift"]
