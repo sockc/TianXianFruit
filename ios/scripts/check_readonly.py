@@ -536,6 +536,6 @@ assert 'if lines.count > 1' in business
 assert '.safeAreaInset(edge: .bottom' in business
 assert '.safeAreaInset(edge: .bottom' in purchase
 assert "ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon" in (root.parent / "project.yml").read_text()
-assert (root.parent / "Config" / "AppIconSource.jpg").exists()
+assert (root.parent / "scripts" / "draw_app_icon.swift").exists()
 assert (root.parent / "Resources" / "Assets.xcassets" / "AppIcon.appiconset" / "Contents.json").exists()
 print("V0.8.5 PASS: compact safe-area root, pinned entry actions and AppIcon source")
