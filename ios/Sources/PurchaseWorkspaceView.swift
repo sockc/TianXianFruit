@@ -209,6 +209,10 @@ struct PurchaseWorkspaceView: View {
                     .font(.subheadline)
                 }
                 dailyOrderSection
+                // Android: selected date's orders above, then 7 distinct
+                // preceding PURCHASE days with their actual cloud totals.
+                Divider()
+                TXRecentPurchaseDaysView(selectedDate: day)
                 if let message = workspace.message {
                     Label(message, systemImage: "info.circle")
                         .font(.caption).foregroundColor(.secondary)
@@ -217,13 +221,6 @@ struct PurchaseWorkspaceView: View {
                      ? "本机采购保存后可同步，云端回读确认后才计入安卓采购。"
                      : "当前账本尚未授权采购云端写入；本机录入不计入结算。")
                     .font(.caption2).foregroundColor(.secondary)
-                HStack {
-                    Spacer()
-                    NavigationLink(destination: PurchasesHistoryView()) {
-                        Label("查看更多采购历史", systemImage: "clock.arrow.circlepath")
-                    }
-                    Spacer()
-                }
                 SyncFooter()
             }
             .padding(12)

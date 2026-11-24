@@ -497,6 +497,17 @@ private struct BusinessPage: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
                 }
+                // Android: selected day above, then the previous seven
+                // actual BUSINESS days. Other date-range modes already show
+                // those days in the main filtered list, so don't duplicate.
+                if period == "单日" {
+                    Divider()
+                    TXRecentBusinessDaysView(selectedDate: selectedKey) {
+                        period = "全部"
+                        showFilters = true
+                        visibleDays = 14
+                    }
+                }
                 // Detail actions remain scoped by account and server permissions.
                 SyncFooter()
             }
@@ -727,7 +738,7 @@ private struct MorePage: View {
                     Label("账号与同步", systemImage: "person.crop.circle")
                         .font(.subheadline.bold())
                 }
-                Text("iOS V0.8.5 · Build 54")
+                Text("iOS V0.8.6 · Build 55")
                     .font(.caption2).foregroundColor(.secondary)
             }
             .padding(12)
