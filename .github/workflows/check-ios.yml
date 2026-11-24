@@ -1,4 +1,4 @@
-name: Check iOS V0.8.8 Android-parity recent business and purchase days
+name: Check iOS V0.8.9 Android-parity recent business and purchase days
 
 on:
   pull_request:
