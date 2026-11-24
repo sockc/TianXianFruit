@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: trollstore-ipa-${{ github.ref }}
@@ -63,8 +63,8 @@ jobs:
           ldid -S "$TARGET/TianXianFruit"
           cd "$RUNNER_TEMP/trollstore"
           ditto -c -k --sequesterRsrc --keepParent Payload \
-            "$RUNNER_TEMP/TianXianFruit-iOS-v0.8.6-Build55-TrollStore.ipa"
-          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v0.8.6-Build55-TrollStore.ipa"
+            "$RUNNER_TEMP/TianXianFruit-iOS-v0.8.7-Build56-TrollStore.ipa"
+          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v0.8.7-Build56-TrollStore.ipa"
       - name: Verify app bundle structure and deployment target
         shell: bash
         run: |
@@ -72,7 +72,7 @@ jobs:
           python3 - <<'PY'
           import os, plistlib, zipfile
           from pathlib import Path
-          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v0.8.6-Build55-TrollStore.ipa"
+          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v0.8.7-Build56-TrollStore.ipa"
           with zipfile.ZipFile(p) as z:
               names = set(z.namelist())
               base = "Payload/TianXianFruit.app/"
@@ -85,10 +85,44 @@ jobs:
               assert not any(name.endswith(".mobileprovision") for name in names)
           print("Verified arm64 TrollStore IPA, iOS minimum 15.0, no Apple profile")
           PY
+      - name: Run iOS XCTest before beta publication
+        if: github.ref == 'refs/heads/feature/ios-settlement-daily-beta-v0.8.7'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SIM_ID="$(xcrun simctl list devices available -j | python3 -c '
+          import json,sys
+          j=json.load(sys.stdin)
+          ids=[d["udid"] for ds in j.get("devices",{}).values()
+                for d in ds if d.get("isAvailable",False) and "iPhone" in d.get("name","")]
+          print(ids[0] if ids else "")
+          ')"
+          test -n "$SIM_ID"
+          xcodebuild -project ios/TianXianFruit.xcodeproj \
+            -scheme TianXianFruit -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIM_ID" \
+            CODE_SIGNING_ALLOWED=NO test
       - name: Upload installable-by-TrollStore test IPA
         uses: actions/upload-artifact@v4
         with:
-          name: TianXianFruit-iOS-v0.8.6-Build55-TrollStore
-          path: ${{ runner.temp }}/TianXianFruit-iOS-v0.8.6-Build55-TrollStore.ipa
+          name: TianXianFruit-iOS-v0.8.7-Build56-TrollStore
+          path: ${{ runner.temp }}/TianXianFruit-iOS-v0.8.7-Build56-TrollStore.ipa
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish iOS v0.8.7 beta prerelease
+        if: github.ref == 'refs/heads/feature/ios-settlement-daily-beta-v0.8.7'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="$RUNNER_TEMP/TianXianFruit-iOS-v0.8.7-Build56-TrollStore.ipa"
+          test -s "$FILE"
+          gh release create "ios-v0.8.7-beta" "$FILE" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "天鲜账本 iOS V0.8.7 Beta (Build 56)" \
+            --notes "结算表按当日计算／资金余额／结算记录分阶段移植。本版优先展示云端已保存的当日计算快照、利润分配与转账登记；资金余额及结算记录保留只读历史入口。尚未移植 Android 跨日资金余额权威计算，不改 Android 日结算法、正式账本写入权限或服务端。适用于 TrollStore 测试，需在实机核对。" \
+            --latest=false
