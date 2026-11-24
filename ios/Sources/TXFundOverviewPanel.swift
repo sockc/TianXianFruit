@@ -126,7 +126,7 @@ struct TXFundOverviewPanel: View {
                             in: RoundedRectangle(cornerRadius: 10))
             }
             if model.lastSyncAt != nil {
-                let audit = TXFundAuditPolicy.inspect(model.snapshot, cutoff: endDate,
+                let audit = TXCumulativeFundAuditPolicy.inspect(model.snapshot, cutoff: endDate,
                                                       partner: selectedPartner)
                 DisclosureGroup {
                     VStack(alignment: .leading, spacing: 8) {
