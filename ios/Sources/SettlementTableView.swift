@@ -148,6 +148,7 @@ struct SettlementTableView: View {
     @State private var location = ""
     @State private var partner = ""
     @State private var visibleDays = 14
+    @State private var settlementSection = "当日计算"
 
     private var endDate: String { BusinessDates.key(selectedDate) }
     private var startDate: String {
@@ -179,8 +180,8 @@ struct SettlementTableView: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("当日结算").font(.title3.bold())
-                        Text("云端资金记录 · 已保存方案")
+                        Text("结算表").font(.title3.bold())
+                        Text("当日计算优先 · 云端已保存数据")
                             .font(.caption2).foregroundColor(.secondary)
                     }
                     Spacer()
@@ -230,6 +231,16 @@ struct SettlementTableView: View {
                                     in: RoundedRectangle(cornerRadius: 10))
                     }
                 }
+                Picker("结算模块", selection: $settlementSection) {
+                    Text("当日计算").tag("当日计算")
+                    Text("资金余额").tag("资金余额")
+                    Text("结算记录").tag("结算记录")
+                }
+                .pickerStyle(.segmented)
+
+                if settlementSection == "当日计算" {
+                Text("本页直接展示安卓同步的日结快照、利润分配及转账登记；不重新推算未保存的资金方案。")
+                    .font(.caption2).foregroundColor(.secondary)
                 TXDayBar(date: $selectedDate, label: "结算日期", allowFuture: false)
                     .onChange(of: selectedDate) { _ in visibleDays = 14 }
                 DisclosureGroup(isExpanded: $showFilters) {
@@ -315,6 +326,25 @@ struct SettlementTableView: View {
                     }
                 }
 
+                } else {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label(settlementSection == "资金余额" ? "资金余额（逐步移植）" : "结算记录（逐步移植）",
+                              systemImage: settlementSection == "资金余额" ? "wallet.pass" : "clock.arrow.circlepath")
+                            .font(.headline)
+                        Text(settlementSection == "资金余额"
+                             ? "当前累计资金余额仍需要安卓权威计算口径，不能将逐日差额相加。可先进入已同步的合伙人逐日资金明细核对。"
+                             : "可先查看已同步的当日转账、周期结清和历史登记。登记状态并不等于实际到账或最终结清。")
+                            .font(.subheadline).foregroundColor(.secondary)
+                        NavigationLink(destination: TXFundHistoryView()) {
+                            Label(settlementSection == "资金余额" ? "查看已有资金明细" : "查看已有结算历史", systemImage: "arrow.right.circle")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(12)
+                    .background(Color(UIColor.secondarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 12))
+                }
                 // Recorded transfers are not effective fund balances.
                 SyncFooter()
             }.padding(12)
