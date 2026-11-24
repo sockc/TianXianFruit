@@ -115,7 +115,7 @@ struct TXLedgerV33Receipt: Codable {
             guard let actual = TXFundDataAdapter.number(payload[field]),
                   abs(actual - amount) < 0.000001 else { return false }
             if line.kind == "stock" {
-                guard let loss = line.loss.flatMap(Double.init),
+                guard let loss = line.loss.flatMap { Double($0) },
                       let actualLoss = TXFundDataAdapter.number(payload["loss_quantity"]),
                       abs(loss - actualLoss) < 0.000001 else { return false }
             }

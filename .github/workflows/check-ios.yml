@@ -1,4 +1,4 @@
-name: Check iOS V0.9.6 inventory operating analysis
+name: Check iOS V0.9.7 ledger V33 integration
 
 on:
   pull_request:
