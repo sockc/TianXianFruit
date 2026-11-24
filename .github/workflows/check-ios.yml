@@ -1,4 +1,4 @@
-name: Check iOS V0.9.2 daily settlement
+name: Check iOS V0.9.3 settlement operations
 
 on:
   pull_request:

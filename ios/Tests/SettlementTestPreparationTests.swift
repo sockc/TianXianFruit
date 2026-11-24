@@ -153,4 +153,24 @@ final class SettlementTestPreparationTests: XCTestCase {
         XCTAssertEqual(old.transferRowVersion, 6,
                        "Local preflight must remain immutable, not update old identity")
     }
+    func testDirectEntryRequiresUniqueParentsAndExplicitAmounts() {
+        var clean = snapshot()
+        XCTAssertTrue(TXSettlementPreparationPolicy.canEditSavedTransfer(
+            clean, date: "2026-11-20", transferID: "transfer-a"))
+        clean.apply([event("daily_cash_settlement", id: "colliding-parent",
+            date: "2026-11-21", values: [
+                "id": .exactInteger(79152283000000003), "status": .number(0)])])
+        XCTAssertFalse(TXSettlementPreparationPolicy.canEditSavedTransfer(
+            clean, date: "2026-11-20", transferID: "transfer-a"))
+        var missing = snapshot()
+        missing.apply([event("settlement_transfer", id: "transfer-a",
+            date: "2026-11-20", version: 8, values: [
+                "id": .exactInteger(79152283000000004),
+                "settlement_id": .exactInteger(79152283000000003),
+                "settlement_kind": .string("DAILY"), "amount": .number(300)])])
+        XCTAssertFalse(TXSettlementPreparationPolicy.canEditSavedTransfer(
+            missing, date: "2026-11-20", transferID: "transfer-a"))
+        XCTAssertThrowsError(try prepare(missing))
+    }
+
 }
