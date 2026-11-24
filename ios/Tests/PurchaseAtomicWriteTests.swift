@@ -67,6 +67,48 @@ final class PurchaseAtomicWriteTests: XCTestCase {
         XCTAssertFalse(supported.allows(plan))
     }
 
+    func testFormalPurchasePreparationRequiresMatchingExplicitScope() throws {
+        let formal = CloudBook(id: "book-formal-1", name: "天鲜正式账本",
+                               role: "OWNER", deleted: false, purged: false)
+        let user = Account(username: "seller", displayName: "采购人", systemRole: nil)
+        let draft = PurchaseWorkspaceDraft(
+            id: UUID().uuidString, account: "seller", bookID: formal.id,
+            date: "2026-11-20", buyerSyncID: "buyer-1", buyerName: "张",
+            purchaseType: "PLANNED", remark: "",
+            lines: [PurchaseDraftLine(
+                id: UUID().uuidString, fruitSyncID: "fruit-1",
+                fruitName: "苹果", quantity: "2", unit: "件",
+                unitPrice: "15", unitWeightJin: "20")],
+            createdAt: Date(), updatedAt: Date())
+        let records = [
+            event("partner", "buyer-1", [
+                "name": .string("张"), "id": .number(101)]),
+            event("fruit", "fruit-1", [
+                "name": .string("苹果"), "id": .number(202)])
+        ]
+        let allow = PurchaseCommitCapabilities(
+            version: 1, enabled: true, supportsCompletePlan: true,
+            atomic: true, idempotency: true,
+            feature: "purchase_atomic_commit_v1", scope: "formal")
+        let testOnly = PurchaseCommitCapabilities(
+            version: 1, enabled: true, supportsCompletePlan: true,
+            atomic: true, idempotency: true,
+            feature: "purchase_atomic_commit_v1", scope: "test")
+        XCTAssertThrowsError(try PurchaseCommitPlanningPolicy.prepare(
+            draft, account: user, book: formal, records: records))
+        XCTAssertThrowsError(try PurchaseCommitPlanningPolicy.prepare(
+            draft, account: user, book: formal, records: records,
+            capabilities: testOnly))
+        let proposal = try PurchaseCommitPlanningPolicy.prepare(
+            draft, account: user, book: formal, records: records,
+            capabilities: allow)
+        XCTAssertEqual(proposal.operation, "create_purchase")
+        XCTAssertEqual(proposal.bookID, formal.id)
+        XCTAssertEqual(proposal.totalCost, "30.00")
+        XCTAssertTrue(allow.allows(book: formal, proposal: proposal))
+        XCTAssertFalse(testOnly.allows(book: formal, proposal: proposal))
+    }
+
     func testDurableReservationAndUnknownStateAfterRestart() throws {
         let (db, folder) = try store()
         defer { try? FileManager.default.removeItem(at: folder) }
