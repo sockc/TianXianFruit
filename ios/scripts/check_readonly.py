@@ -538,3 +538,18 @@ assert any(x.get("size") == "1024x1024" for x in icon_manifest["images"])
 project = (root.parent / "project.yml").read_text()
 assert "ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon" in project
 print("V0.8.5 PASS: adaptive dashboard and complete CI-generated AppIcon asset registration")
+
+# V0.8.6: Android-style seven *actual* history days, not calendar days.
+recent = swift["TXRecentLedgerHistory.swift"]
+assert "previousDays(" in recent
+assert "before: selectedDate" in recent
+assert 'Text("营业历史")' in recent
+assert 'Text("采购历史")' in recent
+assert 'Text("最近7个营业日")' in recent
+assert 'Text("当天 + 前7个采购日")' in recent
+assert "TXRecentBusinessDaysView(selectedDate: selectedKey)" in swift["Views.swift"]
+assert 'if period == "单日"' in swift["Views.swift"]
+assert "TXRecentPurchaseDaysView(selectedDate: day)" in swift["PurchaseWorkspaceView.swift"]
+assert "PurchaseCloudDetailView" in recent and "BusinessCloudDetailView" in recent
+assert (root.parent / "Tests" / "TXRecentLedgerHistoryTests.swift").exists()
+print("V0.8.6 PASS: 7 actual previous business/purchase days, detail links, same-day exclusion")

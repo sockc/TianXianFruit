@@ -1,4 +1,4 @@
-name: Check iOS V0.8.5 home safe area, compact UI and AppIcon
+name: Check iOS V0.8.6 Android-parity recent business and purchase days
 
 on:
   pull_request:
