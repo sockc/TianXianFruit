@@ -165,7 +165,7 @@ enum TXInventory094Policy {
                 if $0.created != $1.created { return $0.created > $1.created }
                 return ($0.id ?? 0) > ($1.id ?? 0)
             }
-            func latestValue(_ extract: (Purchase) -> Double?, through: String = date) -> Double? {
+            func latestValue(_ extract: (Purchase) -> Double?, through: String) -> Double? {
                 let eligible = sorted.filter { $0.date <= through && extract($0) != nil }
                 guard let first = eligible.first else { return nil }
                 let tied = eligible.filter {
@@ -173,7 +173,7 @@ enum TXInventory094Policy {
                 }
                 return tied.count == 1 ? extract(first) : nil
             }
-            let latestPurchasePrice = latestValue { $0.cost }
+            let latestPurchasePrice = latestValue({ $0.cost }, through: date)
             let manualRows = manual.filter { key($0.payload) == k }
             let originalManual = manualRows.count == 1
                 ? quantity(manualRows[0].payload["manual_unit_cost"])
@@ -252,7 +252,7 @@ enum TXInventory094Policy {
                 retail: displayRetail,
                 retailUnit: retailDraft?.unit ?? priceRow?.payload["price_unit"]?.text ?? "斤",
                 retailDate: retailDraft != nil ? date : priceRow?.payload["date"]?.text,
-                weight: latestValue { $0.weight },
+                weight: latestValue({ $0.weight }, through: date),
                 openingCost: openingCost, purchaseCost: purchaseValue, averageCost: average,
                 manualCost: manualValue, manualBasis: manualBasis, retailBasis: retailBasis,
                 usesLocalCost: costDraft != nil, usesLocalRetail: retailDraft != nil))
