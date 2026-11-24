@@ -491,3 +491,16 @@ assert "model.businessCloudBookAllowed" in swift["BusinessLocalEntryView.swift"]
 assert "canCommitCloud" in swift["PurchaseWorkspaceView.swift"]
 assert (root.parent / "Tests" / "FormalWriteScopeTests.swift").exists()
 print("V0.8.2 PASS: formal capability scope; production settlement stays read-only")
+
+# V0.8.3: server authorization cannot be bypassed by formal purchase builder.
+assert 'capabilities?.eligible(book: book) == true' in swift["PurchaseCommitPlanningPolicy.swift"]
+assert 'capabilities: caps' in swift["PurchaseWorkspaceView.swift"]
+assert 'caps.allows(book: book, proposal: proposal)' in swift["PurchaseWorkspaceView.swift"]
+assert 'oldSyncTime == nil || newSyncTime > oldSyncTime!' in swift["PurchaseWorkspaceView.swift"]
+assert 'model.businessCloudBookAllowed else { return }' in swift["BusinessLocalEntryView.swift"]
+assert 'missingCloudFields' in swift["BusinessDraftWorkflowPolicy.swift"]
+assert 'showDiscardConfirmation' in swift["PurchaseWorkspaceEditorView.swift"]
+assert 'dailyTransferReadout' in swift["SettlementTableView.swift"]
+assert 'TXTestBookAccess.isCandidate' in swift["SettlementTableView.swift"]
+assert 'scope == "formal"' in swift["BusinessAtomicCommit.swift"]
+print("V0.8.3 PASS: formal purchase, business recovery and settlement readout")

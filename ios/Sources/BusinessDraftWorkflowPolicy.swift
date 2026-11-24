@@ -115,6 +115,39 @@ enum BusinessDraftWorkflowPolicy {
                        revenueCents: revenue, profitCents: revenue + c - o - e)
     }
 
+    /// Concise, deterministic next-action hint. Invalid numbers are never
+    /// interpreted as zero; time metadata is required for this workflow.
+    static func missingCloudFields(lines: [BusinessCollectorDraftLine],
+                                   expense: String, opening: String, closing: String,
+                                   startTime: String, endTime: String) -> [String] {
+        var fields: [String] = []
+        let validReceipts = !lines.isEmpty &&
+            (try? BusinessCollectorDraftPolicy.validate(
+                lines, fields: totalsFields(lines))) != nil &&
+            (try? BusinessCollectorDraftPolicy.totals(lines)).map {
+                $0.wechat + $0.alipay + $0.cash > 0
+            } == true
+        if !validReceipts { fields.append("收款人及金额") }
+        if expense.isEmpty ||
+           (try? BusinessCollectorDraftPolicy.cents(expense, label: "支出")) == nil {
+            fields.append("支出")
+        }
+        if opening.isEmpty ||
+           (try? BusinessCollectorDraftPolicy.cents(opening, label: "开摊库存")) == nil {
+            fields.append("开摊库存")
+        }
+        if closing.isEmpty ||
+           (try? BusinessCollectorDraftPolicy.cents(closing, label: "收摊库存")) == nil {
+            fields.append("收摊库存")
+        }
+        if (try? BusinessCollectorDraftPolicy.validateTimes([
+            "actual_start_time": startTime, "actual_end_time": endTime])) == nil ||
+            startTime.isEmpty || endTime.isEmpty {
+            fields.append("实际营业时间")
+        }
+        return fields
+    }
+
     /// Incomplete local drafts must never become zero-cost cloud records.
     static func readyForCloud(lines: [BusinessCollectorDraftLine],
                               expense: String, opening: String, closing: String,
@@ -125,6 +158,10 @@ enum BusinessDraftWorkflowPolicy {
             "actual_start_time": startTime.trimmingCharacters(in: .whitespaces),
             "actual_end_time": endTime.trimmingCharacters(in: .whitespaces)
         ]
+        // The Android storage validator permits two missing times, but this
+        // explicit iOS upload workflow requires both actual operating times.
+        guard fields["actual_start_time"]?.isEmpty == false,
+              fields["actual_end_time"]?.isEmpty == false else { return false }
         return (try? BusinessCollectorDraftPolicy.validateTimes(fields)) != nil
     }
 

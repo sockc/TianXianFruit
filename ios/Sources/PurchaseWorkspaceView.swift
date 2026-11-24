@@ -144,6 +144,12 @@ struct PurchaseWorkspaceView: View {
     private var dailyOrders: [PurchaseOrderRow] {
         model.snapshot.purchases.filter { $0.date == day }
     }
+    // Only synced purchase_order amounts: plan estimates never enter this total.
+    private var syncedPurchaseAmount: String {
+        guard model.lastSyncAt != nil else { return "未同步" }
+        guard !dailyOrders.isEmpty else { return "无订单" }
+        return money(dailyOrders.reduce(0) { $0 + $1.totalCost })
+    }
     private var localDrafts: [PurchaseWorkspaceDraft] {
         workspace.drafts.filter { $0.date == day }
     }
@@ -320,7 +326,13 @@ struct PurchaseWorkspaceView: View {
                 PurchaseWorkspaceMetric(
                     title: "已完成金额",
                     value: money(planning.completedAmount))
+                PurchaseWorkspaceMetric(
+                    title: "云端采购额",
+                    value: syncedPurchaseAmount)
             }
+            Text("计划金额为原计划数据，云端采购额只统计当日已同步订单，不将本机草稿计入结算。")
+                .font(.caption2).foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -451,10 +463,9 @@ struct PurchaseWorkspaceView: View {
                 }
             }
             .buttonStyle(.plain)
-            if canEdit, model.selectedBook?.name.hasPrefix("iOS_TEST_") == true,
-               model.purchaseCommitCapabilities?.enabled != true {
+            if canEdit && !canCommitCloud {
                 HStack {
-                    Text("测试账本采购写入尚未启用")
+                    Text("当前账本尚未获得云端采购写入授权")
                         .font(.caption).foregroundColor(.secondary)
                     Spacer()
                     Button("刷新权限") {
@@ -534,7 +545,7 @@ struct PurchaseWorkspaceView: View {
                                   caps.enabled && caps.atomic && caps.idempotency {
                             if draft.lines.contains(where: { $0.sourcePlanItemSyncID != nil }) &&
                                !caps.supportsCompletePlan {
-                                Label("当前账号没有采购计划完成权限；请检查测试账本的采购计划编辑权限",
+                                Label("当前账本没有采购计划完成权限；请检查服务端计划编辑授权",
                                       systemImage: "lock.shield")
                                     .font(.caption).foregroundColor(.orange)
                             } else {
@@ -689,9 +700,11 @@ struct PurchaseWorkspaceView: View {
         submittingID = draft.id
         defer { submittingID = nil }
         do {
+            let oldSyncTime = model.lastSyncAt
             await model.refresh(forceFull: true)
             guard model.errorMessage == nil,
-                  model.lastSyncAt != nil,
+                  let newSyncTime = model.lastSyncAt,
+                  oldSyncTime == nil || newSyncTime > oldSyncTime!,
                   model.selectedBookID == book.id,
                   model.account?.username == account.username,
                   !model.isUsingCachedAuthorization else {
@@ -713,10 +726,20 @@ struct PurchaseWorkspaceView: View {
                 workspace.message = review.message
                 return
             }
-            let proposal = try PurchaseCommitPlanningPolicy.prepare(
-                draft, account: account, book: book, records: events)
+            // Never reserve an immutable outbox using stale capability or
+            // a capability from a previous selected book.
+            await model.refreshPurchaseCommitCapabilities()
             guard let caps = model.purchaseCommitCapabilities,
-                  caps.allows(proposal) else {
+                  model.selectedBookID == book.id,
+                  model.account?.username == account.username,
+                  !model.isUsingCachedAuthorization,
+                  caps.eligible(book: book) else {
+                throw PurchaseAtomicError.unsupported
+            }
+            let proposal = try PurchaseCommitPlanningPolicy.prepare(
+                draft, account: account, book: book, records: events,
+                capabilities: caps)
+            guard caps.allows(book: book, proposal: proposal) else {
                 throw PurchaseAtomicError.unsupported
             }
             let pending = try workspace.reserve(
@@ -843,12 +866,13 @@ private struct PurchaseWorkspaceMetric: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.caption).foregroundColor(.secondary)
-            Text(value).font(.subheadline.bold()).minimumScaleFactor(0.8)
+            Text(title).font(.caption2).foregroundColor(.secondary)
+                .lineLimit(1).minimumScaleFactor(0.8)
+            Text(value).font(.subheadline.bold()).minimumScaleFactor(0.65)
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(11)
+        .padding(8)
         .background(Color(UIColor.secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 11))
     }

@@ -88,6 +88,23 @@ final class BusinessDraftWorkflowTests: XCTestCase {
             startTime: "16:00", endTime: "00:10"))
     }
 
+    func testMissingFieldsNeverTreatsAbsentActualTimesAsValidCloudEntry() {
+        let missing = BusinessDraftWorkflowPolicy.missingCloudFields(
+            lines: lines, expense: "5", opening: "100", closing: "40",
+            startTime: "", endTime: "")
+        XCTAssertEqual(missing, ["实际营业时间"])
+        XCTAssertFalse(BusinessDraftWorkflowPolicy.readyForCloud(
+            lines: lines, expense: "5", opening: "100", closing: "40",
+            startTime: "", endTime: ""))
+        XCTAssertTrue(BusinessDraftWorkflowPolicy.missingCloudFields(
+            lines: lines, expense: "5", opening: "100", closing: "40",
+            startTime: "16:00", endTime: "00:10").isEmpty)
+        XCTAssertEqual(BusinessDraftWorkflowPolicy.missingCloudFields(
+            lines: lines, expense: "", opening: "", closing: "40",
+            startTime: "16:00", endTime: "").sorted(),
+            ["实际营业时间", "开摊库存", "支出"].sorted())
+    }
+
     func testPreviewMatchesBusinessAtomicFormulaAndNeverGuessesMissingStock() {
         let p = BusinessDraftWorkflowPolicy.preview(
             lines: lines, expense: "5", opening: "100", closing: "40")

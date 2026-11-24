@@ -78,6 +78,31 @@ enum SettlementTablePolicy {
     }
 }
 
+/// Counts only saved DAILY transfer registration, not cross-day effective
+/// settlement, bank payment, or newly calculated transfer recommendations.
+struct TXDailyTransferReadout: Equatable {
+    let total: Int
+    let full: Int
+    let partial: Int
+    let pending: Int
+    let invalid: Int
+
+    init(transfers: [FinanceTransferRow]) {
+        let daily = transfers.filter { $0.kind.uppercased() == "DAILY" }
+        total = daily.count
+        let states = daily.map(TXSettlementRecordPolicy.transferRegistration)
+        full = states.filter { $0 == .fullyRegistered }.count
+        partial = states.filter { $0 == .partiallyRegistered }.count
+        pending = states.filter { $0 == .notRegistered }.count
+        invalid = states.filter { $0 == .inconsistent }.count
+    }
+
+    var label: String {
+        "当日转账原始登记：\(total) 笔 · 全额 \(full) · 部分 \(partial) · 未登记 \(pending)" +
+            (invalid > 0 ? " · 异常 \(invalid)" : "")
+    }
+}
+
 enum SettlementSnapshotState: Equatable {
     case missing
     case available
@@ -108,6 +133,10 @@ extension SettlementTableDay {
 
     var includesPeriodTransfers: Bool {
         transfers.contains { $0.kind.uppercased() != "DAILY" }
+    }
+
+    var dailyTransferReadout: TXDailyTransferReadout {
+        TXDailyTransferReadout(transfers: transfers)
     }
 }
 
@@ -350,6 +379,14 @@ private struct SettlementDateCard: View {
                         Spacer(minLength: 0)
                     }
                     .font(.caption2).foregroundColor(.secondary)
+                    if day.dailyTransferReadout.total > 0 {
+                        Text(day.dailyTransferReadout.label)
+                            .font(.caption2)
+                            .foregroundColor(day.dailyTransferReadout.invalid > 0
+                                             ? .orange : .secondary)
+                        Text("仅原始登记进度，不代表已实际到账或跨日结清。")
+                            .font(.caption2).foregroundColor(.secondary)
+                    }
                     if day.includesPeriodTransfers {
                         Label("本日有周期或资金中心转账记录，需核对覆盖日期",
                               systemImage: "calendar.badge.clock")
