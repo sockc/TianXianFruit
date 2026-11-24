@@ -130,8 +130,9 @@ func render(_ size: Int) throws -> Data {
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = context
     context.imageInterpolation = .high
-    NSAffineTransform(transform:
-        AffineTransform(scaleByX: CGFloat(size)/1024, byY: CGFloat(size)/1024)).concat()
+    let transform = NSAffineTransform()
+    transform.scaleX(by: CGFloat(size) / 1024, yBy: CGFloat(size) / 1024)
+    transform.concat()
     drawArtwork()
     context.flushGraphics()
     NSGraphicsContext.restoreGraphicsState()
