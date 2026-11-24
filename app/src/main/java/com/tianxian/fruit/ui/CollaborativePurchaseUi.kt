@@ -682,47 +682,6 @@ internal fun CollaborativePurchaseContent(
 }
 
 @Composable
-private fun CollaborationMetric(
-    label: String,
-    value: String,
-    modifier: Modifier
-) {
-    Card(
-        modifier = modifier,
-        colors =
-            CardDefaults.cardColors(
-                containerColor =
-                    Color(0xFFF3FAF6)
-            )
-    ) {
-        Column(
-            Modifier.padding(
-                horizontal = 12.dp,
-                vertical = 9.dp
-            )
-        ) {
-            Text(
-                label,
-                style =
-                    MaterialTheme
-                        .typography
-                        .bodySmall,
-                color = Color.Gray
-            )
-
-            Text(
-                value,
-                fontSize = 21.sp,
-                fontWeight =
-                    FontWeight.Bold,
-                color =
-                    Color(0xFF13A868)
-            )
-        }
-    }
-}
-
-@Composable
 private fun CollaborationCompletedBuyerCard(
     buyerName: String,
     items: List<PurchasePlanItemRecord>,
@@ -800,232 +759,83 @@ private fun CollaborationPlanRow(
     onRestoreCompleted: () -> Unit,
     onDeleteCompleted: () -> Unit
 ) {
-    val completed =
-        item.status == 1
-
+    val completed = item.status == 1
     Card(
-        modifier =
-            Modifier.fillMaxWidth(),
-        colors =
-            CardDefaults.cardColors(
-                containerColor =
-                    if (completed) {
-                        Color(0xFFF2F8F4)
-                    } else {
-                        Color.White
-                    }
-            )
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (completed) Color(0xFFF2F8F4) else MaterialTheme.colorScheme.surface
+        )
     ) {
-        Row(
-            Modifier.padding(
-                horizontal = 11.dp,
-                vertical = 8.dp
-            ),
-            verticalAlignment =
-                Alignment.CenterVertically
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
-            Text(
-                if (completed) {
-                    "✓"
-                } else {
-                    "○"
-                },
-                color =
-                    if (completed) {
-                        Color(0xFF13A868)
-                    } else {
-                        Color.Gray
-                    },
-                fontSize = 20.sp,
-                fontWeight =
-                    FontWeight.Bold,
-                modifier =
-                    Modifier.width(28.dp)
-            )
-
-            Column(
-                Modifier.weight(1f)
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     item.fruitName,
-                    fontWeight =
-                        FontWeight.SemiBold
+                    modifier = Modifier.weight(1f),
+                    fontWeight = FontWeight.SemiBold
                 )
-
-                if (completed) {
-                    Text(
-                        "实际 ${collaborationNumber(item.actualQuantity)}${item.unit}" +
-                            " · ${collaborationMoney(item.actualAmount)}" +
-                            if (
-                                item.buyerName.isNotBlank()
-                            ) {
-                                " · ${item.buyerName}"
-                            } else {
-                                ""
-                            },
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall,
-                        color =
-                            Color.DarkGray
-                    )
-
-                    if (
-                        item.completedAt > 0L
-                    ) {
-                        Text(
-                            "完成 ${collaborationTime(item.completedAt)}" +
-                                if (
-                                    item.completedByDisplayName
-                                        .isNotBlank() &&
-                                    item.completedByDisplayName !=
-                                    item.buyerName
-                                ) {
-                                    " · 录入 ${item.completedByDisplayName}"
-                                } else {
-                                    ""
-                                },
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .labelSmall,
-                            color = Color.Gray
-                        )
-                    }
-                } else {
-                    Text(
-                        "计划 ${collaborationNumber(item.quantity)}${item.unit}" +
-                            if (
-                                item.estimatedAmount > 0
-                            ) {
-                                " · 预计 ${collaborationMoney(item.estimatedAmount)}"
-                            } else {
-                                " · 预计金额未填"
-                            } +
-                            if (item.buyerName.isNotBlank()) {
-                                " · ${item.buyerName}"
-                            } else {
-                                " · 未指定采购人"
-                            },
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall,
-                        color = Color.Gray
-                    )
-                }
-
-                if (
-                    item.remark.isNotBlank()
-                ) {
-                    Text(
-                        item.remark,
-                        style =
-                            MaterialTheme
-                                .typography
-                                .labelSmall,
-                        color = Color.Gray
-                    )
-                }
+                Text(
+                    item.buyerName.ifBlank { "未分配采购人" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (item.buyerName.isBlank()) Color.Gray else Color(0xFF13A868)
+                )
             }
-
-            if (!completed) {
-                if (canEditPlan) {
-                    TextButton(
-                        onClick =
-                            onEdit,
-                        contentPadding =
-                            PaddingValues(
-                                horizontal = 7.dp
-                            )
-                    ) {
-                        Text("修改")
-                    }
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    if (completed) "实购 ${collaborationNumber(item.actualQuantity)}${item.unit}"
+                    else "计划 ${collaborationNumber(item.quantity)}${item.unit}",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    if (completed) collaborationMoney(item.actualAmount)
+                    else "预计 ${collaborationMoney(item.estimatedAmount)}",
+                    color = if (completed) Color(0xFF13A868) else Color.DarkGray,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            if (item.remark.isNotBlank()) {
+                Text(
+                    item.remark,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.Gray
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (!completed && canEditPlan) {
+                    TextButton(onClick = onEdit) { Text("修改计划", fontSize = 12.sp) }
+                    TextButton(onClick = onDelete) { Text("移除", fontSize = 12.sp, color = Color.Gray) }
                 }
-
-                if (canComplete) {
+                if (!completed && canComplete) {
+                    Spacer(Modifier.weight(1f))
                     Button(
-                        onClick =
-                            onComplete,
-                        contentPadding =
-                            PaddingValues(
-                                horizontal = 10.dp,
-                                vertical = 2.dp
-                            ),
-                        modifier =
-                            Modifier.height(36.dp)
-                    ) {
-                        Text(
-                            "完成采购",
-                            fontSize = 12.sp
-                        )
-                    }
+                        onClick = onComplete,
+                        contentPadding = PaddingValues(horizontal = 10.dp),
+                        modifier = Modifier.height(36.dp)
+                    ) { Text("填写实购", fontSize = 12.sp) }
                 }
-            }
-        }
-
-        if (completed && (canEditCompleted || canDeleteCompleted)) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.End
-            ) {
-                if (canEditCompleted) {
-                    TextButton(
-                        onClick = onEditCompleted,
-                        contentPadding = PaddingValues(horizontal = 7.dp)
-                    ) {
-                        Text("修改", fontSize = 12.sp)
-                    }
+                if (completed && canEditCompleted) {
+                    TextButton(onClick = onEditCompleted) { Text("修改", fontSize = 12.sp) }
                 }
-
-                if (canDeleteCompleted) {
-                    TextButton(
-                        onClick = onRestoreCompleted,
-                        contentPadding = PaddingValues(horizontal = 7.dp)
-                    ) {
-                        Text("恢复未完成", fontSize = 12.sp)
+                if (completed && canDeleteCompleted) {
+                    TextButton(onClick = onRestoreCompleted) { Text("恢复未完成", fontSize = 12.sp) }
+                    TextButton(onClick = onDeleteCompleted) {
+                        Text("删除", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
                     }
-
-                    TextButton(
-                        onClick = onDeleteCompleted,
-                        contentPadding = PaddingValues(horizontal = 7.dp)
-                    ) {
-                        Text("删除", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                    }
-                }
-            }
-        }
-
-        if (
-            !completed &&
-            canEditPlan
-        ) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(
-                        end = 8.dp,
-                        bottom = 2.dp
-                    ),
-                horizontalArrangement =
-                    Arrangement.End
-            ) {
-                TextButton(
-                    onClick =
-                        onDelete,
-                    contentPadding =
-                        PaddingValues(
-                            horizontal = 8.dp
-                        )
-                ) {
-                    Text(
-                        "移除",
-                        color = Color.Gray,
-                        fontSize = 12.sp
-                    )
                 }
             }
         }
