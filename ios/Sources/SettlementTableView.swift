@@ -239,10 +239,11 @@ struct SettlementTableView: View {
                 .pickerStyle(.segmented)
 
                 if settlementSection == "当日计算" {
-                Text("本页直接展示安卓同步的日结快照、利润分配及转账登记；不重新推算未保存的资金方案。")
+                Text("已同步日结记录与当日实时计算预览分开展示。")
                     .font(.caption2).foregroundColor(.secondary)
                 TXDayBar(date: $selectedDate, label: "结算日期", allowFuture: false)
                     .onChange(of: selectedDate) { _ in visibleDays = 14 }
+                TXDailySettlement092Panel(date: BusinessDates.key(selectedDate))
                 DisclosureGroup(isExpanded: $showFilters) {
                 Picker("日期范围", selection: $range) {
                     Text("单日").tag("单日")
