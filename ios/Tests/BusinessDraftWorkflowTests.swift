@@ -59,6 +59,32 @@ final class BusinessDraftWorkflowTests: XCTestCase {
                        .unsafeToRead)
     }
 
+    func testConfirmedBusinessMissingOrChangedOnCloudNeedsAuditNotRepost() {
+        let confirmed = attempt(.confirmed)
+        XCTAssertEqual(BusinessDraftWorkflowPolicy.status(
+            draft: draft, events: [], attempt: confirmed,
+            cloudSnapshotReady: false), .confirmed,
+            "Offline or no fresh cloud snapshot must not accuse the server of deletion")
+        XCTAssertEqual(BusinessDraftWorkflowPolicy.status(
+            draft: draft, events: [], attempt: confirmed,
+            cloudSnapshotReady: true), .confirmedRemoteMissing)
+        XCTAssertTrue(BusinessDraftWorkflowPolicy.CloudState
+            .confirmedRemoteMissing.needsAttention)
+        // A known receipt with a row that no longer matches the original
+        // amount must not be mislabeled as still matching the submission.
+        var saved = confirmed
+        saved.receipt = BusinessCommitReceipt(
+            status: "committed", operationID: confirmed.proposal.operationID,
+            bookID: confirmed.proposal.bookID,
+            recordSyncID: "stable-record", collectorSyncIDs: [],
+            payloadHash: confirmed.proposal.payloadHash, syncCursor: 1)
+        XCTAssertEqual(BusinessDraftWorkflowPolicy.status(
+            draft: draft, events: [event()], attempt: saved,
+            cloudSnapshotReady: true), .confirmedRemoteChanged)
+        XCTAssertTrue(BusinessDraftWorkflowPolicy.CloudState
+            .confirmedRemoteChanged.needsAttention)
+    }
+
     func testReloadedSavedDraftIsRecognizedButUnsavedEditIsNot() {
         XCTAssertTrue(BusinessDraftWorkflowPolicy.matchesSaved(
             draft: draft, date: draft.date, storeID: draft.storeID,
