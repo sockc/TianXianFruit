@@ -99,7 +99,6 @@ struct BusinessLocalEntryView: View {
     @State private var canResumeOriginal = false
     @State private var commitMessage: String?
     @State private var submitting = false
-    @State private var showHours = false
     @State private var storageError: String?
     @State private var pendingDate: Date?
     @State private var pendingStoreID: String?
@@ -261,7 +260,7 @@ struct BusinessLocalEntryView: View {
         }
         saved = persistedDraft != nil
         // Keep the required hours visible; collapsing hid why sync was blocked.
-        showHours = true
+        // Required operating hours are visible beside location
         canResumeOriginal = false
         commitMessage = nil
         errorText = nil
@@ -327,7 +326,7 @@ struct BusinessLocalEntryView: View {
 
     private func saveThenSync() async {
         guard cloudReady else {
-            showHours = true
+            // Required operating hours are visible beside location
             errorText = "请补齐：" + missingCloudFields.joined(separator: "、") +
                         "；缺失金额不会被当作零。"
             return
@@ -395,7 +394,7 @@ struct BusinessLocalEntryView: View {
             Form {
                 Section(header: Text("营业日期与位置")) {
                     TXDayBar(date: guardedDate, label: "营业日期", allowFuture: false)
-                    HStack(spacing: 8) {
+                    HStack(spacing: 5) {
                         Picker("营业位置", selection: guardedStore) {
                             Text("请选择位置").tag("")
                             ForEach(model.snapshot.testStores) { store in
@@ -404,13 +403,26 @@ struct BusinessLocalEntryView: View {
                         }
                         .pickerStyle(MenuPickerStyle())
                         .accessibilityLabel("营业位置")
-                        Spacer(minLength: 4)
-                        Text((startTime.isEmpty || endTime.isEmpty)
-                             ? "实际时间未填" : startTime + "—" + endTime)
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1).minimumScaleFactor(0.8)
+                        Spacer(minLength: 1)
+                        Text("开").font(.caption2).foregroundColor(.secondary)
+                        TextField("16:00", text: $startTime)
+                            .keyboardType(.numbersAndPunctuation)
+                            .multilineTextAlignment(.center)
+                            .font(.caption)
+                            .frame(width: 57)
+                            .accessibilityLabel("实际开摊时间")
+                        Text("收").font(.caption2).foregroundColor(.secondary)
+                        TextField("00:10", text: $endTime)
+                            .keyboardType(.numbersAndPunctuation)
+                            .multilineTextAlignment(.center)
+                            .font(.caption)
+                            .frame(width: 57)
+                            .accessibilityLabel("实际收摊时间")
                     }
+                    TextField("营业备注（仅本机，可选）", text: $note)
+                        .font(.caption)
+                    Text("营业时间 HH:mm，可跨午夜；不自动扣减凌晨收款。")
+                        .font(.caption2).foregroundColor(.secondary)
                     if let remoteRecord {
                         Label("云端已有该日该位置营业，不能重复新增。",
                               systemImage: "checkmark.shield")
@@ -494,31 +506,6 @@ struct BusinessLocalEntryView: View {
                     }
                     Text("可以先保存未填完的营业草稿。利润沿用安卓规则；云端提交前必须补齐真实成本，不能把缺失值当作零。")
                         .font(.caption).foregroundColor(.secondary)
-                }
-                Section {
-                    DisclosureGroup(isExpanded: $showHours) {
-                        HStack {
-                            Text("开摊")
-                            Spacer()
-                            TextField("16:00", text: $startTime)
-                                .keyboardType(.numbersAndPunctuation)
-                                .multilineTextAlignment(.trailing)
-                                .frame(maxWidth: 105)
-                        }
-                        HStack {
-                            Text("收摊")
-                            Spacer()
-                            TextField("00:10", text: $endTime)
-                                .keyboardType(.numbersAndPunctuation)
-                                .multilineTextAlignment(.trailing)
-                                .frame(maxWidth: 105)
-                        }
-                        Text("格式 HH:mm；可跨午夜。这里只记录实际营业时间，不自动扣减凌晨收款。")
-                            .font(.caption2).foregroundColor(.secondary)
-                        TextField("营业备注（仅本机，不参与结算）", text: $note)
-                    } label: {
-                        Label("实际营业时间与备注", systemImage: "clock")
-                    }
                 }
                 Section {
                     Button {
