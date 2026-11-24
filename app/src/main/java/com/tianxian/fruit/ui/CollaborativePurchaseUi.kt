@@ -33,6 +33,16 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private enum class CollaborationPendingFilter { ALL, HAS_REMARK, UNPRICED }
+
+@Composable
+private fun CollaborationCompactMetric(label: String, value: String, modifier: Modifier) {
+    Column(modifier) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+        Text(value, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Color(0xFF13A868))
+    }
+}
+
 @Composable
 internal fun CollaborativePurchaseContent(
     db: AppDatabase,
@@ -280,97 +290,68 @@ internal fun CollaborativePurchaseContent(
             .distinct()
             .size
 
+
+    // Filtering operates on local buyer names only. Cross-book invitations
+    // require an authenticated server authorization scope and are not emulated here.
+    var pendingFilter by remember(currentBook.id) {
+        mutableStateOf(CollaborationPendingFilter.ALL)
+    }
+    var completedExpanded by remember(currentBook.id, date) { mutableStateOf(false) }
+    var inlineCompletionId by remember(currentBook.id, date) { mutableStateOf<Long?>(null) }
+    var showCollaborationInfo by remember { mutableStateOf(false) }
+    // The current purchase_plan schema has no pending-item assignee.
+    // Until scoped server claims exist, filter only by persisted plan fields.
+    val visiblePending = pendingItems.filter { item ->
+        when (pendingFilter) {
+            CollaborationPendingFilter.ALL -> true
+            CollaborationPendingFilter.HAS_REMARK -> item.remark.isNotBlank()
+            CollaborationPendingFilter.UNPRICED -> item.estimatedAmount == 0.0
+        }
+    }
+
     LazyColumn(
-        modifier =
-            Modifier.fillMaxSize(),
-        contentPadding =
-            PaddingValues(
-                horizontal = 12.dp,
-                vertical = 8.dp
-            ),
-        verticalArrangement =
-            Arrangement.spacedBy(8.dp)
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp)
     ) {
         item {
             Row(
                 Modifier.fillMaxWidth(),
-                verticalAlignment =
-                    Alignment.CenterVertically,
-                horizontalArrangement =
-                    Arrangement.spacedBy(8.dp)
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 CompactDateNavigator(
                     label = null,
                     date = date,
-                    modifier =
-                        Modifier.weight(1f),
+                    modifier = Modifier.weight(1f),
                     chineseDisplay = true,
                     showWeekday = true
+                ) { date = it }
+                TextButton(
+                    onClick = { scope.launch { refreshCloud() } },
+                    enabled = !syncing && session != null && currentBook.cloudEnabled
                 ) {
-                    date = it
-                }
-
-                OutlinedButton(
-                    onClick = {
-                        scope.launch {
-                            refreshCloud()
-                        }
-                    },
-                    enabled = !syncing
-                ) {
-                    if (syncing) {
-                        CircularProgressIndicator(
-                            modifier =
-                                Modifier.size(15.dp),
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        Text("刷新")
-                    }
+                    Text(if (syncing) "同步中" else "同步", fontSize = 12.sp)
                 }
             }
         }
 
         item {
-            Column(
-                verticalArrangement =
-                    Arrangement.spacedBy(7.dp)
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFF3FAF6))
             ) {
                 Row(
-                    horizontalArrangement =
-                        Arrangement.spacedBy(7.dp)
+                    Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    CollaborationMetric(
-                        "计划金额",
-                        collaborationMoney(
-                            plannedAmount
-                        ),
-                        Modifier.weight(1f)
+                    CollaborationCompactMetric(
+                        "已采购", collaborationMoney(completedAmount), Modifier.weight(1f)
                     )
-
-                    CollaborationMetric(
-                        "已完成金额",
-                        collaborationMoney(
-                            completedAmount
-                        ),
-                        Modifier.weight(1f)
+                    CollaborationCompactMetric(
+                        "计划金额", collaborationMoney(plannedAmount), Modifier.weight(1f)
                     )
-                }
-
-                Row(
-                    horizontalArrangement =
-                        Arrangement.spacedBy(7.dp)
-                ) {
-                    CollaborationMetric(
-                        "已采购",
-                        "$completedFruitCount 种",
-                        Modifier.weight(1f)
-                    )
-
-                    CollaborationMetric(
-                        "剩余",
-                        "$pendingFruitCount 种",
-                        Modifier.weight(1f)
+                    CollaborationCompactMetric(
+                        "完成进度", "${completedItems.size}/${items.size}", Modifier.weight(1f)
                     )
                 }
             }
@@ -381,73 +362,107 @@ internal fun CollaborativePurchaseContent(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    "待采购",
-                    fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.titleMedium,
+                Text("待采购", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text("${pendingItems.size} 项", color = Color(0xFF13A868))
+                TextButton(onClick = { showCollaborationInfo = true }) {
+                    Text("协作说明", fontSize = 12.sp)
+                }
+            }
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                FilterChip(
+                    selected = pendingFilter == CollaborationPendingFilter.ALL,
+                    onClick = { pendingFilter = CollaborationPendingFilter.ALL },
+                    label = { Text("全部", fontSize = 12.sp) },
                     modifier = Modifier.weight(1f)
                 )
-                Text(
-                    "${pendingItems.size} 种",
-                    color = Color(0xFF13A868),
-                    fontWeight = FontWeight.SemiBold
+                FilterChip(
+                    selected = pendingFilter == CollaborationPendingFilter.HAS_REMARK,
+                    onClick = { pendingFilter = CollaborationPendingFilter.HAS_REMARK },
+                    label = { Text("有备注", fontSize = 12.sp) },
+                    modifier = Modifier.weight(1f)
+                )
+                FilterChip(
+                    selected = pendingFilter == CollaborationPendingFilter.UNPRICED,
+                    onClick = { pendingFilter = CollaborationPendingFilter.UNPRICED },
+                    label = { Text("预算为0", fontSize = 12.sp) },
+                    modifier = Modifier.weight(1f)
                 )
             }
         }
 
         if (items.isEmpty()) {
             item {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F8FA))
-                ) {
-                    Text(
-                        "这一天还没有采购计划。",
-                        modifier = Modifier.fillMaxWidth().padding(14.dp),
-                        color = Color.Gray
-                    )
-                }
+                Text(
+                    "这一天还没有采购计划，可在下方添加商品。",
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    color = Color.Gray
+                )
             }
         } else if (pendingItems.isEmpty()) {
             item {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF2F8F4))
-                ) {
-                    Text(
-                        "✓ 当天采购已全部完成",
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-                        color = Color(0xFF13A868),
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
+                Text(
+                    "✓ 当天采购已全部完成",
+                    modifier = Modifier.fillMaxWidth().padding(10.dp),
+                    color = Color(0xFF13A868),
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        } else if (visiblePending.isEmpty()) {
+            item {
+                Text(
+                    if (pendingFilter == CollaborationPendingFilter.HAS_REMARK) {
+                        "没有带备注的待采购商品。"
+                    } else {
+                        "没有预算为0的待采购商品。"
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    color = Color.Gray
+                )
             }
         } else {
-            items(
-                pendingItems,
-                key = { "collab_pending_${it.id}" }
-            ) { item ->
-                CollaborationPlanRow(
-                    item = item,
-                    canEditPlan = canEditPlan,
-                    canComplete = canComplete,
-                    canEditCompleted = false,
-                    canDeleteCompleted = false,
-                    onEdit = { editingItem = item },
-                    onDelete = {
-                        if (db.deleteCollaborationPlanItem(item.id)) {
-                            message = "${item.fruitName} 已从采购计划移除"
-                            onChanged()
-                        } else {
-                            message = "只有未完成项目可以移除"
-                        }
-                    },
-                    onComplete = {
-                        editingCompletedPurchase = false
-                        completingItem = item
-                    },
-                    onEditCompleted = {},
-                    onRestoreCompleted = {},
-                    onDeleteCompleted = {}
-                )
+            items(visiblePending, key = { "collab_pending_${it.id}" }) { item ->
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    CollaborationPlanRow(
+                        item = item,
+                        canEditPlan = canEditPlan,
+                        canComplete = canComplete,
+                        canEditCompleted = false,
+                        canDeleteCompleted = false,
+                        onEdit = { editingItem = item },
+                        onDelete = {
+                            if (db.deleteCollaborationPlanItem(item.id)) {
+                                message = "${item.fruitName} 已从采购计划移除"
+                                onChanged()
+                            } else {
+                                message = "只有未完成项目可以移除"
+                            }
+                        },
+                        onComplete = {
+                            inlineCompletionId = if (inlineCompletionId == item.id) null else item.id
+                        },
+                        onEditCompleted = {},
+                        onRestoreCompleted = {},
+                        onDeleteCompleted = {}
+                    )
+                    if (inlineCompletionId == item.id) {
+                        CollaborationInlineCompletionEditor(
+                            db = db,
+                            item = item,
+                            recorderUsername = session?.username.orEmpty(),
+                            recorderDisplayName = session?.displayName.orEmpty(),
+                            onCancel = { inlineCompletionId = null },
+                            onCompleted = {
+                                inlineCompletionId = null
+                                message = it
+                                onChanged()
+                                scope.launch { refreshCloud() }
+                            }
+                        )
+                    }
+                }
             }
         }
 
@@ -465,80 +480,68 @@ internal fun CollaborativePurchaseContent(
         if (completedItems.isNotEmpty()) {
             item {
                 Row(
-                    Modifier.fillMaxWidth().padding(top = 2.dp),
+                    Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "已完成采购",
+                        "已采购（${completedItems.size}）",
                         fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.weight(1f)
                     )
                     Text(
-                        "${completedItems.size} 种 · ${collaborationMoney(completedAmount)}",
+                        collaborationMoney(completedAmount),
                         color = Color(0xFF13A868),
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.SemiBold
+                        style = MaterialTheme.typography.bodySmall
                     )
+                    TextButton(onClick = { completedExpanded = !completedExpanded }) {
+                        Text(if (completedExpanded) "收起 ∧" else "展开 ∨")
+                    }
                 }
             }
-
-            val completedByBuyer =
-                completedItems.groupBy { item -> item.buyerId to item.buyerName }
-
-            completedByBuyer.entries.forEachIndexed { index, entry ->
-                item(
-                    key = "collab_completed_buyer_${entry.key.first}_$index"
-                ) {
-                    CollaborationCompletedBuyerCard(
-                        buyerName = entry.key.second.ifBlank { "未指定采购人" },
-                        items = entry.value,
-                        canOpen = canEditCompleted || canDeleteCompleted,
-                        onItemClick = { completedActionItem = it }
-                    )
+            if (completedExpanded) {
+                val completedByBuyer = completedItems.groupBy { it.buyerId to it.buyerName }
+                completedByBuyer.entries.forEachIndexed { index, entry ->
+                    item(key = "collab_completed_buyer_${entry.key.first}_$index") {
+                        CollaborationCompletedBuyerCard(
+                            buyerName = entry.key.second.ifBlank { "未指定采购人" },
+                            items = entry.value,
+                            canOpen = canEditCompleted || canDeleteCompleted,
+                            onItemClick = { completedActionItem = it }
+                        )
+                    }
                 }
             }
         }
 
-        if (
-            message.isNotBlank()
-        ) {
+        if (message.isNotBlank()) {
             item {
                 Text(
                     message,
-                    color =
-                        if (
-                            message.startsWith(
-                                "失败"
-                            ) ||
-                            message.contains(
-                                "失败"
-                            )
-                        ) {
-                            MaterialTheme
-                                .colorScheme
-                                .error
-                        } else {
-                            Color(0xFF13A868)
-                        },
-                    style =
-                        MaterialTheme
-                            .typography
-                            .bodySmall
+                    color = if (message.contains("失败")) MaterialTheme.colorScheme.error
+                        else Color(0xFF13A868),
+                    style = MaterialTheme.typography.bodySmall
                 )
             }
         }
+    }
 
-        item {
-            Text(
-                "只有点击“完成采购”并确认实际数量、金额后，才会生成正式采购记录。",
-                style =
-                    MaterialTheme
-                        .typography
-                        .bodySmall,
-                color = Color.Gray
-            )
-        }
+    if (showCollaborationInfo) {
+        AlertDialog(
+            onDismissRequest = { showCollaborationInfo = false },
+            title = { Text("协同采购") },
+            text = {
+                Text(
+                    "当前清单属于本账本，已有采购权限的账本成员可共同填写。" +
+                    "跨账本账号邀请需要服务端建立独立采购授权，" +
+                    "在权限隔离和防重复写入完成之前不会开放，以免外部人员看到经营、利润及结算数据。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showCollaborationInfo = false }) {
+                    Text("知道了")
+                }
+            }
+        )
     }
 
     completedActionItem?.let { item ->
@@ -678,47 +681,6 @@ internal fun CollaborativePurchaseContent(
 }
 
 @Composable
-private fun CollaborationMetric(
-    label: String,
-    value: String,
-    modifier: Modifier
-) {
-    Card(
-        modifier = modifier,
-        colors =
-            CardDefaults.cardColors(
-                containerColor =
-                    Color(0xFFF3FAF6)
-            )
-    ) {
-        Column(
-            Modifier.padding(
-                horizontal = 12.dp,
-                vertical = 9.dp
-            )
-        ) {
-            Text(
-                label,
-                style =
-                    MaterialTheme
-                        .typography
-                        .bodySmall,
-                color = Color.Gray
-            )
-
-            Text(
-                value,
-                fontSize = 21.sp,
-                fontWeight =
-                    FontWeight.Bold,
-                color =
-                    Color(0xFF13A868)
-            )
-        }
-    }
-}
-
-@Composable
 private fun CollaborationCompletedBuyerCard(
     buyerName: String,
     items: List<PurchasePlanItemRecord>,
@@ -796,232 +758,83 @@ private fun CollaborationPlanRow(
     onRestoreCompleted: () -> Unit,
     onDeleteCompleted: () -> Unit
 ) {
-    val completed =
-        item.status == 1
-
+    val completed = item.status == 1
     Card(
-        modifier =
-            Modifier.fillMaxWidth(),
-        colors =
-            CardDefaults.cardColors(
-                containerColor =
-                    if (completed) {
-                        Color(0xFFF2F8F4)
-                    } else {
-                        Color.White
-                    }
-            )
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (completed) Color(0xFFF2F8F4) else MaterialTheme.colorScheme.surface
+        )
     ) {
-        Row(
-            Modifier.padding(
-                horizontal = 11.dp,
-                vertical = 8.dp
-            ),
-            verticalAlignment =
-                Alignment.CenterVertically
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
-            Text(
-                if (completed) {
-                    "✓"
-                } else {
-                    "○"
-                },
-                color =
-                    if (completed) {
-                        Color(0xFF13A868)
-                    } else {
-                        Color.Gray
-                    },
-                fontSize = 20.sp,
-                fontWeight =
-                    FontWeight.Bold,
-                modifier =
-                    Modifier.width(28.dp)
-            )
-
-            Column(
-                Modifier.weight(1f)
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     item.fruitName,
-                    fontWeight =
-                        FontWeight.SemiBold
+                    modifier = Modifier.weight(1f),
+                    fontWeight = FontWeight.SemiBold
                 )
-
-                if (completed) {
-                    Text(
-                        "实际 ${collaborationNumber(item.actualQuantity)}${item.unit}" +
-                            " · ${collaborationMoney(item.actualAmount)}" +
-                            if (
-                                item.buyerName.isNotBlank()
-                            ) {
-                                " · ${item.buyerName}"
-                            } else {
-                                ""
-                            },
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall,
-                        color =
-                            Color.DarkGray
-                    )
-
-                    if (
-                        item.completedAt > 0L
-                    ) {
-                        Text(
-                            "完成 ${collaborationTime(item.completedAt)}" +
-                                if (
-                                    item.completedByDisplayName
-                                        .isNotBlank() &&
-                                    item.completedByDisplayName !=
-                                    item.buyerName
-                                ) {
-                                    " · 录入 ${item.completedByDisplayName}"
-                                } else {
-                                    ""
-                                },
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .labelSmall,
-                            color = Color.Gray
-                        )
-                    }
-                } else {
-                    Text(
-                        "计划 ${collaborationNumber(item.quantity)}${item.unit}" +
-                            if (
-                                item.estimatedAmount > 0
-                            ) {
-                                " · 预计 ${collaborationMoney(item.estimatedAmount)}"
-                            } else {
-                                " · 预计金额未填"
-                            } +
-                            if (item.buyerName.isNotBlank()) {
-                                " · ${item.buyerName}"
-                            } else {
-                                " · 未指定采购人"
-                            },
-                        style =
-                            MaterialTheme
-                                .typography
-                                .bodySmall,
-                        color = Color.Gray
-                    )
-                }
-
-                if (
-                    item.remark.isNotBlank()
-                ) {
-                    Text(
-                        item.remark,
-                        style =
-                            MaterialTheme
-                                .typography
-                                .labelSmall,
-                        color = Color.Gray
-                    )
-                }
+                Text(
+                    item.buyerName.ifBlank { "未分配采购人" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (item.buyerName.isBlank()) Color.Gray else Color(0xFF13A868)
+                )
             }
-
-            if (!completed) {
-                if (canEditPlan) {
-                    TextButton(
-                        onClick =
-                            onEdit,
-                        contentPadding =
-                            PaddingValues(
-                                horizontal = 7.dp
-                            )
-                    ) {
-                        Text("修改")
-                    }
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    if (completed) "实购 ${collaborationNumber(item.actualQuantity)}${item.unit}"
+                    else "计划 ${collaborationNumber(item.quantity)}${item.unit}",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    if (completed) collaborationMoney(item.actualAmount)
+                    else "预计 ${collaborationMoney(item.estimatedAmount)}",
+                    color = if (completed) Color(0xFF13A868) else Color.DarkGray,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            if (item.remark.isNotBlank()) {
+                Text(
+                    item.remark,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.Gray
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (!completed && canEditPlan) {
+                    TextButton(onClick = onEdit) { Text("修改计划", fontSize = 12.sp) }
+                    TextButton(onClick = onDelete) { Text("移除", fontSize = 12.sp, color = Color.Gray) }
                 }
-
-                if (canComplete) {
+                if (!completed && canComplete) {
+                    Spacer(Modifier.weight(1f))
                     Button(
-                        onClick =
-                            onComplete,
-                        contentPadding =
-                            PaddingValues(
-                                horizontal = 10.dp,
-                                vertical = 2.dp
-                            ),
-                        modifier =
-                            Modifier.height(36.dp)
-                    ) {
-                        Text(
-                            "完成采购",
-                            fontSize = 12.sp
-                        )
-                    }
+                        onClick = onComplete,
+                        contentPadding = PaddingValues(horizontal = 10.dp),
+                        modifier = Modifier.height(36.dp)
+                    ) { Text("填写实购", fontSize = 12.sp) }
                 }
-            }
-        }
-
-        if (completed && (canEditCompleted || canDeleteCompleted)) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.End
-            ) {
-                if (canEditCompleted) {
-                    TextButton(
-                        onClick = onEditCompleted,
-                        contentPadding = PaddingValues(horizontal = 7.dp)
-                    ) {
-                        Text("修改", fontSize = 12.sp)
-                    }
+                if (completed && canEditCompleted) {
+                    TextButton(onClick = onEditCompleted) { Text("修改", fontSize = 12.sp) }
                 }
-
-                if (canDeleteCompleted) {
-                    TextButton(
-                        onClick = onRestoreCompleted,
-                        contentPadding = PaddingValues(horizontal = 7.dp)
-                    ) {
-                        Text("恢复未完成", fontSize = 12.sp)
+                if (completed && canDeleteCompleted) {
+                    TextButton(onClick = onRestoreCompleted) { Text("恢复未完成", fontSize = 12.sp) }
+                    TextButton(onClick = onDeleteCompleted) {
+                        Text("删除", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
                     }
-
-                    TextButton(
-                        onClick = onDeleteCompleted,
-                        contentPadding = PaddingValues(horizontal = 7.dp)
-                    ) {
-                        Text("删除", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                    }
-                }
-            }
-        }
-
-        if (
-            !completed &&
-            canEditPlan
-        ) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(
-                        end = 8.dp,
-                        bottom = 2.dp
-                    ),
-                horizontalArrangement =
-                    Arrangement.End
-            ) {
-                TextButton(
-                    onClick =
-                        onDelete,
-                    contentPadding =
-                        PaddingValues(
-                            horizontal = 8.dp
-                        )
-                ) {
-                    Text(
-                        "移除",
-                        color = Color.Gray,
-                        fontSize = 12.sp
-                    )
                 }
             }
         }
