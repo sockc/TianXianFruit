@@ -33,7 +33,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private enum class CollaborationPendingFilter { ALL, MINE, UNASSIGNED }
+private enum class CollaborationPendingFilter { ALL, HAS_REMARK, UNPRICED }
 
 @Composable
 private fun CollaborationCompactMetric(label: String, value: String, modifier: Modifier) {
@@ -299,14 +299,13 @@ internal fun CollaborativePurchaseContent(
     var completedExpanded by remember(currentBook.id, date) { mutableStateOf(false) }
     var inlineCompletionId by remember(currentBook.id, date) { mutableStateOf<Long?>(null) }
     var showCollaborationInfo by remember { mutableStateOf(false) }
-    val selfNames = listOf(session?.displayName.orEmpty(), session?.username.orEmpty())
-        .map { it.trim() }.filter { it.isNotBlank() }
+    // The current purchase_plan schema has no pending-item assignee.
+    // Until scoped server claims exist, filter only by persisted plan fields.
     val visiblePending = pendingItems.filter { item ->
         when (pendingFilter) {
             CollaborationPendingFilter.ALL -> true
-            CollaborationPendingFilter.MINE ->
-                selfNames.any { it.equals(item.buyerName, ignoreCase = true) }
-            CollaborationPendingFilter.UNASSIGNED -> item.buyerName.isBlank()
+            CollaborationPendingFilter.HAS_REMARK -> item.remark.isNotBlank()
+            CollaborationPendingFilter.UNPRICED -> item.estimatedAmount == 0.0
         }
     }
 
@@ -380,15 +379,15 @@ internal fun CollaborativePurchaseContent(
                     modifier = Modifier.weight(1f)
                 )
                 FilterChip(
-                    selected = pendingFilter == CollaborationPendingFilter.MINE,
-                    onClick = { pendingFilter = CollaborationPendingFilter.MINE },
-                    label = { Text("我的采购", fontSize = 12.sp) },
+                    selected = pendingFilter == CollaborationPendingFilter.HAS_REMARK,
+                    onClick = { pendingFilter = CollaborationPendingFilter.HAS_REMARK },
+                    label = { Text("有备注", fontSize = 12.sp) },
                     modifier = Modifier.weight(1f)
                 )
                 FilterChip(
-                    selected = pendingFilter == CollaborationPendingFilter.UNASSIGNED,
-                    onClick = { pendingFilter = CollaborationPendingFilter.UNASSIGNED },
-                    label = { Text("未分配", fontSize = 12.sp) },
+                    selected = pendingFilter == CollaborationPendingFilter.UNPRICED,
+                    onClick = { pendingFilter = CollaborationPendingFilter.UNPRICED },
+                    label = { Text("预算为0", fontSize = 12.sp) },
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -414,10 +413,10 @@ internal fun CollaborativePurchaseContent(
         } else if (visiblePending.isEmpty()) {
             item {
                 Text(
-                    if (pendingFilter == CollaborationPendingFilter.MINE) {
-                        "没有匹配当前账号姓名的待采购商品，可切换“全部”查看。"
+                    if (pendingFilter == CollaborationPendingFilter.HAS_REMARK) {
+                        "没有带备注的待采购商品。"
                     } else {
-                        "暂无未分配采购人的商品。"
+                        "没有预算为0的待采购商品。"
                     },
                     modifier = Modifier.fillMaxWidth().padding(12.dp),
                     color = Color.Gray
