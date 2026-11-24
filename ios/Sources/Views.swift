@@ -78,7 +78,7 @@ private struct DashboardView: View {
                 Group {
                     switch selectedTab {
                     case .home: HomePage(selectedTab: $selectedTab)
-                    case .inventory: InventoryPage()
+                    case .inventory: TXInventory094Page()
                     case .purchase: PurchaseWorkspaceView()
                     case .business: BusinessPage()
                     case .settlement: SettlementTableView()
