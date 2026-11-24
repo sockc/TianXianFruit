@@ -124,9 +124,25 @@ struct TXRecentBusinessDaysView: View {
               let wechat = payload["wechat_income"]?.decimal,
               let alipay = payload["alipay_income"]?.decimal,
               let cash = payload["cash_income"]?.decimal else { return nil }
-        return "微信 " + wechat.formatted(.currency(code: "CNY")) +
+        let channelText = "微信 " + wechat.formatted(.currency(code: "CNY")) +
             " · 支付宝 " + alipay.formatted(.currency(code: "CNY")) +
             " · 现金 " + cash.formatted(.currency(code: "CNY"))
+        guard let event = model.snapshot.records["store_daily_record|" + row.id] else {
+            return channelText
+        }
+        let splits = TestBusinessSplitInput.from(event)
+        guard !splits.isEmpty else { return channelText }
+        let people = splits.prefix(2).compactMap { split -> String? in
+            guard let wx = Double(split.wechat),
+                  let ali = Double(split.alipay),
+                  let cash = Double(split.cash) else { return nil }
+            let total = wx + ali + cash
+            return split.partnerName + " " +
+                total.formatted(.currency(code: "CNY"))
+        }
+        if people.isEmpty { return channelText }
+        return channelText + " · " + people.joined(separator: " / ") +
+            (splits.count > 2 ? " 等收款人" : "")
     }
 }
 
@@ -174,16 +190,21 @@ struct TXRecentPurchaseDaysView: View {
                         ForEach(day.rows) { order in
                             NavigationLink(destination: PurchaseCloudDetailView(
                                 order: order, bookID: model.selectedBookID ?? "")) {
-                                HStack(spacing: 6) {
-                                    Text(order.buyer)
-                                        .font(.subheadline)
-                                        .foregroundColor(.primary)
-                                    Spacer(minLength: 4)
-                                    Text(order.totalCost.formatted(.currency(code: "CNY")))
-                                        .font(.subheadline.bold())
-                                        .foregroundColor(.primary)
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption).foregroundColor(.secondary)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack(spacing: 6) {
+                                        Text(order.buyer)
+                                            .font(.subheadline.bold())
+                                            .foregroundColor(.primary)
+                                        Spacer(minLength: 4)
+                                        Text(order.totalCost.formatted(.currency(code: "CNY")))
+                                            .font(.subheadline.bold())
+                                            .foregroundColor(.primary)
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption).foregroundColor(.secondary)
+                                    }
+                                    Text(orderItemPreview(order))
+                                        .font(.caption2).foregroundColor(.secondary)
+                                        .lineLimit(2)
                                 }
                             }
                             .buttonStyle(.plain)
@@ -195,8 +216,24 @@ struct TXRecentPurchaseDaysView: View {
                                 in: RoundedRectangle(cornerRadius: 11))
                 }
             }
-            Text("按实际采购日分组；当天订单在上方，点采购人查看商品明细。")
+            Text("按实际采购日分组；当天订单在上方，点采购人查看完整商品明细。")
                 .font(.caption2).foregroundColor(.secondary)
         }
+    }
+
+    private func orderItemPreview(_ order: PurchaseOrderRow) -> String {
+        let result = CloudPurchaseDetail(order: order, snapshot: model.snapshot)
+        guard !result.items.isEmpty else {
+            return "商品明细待核对，点击查看云端原始数据"
+        }
+        let parts = result.items.prefix(2).map { item -> String in
+            let quantity = item.quantity.map { String(format: "%g", $0) } ?? "?"
+            let amount = item.subtotal.map {
+                $0.formatted(.currency(code: "CNY"))
+            } ?? "金额待核对"
+            return item.name + " " + quantity + item.unit + " · " + amount
+        }
+        return parts.joined(separator: " / ") +
+            (result.items.count > 2 ? " 等\(result.items.count)项" : "")
     }
 }
