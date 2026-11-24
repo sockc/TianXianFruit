@@ -310,10 +310,7 @@ private struct PurchaseWorkspaceLineCard: View {
                     // Different goods must not inherit the previous goods'
                     // unit price. A valid historical price is optional and
                     // only copied via the explicit "填入" action below.
-                    line.unitPrice = PurchaseLastPricePolicy.priceAfterFruitChange(
-                        previousFruitID: line.fruitName,
-                        nextFruitID: fruits.first { $0.id == next }?.name ?? "",
-                        currentPrice: line.unitPrice)
+                    line.unitPrice = "0"
                     line.fruitName = fruits.first { $0.id == next }?.name ?? ""
                     line.sourcePlanItemSyncID = nil
                 }
