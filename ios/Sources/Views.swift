@@ -315,6 +315,20 @@ private struct BusinessPage: View {
         DayRows<StoreDailyRow>.grouping(rows, date: { $0.date })
     }
 
+    // Respect the selected location filter when entering a new business
+    // record, but only if the cloud location has an unambiguous identity.
+    private var filteredStoreID: String? {
+        guard !position.isEmpty else { return nil }
+        let found = model.snapshot.testStores.filter { $0.name == position }
+        return found.count == 1 ? found[0].id : nil
+    }
+
+    private var filteredDayAlreadyRecorded: Bool {
+        !position.isEmpty && model.snapshot.business.contains {
+            $0.date == selectedKey && $0.storeName == position
+        }
+    }
+
     private func moveDay(_ offset: Int) {
         selectedDate = BusinessDates.calendar.date(byAdding: .day, value: offset, to: selectedDate)
             ?? selectedDate
@@ -333,14 +347,19 @@ private struct BusinessPage: View {
                     }
                     .pickerStyle(.menu)
                     Spacer()
-                    Button {
-                        preferredStoreID = nil
-                        showLocalEntry = true
-                    } label: {
-                        Label("营业录入", systemImage: "plus")
+                    if filteredDayAlreadyRecorded {
+                        Label("当前日期与位置已有营业", systemImage: "checkmark.shield")
+                            .font(.caption2).foregroundColor(.secondary)
+                    } else {
+                        Button {
+                            preferredStoreID = filteredStoreID
+                            showLocalEntry = true
+                        } label: {
+                            Label("营业录入", systemImage: "plus")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.selectedBookID == nil)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.selectedBookID == nil)
                 }
                 DisclosureGroup(isExpanded: $showFilters) {
                     VStack(spacing: 8) {
