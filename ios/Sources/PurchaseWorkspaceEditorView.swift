@@ -81,7 +81,7 @@ struct PurchaseWorkspaceEditorView: View {
     var body: some View {
         NavigationView {
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text(original == nil ? "新增采购" : "修改采购")
                             .font(.headline)
@@ -89,22 +89,30 @@ struct PurchaseWorkspaceEditorView: View {
                         Text("本机待提交")
                             .font(.caption.bold()).foregroundColor(.orange)
                     }
-                    Text(model.selectedBook.map { book in
-                            model.purchaseCommitCapabilities?.eligible(book: book) == true
-                                ? "先保存本机采购，再确认原子提交；安卓回读后才记为已采购。"
-                                : "此账本云端采购未授权；本机录入不会影响资金结算。"
-                         } ?? "请先选择账本")
-                        .font(.caption).foregroundColor(.secondary)
+                    if model.selectedBook.map({ book in
+                        model.purchaseCommitCapabilities?.eligible(book: book) != true
+                    }) ?? true {
+                        Label("本机草稿 · 云端未授权，不计入结算",
+                              systemImage: "lock.shield")
+                            .font(.caption2).foregroundColor(.secondary)
+                    }
 
                     TXDayBar(date: $date, label: "采购日期")
                         .disabled(hasPlanSource)
-                    Picker("采购人", selection: $buyerSyncID) {
-                        Text("请选择采购人").tag("")
-                        ForEach(model.snapshot.testPartners) { buyer in
-                            Text(buyer.name).tag(buyer.id)
+                    HStack(spacing: 8) {
+                        Picker("采购人", selection: $buyerSyncID) {
+                            Text("请选择采购人").tag("")
+                            ForEach(model.snapshot.testPartners) { buyer in
+                                Text(buyer.name).tag(buyer.id)
+                            }
                         }
+                        .pickerStyle(MenuPickerStyle())
+                        Picker("类型", selection: $purchaseType) {
+                            Text("计划").tag("PLANNED")
+                            Text("临时").tag("TEMPORARY")
+                        }
+                        .pickerStyle(MenuPickerStyle())
                     }
-                    .pickerStyle(MenuPickerStyle())
                     .disabled(hasPlanSource)
                     if hasPlanSource {
                         Label("已关联安卓待采购计划：采购日期与采购人已锁定",
@@ -125,13 +133,7 @@ struct PurchaseWorkspaceEditorView: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
-                    Picker("采购类型", selection: $purchaseType) {
-                        Text("计划采购").tag("PLANNED")
-                        Text("临时采购").tag("TEMPORARY")
-                    }.pickerStyle(SegmentedPickerStyle())
-                    .disabled(hasPlanSource)
-
-                    HStack {
+                     HStack {
                         Text("商品明细").font(.subheadline.bold())
                         Spacer()
                         Text("共 " + String(lines.count) + " 种")
@@ -158,9 +160,9 @@ struct PurchaseWorkspaceEditorView: View {
                                 lines.removeAll { $0.id == line.id }
                             })
                     }
-                    VStack(spacing: 10) {
+                    VStack(spacing: 6) {
                         HStack {
-                            Text("已录入金额").font(.subheadline.bold())
+                            Text("本单合计").font(.subheadline.bold())
                             Spacer()
                             Text(total.map {
                                 "¥" + PurchaseDraftPolicy.display($0)
@@ -173,7 +175,7 @@ struct PurchaseWorkspaceEditorView: View {
                         Text("单价优先真实填写；采购总额按商品明细计算，不把“总价”当作商品单价。")
                             .font(.caption2).foregroundColor(.secondary)
                     }
-                    .padding(12)
+                    .padding(9)
                     .background(Color(UIColor.secondarySystemGroupedBackground),
                                 in: RoundedRectangle(cornerRadius: 12))
                     if let errorText {
