@@ -671,7 +671,15 @@ private struct SettlementDateDetail: View {
 }
 
 private struct SettlementTransferDetailRow: View {
+    @EnvironmentObject private var model: LedgerViewModel
     let item: FinanceTransferRow
+
+    private var canOperate: Bool {
+        TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
+                                     offline: model.isUsingCachedAuthorization) &&
+        TXSettlementPreparationPolicy.canEditSavedTransfer(
+            model.snapshot, date: item.date, transferID: item.id)
+    }
 
     private var registration: TXTransferRegistration {
         TXSettlementRecordPolicy.transferRegistration(item)
@@ -705,6 +713,19 @@ private struct SettlementTransferDetailRow: View {
             if registration == .inconsistent {
                 Text("原始登记金额超出方案或格式异常，不自行调整金额。")
                     .font(.caption2).foregroundColor(.red)
+            }
+            if canOperate, let date = BusinessDates.parse(item.date) {
+                NavigationLink(destination: TXSettlementTestWorkbenchView(
+                    initialDate: date, initialTransferID: item.id,
+                    initialAction: registration == .fullyRegistered ? .reset : .full)) {
+                    HStack {
+                        Label("登记／修改结算", systemImage: "checkmark.shield")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                    }
+                    .font(.caption.bold())
+                }
+                .buttonStyle(.bordered)
             }
             if item.kind.uppercased() == "CUTOFF_LEGACY_INVALID" {
                 Text("旧版无效结清记录：安卓不会将其计入当前资金余额。")

@@ -23,6 +23,13 @@ final class TXSettlementAtomicCoordinator: ObservableObject {
         busy = true
         defer { busy = false }
         do {
+            // Avoid creating a durable unknown-operation lock when the current
+            // book/account/capability already forbids submission.
+            guard scopeMatches(proposal, model), !model.isBusy,
+                  !model.isSettlementCommitBusy,
+                  model.settlementCommitCapabilities?.allowsWrite == true else {
+                throw TXSettlementAtomicError.scope
+            }
             guard let store else { throw TXSettlementAtomicError.storage }
             let prior = try store.load(account: proposal.account, book: proposal.bookID)
             guard TXSettlementSubmissionPolicy.canBegin(proposal, prior: prior)
@@ -58,6 +65,9 @@ final class TXSettlementAtomicCoordinator: ObservableObject {
         busy = true
         defer { busy = false }
         do {
+            guard scopeMatches(previous.proposal, model) else {
+                throw TXSettlementAtomicError.scope
+            }
             guard let store else { throw TXSettlementAtomicError.storage }
             let receipt: TXSettlementCommitReceipt
             if let saved = previous.receipt { receipt = saved }
@@ -81,9 +91,20 @@ final class TXSettlementAtomicCoordinator: ObservableObject {
         }
     }
 
+    private func scopeMatches(_ proposal: TXSettlementLocalPreparation,
+                              _ model: LedgerViewModel) -> Bool {
+        TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
+                                     offline: model.isUsingCachedAuthorization) &&
+        model.selectedBookID?.lowercased() == proposal.bookID.lowercased() &&
+        model.account?.username.lowercased() == proposal.account.lowercased()
+    }
+
     private func confirmReadback(_ model: LedgerViewModel) throws {
         guard let store, var saved = attempt, let receipt = saved.receipt else {
             throw TXSettlementAtomicError.storage
+        }
+        guard scopeMatches(saved.proposal, model) else {
+            throw TXSettlementAtomicError.scope
         }
         let assessment = TXSettlementCommitReadback.assessment(
             saved.proposal, receipt: receipt,
@@ -103,6 +124,7 @@ final class TXSettlementAtomicCoordinator: ObservableObject {
 struct TXSettlementAtomicSubmitView: View {
     @EnvironmentObject private var model: LedgerViewModel
     @StateObject private var coordinator = TXSettlementAtomicCoordinator()
+    @Environment(\.dismiss) private var dismiss
     let proposal: TXSettlementLocalPreparation
 
     private var matchingTestBook: Bool {
@@ -182,6 +204,10 @@ struct TXSettlementAtomicSubmitView: View {
                 if !coordinator.message.isEmpty {
                     Text(coordinator.message)
                         .font(.caption).foregroundColor(.secondary)
+                }
+                if coordinator.attempt?.phase == .confirmed {
+                    Button("完成并返回结算表") { dismiss() }
+                        .buttonStyle(.borderedProminent)
                 }
                 // Recover the original operation before any new financial write.
                 SyncFooter()

@@ -36,6 +36,22 @@ struct TXFundOverviewPanel: View {
     @State private var selectedPartner = ""
     @State private var expandedDay = ""
     @State private var candidate: TXFundDataAdapter.Report?
+    @State private var candidateKey = ""
+
+    private var calculationKey: String {
+        [model.account?.username ?? "", model.selectedBookID ?? "", endDate,
+         String(model.currentCursor), String(model.lastSyncAt?.timeIntervalSince1970 ?? 0),
+         String(model.isUsingCachedAuthorization)].joined(separator: "|")
+    }
+
+    private func recalculate() {
+        candidate = nil
+        candidateKey = ""
+        guard model.lastSyncAt != nil, !model.isUsingCachedAuthorization,
+              model.selectedBookID != nil else { return }
+        candidate = TXFundDataAdapter.evaluate(model.snapshot, until: endDate)
+        candidateKey = calculationKey
+    }
 
     private var endDate: String { BusinessDates.key(cutoff) }
     private var startDate: String {
@@ -86,13 +102,13 @@ struct TXFundOverviewPanel: View {
                         Text("累计资金余额 · 跨端核对").font(.subheadline.bold())
                         Spacer()
                         Button("计算核对") {
-                            candidate = TXFundDataAdapter.evaluate(model.snapshot, until: endDate)
+                            recalculate()
                         }
                         .disabled(model.isBusy || model.isUsingCachedAuthorization)
                     }
                     Text("计算范围为全部历史至 " + endDate + "，与下方近7天筛选无关。")
                         .font(.caption2).foregroundColor(.secondary)
-                    if let candidate {
+                    if let candidate, candidateKey == calculationKey {
                         if let blocker = candidate.blocker {
                             Label(blocker, systemImage: "exclamationmark.triangle")
                                 .font(.caption).foregroundColor(.orange)
@@ -258,10 +274,7 @@ struct TXFundOverviewPanel: View {
             }
             .buttonStyle(.bordered)
         }
-        .onChange(of: endDate) { _ in candidate = nil }
-        .onChange(of: model.selectedBookID) { _ in candidate = nil }
-        .onChange(of: model.lastSyncAt) { _ in candidate = nil }
-        .onChange(of: model.isUsingCachedAuthorization) { _ in candidate = nil }
+        .task(id: calculationKey) { recalculate() }
     }
 
     private func metric(_ title: String, _ value: Double) -> some View {

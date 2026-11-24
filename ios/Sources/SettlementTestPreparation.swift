@@ -92,6 +92,30 @@ enum TXSettlementPreparationPolicy {
         return Int64((value * 100).rounded())
     }
 
+    /// Only server-supported, fully identified saved daily transfers can
+    /// enter the direct settlement workflow. Never rely on the display kind alone.
+    static func canEditSavedTransfer(_ snapshot: ReadOnlySnapshot,
+                                     date: String, transferID: String) -> Bool {
+        let days = snapshot.financeDaily.filter { $0.date == date }
+        guard days.count == 1, let day = days.first,
+              let parent = snapshot.records["daily_cash_settlement|" + day.id],
+              parent.rowVersion > 0,
+              let status = TXFundDataAdapter.number(parent.payload["status"]),
+              [0.0, 1.0, 2.0].contains(status),
+              let parentID = AndroidNumericIdentity.exact(parent.payload["id"]),
+              let transfer = snapshot.records["settlement_transfer|" + transferID],
+              transfer.rowVersion > 0, transfer.payload["date"]?.text == date,
+              transfer.payload["settlement_kind"]?.text == "DAILY",
+              AndroidNumericIdentity.exact(transfer.payload["settlement_id"]) == parentID,
+              let amount = TXFundDataAdapter.number(transfer.payload["amount"]),
+              let paid = TXFundDataAdapter.number(transfer.payload["settled_amount"]),
+              let maximum = persistedCents(amount), let current = persistedCents(paid),
+              maximum > 0, current <= maximum else { return false }
+        let all = Array(snapshot.records.values)
+        return AndroidNumericIdentity.unique(parent, in: all) &&
+            AndroidNumericIdentity.unique(transfer, in: all)
+    }
+
     static func prepare(book: CloudBook?, account: Account?, offline: Bool,
                         snapshot: ReadOnlySnapshot, date: String,
                         transferID: String, action: TXSettlementTestAction,
@@ -129,6 +153,9 @@ enum TXSettlementPreparationPolicy {
               let dailyID = AndroidNumericIdentity.exact(dailyEvent.payload["id"]),
               AndroidNumericIdentity.exact(event.payload["settlement_id"]) == dailyID,
               AndroidNumericIdentity.exact(event.payload["id"]) != nil else {
+            throw TXSettlementPreparationError.unverifiedSnapshot
+        }
+        guard canEditSavedTransfer(snapshot, date: date, transferID: transferID) else {
             throw TXSettlementPreparationError.unverifiedSnapshot
         }
         guard let original = persistedCents(transfer.recordedSettled),
@@ -172,8 +199,11 @@ struct TXSettlementTestWorkbenchView: View {
     @EnvironmentObject private var model: LedgerViewModel
     @State private var date: Date
 
-    init(initialDate: Date = Date()) {
+    init(initialDate: Date = Date(), initialTransferID: String = "",
+         initialAction: TXSettlementTestAction = .full) {
         _date = State(initialValue: initialDate)
+        _transferID = State(initialValue: initialTransferID)
+        _action = State(initialValue: initialAction)
     }
     @State private var transferID = ""
     @State private var action: TXSettlementTestAction = .full
@@ -216,7 +246,8 @@ struct TXSettlementTestWorkbenchView: View {
     }
     private var transfers: [FinanceTransferRow] {
         model.snapshot.financeTransfers.filter {
-            $0.date == dateKey && $0.kind.uppercased() == "DAILY"
+            $0.date == dateKey && TXSettlementPreparationPolicy.canEditSavedTransfer(
+                model.snapshot, date: dateKey, transferID: $0.id)
         }.sorted { $0.id < $1.id }
     }
     private var chosen: FinanceTransferRow? {
@@ -259,6 +290,14 @@ struct TXSettlementTestWorkbenchView: View {
                 if !operationLockError.isEmpty {
                     Label(operationLockError, systemImage: "exclamationmark.shield")
                         .font(.caption).foregroundColor(.red)
+                }
+                if candidate && model.settlementCommitCapabilities?.allowsWrite != true {
+                    Label(model.settlementCommitError ?? "正在核对服务器结算权限",
+                          systemImage: "lock.shield")
+                        .font(.caption).foregroundColor(.orange)
+                    Button("重新核对结算权限") {
+                        Task { await model.refreshSettlementCapabilities() }
+                    }.font(.caption)
                 }
                 if !candidate {
                     Label("当前账本仅可查看结算记录，不能修改。",
@@ -350,7 +389,8 @@ struct TXSettlementTestWorkbenchView: View {
                             } catch { errorText = error.localizedDescription }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(chosen == nil || operationLocked)
+                        .disabled(chosen == nil || operationLocked || model.isBusy ||
+                                  model.settlementCommitCapabilities?.allowsWrite != true)
                     }
 
                     if !errorText.isEmpty {
@@ -398,8 +438,13 @@ struct TXSettlementTestWorkbenchView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             restoreOperation()
-            if transfers.count == 1 { transferID = transfers[0].id }
+            if chosen == nil { transferID = transfers.count == 1 ? transfers[0].id : "" }
+            if let chosen, amount.isEmpty {
+                amount = TXSettlementPreparationPolicy.yuan(
+                    TXSettlementPreparationPolicy.persistedCents(chosen.recordedSettled) ?? 0)
+            }
         }
+        .task { if candidate { await model.refreshSettlementCapabilities() } }
         .onChange(of: model.selectedBookID) { _ in
             transferID = ""; amount = ""; clearPreview()
             restoreOperation()
@@ -407,6 +452,11 @@ struct TXSettlementTestWorkbenchView: View {
         .onChange(of: model.currentCursor) { _ in
             clearPreview()
             restoreOperation()
+            if chosen == nil { transferID = transfers.count == 1 ? transfers[0].id : "" }
+            amount = chosen.map {
+                TXSettlementPreparationPolicy.yuan(
+                    TXSettlementPreparationPolicy.persistedCents($0.recordedSettled) ?? 0)
+            } ?? ""
         }
     }
 
