@@ -1,4 +1,4 @@
-name: Check iOS V0.9.4 inventory
+name: Check iOS V0.9.5 inventory valuation
 
 on:
   pull_request:

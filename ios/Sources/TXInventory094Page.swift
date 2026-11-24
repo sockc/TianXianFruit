@@ -44,6 +44,9 @@ struct TXInventory094Page: View {
     @State private var search = ""
     @State private var report: TXInventory094Policy.Report?
     @State private var drafts: [TXInventory094Draft] = []
+    @State private var prices: [TXInventory095PriceDraft] = []
+    @State private var priceEditor: TXInventory094Policy.Row?
+    @State private var loadedRevision = ""
     @State private var loadedScope = ""
     @State private var error = ""
     @State private var storageOK = false
@@ -56,20 +59,24 @@ struct TXInventory094Page: View {
         scope + "|" + String(model.currentCursor) + "|" + String(model.lastSyncAt?.timeIntervalSince1970 ?? 0)
     }
     private var editable: Bool {
-        loadedScope == scope && storageOK && report?.issues.isEmpty == true &&
+        loadedScope == scope && loadedRevision == revision && storageOK && report?.issues.isEmpty == true &&
         TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
                                      offline: model.isUsingCachedAuthorization)
     }
 
     private func reload() {
-        report = model.lastSyncAt == nil ? nil : TXInventory094Policy.evaluate(model.snapshot, date: date)
-        loadedScope = ""
-        drafts = []; error = ""; storageOK = false
+        loadedScope = ""; loadedRevision = ""
+        report = nil; priceEditor = nil
+        drafts = []; prices = []; error = ""; storageOK = false
         guard model.account != nil, model.selectedBookID != nil else { return }
         do {
             drafts = try TXInventory094DraftStore.load(scope: scope)
+            prices = try TXInventory095PriceStore.load(scope: scope)
             loadedScope = scope; storageOK = true
-        } catch { self.error = "本地库存草稿读取失败，已禁用编辑；原文件未覆盖" }
+        } catch { self.error = "本地库存或价格草稿读取失败，已禁用编辑；原文件未覆盖" }
+        loadedRevision = revision
+        report = model.lastSyncAt == nil ? nil :
+            TXInventory094Policy.evaluate(model.snapshot, date: date, prices: prices)
     }
 
     private func save(_ draft: TXInventory094Draft) {
@@ -81,6 +88,61 @@ struct TXInventory094Page: View {
             try TXInventory094DraftStore.save(next, scope: scope)
             drafts = next; error = ""
         } catch { self.error = "本地草稿保存失败，请保留输入并重试"; storageOK = false }
+    }
+
+    private func savePrice(_ values: [TXInventory095PriceDraft], expectedRevision: String) {
+        guard editable, expectedRevision == revision else {
+            error = "账本或云端记录已变化，请重新打开价格编辑"; return
+        }
+        var next = prices
+        for value in values {
+            guard value.date == date, TXInventory095PriceDraft.valid(value.value),
+                  let row = report?.rows.first(where: { $0.key.product == value.product &&
+                      (value.kind == .retail || $0.key.unit == value.unit) }),
+                  value.basis == (value.kind == .cost ? row.manualBasis : row.retailBasis)
+            else { error = "原始价格记录存在冲突，未保存"; return }
+            next.removeAll { $0.id == value.id }
+            next.append(value)
+        }
+        do {
+            try TXInventory095PriceStore.save(next, scope: scope)
+            prices = next
+            report = TXInventory094Policy.evaluate(model.snapshot, date: date, prices: prices)
+            priceEditor = nil; error = ""
+        } catch { self.error = "价格草稿保存失败，未覆盖原记录" }
+    }
+
+    private func summary(_ rows: [TXInventory094Policy.Row]) -> some View {
+        let values = rows.map { row in
+            TXInventory095Valuation.item(row, draft: drafts.first { $0.key == row.key })
+        }
+        let eligible = values.filter { $0.counted && !$0.anomaly }
+        let known = eligible.filter { $0.closingCost != nil }
+        let missing = values.count - known.count
+        return VStack(alignment: .leading, spacing: 5) {
+            Text("库存估值 · 已盘点已知成本").font(.subheadline.bold())
+            HStack {
+                VStack(alignment: .leading) {
+                    Text("剩余库存").font(.caption2).foregroundColor(.secondary)
+                    Text(known.isEmpty ? "—" : known.compactMap(\.closingCost).reduce(0,+)
+                        .formatted(.currency(code: "CNY"))).font(.headline)
+                }
+                Spacer()
+                VStack(alignment: .trailing) {
+                    Text("损耗成本").font(.caption2).foregroundColor(.secondary)
+                    Text(known.isEmpty ? "—" : known.compactMap(\.lossCost).reduce(0,+)
+                        .formatted(.currency(code: "CNY"))).font(.headline)
+                }
+            }
+            if missing > 0 {
+                Text("\(missing) 项未盘点、缺成本或数量异常；仅显示已知金额")
+                    .font(.caption2).foregroundColor(.orange)
+            }
+            if values.contains(where: { $0.local }) {
+                Text("含本地草稿预估，未同步，不计入正式利润")
+                    .font(.caption2).foregroundColor(.orange)
+            }
+        }.padding(10).background(TXTheme.header, in: RoundedRectangle(cornerRadius: 10))
     }
 
     var body: some View {
@@ -100,7 +162,8 @@ struct TXInventory094Page: View {
                      "云端库存只读；库存写入将在联合服务端升级后开放")
                     .font(.caption2).foregroundColor(.secondary)
                 if !error.isEmpty { Text(error).font(.caption).foregroundColor(.red) }
-                if let report {
+                if let report, loadedRevision == revision {
+                    summary(report.rows)
                     if !report.issues.isEmpty {
                         DisclosureGroup("存在库存数据缺口，已暂停草稿编辑") {
                             ForEach(report.issues, id: \.self) { Text($0).font(.caption) }
@@ -117,10 +180,21 @@ struct TXInventory094Page: View {
                         Text("所选日期暂无可展示库存，未保存不等于实际库存为零")
                             .font(.caption).foregroundColor(.secondary).padding(.vertical, 10)
                     }
+                    if prices.contains(where: { value in
+                        !report.rows.contains { row in
+                            row.key.product == value.product &&
+                            (value.kind == .retail || row.key.unit == value.unit) &&
+                            value.basis == (value.kind == .cost ? row.manualBasis : row.retailBasis)
+                        }
+                    }) {
+                        Text("存在与云端版本不一致的价格草稿，未用于估值；原草稿保留。")
+                            .font(.caption2).foregroundColor(.orange)
+                    }
                     LazyVStack(spacing: 8) {
                         ForEach(rows) { row in
                             TXInventory094Card(row: row, draft: drafts.first { $0.key == row.key },
-                                                editable: editable, onSave: save)
+                                                editable: editable, onSave: save,
+                                                onPrice: { priceEditor = row })
                                 .id(revision + "|" + row.key.product + "|" + row.key.unit)
                         }
                     }
@@ -135,6 +209,10 @@ struct TXInventory094Page: View {
             }.padding(12)
         }
         .task(id: revision) { reload() }
+        .sheet(item: $priceEditor) { row in
+            TXInventory095PriceEditor(row: row, date: date, revision: revision,
+                onSave: savePrice)
+        }
     }
 }
 
@@ -143,12 +221,14 @@ private struct TXInventory094Card: View {
     let draft: TXInventory094Draft?
     let editable: Bool
     let onSave: (TXInventory094Draft) -> Void
+    let onPrice: () -> Void
     @State private var remaining: String
     @State private var loss: String
 
     init(row: TXInventory094Policy.Row, draft: TXInventory094Draft?, editable: Bool,
-         onSave: @escaping (TXInventory094Draft) -> Void) {
+         onSave: @escaping (TXInventory094Draft) -> Void, onPrice: @escaping () -> Void) {
         self.row = row; self.draft = draft; self.editable = editable; self.onSave = onSave
+        self.onPrice = onPrice
         _remaining = State(initialValue: draft?.remaining ?? Self.text(row.remaining))
         _loss = State(initialValue: draft?.loss ?? Self.text(row.loss))
     }
@@ -182,7 +262,11 @@ private struct TXInventory094Card: View {
                 Text("成本 " + (row.cost.map { Self.text($0) + "元/" + row.key.unit } ?? "缺失"))
                 Text("零售 " + (row.retail.map { Self.text($0) + "元/" + row.retailUnit } ?? "未设"))
                 Spacer(minLength: 0)
+                if editable { Button("价格", action: onPrice).font(.caption.bold()) }
             }.font(.caption2).foregroundColor(.secondary)
+            if row.usesLocalCost || row.usesLocalRetail {
+                Text("价格本地草稿 · 未同步").font(.caption2).foregroundColor(.orange)
+            }
             if let weight = row.weight {
                 Text("规格 " + Self.text(weight) + "斤/" + row.key.unit)
                     .font(.caption2).foregroundColor(.secondary)
@@ -209,6 +293,14 @@ private struct TXInventory094Card: View {
                     tile("损耗", row.loss)
                 }
             }
+            let value = TXInventory095Valuation.item(row, draft: draft)
+            HStack(spacing: 5) {
+                Text("加权成本 " + (row.averageCost.map { Self.text($0) } ?? "未知"))
+                Spacer(minLength: 0)
+                Text("剩余估值 " + (value.counted && !value.anomaly
+                    ? (value.closingCost.map { $0.formatted(.currency(code: "CNY")) } ?? "未知")
+                    : "待盘点"))
+            }.font(.caption2).foregroundColor(.secondary)
             if conflict {
                 Text("云端库存或采购已变化，原草稿剩余 " + (draft?.remaining ?? "") +
                      " / 损耗 " + (draft?.loss ?? "") + " 保留待核对，未覆盖云端。")
@@ -228,5 +320,75 @@ private struct TXInventory094Card: View {
         .padding(10)
         .background(Color(UIColor.secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+private struct TXInventory095PriceEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    let row: TXInventory094Policy.Row
+    let date: String
+    let revision: String
+    let onSave: ([TXInventory095PriceDraft], String) -> Void
+    @State private var cost = ""
+    @State private var retail = ""
+    @State private var retailUnit = "斤"
+    @State private var editCost = false
+    @State private var editRetail = false
+
+    private var valid: Bool {
+        (editCost || editRetail) &&
+        (!editCost || (row.manualBasis != nil && TXInventory095PriceDraft.valid(cost))) &&
+        (!editRetail || (row.retailBasis != nil && TXInventory095PriceDraft.valid(retail) &&
+            !retailUnit.trimmingCharacters(in: .whitespaces).isEmpty && retailUnit.count <= 16))
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(header: Text(row.name + " · " + date)) {
+                    Toggle("修改手工参考成本", isOn: $editCost)
+                        .disabled(row.manualBasis == nil)
+                    if editCost {
+                        TextField("元/" + row.key.unit, text: $cost).keyboardType(.decimalPad)
+                    }
+                    Text("有效采购价优先；参考成本仅在没有有效采购价时使用。本地预览限所选日期，不修改历史进价。")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                Section(header: Text("每日零售价")) {
+                    Toggle("修改当天零售价", isOn: $editRetail)
+                        .disabled(row.retailBasis == nil)
+                    if editRetail {
+                        TextField("零售价", text: $retail).keyboardType(.decimalPad)
+                        TextField("零售单位（如斤、件）", text: $retailUnit)
+                    }
+                    Text("按商品与日期保存，跨采购单位共用同一零售价；不回写其他日期。")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                Section {
+                    Button("保存本地价格草稿") {
+                        var values: [TXInventory095PriceDraft] = []
+                        if editCost, let basis = row.manualBasis {
+                            values.append(.init(kind: .cost, product: row.key.product, unit: row.key.unit,
+                                date: date, value: cost, basis: basis))
+                        }
+                        if editRetail, let basis = row.retailBasis {
+                            values.append(.init(kind: .retail, product: row.key.product,
+                                unit: retailUnit.trimmingCharacters(in: .whitespaces),
+                                date: date, value: retail, basis: basis))
+                        }
+                        onSave(values, revision)
+                    }.disabled(!valid)
+                    Text("尚未同步到安卓，不会修改正式账本。").font(.caption).foregroundColor(.orange)
+                }
+            }
+            .navigationTitle("库存价格")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
+        }
+        .navigationViewStyle(.stack)
+        .onAppear {
+            cost = row.manualCost.map { String(format: "%.3f", $0) } ?? ""
+            retail = row.retail.map { String(format: "%.3f", $0) } ?? ""
+            retailUnit = row.retailUnit
+        }
     }
 }
