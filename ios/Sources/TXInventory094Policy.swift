@@ -22,6 +22,14 @@ enum TXInventory094Policy {
         let retailUnit: String
         let retailDate: String?
         let weight: Double?
+        let openingCost: Double?
+        let purchaseCost: Double?
+        let averageCost: Double?
+        let manualCost: Double?
+        let manualBasis: String?
+        let retailBasis: String?
+        let usesLocalCost: Bool
+        let usesLocalRetail: Bool
         var id: Key { key }
         var available: Double { opening + purchased }
         var basis: String {
@@ -55,7 +63,8 @@ enum TXInventory094Policy {
         return amount
     }
 
-    static func evaluate(_ snapshot: ReadOnlySnapshot, date: String) -> Report {
+    static func evaluate(_ snapshot: ReadOnlySnapshot, date: String,
+                         prices: [TXInventory095PriceDraft] = []) -> Report {
         let events = Array(snapshot.records.values)
         let fruits = events.filter { $0.tableName == "fruit" }
         var issues = Set<String>()
@@ -156,19 +165,69 @@ enum TXInventory094Policy {
                 if $0.created != $1.created { return $0.created > $1.created }
                 return ($0.id ?? 0) > ($1.id ?? 0)
             }
-            func latestValue(_ extract: (Purchase) -> Double?) -> Double? {
-                let eligible = sorted.filter { extract($0) != nil }
+            func latestValue(_ extract: (Purchase) -> Double?, through: String = date) -> Double? {
+                let eligible = sorted.filter { $0.date <= through && extract($0) != nil }
                 guard let first = eligible.first else { return nil }
                 let tied = eligible.filter {
                     $0.date == first.date && $0.created == first.created && $0.id == first.id
                 }
                 return tied.count == 1 ? extract(first) : nil
             }
-            let purchaseCost = latestValue { $0.cost }
+            let latestPurchasePrice = latestValue { $0.cost }
             let manualRows = manual.filter { key($0.payload) == k }
-            let manualCost = manualRows.count == 1
-                ? quantity(manualRows[0].payload["manual_unit_cost"]).flatMap { $0 > 0.000001 ? $0 : nil }
+            let originalManual = manualRows.count == 1
+                ? quantity(manualRows[0].payload["manual_unit_cost"])
                 : nil
+            let manualBasis = TXInventory095PriceDraft.basis(manualRows)
+            let costDraft = prices.first { $0.kind == .cost && $0.product == k.product &&
+                $0.unit == k.unit && $0.date == date && $0.basis == manualBasis }
+            let manualValue = costDraft.flatMap { Double($0.value) } ?? originalManual
+            let manualCost = manualValue.flatMap { $0 > 0.000001 ? $0 : nil }
+            func effective(_ day: String) -> Double? {
+                latestValue({ $0.cost }, through: day) ?? manualCost
+            }
+            func aggregate(_ batch: [Purchase], on day: String) -> (qty: Double, cost: Double, complete: Bool) {
+                var qty = 0.0, value = 0.0, complete = true
+                for item in batch {
+                    qty += item.quantity
+                    let price = item.cost ?? effective(day)
+                    if item.quantity > 0.000001 {
+                        if let price, price > 0.000001 { value += item.quantity * price }
+                        else { complete = false }
+                    }
+                }
+                return (qty, value, complete)
+            }
+            var openingCost: Double? = opening <= 0.000001 ? 0 : nil
+            if opening > 0.000001, let last {
+                let snapshots = Dictionary(grouping: historical, by: \.date)
+                if snapshots.values.allSatisfy({ $0.count == 1 }) {
+                    let previousPurchases = Dictionary(grouping: sorted.filter { $0.date <= last }, by: \.date)
+                    let dates = Set(previousPurchases.keys).union(snapshots.keys).sorted()
+                    var tracker = TXInventory095CostTracker()
+                    for day in dates {
+                        if let batch = previousPurchases[day] {
+                            let a = aggregate(batch, on: day)
+                            tracker.purchase(quantity: a.qty, cost: a.cost, known: a.complete)
+                        }
+                        if let stock = snapshots[day]?.first {
+                            tracker.snapshot(remaining: stock.quantity)
+                        }
+                    }
+                    if tracker.complete, let basis = tracker.unitCost ?? effective(last) {
+                        openingCost = TXFundAccumulator.roundMoney(opening * basis)
+                    }
+                } else {
+                    issues.insert("历史库存成本结转存在重复快照：" + name)
+                }
+            }
+            let todayCost = aggregate(today, on: date)
+            let purchaseValue = todayCost.complete ? TXFundAccumulator.roundMoney(todayCost.cost) : nil
+            let average: Double? = openingCost.flatMap { old in
+                purchaseValue.map { new in
+                    opening + purchased > 0.000001 ? (old + new) / (opening + purchased) : 0
+                }
+            }
             let retailRows = retail.filter {
                 AndroidNumericIdentity.exact($0.payload["fruit_id"]) == fid &&
                 ($0.payload["date"]?.text ?? "") <= date &&
@@ -180,15 +239,23 @@ enum TXInventory094Policy {
             let priorRetailDay = earlier.compactMap { $0.payload["date"]?.text }.max()
             let eligibleRetail = exact.isEmpty ? earlier.filter { $0.payload["date"]?.text == priorRetailDay } : exact
             let priceRow = eligibleRetail.count == 1 ? eligibleRetail.first : nil
+            // Retail is one dated snapshot per product, not per purchase unit.
+            let retailBasis = TXInventory095PriceDraft.basis(exact)
+            let retailDraft = prices.first { $0.kind == .retail && $0.product == k.product &&
+                $0.date == date && $0.basis == retailBasis }
+            let displayRetail = retailDraft.flatMap { Double($0.value) } ?? quantity(priceRow?.payload["price_per_jin"])
             rows.append(Row(key: k, name: name, opening: opening, purchased: purchased,
                 remaining: saved.first?.quantity ?? 0, loss: saved.first?.loss ?? 0,
                 savedID: saved.first?.event.syncId, savedVersion: saved.first?.event.rowVersion,
-                cost: purchaseCost ?? manualCost,
-                costSource: purchaseCost != nil ? "采购" : (manualCost != nil ? "手工参考" : "缺失"),
-                retail: quantity(priceRow?.payload["price_per_jin"]),
-                retailUnit: priceRow?.payload["price_unit"]?.text ?? "斤",
-                retailDate: priceRow?.payload["date"]?.text,
-                weight: latestValue { $0.weight }))
+                cost: latestPurchasePrice ?? manualCost,
+                costSource: latestPurchasePrice != nil ? "采购" : (manualCost != nil ? "手工参考" : "缺失"),
+                retail: displayRetail,
+                retailUnit: retailDraft?.unit ?? priceRow?.payload["price_unit"]?.text ?? "斤",
+                retailDate: retailDraft != nil ? date : priceRow?.payload["date"]?.text,
+                weight: latestValue { $0.weight },
+                openingCost: openingCost, purchaseCost: purchaseValue, averageCost: average,
+                manualCost: manualValue, manualBasis: manualBasis, retailBasis: retailBasis,
+                usesLocalCost: costDraft != nil, usesLocalRetail: retailDraft != nil))
         }
         rows.sort {
             if ($0.purchased > 0.000001) != ($1.purchased > 0.000001) { return $0.purchased > 0.000001 }
