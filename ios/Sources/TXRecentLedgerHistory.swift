@@ -156,6 +156,9 @@ struct TXRecentPurchaseDaysView: View {
         TXRecentLedgerHistoryPolicy.previousDays(
             model.snapshot.purchases, before: selectedDate, date: { $0.date })
     }
+    private var hasSelectedDayOrders: Bool {
+        model.snapshot.purchases.contains { $0.date == selectedDate }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -167,7 +170,7 @@ struct TXRecentPurchaseDaysView: View {
                     }
                 }
                 Spacer()
-                Text("当天 + 前7个采购日")
+                Text(hasSelectedDayOrders ? "当天 + 前7个采购日" : "最近7个采购日")
                     .font(.caption2).foregroundColor(.secondary)
             }
             .padding(.top, 4)
@@ -226,6 +229,9 @@ struct TXRecentPurchaseDaysView: View {
         guard !result.items.isEmpty else {
             return "商品明细待核对，点击查看云端原始数据"
         }
+        let warning = result.status == .amountDiffers
+            ? "订单与明细金额不一致 · "
+            : (result.status == .matched ? "" : "商品明细未完全核对 · ")
         let parts = result.items.prefix(2).map { item -> String in
             let quantity = item.quantity.map { String(format: "%g", $0) } ?? "?"
             let amount = item.subtotal.map {
@@ -233,7 +239,7 @@ struct TXRecentPurchaseDaysView: View {
             } ?? "金额待核对"
             return item.name + " " + quantity + item.unit + " · " + amount
         }
-        return parts.joined(separator: " / ") +
+        return warning + parts.joined(separator: " / ") +
             (result.items.count > 2 ? " 等\(result.items.count)项" : "")
     }
 }
