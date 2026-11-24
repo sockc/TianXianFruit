@@ -51,6 +51,36 @@ final class SettlementRecordedStatusTests: XCTestCase {
         XCTAssertEqual(try progress(100, -1), .inconsistent)
     }
 
+    func testCompactDailyTransferStatusNeverCountsPeriodSettlement() throws {
+        let day = "2026-11-20"
+        let events = [
+            row("settlement_transfer", id: "full", date: day,
+                fields: ["amount": .number(100), "settled_amount": .number(100),
+                         "settlement_kind": .string("DAILY")]),
+            row("settlement_transfer", id: "partial", date: day,
+                fields: ["amount": .number(120), "settled_amount": .number(20),
+                         "settlement_kind": .string("DAILY")]),
+            row("settlement_transfer", id: "pending", date: day,
+                fields: ["amount": .number(30), "settled_amount": .number(0),
+                         "settlement_kind": .string("DAILY")]),
+            row("settlement_transfer", id: "invalid", date: day,
+                fields: ["amount": .number(50), "settled_amount": .number(90),
+                         "settlement_kind": .string("DAILY")]),
+            row("settlement_transfer", id: "period", date: day,
+                fields: ["amount": .number(1000), "settled_amount": .number(1000),
+                         "settlement_kind": .string("CUTOFF")])
+        ]
+        let readout = TXDailyTransferReadout(
+            transfers: events.compactMap(FinanceTransferRow.init))
+        XCTAssertEqual(readout.total, 4)
+        XCTAssertEqual(readout.full, 1)
+        XCTAssertEqual(readout.partial, 1)
+        XCTAssertEqual(readout.pending, 1)
+        XCTAssertEqual(readout.invalid, 1)
+        XCTAssertTrue(readout.label.contains("异常 1"))
+        XCTAssertEqual(TXDailyTransferReadout(transfers: []).total, 0)
+    }
+
     func testConfirmedLaterCutoffShowsAuditWarningNotEffectiveSettlement() throws {
         var snapshot = ReadOnlySnapshot()
         snapshot.apply([
