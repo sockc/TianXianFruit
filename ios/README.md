@@ -12,8 +12,8 @@
 - 新增水果＋账本的 iOS AppIcon 资源集，CI 自动生成 iPhone/iPad 各尺寸 PNG，确保 `Info.plist` 中注册 `AppIcon` 并将 `Assets.car` 纳入 IPA。
 
 ## 图标说明
-- 原始图标图片：`ios/Config/AppIconSource.jpg`；图标制备脚本：`ios/scripts/generate_app_icon.sh`。
-- GitHub Actions 的 `macos-15` 机器使用系统 `sips` 将原始图片生成全套 AppIcon PNG；不依赖在线图像下载。
+- 图标高清绘制源：`ios/scripts/draw_app_icon.swift`；尺寸生成脚本：`ios/scripts/generate_app_icon.sh`。
+- GitHub Actions 的 `macos-15` 机器使用 AppKit 生成 1024px 主图，再通过系统 `sips` 生成全部尺寸；无需上传 JPEG、外部图片下载或额外图形依赖。
 - 首次安装及更新后如 iOS 图标未立即刷新，可通过重启 SpringBoard/重新启动设备刷新桌面缓存，但**不要卸载 App**，以免清除本机草稿及不可变提交记录。
 
 ## 发布
