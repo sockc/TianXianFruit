@@ -20,6 +20,12 @@ struct PurchaseWorkspaceEditorView: View {
     @State private var errorText: String?
     @State private var showImportPicker = false
     @State private var importNotice: String?
+    @State private var showDiscardConfirmation = false
+    private let originalDateKey: String
+    private let originalBuyerID: String
+    private let originalPurchaseType: String
+    private let originalRemark: String
+    private let originalLines: [PurchaseDraftLine]
 
     init(original: PurchaseWorkspaceDraft?, date: Date,
          account: String, bookID: String,
@@ -30,14 +36,21 @@ struct PurchaseWorkspaceEditorView: View {
         self.account = account
         self.bookID = bookID
         self.onSave = onSave
-        _date = State(initialValue: original.flatMap {
-            BusinessDates.parse($0.date)
-        } ?? date)
-        _buyerSyncID = State(initialValue: original?.buyerSyncID ??
-                              initialBuyerSyncID ?? "")
-        _purchaseType = State(initialValue: original?.purchaseType ?? "PLANNED")
-        _remark = State(initialValue: original?.remark ?? "")
-        _lines = State(initialValue: original?.lines ?? initialLines ?? [.blank()])
+        let startingDate = original.flatMap { BusinessDates.parse($0.date) } ?? date
+        let startingBuyerID = original?.buyerSyncID ?? initialBuyerSyncID ?? ""
+        let startingType = original?.purchaseType ?? "PLANNED"
+        let startingRemark = original?.remark ?? ""
+        let startingLines = original?.lines ?? initialLines ?? [.blank()]
+        originalDateKey = BusinessDates.key(startingDate)
+        originalBuyerID = startingBuyerID
+        originalPurchaseType = startingType
+        originalRemark = startingRemark
+        originalLines = startingLines
+        _date = State(initialValue: startingDate)
+        _buyerSyncID = State(initialValue: startingBuyerID)
+        _purchaseType = State(initialValue: startingType)
+        _remark = State(initialValue: startingRemark)
+        _lines = State(initialValue: startingLines)
     }
 
     private var canEdit: Bool {
@@ -49,6 +62,18 @@ struct PurchaseWorkspaceEditorView: View {
     }
 
     private var total: Decimal? { try? PurchaseDraftPolicy.total(lines) }
+
+    private var hasUnsavedInput: Bool {
+        let changedFields = BusinessDates.key(date) != originalDateKey ||
+            purchaseType != originalPurchaseType ||
+            remark != originalRemark || lines != originalLines
+        if changedFields { return true }
+        // Do not warn merely because the only available buyer was autofilled.
+        return buyerSyncID != originalBuyerID &&
+            !(originalBuyerID.isEmpty &&
+              model.snapshot.testPartners.count == 1 &&
+              model.snapshot.testPartners[0].id == buyerSyncID)
+    }
     private var hasPlanSource: Bool {
         lines.contains { $0.sourcePlanItemSyncID != nil }
     }
@@ -174,9 +199,27 @@ struct PurchaseWorkspaceEditorView: View {
                 .padding(12)
             }
             .navigationBarTitle("采购录入", displayMode: .inline)
-            .navigationBarItems(leading: Button("取消") { dismiss() })
+            .navigationBarItems(leading: Button("取消") {
+                if hasUnsavedInput { showDiscardConfirmation = true }
+                else { dismiss() }
+            })
         }
         .navigationViewStyle(StackNavigationViewStyle())
+        .onAppear {
+            if original == nil, buyerSyncID.isEmpty,
+               model.snapshot.testPartners.count == 1 {
+                buyerSyncID = model.snapshot.testPartners[0].id
+            }
+        }
+        .interactiveDismissDisabled(hasUnsavedInput)
+        .confirmationDialog("采购内容尚未保存",
+                            isPresented: $showDiscardConfirmation,
+                            titleVisibility: .visible) {
+            Button("放弃未保存的采购输入", role: .destructive) { dismiss() }
+            Button("继续录入", role: .cancel) {}
+        } message: {
+            Text("离开后本次未保存的数量、单价和商品明细会丢失；已保存的本机采购不受影响。")
+        }
         .sheet(isPresented: $showImportPicker) {
             PurchaseImportPickerView(
                 date: BusinessDates.key(date),
