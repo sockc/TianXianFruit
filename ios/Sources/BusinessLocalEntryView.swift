@@ -124,6 +124,11 @@ struct BusinessLocalEntryView: View {
             lines: lines, expense: expense, opening: openingStock,
             closing: closingStock, startTime: startTime, endTime: endTime)
     }
+    private var missingCloudFields: [String] {
+        BusinessDraftWorkflowPolicy.missingCloudFields(
+            lines: lines, expense: expense, opening: openingStock,
+            closing: closingStock, startTime: startTime, endTime: endTime)
+    }
 
     // Preserve unsaved inputs when switching date or business location.
     private var hasUnsavedInput: Bool {
@@ -246,7 +251,8 @@ struct BusinessLocalEntryView: View {
             closingStock = ""
         }
         saved = persistedDraft != nil
-        showHours = !startTime.isEmpty || !endTime.isEmpty
+        // Keep the required hours visible; collapsing hid why sync was blocked.
+        showHours = true
         canResumeOriginal = false
         commitMessage = nil
         errorText = nil
@@ -312,7 +318,9 @@ struct BusinessLocalEntryView: View {
 
     private func saveThenSync() async {
         guard cloudReady else {
-            errorText = "请补齐有效收款人、收入、支出和库存估值后再同步；未填金额不会当作零。"
+            showHours = true
+            errorText = "请补齐：" + missingCloudFields.joined(separator: "、") +
+                        "；缺失金额不会被当作零。"
             return
         }
         if !saved || !formMatchesSavedDraft { save() }
@@ -359,7 +367,7 @@ struct BusinessLocalEntryView: View {
 
     private func resumeOriginal() async {
         guard !submitting, canResumeOriginal, let stored = attempt,
-              model.businessTestBookAllowed else { return }
+              model.businessCloudBookAllowed else { return }
         submitting = true
         defer { submitting = false; loadAttempt() }
         do {
@@ -536,7 +544,8 @@ struct BusinessLocalEntryView: View {
                             .font(.caption).foregroundColor(.red)
                     }
                     if cloudWriteAvailable && !cloudReady {
-                        Label("收款或成本尚未补齐；可先保存本机，补齐后再同步。",
+                        Label("待补齐：" + missingCloudFields.joined(separator: "、") +
+                              "；可以先保存本机。",
                               systemImage: "info.circle")
                             .font(.caption).foregroundColor(.orange)
                     }
@@ -564,7 +573,7 @@ struct BusinessLocalEntryView: View {
                             Text("服务器需明确授权当前账本；只允许使用原操作编号恢复，不能另建重复记录。")
                                 .font(.caption2).foregroundColor(.secondary)
                         }
-                        if model.businessCommitCapabilities?.allowsWrite != true {
+                        if !model.businessCloudBookAllowed {
                             Button("刷新服务器写入权限") {
                                 Task { await model.refreshBusinessCommitCapabilities() }
                             }
