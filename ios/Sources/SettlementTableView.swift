@@ -327,21 +327,16 @@ struct SettlementTableView: View {
                 }
 
                 } else if settlementSection == "资金余额" {
-                    TXFundOverviewPanel()
+                    TXFundOverviewPanel(cutoff: $selectedDate)
                 } else {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label("结算记录（逐步移植）", systemImage: "clock.arrow.circlepath")
-                            .font(.headline)
-                        Text("可查看已同步的当日转账、周期结清和历史登记；已登记不等于最终结清。")
-                            .font(.subheadline).foregroundColor(.secondary)
-                        NavigationLink(destination: TXFundHistoryView()) {
-                            Label("查看已有结算历史", systemImage: "arrow.right.circle")
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                    .padding(12)
-                    .background(Color(UIColor.secondarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 12))
+                    TXSettlementHistory091Panel(date: $selectedDate,
+                        onDaily: {
+                            range = "单日"
+                            location = ""
+                            partner = ""
+                            settlementSection = "当日计算"
+                        },
+                        onFunds: { settlementSection = "资金余额" })
                 }
                 // Recorded transfers are not effective fund balances.
                 SyncFooter()

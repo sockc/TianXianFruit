@@ -31,7 +31,7 @@ enum TXFundOverviewPolicy {
 /// The amounts shown here are source records, NOT the Android current wallet.
 struct TXFundOverviewPanel: View {
     @EnvironmentObject private var model: LedgerViewModel
-    @State private var cutoff = Date()
+    @Binding var cutoff: Date
     @State private var period = "近7天"
     @State private var selectedPartner = ""
     @State private var expandedDay = ""
