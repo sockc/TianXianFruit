@@ -63,8 +63,8 @@ jobs:
           ldid -S "$TARGET/TianXianFruit"
           cd "$RUNNER_TEMP/trollstore"
           ditto -c -k --sequesterRsrc --keepParent Payload \
-            "$RUNNER_TEMP/TianXianFruit-iOS-v0.9.5-Build64-TrollStore.ipa"
-          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v0.9.5-Build64-TrollStore.ipa"
+            "$RUNNER_TEMP/TianXianFruit-iOS-v0.9.6-Build65-TrollStore.ipa"
+          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v0.9.6-Build65-TrollStore.ipa"
       - name: Verify app bundle structure and deployment target
         shell: bash
         run: |
@@ -72,7 +72,7 @@ jobs:
           python3 - <<'PY'
           import os, plistlib, zipfile
           from pathlib import Path
-          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v0.9.5-Build64-TrollStore.ipa"
+          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v0.9.6-Build65-TrollStore.ipa"
           with zipfile.ZipFile(p) as z:
               names = set(z.namelist())
               base = "Payload/TianXianFruit.app/"
@@ -86,7 +86,7 @@ jobs:
           print("Verified arm64 TrollStore IPA, iOS minimum 15.0, no Apple profile")
           PY
       - name: Run iOS XCTest before beta publication
-        if: github.ref == 'refs/heads/feature/ios-inventory-valuation-v0.9.5'
+        if: github.ref == 'refs/heads/feature/ios-inventory-operating-v0.9.6'
         shell: bash
         run: |
           set -euo pipefail
@@ -105,24 +105,24 @@ jobs:
       - name: Upload installable-by-TrollStore test IPA
         uses: actions/upload-artifact@v4
         with:
-          name: TianXianFruit-iOS-v0.9.5-Build64-TrollStore
-          path: ${{ runner.temp }}/TianXianFruit-iOS-v0.9.5-Build64-TrollStore.ipa
+          name: TianXianFruit-iOS-v0.9.6-Build65-TrollStore
+          path: ${{ runner.temp }}/TianXianFruit-iOS-v0.9.6-Build65-TrollStore.ipa
           if-no-files-found: error
           retention-days: 14
 
-      - name: Publish iOS v0.9.5 beta prerelease
-        if: github.ref == 'refs/heads/feature/ios-inventory-valuation-v0.9.5'
+      - name: Publish iOS v0.9.6 beta prerelease
+        if: github.ref == 'refs/heads/feature/ios-inventory-operating-v0.9.6'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          FILE="$RUNNER_TEMP/TianXianFruit-iOS-v0.9.5-Build64-TrollStore.ipa"
+          FILE="$RUNNER_TEMP/TianXianFruit-iOS-v0.9.6-Build65-TrollStore.ipa"
           test -s "$FILE"
-          gh release create "ios-v0.9.5-beta" "$FILE" \
+          gh release create "ios-v0.9.6-beta" "$FILE" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --prerelease \
-            --title "天鲜账本 iOS V0.9.5 Beta (Build 64)" \
-            --notes "库存估值：移植安卓历史加权库存成本及零库存重置，区分采购价、参考成本、平均成本，显示剩余库存和损耗估值。支持测试账本按日期编辑本地参考成本及每日零售价，价格版本冲突保护，缺成本和未盘点不计入完整估值。暂不上传或影响正式利润，待库存结算联合服务端升级。仅本版更新。" \
+            --title "天鲜账本 iOS V0.9.6 Beta (Build 65)" \
+            --notes "首页预估利润与估算利润、库存经营分析、商品销售数量、耗用及损耗成本、毛利率，采购和营业表增加对应日期分析入口。区分潜在毛利、盘点经营利润及原账本日汇总；缺资料、异常数量和跨日结转提示。仅本地预览，不改正式利润、结算或服务端。仅本版更新。" \
             --latest=false

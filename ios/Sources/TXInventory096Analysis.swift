@@ -102,9 +102,22 @@ enum TXInventory096Analysis {
         let aligned = items.filter { $0.row.opening > 0.000001 }.allSatisfy {
             $0.row.previousSnapshotDate == yesterday
         }
+        let orders = snapshot.records.values.filter {
+            $0.tableName == "purchase_order" && $0.payload["date"]?.text == date
+        }
+        let orderAmounts = orders.compactMap { TXFundDataAdapter.number($0.payload["total_cost"]) }
+        // Formal daily summary uses purchase orders, not product-level cost
+        // estimates or the editable inventory drafts.
+        let actual: Double?
+        if let revenue = sum("revenue"), let expense = sum("expense"),
+           let opening = sum("opening_stock_value"), let closing = sum("stock_left_value"),
+           orderAmounts.count == orders.count {
+            actual = TXFundAccumulator.roundMoney(revenue + closing - opening -
+                orderAmounts.reduce(0,+) - expense)
+        } else { actual = nil }
         return Report(date: date, items: items, issues: inventory.issues + extraIssues,
                       revenue: sum("revenue"), expense: sum("expense"),
-                      recordedProfit: sum("profit"), previousDayAligned: aligned)
+                      recordedProfit: actual, previousDayAligned: aligned)
     }
 }
 
@@ -182,7 +195,7 @@ struct TXInventory096Overview: View {
                     tile("估算利润", potential(r.knownPurchased, missing: r.missingPurchased,
                          hasGoods: r.hasPurchased, issues: r.issues), "今日采购卖光")
                     if !compact {
-                        tile("实际利润", money(r.recordedProfit), "已存营业利润")
+                        tile("实际利润", money(r.recordedProfit), "原账本日汇总")
                     }
                 }
                 if r.hasLocal {
@@ -190,8 +203,8 @@ struct TXInventory096Overview: View {
                 }
                 if !compact {
                     HStack(spacing: 5) {
-                        tile("销售耗用成本", r.missingCounts > 0 || r.missingCosts > 0 ? "待核对" : money(r.soldCost), "已盘点")
-                        tile("损耗成本", r.missingCounts > 0 || r.missingCosts > 0 ? "待核对" : money(r.lossCost), "已盘点")
+                        tile("销售耗用成本", r.complete ? money(r.soldCost) : "待核对", "已盘点")
+                        tile("损耗成本", r.complete ? money(r.lossCost) : "待核对", "已盘点")
                         tile("经营利润", money(r.operatingProfit), "营业额−耗用−损耗−费用")
                     }
                     if r.missingCounts > 0 || r.missingCosts > 0 || !r.previousDayAligned || !r.issues.isEmpty {
@@ -237,7 +250,37 @@ struct TXInventory096Detail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 9) {
                 TXDayBar(date: $date, label: "分析日期", allowFuture: false)
-                TXInventory096Overview(date: day, compact: false)
+                if let r = report, reportKey == key {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text("实际利润").font(.caption)
+                            Spacer()
+                            Text(money(r.recordedProfit)).font(.headline)
+                        }
+                        HStack {
+                            Text("销售耗用成本").font(.caption)
+                            Spacer()
+                            Text(r.complete ? money(r.soldCost) : "待核对").font(.subheadline.bold())
+                        }
+                        HStack {
+                            Text("损耗成本").font(.caption)
+                            Spacer()
+                            Text(r.complete ? money(r.lossCost) : "待核对").font(.subheadline.bold())
+                        }
+                        HStack {
+                            Text("盘点经营利润").font(.caption)
+                            Spacer()
+                            Text(money(r.operatingProfit)).font(.subheadline.bold())
+                        }
+                        if !r.complete {
+                            Text("盘点或成本未完整，或结转非昨日；不展示完整经营利润。")
+                                .font(.caption2).foregroundColor(.orange)
+                        }
+                        if r.hasLocal {
+                            Text("含本地草稿 · 未同步").font(.caption2).foregroundColor(.orange)
+                        }
+                    }.padding(10).background(TXTheme.header, in: RoundedRectangle(cornerRadius: 10))
+                }
                 Picker("分析口径", selection: $mode) {
                     Text("预估利润").tag("预估利润")
                     Text("估算利润").tag("估算利润")
