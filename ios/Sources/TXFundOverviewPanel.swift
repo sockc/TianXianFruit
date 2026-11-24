@@ -79,6 +79,33 @@ struct TXFundOverviewPanel: View {
                         in: RoundedRectangle(cornerRadius: 12))
 
             TXDayBar(date: $cutoff, label: "资金截止日期", allowFuture: false)
+            if model.lastSyncAt != nil {
+                let audit = TXFundAuditPolicy.inspect(model.snapshot, cutoff: endDate,
+                                                      partner: selectedPartner)
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("核对范围：全部历史至 " + audit.cutoff)
+                            .font(.caption).foregroundColor(.secondary)
+                        Text("日结快照 \(audit.dailyRecordCount) · 合伙人记录 \(audit.partnerRecordCount) · 转账记录 \(audit.transferCount)")
+                            .font(.caption2).foregroundColor(.secondary)
+                        ForEach(audit.findings) { finding in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(finding.title).font(.caption.bold())
+                                    .foregroundColor(finding.severity == .blocked ? .orange : .secondary)
+                                Text(finding.detail).font(.caption2).foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 5)
+                } label: {
+                    Label("累计余额核对 · 尚未验证", systemImage: "checklist")
+                        .font(.subheadline.bold())
+                }
+                .padding(10)
+                .background(Color(UIColor.secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: 10))
+            }
+
             Picker("历史范围", selection: $period) {
                 Text("近7天").tag("近7天")
                 Text("近30天").tag("近30天")
