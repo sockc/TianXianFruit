@@ -2,7 +2,9 @@ import SwiftUI
 
 enum TXTheme {
     static let primary = Color(red: 0.09, green: 0.49, blue: 0.30)
-    static let header = Color(red: 0.91, green: 0.97, blue: 0.93)
+    // Follows the device appearance; the former hard-coded pale header
+    // created a bright strip above the otherwise dark dashboard.
+    static let header = Color(UIColor.secondarySystemGroupedBackground)
 }
 
 /// Android-like adjacent-day control shared by business and purchasing.
