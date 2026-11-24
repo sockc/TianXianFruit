@@ -303,7 +303,9 @@ private struct BusinessPage: View {
                     bookID: model.selectedBookID ?? "")
                 state = BusinessDraftWorkflowPolicy.status(
                     draft: draft, events: Array(model.snapshot.records.values),
-                    attempt: attempt)
+                    attempt: attempt,
+                    cloudSnapshotReady: model.lastSyncAt != nil &&
+                        !model.isUsingCachedAuthorization)
             } catch {
                 state = .unsafeToRead
             }
@@ -340,6 +342,7 @@ private struct BusinessPage: View {
             VStack(alignment: .leading, spacing: 12) {
                 TXDayBar(date: $selectedDate, label: "营业日期", allowFuture: false)
                     .onChange(of: selectedDate) { _ in visibleDays = 14 }
+                TXCloudSyncStatusBar()
                 HStack(spacing: 8) {
                     Picker("位置", selection: $position) {
                         Text("全部位置").tag("")
@@ -772,6 +775,44 @@ private struct SearchField: View {
         .padding(9)
         .background(Color(UIColor.secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 9))
+    }
+}
+
+/// Online sync is not the same as a successful cloud write. The badge
+/// describes only last completed pull; it never grants write permission.
+struct TXCloudSyncStatusBar: View {
+    @EnvironmentObject private var model: LedgerViewModel
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if model.isBusy {
+                ProgressView()
+                Text("同步中").font(.caption)
+            } else if model.isUsingCachedAuthorization {
+                Label("离线缓存 · 禁止云端提交", systemImage: "wifi.slash")
+                    .foregroundColor(.orange).font(.caption2)
+            } else if let error = model.errorMessage {
+                Label("同步未完成：" + error, systemImage: "exclamationmark.icloud")
+                    .foregroundColor(.orange).font(.caption2)
+                    .lineLimit(2)
+            } else if let date = model.lastSyncAt {
+                Label("最近拉取 " + date.formatted(date: .omitted, time: .shortened),
+                      systemImage: "checkmark.icloud")
+                    .foregroundColor(.secondary).font(.caption2)
+            } else {
+                Label("尚未同步", systemImage: "icloud.slash")
+                    .foregroundColor(.secondary).font(.caption2)
+            }
+            Spacer(minLength: 0)
+            Button {
+                Task { await model.refresh() }
+            } label: {
+                Label("刷新云端", systemImage: "arrow.clockwise")
+                    .font(.caption)
+            }
+            .disabled(model.isBusy || model.account == nil ||
+                      model.selectedBookID == nil)
+        }
     }
 }
 
