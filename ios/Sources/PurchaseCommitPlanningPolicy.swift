@@ -101,10 +101,14 @@ enum PurchaseCommitPlanningPolicy {
     static func prepare(_ draft: PurchaseWorkspaceDraft,
                         account: Account,
                         book: CloudBook,
-                        records: [SyncEvent]) throws -> PurchaseCommitProposal {
+                        records: [SyncEvent],
+                        capabilities: PurchaseCommitCapabilities? = nil) throws -> PurchaseCommitProposal {
+        // Formal ledgers cannot be prepared with a legacy test-only capability.
+        // This guard is *additional* to the live server recheck before POST.
+        let testBook = book.name.hasPrefix("iOS_TEST_")
         guard account.username.lowercased() == draft.account.lowercased(),
               book.id == draft.bookID,
-              book.name.hasPrefix("iOS_TEST_"),
+              (testBook || capabilities?.eligible(book: book) == true),
               PurchaseWorkspaceDraftPolicy.authorized(book: book, account: account)
         else { throw PurchaseCommitPlanningError.wrongAccount }
 
