@@ -59,7 +59,7 @@ struct TXInventory094Page: View {
         scope + "|" + String(model.currentCursor) + "|" + String(model.lastSyncAt?.timeIntervalSince1970 ?? 0)
     }
     private var editable: Bool {
-        loadedScope == scope && loadedRevision == revision && storageOK && report?.issues.isEmpty == true &&
+        loadedScope == scope && loadedRevision == revision && storageOK && !model.isLedgerV33Busy && !model.v33HasPending && report?.issues.isEmpty == true &&
         TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
                                      offline: model.isUsingCachedAuthorization)
     }
@@ -162,6 +162,7 @@ struct TXInventory094Page: View {
                      "云端库存只读；库存写入将在联合服务端升级后开放")
                     .font(.caption2).foregroundColor(.secondary)
                 if !error.isEmpty { Text(error).font(.caption).foregroundColor(.red) }
+                TXLedgerV33InventoryActions(date: date, count: drafts.count + prices.count, onReload: reload)
                 if let report, loadedRevision == revision {
                     summary(report.rows)
                     NavigationLink(destination: TXInventory096Detail(initialDate: day)) {

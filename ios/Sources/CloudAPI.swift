@@ -46,6 +46,8 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             || path == "/api/v1/purchases/capabilities"
             || path == "/api/v1/business/capabilities"
             || path == "/api/v1/settlements/capabilities"
+            || path == "/api/v1/ledger-v33/capabilities"
+            || path.hasPrefix("/api/v1/ledger-v33/operations/")
             || path.hasPrefix("/api/v1/settlements/operations/")
             || path.hasPrefix("/api/v1/business/operations/")
             || path.hasPrefix("/api/v1/purchases/operations/")
@@ -57,6 +59,8 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             || path == "/api/v1/purchases/commit"
             || path == "/api/v1/business/commit"
             || path == "/api/v1/settlements/commit"
+            || path == "/api/v1/ledger-v33/inventory/commit"
+            || path == "/api/v1/ledger-v33/daily/generate"
         guard (method == "GET" && permittedGET) || (method == "POST" && permittedPOST),
               let base = URL(string: root + path),
               var parts = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
@@ -203,6 +207,36 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         } catch let error as CloudAPIError where error.status == 404 {
             return nil
         }
+    }
+
+    func v33Capabilities(token: String, bookID: String) async throws -> TXLedgerV33Capabilities {
+        guard UUID(uuidString: bookID) != nil else { throw TXSettlementAtomicError.scope }
+        return try decode(TXLedgerV33Capabilities.self, from: await request("GET",
+            "/api/v1/ledger-v33/capabilities", token: token,
+            query: [URLQueryItem(name: "book_id", value: bookID)]))
+    }
+
+    func v33Commit(token: String, proposal: TXLedgerV33Proposal) async throws -> TXLedgerV33Receipt {
+        guard proposal.matchesFeature else { throw TXSettlementAtomicError.scope }
+        let path = proposal.feature == "inventory" ? "/api/v1/ledger-v33/inventory/commit" :
+            "/api/v1/ledger-v33/daily/generate"
+        let data = try await request("POST", path, token: token, jsonBody: JSONEncoder().encode(proposal.body))
+        let receipt = try decode(TXLedgerV33Receipt.self, from: data)
+        guard receipt.matches(proposal) else { throw TXSettlementAtomicError.invalidReceipt }
+        return receipt
+    }
+
+    func v33Operation(token: String, proposal: TXLedgerV33Proposal) async throws -> TXLedgerV33Receipt? {
+        guard let operation = UUID(uuidString: proposal.body.operation_id),
+              UUID(uuidString: proposal.body.book_id) != nil else { throw TXSettlementAtomicError.scope }
+        do {
+            let data = try await request("GET", "/api/v1/ledger-v33/operations/" +
+                operation.uuidString.lowercased(), token: token,
+                query: [URLQueryItem(name: "book_id", value: proposal.body.book_id)])
+            let receipt = try decode(TXLedgerV33Receipt.self, from: data)
+            guard receipt.matches(proposal) else { throw TXSettlementAtomicError.invalidReceipt }
+            return receipt
+        } catch let error as CloudAPIError where error.status == 404 { return nil }
     }
 
     func settlementCapabilities(token: String, bookID: String)

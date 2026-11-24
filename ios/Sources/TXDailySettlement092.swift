@@ -399,6 +399,7 @@ struct TXDailySettlement092Panel: View {
                     }
                 } label: { Text("采购垫付与当日资金登记").font(.caption.bold()) }
             }
+            TXLedgerV33DailyActions(date: date)
             Text("采购垫付随当日转账逐笔结算；不会单独推断采购款已结清。")
                 .font(.caption2).foregroundColor(.secondary)
         }

@@ -29,6 +29,7 @@ final class LedgerViewModel: ObservableObject {
     @Published private(set) var settlementCommitCapabilities: TXSettlementCommitCapabilities?
     @Published private(set) var settlementCommitError: String?
     @Published private(set) var isSettlementCommitBusy = false
+    @Published private(set) var isLedgerV33Busy = false
     @Published private(set) var customerSnapshot = CustomerReadSnapshot()
     @Published private(set) var customerCursor: Int64 = 0
     @Published private(set) var customerSyncedAt: Date?
@@ -639,5 +640,116 @@ final class LedgerViewModel: ObservableObject {
         } catch {
             customerError = error.localizedDescription
         }
+    }
+}
+
+
+extension LedgerViewModel {
+    private var v33Authorized: Bool {
+        TXTestBookAccess.isCandidate(selectedBook, account: account, offline: isUsingCachedAuthorization)
+    }
+    var v33HasPending: Bool {
+        guard let name = account?.username, let book = selectedBookID else { return false }
+        do { return try TXLedgerV33Store.load(name, book) != nil }
+        catch { return true }
+    }
+    func v33Capability(_ feature: String) async -> Bool {
+        guard v33Authorized, let name = account?.username, let book = selectedBookID,
+              let token = accessToken else { return false }
+        guard let cap = try? await api.v33Capabilities(token: token, bookID: book),
+              self.account?.username == name, selectedBookID == book,
+              accessToken == token, v33Authorized else { return false }
+        return cap.allows(feature)
+    }
+    private func v33Body(date: String, lines: [TXLedgerV33Line]?,
+                         allocations: [TXLedgerV33Allocation]?) throws -> TXLedgerV33Body {
+        guard v33Authorized, lastSyncAt != nil, let name = account?.username,
+              let book = selectedBookID, UUID(uuidString: book) != nil,
+              BusinessDates.parse(date) != nil else { throw TXSettlementAtomicError.scope }
+        return TXLedgerV33Body(protocol_version: 1, book_id: book, account: name,
+            operation_id: UUID().uuidString.lowercased(), device_id: try CloudAPI.scopedDeviceID(name),
+            date: date, expected_cursor: currentCursor, lines: lines, allocations: allocations)
+    }
+    func v33SubmitInventory(date: String) async -> String {
+        do {
+            guard let name = account?.username, let book = selectedBookID else { throw TXSettlementAtomicError.scope }
+            let scope = [name, book, date].joined(separator: "|")
+            let stocks = try TXInventory094DraftStore.load(scope: scope)
+            let prices = try TXInventory095PriceStore.load(scope: scope)
+            let lines = try TXLedgerV33Policy.inventory(snapshot: snapshot, date: date, stocks: stocks, prices: prices)
+            let p = TXLedgerV33Proposal(feature: "inventory",
+                body: try v33Body(date: date, lines: lines, allocations: nil),
+                stockDrafts: stocks, priceDrafts: prices)
+            return try await v33Run(p, recovering: false)
+        } catch { return error.localizedDescription }
+    }
+    func v33SubmitDaily(date: String, allocations: [TXLedgerV33Allocation]) async -> String {
+        do {
+            let p = TXLedgerV33Proposal(feature: "daily",
+                body: try v33Body(date: date, lines: nil, allocations: allocations),
+                stockDrafts: [], priceDrafts: [])
+            return try await v33Run(p, recovering: false)
+        } catch { return error.localizedDescription }
+    }
+    func v33Recover() async -> String {
+        do {
+            guard let name = account?.username, let book = selectedBookID,
+                  let p = try TXLedgerV33Store.load(name, book) else { return "没有待核对操作" }
+            return try await v33Run(p, recovering: true)
+        } catch { return error.localizedDescription }
+    }
+    private func v33Run(_ p: TXLedgerV33Proposal, recovering: Bool) async throws -> String {
+        guard !isLedgerV33Busy, !isBusy, !isSettlementCommitBusy,
+              !isBusinessCommitBusy, !isPurchaseCommitBusy, v33Authorized,
+              let token = accessToken, let name = account?.username, let book = selectedBookID,
+              p.body.account == name, p.body.book_id == book, p.matchesFeature else {
+            throw TXSettlementAtomicError.scope
+        }
+        isLedgerV33Busy = true
+        defer { isLedgerV33Busy = false }
+        func stillScoped() -> Bool {
+            self.accessToken == token && self.selectedBookID == book &&
+                self.account?.username == name && self.v33Authorized
+        }
+        let cap = try await api.v33Capabilities(token: token, bookID: book)
+        guard stillScoped(), cap.allows(p.feature) else { throw TXSettlementAtomicError.unavailable }
+        var receipt: TXLedgerV33Receipt?
+        if recovering {
+            receipt = try await api.v33Operation(token: token, proposal: p)
+            guard stillScoped() else { throw TXSettlementAtomicError.scope }
+            if receipt == nil && currentCursor != p.body.expected_cursor {
+                return "原操作尚未查到且云端版本已变化，保留锁和草稿；不可换新ID重复提交"
+            }
+        } else {
+            guard try TXLedgerV33Store.load(name, book) == nil else { throw TXSettlementAtomicError.locked }
+            guard currentCursor == p.body.expected_cursor else { throw TXSettlementAtomicError.stale }
+            try TXLedgerV33Store.save(p)
+        }
+        if receipt == nil {
+            do { receipt = try await api.v33Commit(token: token, proposal: p) }
+            catch let error as CloudAPIError where [400, 403, 409, 422, 503].contains(error.status) {
+                // A definitive server rejection, followed by a lookup of the
+                // same operation, can unlock; do not unlock on network errors.
+                if stillScoped(), try await api.v33Operation(token: token, proposal: p) == nil {
+                    try TXLedgerV33Store.clear(p)
+                }
+                throw error
+            } catch { throw error }
+        }
+        guard stillScoped(), let receipt, receipt.matches(p) else {
+            throw TXSettlementAtomicError.invalidReceipt
+        }
+        await refresh(forceFull: true)
+        guard stillScoped(), receipt.readback(p, snapshot: snapshot, cursor: currentCursor) else {
+            return "服务端已提交，等待原操作同步回读；本地草稿保留，不能重复提交"
+        }
+        if p.feature == "inventory" {
+            let stocks = try TXInventory094DraftStore.load(scope: p.scope)
+            let prices = try TXInventory095PriceStore.load(scope: p.scope)
+            try TXInventory094DraftStore.save(stocks.filter { !p.stockDrafts.contains($0) }, scope: p.scope)
+            try TXInventory095PriceStore.save(prices.filter { !p.priceDrafts.contains($0) }, scope: p.scope)
+        }
+        try TXLedgerV33Store.clear(p)
+        return "服务端提交成功，已同步核对全部变更记录"
     }
 }
