@@ -164,6 +164,10 @@ struct TXInventory094Page: View {
                 if !error.isEmpty { Text(error).font(.caption).foregroundColor(.red) }
                 if let report, loadedRevision == revision {
                     summary(report.rows)
+                    NavigationLink(destination: TXInventory096Detail(initialDate: day)) {
+                        Label("商品利润与库存经营分析", systemImage: "chart.bar.xaxis")
+                            .font(.caption.bold())
+                    }
                     if !report.issues.isEmpty {
                         DisclosureGroup("存在库存数据缺口，已暂停草稿编辑") {
                             ForEach(report.issues, id: \.self) { Text($0).font(.caption) }

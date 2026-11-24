@@ -214,6 +214,7 @@ private struct HomePage: View {
                                               \.totalCost), color: .primary)
                         AmountCard(title: "今日已存利润", value: sum(daily, \.profit), color: .primary)
                     }
+                    TXInventory096Overview(date: today, compact: true)
                     HStack(spacing: 8) {
                         AmountCard(title: "近7天营业", value: sum(week, \.revenue), color: .primary)
                         AmountCard(title: "近30天营业", value: sum(month, \.revenue), color: .primary)
@@ -351,6 +352,9 @@ private struct BusinessPage: View {
                 TXDayBar(date: $selectedDate, label: "营业日期", allowFuture: false)
                     .onChange(of: selectedDate) { _ in visibleDays = 14 }
                 TXCloudSyncStatusBar()
+                DisclosureGroup("当日库存经营分析（全账本）") {
+                    TXInventory096Overview(date: selectedKey)
+                }.font(.caption)
                 HStack(spacing: 8) {
                     Picker("位置", selection: $position) {
                         Text("全部位置").tag("")

@@ -22,6 +22,7 @@ enum TXInventory094Policy {
         let retailUnit: String
         let retailDate: String?
         let weight: Double?
+        let previousSnapshotDate: String?
         let openingCost: Double?
         let purchaseCost: Double?
         let averageCost: Double?
@@ -253,7 +254,7 @@ enum TXInventory094Policy {
                 retailUnit: retailDraft?.unit ?? priceRow?.payload["price_unit"]?.text ?? "斤",
                 retailDate: retailDraft != nil ? date : priceRow?.payload["date"]?.text,
                 weight: latestValue({ $0.weight }, through: date),
-                openingCost: openingCost, purchaseCost: purchaseValue, averageCost: average,
+                previousSnapshotDate: last, openingCost: openingCost, purchaseCost: purchaseValue, averageCost: average,
                 manualCost: manualValue, manualBasis: manualBasis, retailBasis: retailBasis,
                 usesLocalCost: costDraft != nil, usesLocalRetail: retailDraft != nil))
         }

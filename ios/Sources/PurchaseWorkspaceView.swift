@@ -183,6 +183,9 @@ struct PurchaseWorkspaceView: View {
                 dateHeader
                 TXCloudSyncStatusBar()
                 metrics
+                DisclosureGroup("采购与库存利润预估") {
+                    TXInventory096Overview(date: day, compact: true)
+                }.font(.caption)
                 Button {
                     request = PurchaseWorkspaceEditorRequest(original: nil)
                 } label: {
