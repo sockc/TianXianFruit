@@ -1,4 +1,4 @@
-name: Check iOS V0.8.4 cloud reconciliation and daily experience
+name: Check iOS V0.8.5 home safe area, compact UI and AppIcon
 
 on:
   pull_request:
@@ -29,6 +29,10 @@ jobs:
         run: python3 ios/scripts/check_readonly.py
       - name: Install XcodeGen
         run: brew install xcodegen
+      - name: Generate AppIcon PNG resources
+        run: |
+          swift ios/scripts/generate_app_icon.swift
+          test -s ios/Assets.xcassets/AppIcon.appiconset/Icon-1024.png
       - name: Generate Xcode project
         run: cd ios && xcodegen generate
       - name: Build for iOS Simulator (unsigned)
