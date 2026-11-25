@@ -5850,7 +5850,7 @@ class AppDatabase(
                 }
             }
 
-        return writableDatabase.insert("fruit", null, baseSyncValues().apply {
+        return insertNewMasterRow(writableDatabase, "fruit", baseSyncValues().apply {
             put("name", clean)
             put("default_unit", defaultUnit)
             put("enabled", 1)
@@ -6091,9 +6091,9 @@ class AppDatabase(
                 }
             }
 
-        return writableDatabase.insertWithOnConflict(
+        return insertNewMasterRow(
+            writableDatabase,
             "store",
-            null,
             baseSyncValues().apply {
                 put("name", clean)
                 put(
@@ -6481,7 +6481,7 @@ class AppDatabase(
         if (clean.isBlank()) return -1
         val duplicate = readableDatabase.rawQuery("SELECT id FROM partner WHERE name=? AND deleted=0 LIMIT 1", arrayOf(clean)).use { it.moveToFirst() }
         if (duplicate) return -1
-        return writableDatabase.insert("partner", null, baseSyncValues().apply {
+        return insertNewMasterRow(writableDatabase, "partner", baseSyncValues().apply {
             put("name", clean); put("enabled", 1); put("deleted", 0)
         })
     }
@@ -16982,6 +16982,47 @@ class AppDatabase(
         c.dbl("purchase_cost"), c.dbl("profit"), c.int("new_customer"), c.int("old_customer"),
         c.str("actual_start_time"), c.str("actual_end_time")
     )
+
+    // Test-book pilot only. Existing rows, restore paths and seed identities
+    // remain unchanged. Never renumber a row or translate its foreign keys.
+    private fun insertNewMasterRow(
+        db: SQLiteDatabase,
+        table: String,
+        values: ContentValues,
+        conflictAlgorithm: Int = SQLiteDatabase.CONFLICT_NONE
+    ): Long {
+        require(table in MasterRecordIdentity.tables)
+        fun insert(): Long =
+            if (conflictAlgorithm == SQLiteDatabase.CONFLICT_NONE) db.insert(table, null, values)
+            else db.insertWithOnConflict(table, null, values, conflictAlgorithm)
+
+        if (!MasterRecordIdentity.pilotEnabled(ledgerName)) return insert()
+
+        db.beginTransaction()
+        try {
+            var chosen: Long? = null
+            repeat(16) {
+                if (chosen != null) return@repeat
+                val uuid = UUID.randomUUID()
+                val candidate = MasterRecordIdentity.androidId(uuid)
+                val occupied = db.rawQuery(
+                    "SELECT 1 FROM $table WHERE id=? OR sync_id=? LIMIT 1",
+                    arrayOf(candidate.toString(), uuid.toString())
+                ).use { it.moveToFirst() }
+                if (!occupied) {
+                    values.put("id", candidate)
+                    values.put("sync_id", uuid.toString())
+                    chosen = candidate
+                }
+            }
+            if (chosen == null) return -1L
+            val result = insert()
+            if (result == chosen) db.setTransactionSuccessful()
+            return if (result == chosen) result else -1L
+        } finally {
+            db.endTransaction()
+        }
+    }
 
     private fun baseSyncValues(): ContentValues {
         val now = System.currentTimeMillis()
