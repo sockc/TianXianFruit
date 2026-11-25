@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - feature/ios-v1.0.2-business-parity
+      - feature/ios-v1.0.3-bill-preview
   workflow_dispatch:
 permissions:
   contents: read

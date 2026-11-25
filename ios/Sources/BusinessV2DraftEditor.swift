@@ -434,6 +434,7 @@ struct TXBusinessV2DraftEditor: View {
     private var editorContent: some View {
         VStack(alignment: .leading, spacing: 7) {
             header
+            TXBillPreviewEntry(scope: scope).disabled(editorLocked)
             receiptCard
             card { costFields }.disabled(editorLocked)
             submission

@@ -576,8 +576,8 @@ assert '"同步异常"' in swift['Views.swift']
 assert 'showConfirmedDrafts || attempt.phase != .confirmed || confirmedPurchaseChanged(attempt)' in swift['PurchaseWorkspaceView.swift']
 assert 'DisclosureGroup(isExpanded: $showAudit)' in swift['TXFundOverviewPanel.swift']
 assert '服务端库存写入未授权' in swift['TXInventory094Page.swift']
-assert 'MARKETING_VERSION: "1.0.2"' in project
-assert 'CURRENT_PROJECT_VERSION: "80"' in project
+assert 'MARKETING_VERSION: "1.0.3"' in project
+assert 'CURRENT_PROJECT_VERSION: "81"' in project
 print("V1.0.0 RC1 PASS: routine UI, retained history, honest sync states")
 
 # RC2: directory is read-only except existing book selection.
@@ -627,7 +627,7 @@ assert 'TXPageDateHeader(title: "营业", date: $model.workDate)' in swift["View
 assert 'TXPageDateHeader(title: "采购", date: $model.workDate' in swift["PurchaseWorkspaceView.swift"]
 assert 'TXPageDateHeader(title: "库存", date: $model.workDate)' in swift["TXInventory094Page.swift"]
 assert 'TXDayBar(date: $model.workDate, label: "经营日期"' in swift["Views.swift"]
-assert 'MARKETING_VERSION: "1.0.2"' in project
+assert 'MARKETING_VERSION: "1.0.3"' in project
 print("V1.0.1 UI parity shared operating date guard PASS")
 
 assert "Button(action: openInlineEditor)" in swift["PurchaseWorkspaceView.swift"]
@@ -731,3 +731,10 @@ assert "TXBusinessV2DraftPolicy.preview(draft, date: scope.date, events: events)
 assert "BusinessDraftWorkflowPolicy.preview(lines: adjusted.lines" in v2editor
 assert "!local.contains(store.id)" in swift["Views.swift"]
 print("Build 80 live amount preview and draft recovery routing PASS")
+
+assert "TXBillPreviewEntry(scope: scope)" in v2editor
+bill = swift["BusinessBillCSV.swift"] + swift["BusinessBillPreviewView.swift"]
+assert "TXBillCSV.parse" in bill and "账单收款人" in bill
+assert "commitBusiness" not in bill and "URLSession" not in bill and "customer-analytics/push" not in bill
+assert (root.parent / "Tests" / "BusinessBillCSVTests.swift").exists()
+print("Build 81 local-only bill CSV parsing and preview guard PASS")
