@@ -59,6 +59,12 @@ final class BusinessV2DraftTests: XCTestCase {
         let prepared = try TXBusinessV2DraftPolicy.prepare(draft, scope: scope, account: account, book: testBook,
             records: records, events: [source])
         XCTAssertEqual(prepared.proposal.totalRevenue, "9.00")
+        let live = try XCTUnwrap(TXBusinessV2DraftPolicy.preview(draft, date: scope.date, events: [source]))
+        XCTAssertEqual(live.revenue, prepared.proposal.totalRevenue)
+        XCTAssertEqual(live.profit, prepared.proposal.profit)
+        var missing = draft; missing.opening = ""
+        XCTAssertEqual(TXBusinessV2DraftPolicy.preview(missing, date: scope.date, events: [source])?.revenue, "9.00")
+        XCTAssertNil(TXBusinessV2DraftPolicy.preview(missing, date: scope.date, events: [source])?.profit)
         XCTAssertEqual(prepared.proposal.profit, "8.00")
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: prepared.canonical) as? [String: Any])
         XCTAssertEqual(body["expense_payer_sync_id"] as? String, payer)

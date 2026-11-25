@@ -429,7 +429,7 @@ private struct BusinessPage: View {
     }
     private func checkV2() async {
         let key = v2CapabilityKey
-        v2Ready = false; v2Message = nil
+        v2Ready = false; v2Message = nil; v2Checking = false
         guard canEnterBusiness, let account = model.account?.username,
               let book = model.selectedBookID else { return }
         v2Checking = true
@@ -470,20 +470,22 @@ private struct BusinessPage: View {
         }
     }
     private var v2NewStores: [String] {
-        model.snapshot.testStores.filter { store in
+        let local = Set(v2LocalStores)
+        return model.snapshot.testStores.filter { store in
             (filteredStoreID == nil || filteredStoreID == store.id) &&
             !model.snapshot.business.contains { $0.date == selectedKey && $0.storeName == store.name } &&
-            !localDrafts.contains { $0.storeID == store.id }
+            !localDrafts.contains { $0.storeID == store.id } && !local.contains(store.id)
         }.map(\.id)
     }
     private var v2EntryMenu: some View {
-        Menu {
-            ForEach(model.snapshot.testStores.filter { v2NewStores.contains($0.id) }) { store in
+        let available = Set(v2NewStores)
+        return Menu {
+            ForEach(model.snapshot.testStores.filter { available.contains($0.id) }) { store in
                 Button(store.name) { openV2(storeID: store.id, name: store.name) }
             }
         } label: { Label("新增营业记录", systemImage: "plus") }
         .buttonStyle(.borderedProminent)
-        .disabled(v2NewStores.isEmpty || !canEnterBusiness)
+        .disabled(available.isEmpty || !canEnterBusiness)
     }
 
     private func moveDay(_ offset: Int) {
@@ -524,10 +526,11 @@ private struct BusinessPage: View {
                 Button("刷新营业权限") { Task { await checkV2() } }.font(.caption2).disabled(v2Checking)
             }
         }
-        if canEnterBusiness && !v2LocalStores.isEmpty {
+        let recoverable = Set(v2LocalStores)
+        if canEnterBusiness && !recoverable.isEmpty {
             VStack(alignment: .leading, spacing: 5) {
                 Text("营业草稿及原操作核对").font(.caption.bold())
-                ForEach(model.snapshot.testStores.filter { v2LocalStores.contains($0.id) }) { store in
+                ForEach(model.snapshot.testStores.filter { recoverable.contains($0.id) }) { store in
                     Button { openV2(storeID: store.id, name: store.name) } label: {
                         HStack { Text(store.name); Spacer(); Text("打开核对"); Image(systemName: "chevron.right") }
                     }.font(.caption)

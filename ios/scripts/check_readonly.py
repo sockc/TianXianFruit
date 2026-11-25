@@ -726,3 +726,8 @@ assert "else if v2Ready" in swift["Views.swift"]
 assert "营业草稿及原操作核对" in swift["Views.swift"]
 assert "确认保存营业到正式账本" in v2editor
 print("Build 80 scope-matched capabilities, inline entry and both-scope draft isolation PASS")
+
+assert "TXBusinessV2DraftPolicy.preview(draft, date: scope.date, events: events)" in v2editor
+assert "BusinessDraftWorkflowPolicy.preview(lines: adjusted.lines" in v2editor
+assert "!local.contains(store.id)" in swift["Views.swift"]
+print("Build 80 live amount preview and draft recovery routing PASS")

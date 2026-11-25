@@ -150,6 +150,43 @@ enum TXBusinessV2DraftPolicy {
                 try source(events, date: reference.followingDate, partner: partner))
     }
 
+    static func adjustedCollectors(_ draft: TXBusinessV2LocalDraft, date: String,
+                                   events: [CustomerChangeEvent]) throws -> (natural: [TXBusinessV2Natural], lines: [BusinessCollectorDraftLine]) {
+        guard (1...12).contains(draft.collectors.count),
+              Set(draft.collectors.map(\.partner)).count == draft.collectors.count else {
+            throw BusinessAtomicError.invalidDraft
+        }
+        var natural: [TXBusinessV2Natural] = []
+        var lines: [BusinessCollectorDraftLine] = []
+        for input in draft.collectors {
+            let key = date + "|" + input.partner
+            guard !events.contains(where: { $0.kind == "NATURAL" &&
+                ($0.key == key || ($0.payload["date"] == .string(date) &&
+                 $0.payload["partner_sync_id"] == .string(input.partner))) }) else {
+                throw BusinessAtomicError.cloudConflict
+            }
+            let pair = try sources(events, date: date, partner: input.partner)
+            let request = try input.request(previousRevision: pair.0.revision, followingRevision: pair.1.revision)
+            let adjusted = try TXBusinessV2Preparation.adjusted(request,
+                previous: pair.0.morning, following: pair.1.morning)
+            natural.append(request)
+            lines.append(BusinessCollectorDraftLine(id: input.id, partnerSyncID: input.partner,
+                wechat: BusinessCommitPolicy.money(adjusted[0]), alipay: BusinessCommitPolicy.money(adjusted[1]),
+                cash: BusinessCommitPolicy.money(adjusted[2])))
+        }
+        return (natural, lines)
+    }
+
+    static func preview(_ draft: TXBusinessV2LocalDraft, date: String,
+                        events: [CustomerChangeEvent]) -> (revenue: String, profit: String?)? {
+        guard let adjusted = try? adjustedCollectors(draft, date: date, events: events),
+              let totals = try? BusinessCollectorDraftPolicy.totals(adjusted.lines) else { return nil }
+        let revenue = BusinessCommitPolicy.money(totals.wechat + totals.alipay + totals.cash)
+        let profit = BusinessDraftWorkflowPolicy.preview(lines: adjusted.lines, expense: draft.expense,
+            opening: draft.opening, closing: draft.closing)?.profit
+        return (revenue, profit)
+    }
+
     static func prepare(_ draft: TXBusinessV2LocalDraft, scope: TXBusinessV2EditorScope,
                         account: Account, book: CloudBook, records: [SyncEvent],
                         events: [CustomerChangeEvent]) throws -> Prepared {
@@ -164,24 +201,7 @@ enum TXBusinessV2DraftPolicy {
                 throw BusinessAtomicError.invalidDraft
             }
         }
-        var natural: [TXBusinessV2Natural] = []
-        var lines: [BusinessCollectorDraftLine] = []
-        for input in draft.collectors {
-            let key = scope.date + "|" + input.partner
-            guard !events.contains(where: { $0.kind == "NATURAL" &&
-                ($0.key == key || ($0.payload["date"] == .string(scope.date) &&
-                 $0.payload["partner_sync_id"] == .string(input.partner))) }) else {
-                throw BusinessAtomicError.cloudConflict
-            }
-            let pair = try sources(events, date: scope.date, partner: input.partner)
-            let request = try input.request(previousRevision: pair.0.revision, followingRevision: pair.1.revision)
-            let adjusted = try TXBusinessV2Preparation.adjusted(request,
-                previous: pair.0.morning, following: pair.1.morning)
-            natural.append(request)
-            lines.append(BusinessCollectorDraftLine(id: input.id, partnerSyncID: input.partner,
-                wechat: BusinessCommitPolicy.money(adjusted[0]), alipay: BusinessCommitPolicy.money(adjusted[1]),
-                cash: BusinessCommitPolicy.money(adjusted[2])))
-        }
+        let (natural, lines) = try adjustedCollectors(draft, date: scope.date, events: events)
         // Reuse the stable arithmetic and validation, not V1 transport or storage.
         let base = BusinessLocalDraft(id: draft.operationID, date: scope.date, storeID: scope.storeID,
             storeName: scope.storeName, collectors: lines, startTime: draft.start, endTime: draft.end,
@@ -361,11 +381,19 @@ struct TXBusinessV2DraftEditor: View {
 
     private var submission: some View {
         card {
-            if let prepared {
+            if let reserved {
                 HStack {
-                    TXCompactMetric(title: "本摊营业额", value: "¥" + prepared.proposal.totalRevenue, tint: .green)
-                    TXCompactMetric(title: "利润预览", value: "¥" + prepared.proposal.profit, tint: .orange)
+                    TXCompactMetric(title: "原提交营业额", value: "¥" + reserved.prepared.proposal.totalRevenue, tint: .green)
+                    TXCompactMetric(title: "原提交利润", value: "¥" + reserved.prepared.proposal.profit, tint: .orange)
                 }
+            } else {
+                let current = sourcesReady ? TXBusinessV2DraftPolicy.preview(draft, date: scope.date, events: events) : nil
+                HStack {
+                    TXCompactMetric(title: "本摊营业额", value: current.map { "¥" + $0.revenue } ?? "待核对", tint: .green)
+                    TXCompactMetric(title: "利润预览", value: current?.profit.map { "¥" + $0 } ?? "待补齐", tint: .orange)
+                }
+            }
+            if let prepared {
                 DisclosureGroup("请求指纹") {
                     Text(prepared.hash).font(.caption2).textSelection(.enabled)
                 }.font(.caption2)
@@ -418,6 +446,8 @@ struct TXBusinessV2DraftEditor: View {
                     if let prepared { let value = TXBusinessV2Immutable(scope: scope, prepared: prepared); Task { await send(value) } }
                 }
                 Button("取消", role: .cancel) {}
+            } message: {
+                Text(scope.storeName + " · " + scope.date + "\n营业额 ¥" + (prepared?.proposal.totalRevenue ?? "待核对"))
             }
             .confirmationDialog("有未保存的营业草稿", isPresented: $showClose, titleVisibility: .visible) {
                 Button("保存草稿并关闭") { save(); if saved == draft { onClose() } }
