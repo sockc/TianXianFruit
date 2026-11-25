@@ -10,6 +10,8 @@ private struct VerifiedProfile: Codable {
 
 @MainActor
 final class LedgerViewModel: ObservableObject {
+    // Presentation-only date. Never used as an implicit cloud-write date.
+    @Published var workDate = Date()
     @Published private(set) var account: Account?
     @Published private(set) var books: [CloudBook] = []
     @Published private(set) var selectedBookID: String?
@@ -368,6 +370,7 @@ final class LedgerViewModel: ObservableObject {
 
     private func activateBook(_ bookID: String) {
         guard books.contains(where: { $0.id == bookID }), let account else { return }
+        if selectedBookID != bookID { workDate = Date() }
         selectedBookID = bookID
         snapshot = ReadOnlySnapshot()
         currentCursor = 0
@@ -564,6 +567,7 @@ final class LedgerViewModel: ObservableObject {
     }
 
     private func reset() {
+        workDate = Date()
         account = nil
         books = []
         selectedBookID = nil

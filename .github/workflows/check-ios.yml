@@ -1,4 +1,4 @@
-name: Check iOS V1.0.0 RC7
+name: Check iOS V1.0.1 UI parity
 
 on:
   pull_request:

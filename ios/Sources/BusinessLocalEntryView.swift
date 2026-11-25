@@ -489,12 +489,20 @@ struct BusinessLocalEntryView: View {
                     }
                 }
                 Section(header: Text("营业成本与利润依据（同步前必填）")) {
-                    amount("支出", value: $expense)
-                    amount("开摊库存估值", value: $openingStock)
-                    amount("收摊库存估值", value: $closingStock)
+                    amount("日常开销", value: $expense)
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("开摊库存估值").font(.caption2).foregroundColor(.secondary)
+                            TXFastNumericField(text: $openingStock, label: "开摊库存估值").frame(height: 36)
+                        }
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("收摊库存估值").font(.caption2).foregroundColor(.secondary)
+                            TXFastNumericField(text: $closingStock, label: "收摊库存估值").frame(height: 36)
+                        }
+                    }
                     if let preview {
                         HStack {
-                            Text("本次营业额").foregroundColor(.secondary)
+                            Text("本摊营业额").foregroundColor(.secondary)
                             Spacer()
                             Text("¥" + preview.revenue).font(.headline.bold())
                         }

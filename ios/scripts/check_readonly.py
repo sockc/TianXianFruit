@@ -325,7 +325,7 @@ assert (root.parent / "Tests" / "FastEntryFieldTests.swift").exists()
 
 # V0.6.3 settlement visual presentation: zero new financial write routes.
 settlement_ui = swift["SettlementTableView.swift"]
-assert "TXDayBar(date: $selectedDate" in settlement_ui
+assert 'TXPageDateHeader(title: "当日结算", date: $model.workDate)' in settlement_ui
 assert "snapshotState" in settlement_ui
 assert "day.uniqueSnapshot" in settlement_ui
 assert "day.savedDaily.count > 1" in settlement_ui
@@ -577,7 +577,7 @@ assert 'showConfirmedDrafts || attempt.phase != .confirmed || confirmedPurchaseC
 assert 'DisclosureGroup(isExpanded: $showAudit)' in swift['TXFundOverviewPanel.swift']
 assert '服务端库存写入未授权' in swift['TXInventory094Page.swift']
 assert 'MARKETING_VERSION: "1.0.0"' in project
-assert 'CURRENT_PROJECT_VERSION: "77"' in project
+assert 'CURRENT_PROJECT_VERSION: "78"' in project
 print("V1.0.0 RC1 PASS: routine UI, retained history, honest sync states")
 
 # RC2: directory is read-only except existing book selection.
@@ -620,3 +620,12 @@ assert 'TXProfitRuleDirectoryView()' in swift['TXBasicDirectoryView.swift']
 assert '"/api/v1/sync/push"' not in swift['TXProfitRuleDirectoryView.swift']
 assert (root.parent / 'Tests' / 'TXProfitRuleDirectoryTests.swift').exists()
 print("V1.0.0 RC7 PASS: test-only partner rename and read-only rule directory")
+
+assert '@Published var workDate = Date()' in swift["LedgerViewModel.swift"]
+assert 'TXWorkDayPolicy.swipeDays' in swift["AndroidStyleShell.swift"]
+assert 'TXPageDateHeader(title: "营业", date: $model.workDate)' in swift["Views.swift"]
+assert 'TXPageDateHeader(title: "采购", date: $model.workDate' in swift["PurchaseWorkspaceView.swift"]
+assert 'TXPageDateHeader(title: "库存", date: $model.workDate)' in swift["TXInventory094Page.swift"]
+assert 'TXDayBar(date: $model.workDate, label: "经营日期"' in swift["Views.swift"]
+assert 'MARKETING_VERSION: "1.0.1"' in project
+print("V1.0.1 UI parity shared operating date guard PASS")

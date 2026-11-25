@@ -1,0 +1,110 @@
+name: Build iOS V1.0.1 UI parity candidate
+
+on:
+  push:
+    branches:
+      - feature/ios-v1.0.1-ui-parity
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trollstore-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Verify isolated write endpoints and no generic business push
+        run: python3 ios/scripts/check_readonly.py
+      - name: Install iOS build utilities
+        run: brew install xcodegen ldid
+      - name: Generate AppIcon PNG resources
+        run: |
+          swift ios/scripts/generate_app_icon.swift
+          test -s ios/Assets.xcassets/AppIcon.appiconset/Icon-1024.png
+          sips -g pixelWidth -g pixelHeight ios/Assets.xcassets/AppIcon.appiconset/Icon-1024.png
+      - name: Generate Xcode project
+        run: cd ios && xcodegen generate
+      - name: Build iPhoneOS app without Apple certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project ios/TianXianFruit.xcodeproj \
+            -scheme TianXianFruit \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/tianxian-derived" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+      - name: Fake-sign executable and package TrollStore IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/tianxian-derived/Build/Products/Release-iphoneos/TianXianFruit.app"
+          test -d "$APP"
+          test -f "$APP/TianXianFruit"
+          ARCHS="$(lipo -archs "$APP/TianXianFruit")"
+          echo "$ARCHS" | grep -qw arm64
+          mkdir -p "$RUNNER_TEMP/trollstore/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/trollstore/Payload/TianXianFruit.app"
+          TARGET="$RUNNER_TEMP/trollstore/Payload/TianXianFruit.app"
+          # ldid is a non-Apple fake signer, not a substitute for App Store
+          # signing. No elevated/private entitlements are granted.
+          ldid -S "$TARGET/TianXianFruit"
+          cd "$RUNNER_TEMP/trollstore"
+          ditto -c -k --sequesterRsrc --keepParent Payload \
+            "$RUNNER_TEMP/TianXianFruit-iOS-v1.0.1-Build78-TrollStore.ipa"
+          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v1.0.1-Build78-TrollStore.ipa"
+      - name: Verify app bundle structure and deployment target
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, plistlib, zipfile
+          from pathlib import Path
+          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v1.0.1-Build78-TrollStore.ipa"
+          with zipfile.ZipFile(p) as z:
+              names = set(z.namelist())
+              base = "Payload/TianXianFruit.app/"
+              assert base + "Info.plist" in names, "Missing iOS Info.plist"
+              assert base + "TianXianFruit" in names, "Missing device executable"
+              info = plistlib.loads(z.read(base + "Info.plist"))
+              assert info["CFBundleIdentifier"] == "com.tianxian.fruit.ios"
+              assert info["CFBundleExecutable"] == "TianXianFruit"
+              assert info["CFBundleShortVersionString"] == "1.0.1"
+              assert info["CFBundleVersion"] == "78"
+              assert info["NSFaceIDUsageDescription"]
+              assert tuple(map(int, info["MinimumOSVersion"].split("."))) <= (15, 0)
+              assert not any(name.endswith(".mobileprovision") for name in names)
+          print("Verified arm64 TrollStore IPA, iOS minimum 15.0, no Apple profile")
+          PY
+      - name: Run iOS XCTest before artifact upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          SIM_ID="$(xcrun simctl list devices available -j | python3 -c '
+          import json,sys
+          j=json.load(sys.stdin)
+          ids=[d["udid"] for ds in j.get("devices",{}).values()
+                for d in ds if d.get("isAvailable",False) and "iPhone" in d.get("name","")]
+          print(ids[0] if ids else "")
+          ')"
+          test -n "$SIM_ID"
+          xcodebuild -project ios/TianXianFruit.xcodeproj \
+            -scheme TianXianFruit -configuration Debug \
+            -destination "platform=iOS Simulator,id=$SIM_ID" \
+            CODE_SIGNING_ALLOWED=NO test
+      - name: Upload installable-by-TrollStore test IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: TianXianFruit-iOS-v1.0.1-Build78-TrollStore
+          path: ${{ runner.temp }}/TianXianFruit-iOS-v1.0.1-Build78-TrollStore.ipa
+          if-no-files-found: error
+          retention-days: 14

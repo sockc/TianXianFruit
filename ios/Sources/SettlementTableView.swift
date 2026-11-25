@@ -142,7 +142,7 @@ extension SettlementTableDay {
 
 struct SettlementTableView: View {
     @EnvironmentObject private var model: LedgerViewModel
-    @State private var selectedDate = Date()
+    private var selectedDate: Date { model.workDate }
     @State private var range = "单日"
     @State private var showFilters = false
     @State private var location = ""
@@ -177,7 +177,13 @@ struct SettlementTableView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 7) {
+                Picker("结算模块", selection: $settlementSection) {
+                    Text("当日结算").tag("当日计算")
+                    Text("资金余额").tag("资金余额")
+                    Text("结算记录").tag("结算记录")
+                }
+                .pickerStyle(.segmented)
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("结算表").font(.title3.bold())
@@ -233,17 +239,12 @@ struct SettlementTableView: View {
                                     in: RoundedRectangle(cornerRadius: 10))
                     }
                 }
-                Picker("结算模块", selection: $settlementSection) {
-                    Text("当日计算").tag("当日计算")
-                    Text("资金余额").tag("资金余额")
-                    Text("结算记录").tag("结算记录")
-                }
-                .pickerStyle(.segmented)
+
 
                 if settlementSection == "当日计算" {
                 Text("已同步日结记录与当日实时计算预览分开展示。")
                     .font(.caption2).foregroundColor(.secondary)
-                TXDayBar(date: $selectedDate, label: "结算日期", allowFuture: false)
+                TXPageDateHeader(title: "当日结算", date: $model.workDate)
                     .onChange(of: selectedDate) { _ in visibleDays = 14 }
                 TXDailySettlement092Panel(date: BusinessDates.key(selectedDate))
                 DisclosureGroup(isExpanded: $showFilters) {
@@ -330,9 +331,9 @@ struct SettlementTableView: View {
                 }
 
                 } else if settlementSection == "资金余额" {
-                    TXFundOverviewPanel(cutoff: $selectedDate)
+                    TXFundOverviewPanel(cutoff: $model.workDate)
                 } else {
-                    TXSettlementHistory091Panel(date: $selectedDate,
+                    TXSettlementHistory091Panel(date: $model.workDate,
                         onDaily: {
                             range = "单日"
                             location = ""

@@ -146,7 +146,7 @@ struct PurchaseWorkspaceEditorView: View {
                                 lines.append(.blank())
                             }
                         } label: {
-                            Label("新增商品", systemImage: "plus.circle")
+                            Label("添加商品", systemImage: "plus.circle")
                         }
                         .disabled(lines.count >= PurchaseDraftPolicy.maxLines || hasPlanSource)
                     }
@@ -298,8 +298,8 @@ private struct PurchaseWorkspaceLineCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
                 Picker("商品", selection: $line.fruitSyncID) {
                     Text("请选择商品").tag("")
                     ForEach(fruits) { fruit in
@@ -340,7 +340,7 @@ private struct PurchaseWorkspaceLineCard: View {
                 input("数量", value: $line.quantity)
                 input("单价（元）", value: $line.unitPrice)
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text("小计").font(.caption2).foregroundColor(.secondary)
+                    Text("总价").font(.caption2).foregroundColor(.secondary)
                     Text(subtotal.map { "¥" + PurchaseDraftPolicy.display($0) } ??
                          "待核对")
                         .font(.subheadline.bold())
@@ -371,9 +371,9 @@ private struct PurchaseWorkspaceLineCard: View {
                 input("每件重量（斤）", value: $line.unitWeightJin)
             }
          }
-        .padding(12)
+        .padding(8)
         .background(Color(UIColor.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 12))
+                    in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func input(_ name: String, value: Binding<String>,
