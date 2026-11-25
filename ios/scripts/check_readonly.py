@@ -576,8 +576,8 @@ assert '"同步异常"' in swift['Views.swift']
 assert 'showConfirmedDrafts || attempt.phase != .confirmed || confirmedPurchaseChanged(attempt)' in swift['PurchaseWorkspaceView.swift']
 assert 'DisclosureGroup(isExpanded: $showAudit)' in swift['TXFundOverviewPanel.swift']
 assert '服务端库存写入未授权' in swift['TXInventory094Page.swift']
-assert 'MARKETING_VERSION: "1.0.1"' in project
-assert 'CURRENT_PROJECT_VERSION: "78"' in project
+assert 'MARKETING_VERSION: "1.0.2"' in project
+assert 'CURRENT_PROJECT_VERSION: "79"' in project
 print("V1.0.0 RC1 PASS: routine UI, retained history, honest sync states")
 
 # RC2: directory is read-only except existing book selection.
@@ -627,7 +627,7 @@ assert 'TXPageDateHeader(title: "营业", date: $model.workDate)' in swift["View
 assert 'TXPageDateHeader(title: "采购", date: $model.workDate' in swift["PurchaseWorkspaceView.swift"]
 assert 'TXPageDateHeader(title: "库存", date: $model.workDate)' in swift["TXInventory094Page.swift"]
 assert 'TXDayBar(date: $model.workDate, label: "经营日期"' in swift["Views.swift"]
-assert 'MARKETING_VERSION: "1.0.1"' in project
+assert 'MARKETING_VERSION: "1.0.2"' in project
 print("V1.0.1 UI parity shared operating date guard PASS")
 
 assert "Button(action: openInlineEditor)" in swift["PurchaseWorkspaceView.swift"]
@@ -671,3 +671,11 @@ assert "else {\n            stacked" in adaptive_ui
 assert 'IPHONEOS_DEPLOYMENT_TARGET: "15.0"' in project
 assert "if persisted { date = BusinessDates.parse(item.date) ?? date }" in swift["PurchaseWorkspaceView.swift"]
 print("V1.0.1 compact layout and keyboard guard PASS")
+
+reference_ui = swift["BusinessOvernightReference.swift"]
+assert '$0.kind == "OVERNIGHT"' in reference_ui
+assert "TXBusinessOvernightReferenceView(date: dateKey, partner: line.partnerSyncID)" in swift["BusinessLocalEntryView.swift"]
+assert "未自动扣减或计入营业额" in reference_ui
+assert "commitBusiness(" not in reference_ui and "sync/push" not in reference_ui
+assert (root.parent / "Tests" / "BusinessOvernightReferenceTests.swift").exists()
+print("V1.0.2 read-only collector/date overnight reference guard PASS")

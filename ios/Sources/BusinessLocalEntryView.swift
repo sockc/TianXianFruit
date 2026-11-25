@@ -511,6 +511,7 @@ struct BusinessLocalEntryView: View {
                         TXReceiptChannelInput(label: "支付宝", value: $line.alipay)
                         TXReceiptChannelInput(label: "现金", value: $line.cash)
                     }
+                    TXBusinessOvernightReferenceView(date: dateKey, partner: line.partnerSyncID)
                     if lines.count > 1,
                        let subtotal = TXBusinessReceiptPolicy.individual(line) {
                         HStack {
@@ -532,6 +533,12 @@ struct BusinessLocalEntryView: View {
                     Label("增加收款人", systemImage: "person.badge.plus")
                 }
             }
+            Button {
+                Task { await model.refreshCustomer() }
+            } label: {
+                Label(model.isCustomerBusy ? "同步凌晨来源中" : "核对云端凌晨收款", systemImage: "arrow.clockwise")
+                    .font(.caption)
+            }.disabled(model.isCustomerBusy || submitting || !scopeMatches)
             // One collector already sees all three channel amounts.
             // A second totals card only repeats those same figures.
             if lines.count > 1 {
