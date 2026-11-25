@@ -37,6 +37,7 @@ struct TXFundOverviewPanel: View {
     @State private var expandedDay = ""
     @State private var candidate: TXFundDataAdapter.Report?
     @State private var candidateKey = ""
+    @State private var showAudit = false
 
     private var calculationKey: String {
         [model.account?.username ?? "", model.selectedBookID ?? "", endDate,
@@ -98,9 +99,10 @@ struct TXFundOverviewPanel: View {
             TXDayBar(date: $cutoff, label: "资金截止日期", allowFuture: false)
             TXLedgerV33FundPanel(date: endDate)
             if model.lastSyncAt != nil {
+                DisclosureGroup(isExpanded: $showAudit) {
                 VStack(alignment: .leading, spacing: 7) {
                     HStack {
-                        Text("累计资金余额 · 跨端核对").font(.subheadline.bold())
+                        Text("本机历史重算").font(.subheadline.bold())
                         Spacer()
                         Button("计算核对") {
                             recalculate()
@@ -114,7 +116,7 @@ struct TXFundOverviewPanel: View {
                             Label(blocker, systemImage: "exclamationmark.triangle")
                                 .font(.caption).foregroundColor(.orange)
                         } else {
-                            Text("云端重建结果 · 尚未与安卓实机确认")
+                            Text("本机重算结果 · 不作为实际转账指令")
                                 .font(.caption.bold()).foregroundColor(.orange)
                             ForEach(candidate.rows) { row in
                                 HStack {
@@ -137,6 +139,10 @@ struct TXFundOverviewPanel: View {
                             }
                         }
                     }
+                }
+                .padding(.top, 6)
+                } label: {
+                    Label("余额计算详情", systemImage: "checklist").font(.caption)
                 }
                 .padding(10)
                 .background(Color(UIColor.secondarySystemGroupedBackground),
@@ -161,7 +167,7 @@ struct TXFundOverviewPanel: View {
                     }
                     .padding(.vertical, 5)
                 } label: {
-                    Label("累计余额核对 · 尚未验证", systemImage: "checklist")
+                    Label("原始资金记录检查", systemImage: "checklist")
                         .font(.subheadline.bold())
                 }
                 .padding(10)
@@ -275,7 +281,11 @@ struct TXFundOverviewPanel: View {
             }
             .buttonStyle(.bordered)
         }
-        .task(id: calculationKey) { recalculate() }
+        .task(id: calculationKey) {
+            candidate = nil; candidateKey = ""
+            if showAudit { recalculate() }
+        }
+        .onChange(of: showAudit) { open in if open { recalculate() } }
     }
 
     private func metric(_ title: String, _ value: Double) -> some View {

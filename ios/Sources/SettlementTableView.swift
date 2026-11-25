@@ -202,6 +202,7 @@ struct SettlementTableView: View {
                 .background(TXTheme.header,
                             in: RoundedRectangle(cornerRadius: 12))
 
+                if settlementSection == "结算记录" {
                 NavigationLink(destination: TXFundHistoryView()) {
                     HStack {
                         Label("资金余额与结清历史", systemImage: "clock.arrow.circlepath")
@@ -215,9 +216,10 @@ struct SettlementTableView: View {
                     .background(Color(UIColor.secondarySystemGroupedBackground),
                                 in: RoundedRectangle(cornerRadius: 11))
                 }
-                if TXTestBookAccess.isCandidate(model.selectedBook,
+                }
+                if settlementSection == "当日计算" && (TXTestBookAccess.isCandidate(model.selectedBook,
                                                  account: model.account,
-                                                 offline: model.isUsingCachedAuthorization) || model.settlementCloudBookAllowed {
+                                                 offline: model.isUsingCachedAuthorization) || model.settlementCloudBookAllowed) {
                     NavigationLink(destination: TXSettlementTestWorkbenchView(initialDate: selectedDate)) {
                         HStack(spacing: 8) {
                             Label("办理已保存转账", systemImage: "checkmark.circle")

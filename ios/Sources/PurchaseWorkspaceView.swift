@@ -125,6 +125,7 @@ struct PurchaseWorkspaceView: View {
     @State private var date = Date()
     @State private var request: PurchaseWorkspaceEditorRequest?
     @State private var showDrafts = true
+    @State private var showConfirmedDrafts = false
     @State private var showPlanDetails = false
     @State private var reconcilingID: String?
     @State private var reviewedID: String?
@@ -152,6 +153,12 @@ struct PurchaseWorkspaceView: View {
     }
     private var localDrafts: [PurchaseWorkspaceDraft] {
         workspace.drafts.filter { $0.date == day }
+    }
+    private var visibleDrafts: [PurchaseWorkspaceDraft] {
+        localDrafts.filter { draft in
+            guard let attempt = workspace.attempt(for: draft) else { return true }
+            return showConfirmedDrafts || attempt.phase != .confirmed || confirmedPurchaseChanged(attempt) || model.lastSyncAt == nil || model.isUsingCachedAuthorization
+        }
     }
     private var canEdit: Bool {
         guard workspace.storageReady,
@@ -220,10 +227,10 @@ struct PurchaseWorkspaceView: View {
                     Label(message, systemImage: "info.circle")
                         .font(.caption).foregroundColor(.secondary)
                 }
-                Text(canCommitCloud
-                     ? "本机采购保存后可同步，云端回读确认后才计入安卓采购。"
-                     : "当前账本尚未授权采购云端写入；本机录入不计入结算。")
-                    .font(.caption2).foregroundColor(.secondary)
+                if !canCommitCloud {
+                    Text("采购云端写入未授权，本机录入不计入结算。")
+                        .font(.caption2).foregroundColor(.orange)
+                }
                 SyncFooter()
             }
             .padding(12)
@@ -467,7 +474,7 @@ struct PurchaseWorkspaceView: View {
                 showDrafts.toggle()
             } label: {
                 HStack {
-                    Text("采购录入 · " + String(localDrafts.count))
+                    Text("本机采购 · " + String(visibleDrafts.count))
                         .font(.headline)
                     Spacer()
                     Image(systemName: showDrafts ? "chevron.up" : "chevron.down")
@@ -486,10 +493,11 @@ struct PurchaseWorkspaceView: View {
                 }
             }
             if showDrafts {
-                if localDrafts.isEmpty {
-                    notice("当前日期没有本机待提交采购")
+                if localDrafts.count > visibleDrafts.count || showConfirmedDrafts {
+                    Toggle("显示已同步录入", isOn: $showConfirmedDrafts).font(.caption)
                 }
-                ForEach(localDrafts) { draft in
+                if !visibleDrafts.isEmpty {
+                ForEach(visibleDrafts) { draft in
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text(draft.buyerName + " · " +
@@ -610,6 +618,9 @@ struct PurchaseWorkspaceView: View {
                     .background(Color(UIColor.secondarySystemGroupedBackground),
                                 in: RoundedRectangle(cornerRadius: 11))
                 }
+                } else {
+                    notice("没有待同步采购")
+                }
             }
         }
     }
@@ -617,7 +628,7 @@ struct PurchaseWorkspaceView: View {
     private var dailyOrderSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("正式采购订单").font(.headline)
+                Text("当日采购订单").font(.headline)
                 Spacer()
                 Text(String(dailyOrders.count) + " 单")
                     .font(.caption).foregroundColor(.secondary)
@@ -640,7 +651,7 @@ struct PurchaseWorkspaceView: View {
                 .buttonStyle(.plain)
             }
             if dailyOrders.isEmpty {
-                notice("当天尚未同步到正式采购订单")
+                notice("当天暂无已同步采购订单")
             }
         }
     }

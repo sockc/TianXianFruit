@@ -609,10 +609,10 @@ struct BusinessLocalEntryView: View {
                     if let warning = model.businessCommitError {
                         Text(warning).font(.caption).foregroundColor(.secondary)
                     }
-                    Text(cloudWriteAvailable
-                         ? "当前账本已有服务端写入授权；断线只恢复原操作，安卓端同步后可核对。"
-                         : "当前账本云端营业未授权；本机草稿不计入安卓营业或结算。")
-                        .font(.caption2).foregroundColor(.secondary)
+                    if !cloudWriteAvailable {
+                        Text("营业云端写入未授权，本机草稿不计入结算。")
+                            .font(.caption2).foregroundColor(.orange)
+                    }
                 }
             }
             .navigationTitle("营业录入")
