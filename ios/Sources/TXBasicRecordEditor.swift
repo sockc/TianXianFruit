@@ -50,7 +50,7 @@ struct TXBasicEdit: Codable, Equatable {
               row.payload["name"]?.text == name else { return false }
         if table == "fruit" {
             return row.payload["default_unit"]?.text == default_unit &&
-                TXFundDataAdapter.number(row.payload["enabled"]) == enabled.map(Double.init)
+                TXFundDataAdapter.number(row.payload["enabled"]) == enabled.map { Double($0) }
         }
         func coordinateMatches(_ key: String, _ wanted: String?) -> Bool {
             guard let wanted else { return false }
