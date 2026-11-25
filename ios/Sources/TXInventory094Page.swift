@@ -23,7 +23,8 @@ enum TXInventory094DraftStore {
         let file = try url(scope: scope)
         guard FileManager.default.fileExists(atPath: file.path) else { return [] }
         let values = try JSONDecoder().decode([TXInventory094Draft].self, from: Data(contentsOf: file))
-        guard Set(values.map(\.key)).count == values.count else {
+        guard Set(values.map(\.key)).count == values.count,
+              values.allSatisfy({ valid($0.remaining) && valid($0.loss) && !$0.basis.isEmpty }) else {
             throw CocoaError(.fileReadCorruptFile)
         }
         return values
@@ -66,6 +67,17 @@ struct TXInventory094Page: View {
         loadedScope == scope && loadedRevision == revision && storageOK && !model.isLedgerV33Busy && !model.v33HasPending && report?.issues.isEmpty == true &&
         TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
                                      offline: model.isUsingCachedAuthorization)
+    }
+
+    private var syncStatus: String {
+        if model.isLedgerV33Busy { return "正在同步" }
+        if model.v33HasPending { return "待核对上次同步结果" }
+        if !storageOK { return "库存尚未加载" }
+        if !TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
+                                         offline: model.isUsingCachedAuthorization) { return "库存只读" }
+        let count = drafts.count + prices.count
+        if count > 0 { return "\(count) 项待同步" }
+        return "已读取云端库存"
     }
 
     private func reload() {
@@ -116,7 +128,8 @@ struct TXInventory094Page: View {
 
     private func save(_ draft: TXInventory094Draft) {
         guard editable, TXInventory094DraftStore.valid(draft.remaining),
-              TXInventory094DraftStore.valid(draft.loss) else { return }
+              TXInventory094DraftStore.valid(draft.loss),
+              report?.rows.contains(where: { $0.key == draft.key && $0.basis == draft.basis }) == true else { return }
         var next = drafts.filter { $0.key != draft.key }
         next.append(draft)
         do {
@@ -136,6 +149,9 @@ struct TXInventory094Page: View {
                       (value.kind == .retail || $0.key.unit == value.unit) }),
                   value.basis == (value.kind == .cost ? row.manualBasis : row.retailBasis)
             else { error = "原始价格记录存在冲突，未保存"; return }
+            guard !next.contains(where: { $0.id == value.id && $0.basis != value.basis }) else {
+                error = "原价格草稿与云端版本冲突，未覆盖"; return
+            }
             next.removeAll { $0.id == value.id }
             next.append(value)
         }
@@ -193,13 +209,17 @@ struct TXInventory094Page: View {
                 TXDayBar(date: $day, label: "盘点日期", allowFuture: false)
                 TextField("查找商品", text: $search)
                     .textFieldStyle(.roundedBorder)
-                Text(editable ? "测试账本 · 本地草稿自动保存，尚未同步到安卓" :
-                     "云端库存只读；库存写入将在联合服务端升级后开放")
-                    .font(.caption2).foregroundColor(.secondary)
+                HStack(spacing: 5) {
+                    Image(systemName: model.isLedgerV33Busy ? "arrow.triangle.2.circlepath" :
+                          (model.v33HasPending ? "exclamationmark.icloud" : "icloud"))
+                    Text(syncStatus)
+                    Spacer(minLength: 0)
+                    if editable && autoEnabled { Text("自动保存").foregroundColor(TXTheme.primary) }
+                }.font(.caption2).foregroundColor(.secondary)
                 if !error.isEmpty { Text(error).font(.caption).foregroundColor(.red) }
                 TXLedgerV33InventoryActions(date: date, count: drafts.count + prices.count, onReload: reload)
-                if autoEnabled {
-                    Text(freshAutosaveSession ? "测试账本云端自动保存已启用 · 输入停止后提交" : "有上次遗留草稿，请先手动核对并同步；不会静默上传旧草稿")
+                if autoEnabled && !freshAutosaveSession && (!drafts.isEmpty || !prices.isEmpty) {
+                    Text("有上次遗留草稿，请手动核对并同步")
                         .font(.caption2).foregroundColor(.secondary)
                 }
                 if !autoMessage.isEmpty { Text(autoMessage).font(.caption2).foregroundColor(.secondary) }
@@ -239,6 +259,7 @@ struct TXInventory094Page: View {
                         ForEach(rows) { row in
                             TXInventory094Card(row: row, draft: drafts.first { $0.key == row.key },
                                                 editable: editable, onSave: save,
+                                                onInvalid: { autosaveDelay?.cancel() },
                                                 onPrice: { priceEditor = row })
                                 .id(revision + "|" + row.key.product + "|" + row.key.unit)
                         }
@@ -276,24 +297,26 @@ private struct TXInventory094Card: View {
     let draft: TXInventory094Draft?
     let editable: Bool
     let onSave: (TXInventory094Draft) -> Void
+    let onInvalid: () -> Void
     let onPrice: () -> Void
     @State private var remaining: String
     @State private var loss: String
 
     init(row: TXInventory094Policy.Row, draft: TXInventory094Draft?, editable: Bool,
-         onSave: @escaping (TXInventory094Draft) -> Void, onPrice: @escaping () -> Void) {
+         onSave: @escaping (TXInventory094Draft) -> Void, onInvalid: @escaping () -> Void,
+         onPrice: @escaping () -> Void) {
         self.row = row; self.draft = draft; self.editable = editable; self.onSave = onSave
-        self.onPrice = onPrice
+        self.onPrice = onPrice; self.onInvalid = onInvalid
         _remaining = State(initialValue: draft?.remaining ?? Self.text(row.remaining))
         _loss = State(initialValue: draft?.loss ?? Self.text(row.loss))
     }
     private static func text(_ n: Double) -> String {
-        String(format: "%.3f", n).replacingOccurrences(of: #"\.?0+$"#, with: "", options: .regularExpression)
+        TXLedgerV33AutosavePolicy.quantityText(n)
     }
     private var conflict: Bool { draft.map { $0.basis != row.basis } ?? false }
     private var valid: Bool { TXInventory094DraftStore.valid(remaining) && TXInventory094DraftStore.valid(loss) }
     private func save() {
-        guard editable, !conflict, valid else { return }
+        guard editable, !conflict, valid else { onInvalid(); return }
         onSave(TXInventory094Draft(key: row.key, basis: row.basis,
                                    remaining: remaining, loss: loss))
     }
@@ -311,7 +334,7 @@ private struct TXInventory094Card: View {
                 Spacer(minLength: 2)
                 Text(row.purchased > 0.000001 ? "今日有采购" : "无采购")
                     .font(.caption2).foregroundColor(row.purchased > 0.000001 ? TXTheme.primary : .primary)
-                if row.savedID != nil { Image(systemName: "checkmark").foregroundColor(TXTheme.primary).font(.caption) }
+                if row.savedID != nil && draft == nil && !row.usesLocalCost && !row.usesLocalRetail { Image(systemName: "checkmark").foregroundColor(TXTheme.primary).font(.caption) }
             }
             HStack(spacing: 5) {
                 Text("成本 " + (row.cost.map { Self.text($0) + "元/" + row.key.unit } ?? "缺失"))
@@ -406,7 +429,7 @@ private struct TXInventory095PriceEditor: View {
                     if editCost {
                         TextField("元/" + row.key.unit, text: $cost).keyboardType(.decimalPad)
                     }
-                    Text("有效采购价优先；参考成本仅在没有有效采购价时使用。本地预览限所选日期，不修改历史进价。")
+                    Text("有效采购价优先；参考成本仅在没有有效采购价时使用。参考成本不覆盖历史进价。")
                         .font(.caption).foregroundColor(.secondary)
                 }
                 Section(header: Text("每日零售价")) {
@@ -420,7 +443,7 @@ private struct TXInventory095PriceEditor: View {
                         .font(.caption).foregroundColor(.secondary)
                 }
                 Section {
-                    Button("保存本地价格草稿") {
+                    Button("保存价格") {
                         var values: [TXInventory095PriceDraft] = []
                         if editCost, let basis = row.manualBasis {
                             values.append(.init(kind: .cost, product: row.key.product, unit: row.key.unit,
@@ -433,7 +456,7 @@ private struct TXInventory095PriceEditor: View {
                         }
                         onSave(values, revision)
                     }.disabled(!valid)
-                    Text("尚未同步到安卓，不会修改正式账本。").font(.caption).foregroundColor(.orange)
+                    Text("先保存本地，再按当前账本权限同步。").font(.caption).foregroundColor(.orange)
                 }
             }
             .navigationTitle("库存价格")
