@@ -1,0 +1,11 @@
+*.xcodeproj/
+*.xcworkspace/
+*.xcuserstate
+DerivedData/
+build/
+*.xcarchive
+*.ipa
+*.mobileprovision
+*.p12
+*.cer
+ExportOptions.plist
