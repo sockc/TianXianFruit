@@ -183,6 +183,12 @@ enum TXBusinessV2Readback {
 /// One durable immutable reservation per account/book/date/store, never
 /// delete, overwrite or automatically retry. A crash after reserve is unknown.
 final class TXBusinessV2Outbox {
+    static func requireV1Free(book: CloudBook, account: String, date: String, storeID: String) throws {
+        guard book.name.hasPrefix("iOS_TEST_") else { return }
+        let scope = TXBusinessV2EditorScope(account: account, book: book.id, date: date, storeID: storeID, storeName: "")
+        guard try TXBusinessV2Outbox().load(scope) == nil else { throw BusinessAtomicError.locked }
+    }
+
     private var db: OpaquePointer?
     init(url: URL? = nil) throws {
         let file = url ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

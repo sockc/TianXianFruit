@@ -66,5 +66,63 @@ final class BusinessV2DraftTests: XCTestCase {
         XCTAssertEqual(natural.first?["previous_revision"] as? Int, 4)
         XCTAssertThrowsError(try TXBusinessV2DraftPolicy.prepare(draft, scope: scope, account: account, book: formal,
             records: records, events: [source]))
+        let immutable = TXBusinessV2Immutable(scope: scope, prepared: prepared)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let outbox = try TXBusinessV2Outbox(url: folder.appendingPathComponent("v2.sqlite"))
+        XCTAssertNil(try outbox.load(scope))
+        try outbox.reserve(immutable)
+        XCTAssertEqual(try outbox.load(scope), immutable)
+        XCTAssertThrowsError(try outbox.reserve(immutable))
+        let reopened = try TXBusinessV2Outbox(url: folder.appendingPathComponent("v2.sqlite"))
+        XCTAssertEqual(try reopened.load(scope), immutable)
+        let bodyWithDevice = try XCTUnwrap(JSONSerialization.jsonObject(with: immutable.body(deviceID: "device")) as? [String: Any])
+        XCTAssertEqual(bodyWithDevice["payload_hash"] as? String, prepared.hash)
+        XCTAssertEqual(bodyWithDevice["device_id"] as? String, "device")
+
+        let saleID = BusinessUploadPolicy.androidSyncID(date: scope.date, storeSyncID: scope.storeID)
+        let receipt = TXBusinessV2Receipt(status: "committed", operation_id: prepared.proposal.operationID,
+            book_id: scope.book, record_sync_id: saleID, collector_sync_ids: [partner],
+            payload_hash: prepared.hash, sync_cursor: 22,
+            overnight_receipts: [.init(partner_sync_id: partner, previous_revision: 4, following_revision: 1, natural_revision: 1)],
+            expense_payer_sync_id: payer)
+        XCTAssertTrue(receipt.matches(immutable))
+        var readbackRecords = records
+        readbackRecords[1] = SyncEvent(tableName: "partner", syncId: partner, rowVersion: 1, operation: "UPSERT",
+            payload: ["id": .number(42), "name": .string("收款人")])
+        readbackRecords[2] = SyncEvent(tableName: "partner", syncId: payer, rowVersion: 1, operation: "UPSERT",
+            payload: ["id": .exactInteger(9007199254740993), "name": .string("付款人")])
+        let split = """
+        [{"partner_id":42,"amount":9,"wechat_income":9,"alipay_income":0,"cash_income":0}]
+        """
+        let sale: [String: JSONValue] = ["date": .string(scope.date), "store_sync_id": .string(scope.storeID),
+            "store_name": .string(scope.storeName), "revenue": .number(9), "wechat_income": .number(9),
+            "alipay_income": .number(0), "cash_income": .number(0), "expense": .number(1), "profit": .number(8),
+            "opening_stock_value": .number(0), "stock_left_value": .number(0), "actual_start_time": .string("16:00"),
+            "actual_end_time": .string("00:30"), "expense_payer_id": .exactInteger(9007199254740993),
+            "receipt_splits_json": .string(split)]
+        readbackRecords.append(SyncEvent(tableName: "store_daily_record", syncId: saleID,
+            rowVersion: 1, operation: "UPSERT", payload: sale))
+        let following = CustomerChangeEvent(kind: "OVERNIGHT", key: "2026-11-26|" + partner, revision: 1,
+            payload: ["date": .string("2026-11-26"), "partner_sync_id": .string(partner), "wechat": .number(2),
+                "alipay": .number(0), "cash": .number(0), "wechat_recorded": .bool(true),
+                "alipay_recorded": .bool(false), "cash_recorded": .bool(false)])
+        let provenance = CustomerChangeEvent(kind: "NATURAL", key: scope.date + "|" + partner, revision: 1,
+            payload: ["date": .string(scope.date), "partner_sync_id": .string(partner),
+                "store_sync_id": .string(scope.storeID), "wechat": .number(10), "alipay": .number(0), "cash": .number(0),
+                "saved_wechat": .number(9), "saved_alipay": .number(0), "saved_cash": .number(0),
+                "deduct_wechat": .bool(true), "deduct_alipay": .bool(true), "deduct_cash": .bool(true)])
+        XCTAssertTrue(TXBusinessV2Readback.verified(immutable, receipt: receipt, records: readbackRecords,
+            events: [source, following, provenance], ledgerCursor: 22))
+        XCTAssertFalse(TXBusinessV2Readback.verified(immutable, receipt: receipt, records: readbackRecords,
+            events: [source, following], ledgerCursor: 22))
+        XCTAssertFalse(TXBusinessV2Readback.verified(immutable, receipt: receipt, records: readbackRecords,
+            events: [source, following, provenance], ledgerCursor: 21))
+        var badSale = sale
+        badSale["expense_payer_id"] = .exactInteger(9007199254740992)
+        readbackRecords[3] = SyncEvent(tableName: "store_daily_record", syncId: saleID,
+            rowVersion: 2, operation: "UPSERT", payload: badSale)
+        XCTAssertFalse(TXBusinessV2Readback.verified(immutable, receipt: receipt, records: readbackRecords,
+            events: [source, following, provenance], ledgerCursor: 22))
     }
 }

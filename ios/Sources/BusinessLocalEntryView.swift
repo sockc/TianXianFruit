@@ -307,6 +307,9 @@ struct BusinessLocalEntryView: View {
             return
         }
         do {
+            if let book = model.selectedBook {
+                try TXBusinessV2Outbox.requireV1Free(book: book, account: account, date: dateKey, storeID: storeID)
+            }
             // Local drafts are allowed before all amounts are complete.
             // Server upload still requires readyForCloud and the atomic policy.
             guard !lines.isEmpty, lines.count <= 12 else {

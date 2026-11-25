@@ -8,6 +8,7 @@ enum BusinessFormalSubmit {
                           draft: BusinessLocalDraft) async throws -> BusinessCommitProposal {
         guard let account = model.account, let book = model.selectedBook,
               !model.isUsingCachedAuthorization else { throw BusinessAtomicError.scope }
+        try TXBusinessV2Outbox.requireV1Free(book: book, account: account.username, date: draft.date, storeID: draft.storeID)
         await model.refreshBusinessCommitCapabilities()
         guard model.businessCommitCapabilities?.allows(book: book) == true else {
             throw BusinessAtomicError.unavailable

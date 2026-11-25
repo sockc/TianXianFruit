@@ -715,3 +715,7 @@ assert swift["LedgerViewModel.swift"].index("try outbox.reserve(immutable)") < s
 assert "capabilities.allowsTest" in regular
 assert "查询原操作并核对" in v2editor
 print("V1.0.2 V2 test capability, immutable reserve and two-stream readback guard PASS")
+
+assert "requireV1Free" in swift["BusinessFormalSubmit.swift"] and "requireV1Free" in swift["BusinessLocalEntryView.swift"]
+assert "guard book.name.hasPrefix(\"iOS_TEST_\") else { return }" in v2tx
+print("V1.0.2 V2 reservation protects legacy test-book entry PASS")

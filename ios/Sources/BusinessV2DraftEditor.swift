@@ -264,7 +264,7 @@ struct TXBusinessV2DraftEditor: View {
     }
 
     private func send(_ request: TXBusinessV2Immutable) async {
-        guard !working, permitted, reserved == nil, prepared == request.prepared else { return }
+        guard !working, permitted, serverAllowed, sourcesReady, reserved == nil, prepared == request.prepared else { return }
         working = true
         defer { working = false }
         do {
@@ -375,7 +375,7 @@ struct TXBusinessV2DraftEditor: View {
             .onChange(of: model.lastSyncAt) { _ in prepared = nil }
             .onChange(of: sourcesReady) { ready in if !ready { prepared = nil } }
             .onChange(of: permitted) { allowed in if !allowed { prepared = nil; dismiss() } }
-            .confirmationDialog("确认提交到隔离测试账本？", isPresented: $showSend, titleVisibility: .visible) {
+            .alert("确认提交到隔离测试账本？", isPresented: $showSend) {
                 Button("确认提交") {
                     if let prepared { let value = TXBusinessV2Immutable(scope: scope, prepared: prepared); Task { await send(value) } }
                 }
