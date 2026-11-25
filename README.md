@@ -1,8 +1,8 @@
 # 天鲜账本
 
-用于水果经营的 Android 账本：采购、库存盘点、营业收款、合伙人资金结算、统计、天气和云同步。
+用于水果经营的 Android / iOS 账本：采购、库存盘点、营业收款、合伙人资金结算、统计、天气和云同步。
 
-当前 Android 源码版本：**V1.4.7.134**，versionCode **172**（以 `app/build.gradle` 为准）。实际已发布安装包以 GitHub Releases 页面为准；正式 APK 必须经自动测试、签名验证和 GitHub Release 发布；跨设备并发冲突仍需持续监测。
+当前 Android 源码版本：**V1.4.7.135**，versionCode **173**（以 `app/build.gradle` 为准）。实际已发布安装包以 GitHub Releases 页面为准；正式 APK 必须经自动测试、签名验证和 GitHub Release 发布；跨设备并发冲突仍需持续监测。
 
 ## 经营口径
 
@@ -21,7 +21,7 @@ python3 -m unittest discover -s tests -v
 gradle :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
-正式发布工作流使用 GitHub Secrets `SIGNING_KEY_BASE64`、`KEYSTORE_PASSWORD`、`KEY_ALIAS`，构建并验证签名后发布 APK。
+正式发布工作流使用 GitHub Secrets `SIGNING_KEY_BASE64`、`KEYSTORE_PASSWORD`、`KEY_ALIAS`，构建并验证签名。V1.4.7.135 采用联合工作流：双端候选包验证和实机验收后，在 main 明确确认 APK 与 IPA 联合发布。
 
 ## 检查
 
@@ -38,4 +38,4 @@ PR 执行业务边界单元测试、SQLite 同步回归测试、Android Lint 和
 
 ## 代码范围
 
-此仓库包含 Android 客户端和 TXB 服务器管理脚本，不包含完整同步服务器及 Web 客户端。服务器脚本复用现有 TXB 工具链，不改变备份格式。
+此仓库包含 Android、iOS 客户端和 TXB 服务器管理脚本，不包含完整同步服务器及 Web 客户端。服务器脚本复用现有 TXB 工具链，不改变备份格式。
