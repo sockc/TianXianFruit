@@ -663,6 +663,11 @@ print("V1.0.1 settlement presentation and grouped settings guard PASS")
 assert "keyboardWillShowNotification" in swift["Views.swift"]
 assert "keyboardWillHideNotification" in swift["Views.swift"]
 assert "if !keyboardVisible" in swift["Views.swift"]
-assert "ViewThatFits(in: .horizontal)" in swift["TXInventory094Page.swift"]
+assert swift["TXInventory094Page.swift"].count("TXAdaptiveHorizontal {") == 2
+adaptive_ui = swift["AndroidStyleShell.swift"].split("struct TXAdaptiveHorizontal<", 1)[1].split("struct TXCompactMetric", 1)[0]
+assert "if #available(iOS 16.0, *)" in adaptive_ui
+assert "ViewThatFits(in: .horizontal)" in adaptive_ui
+assert "else {\n            stacked" in adaptive_ui
+assert 'IPHONEOS_DEPLOYMENT_TARGET: "15.0"' in project
 assert "if persisted { date = BusinessDates.parse(item.date) ?? date }" in swift["PurchaseWorkspaceView.swift"]
 print("V1.0.1 compact layout and keyboard guard PASS")

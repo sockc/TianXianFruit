@@ -127,6 +127,29 @@ struct TXPageDateHeader: View {
     }
 }
 
+/// iOS 16 can measure intrinsic widths; iOS 15 deliberately uses the
+/// readable stacked layout. Keep the existing deployment target unchanged.
+struct TXAdaptiveHorizontal<Compact: View, Stacked: View>: View {
+    private let compact: Compact
+    private let stacked: Stacked
+
+    init(@ViewBuilder compact: () -> Compact, @ViewBuilder stacked: () -> Stacked) {
+        self.compact = compact()
+        self.stacked = stacked()
+    }
+
+    var body: some View {
+        if #available(iOS 16.0, *) {
+            ViewThatFits(in: .horizontal) {
+                compact
+                stacked
+            }
+        } else {
+            stacked
+        }
+    }
+}
+
 /// Small tinted metric tile, readable in both device appearances.
 struct TXCompactMetric: View {
     let title: String

@@ -182,13 +182,14 @@ struct TXInventory094Page: View {
         let carried = rows.filter { $0.purchased <= 0.000001 && $0.opening > 0.000001 }.count
         let closing = known.isEmpty ? "—" : known.compactMap(\.closingCost).reduce(0,+).formatted(.currency(code: "CNY").precision(.fractionLength(0)))
         return VStack(alignment: .leading, spacing: 4) {
-            ViewThatFits(in: .horizontal) {
+            TXAdaptiveHorizontal {
                 HStack(spacing: 4) {
                     TXCompactMetric(title: "库存商品", value: "\(rows.count)种", tint: .green).frame(minWidth: 65)
                     TXCompactMetric(title: "今日采购", value: "\(purchased)种", tint: .blue).frame(minWidth: 65)
                     TXCompactMetric(title: "仅结转", value: "\(carried)种", tint: .orange).frame(minWidth: 65)
                     TXCompactMetric(title: "剩余价值", value: closing, tint: .purple).frame(minWidth: 90)
                 }
+            } stacked: {
                 VStack(spacing: 4) {
                     HStack(spacing: 4) {
                         TXCompactMetric(title: "库存商品", value: "\(rows.count)种", tint: .green)
@@ -369,13 +370,14 @@ private struct TXInventory094Card: View {
     }
 
     private var productHeader: some View {
-        ViewThatFits(in: .horizontal) {
+        TXAdaptiveHorizontal {
             HStack(spacing: 3) {
                 Text(row.name).font(.subheadline.bold()).fixedSize()
                 Spacer(minLength: 0)
                 productPrice.fixedSize()
                 productStatus
             }
+        } stacked: {
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
                     Text(row.name).font(.subheadline.bold()).fixedSize(horizontal: false, vertical: true)
