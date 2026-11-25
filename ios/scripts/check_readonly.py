@@ -632,8 +632,17 @@ print("V1.0.1 UI parity shared operating date guard PASS")
 
 assert "Button(action: openInlineEditor)" in swift["PurchaseWorkspaceView.swift"]
 assert "onClose: closeInlineEditor" in swift["PurchaseWorkspaceView.swift"]
-assert "guard !inlinePurchaseEditing else { return }" in swift["LedgerViewModel.swift"]
-assert ".disabled(model.inlinePurchaseEditing)" in swift["Views.swift"]
+assert "guard !inlineLedgerEditing else { return }" in swift["LedgerViewModel.swift"]
+assert ".disabled(model.inlineLedgerEditing)" in swift["Views.swift"]
 assert "showDiscardConfirmation" in swift["PurchaseWorkspaceEditorView.swift"]
 assert "private var quantityRow: some View" in swift["TXInventory094Page.swift"]
 print("V1.0.1 inline purchase and inventory type-check split guard PASS")
+
+assert "openBusinessEditor(storeID: filteredStoreID)" in swift["Views.swift"]
+assert "onClose: closeBusinessEditor" in swift["Views.swift"]
+assert ".sheet(isPresented: $showLocalEntry)" not in swift["Views.swift"]
+assert "expectedBookID == bookID" in swift["BusinessLocalEntryView.swift"]
+assert "guard scopeMatches, !submitting" in swift["BusinessLocalEntryView.swift"]
+assert "inlinePurchaseEditing || inlineBusinessEditing" in swift["LedgerViewModel.swift"]
+assert "showCloseConfirmation" in swift["BusinessLocalEntryView.swift"]
+print("V1.0.1 inline business entry and account/book isolation guard PASS")

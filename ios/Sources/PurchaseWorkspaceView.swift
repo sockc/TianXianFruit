@@ -333,7 +333,7 @@ struct PurchaseWorkspaceView: View {
     }
 
     private func openInlineEditor() {
-        guard canEdit, request == nil, !inlineEntry, !model.inlinePurchaseEditing else { return }
+        guard canEdit, request == nil, !inlineEntry, !model.inlineLedgerEditing else { return }
         savedPurchaseToConfirmID = nil
         model.inlinePurchaseEditing = true
         inlineEntry = true

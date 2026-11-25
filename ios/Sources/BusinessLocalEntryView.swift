@@ -106,7 +106,16 @@ struct BusinessLocalEntryView: View {
     @State private var showSwitchConfirmation = false
     @State private var showCloseConfirmation = false
 
-    init(date: Date, preferredStoreID: String? = nil) {
+    private let onClose: ((Date) -> Void)?
+    private let expectedAccount: String?
+    private let expectedBookID: String?
+
+    init(date: Date, preferredStoreID: String? = nil,
+         expectedAccount: String? = nil, expectedBookID: String? = nil,
+         onClose: ((Date) -> Void)? = nil) {
+        self.expectedAccount = expectedAccount
+        self.expectedBookID = expectedBookID
+        self.onClose = onClose
         _date = State(initialValue: date)
         _storeID = State(initialValue: preferredStoreID ?? "")
     }
@@ -114,6 +123,10 @@ struct BusinessLocalEntryView: View {
     private var account: String { model.account?.username ?? "" }
     private var bookID: String { model.selectedBookID ?? "" }
     private var dateKey: String { BusinessDates.key(date) }
+    private var scopeMatches: Bool {
+        (expectedAccount == nil || expectedAccount?.lowercased() == account.lowercased()) &&
+        (expectedBookID == nil || expectedBookID == bookID)
+    }
     private var persistedDraft: BusinessLocalDraft? {
         BusinessLocalDraftStore.load(account: account, bookID: bookID)
             .first { $0.date == dateKey && $0.storeID == storeID }
@@ -144,7 +157,7 @@ struct BusinessLocalEntryView: View {
 
     private var guardedDate: Binding<Date> {
         Binding(get: { date }, set: { next in
-            guard BusinessDates.key(next) != dateKey else { return }
+            guard scopeMatches, !submitting, BusinessDates.key(next) != dateKey else { return }
             if hasUnsavedInput {
                 pendingDate = next
                 pendingStoreID = nil
@@ -158,7 +171,7 @@ struct BusinessLocalEntryView: View {
 
     private var guardedStore: Binding<String> {
         Binding(get: { storeID }, set: { next in
-            guard next != storeID else { return }
+            guard scopeMatches, !submitting, next != storeID else { return }
             if hasUnsavedInput {
                 pendingStoreID = next
                 pendingDate = nil
@@ -210,7 +223,7 @@ struct BusinessLocalEntryView: View {
     }
 
     private var editingAllowed: Bool {
-        guard let book = model.selectedBook, book.isAvailable, !account.isEmpty else { return false }
+        guard scopeMatches, let book = model.selectedBook, book.isAvailable, !account.isEmpty else { return false }
         return ["OWNER", "SUPERADMIN", "EDITOR"].contains(book.role.uppercased())
     }
 
@@ -226,7 +239,7 @@ struct BusinessLocalEntryView: View {
     }
 
     private func loadDraft() {
-        guard !storeID.isEmpty else { return }
+        guard scopeMatches, !storeID.isEmpty else { return }
         let existing: BusinessLocalDraft?
         do {
             existing = try BusinessLocalDraftStore.loadChecked(
@@ -355,7 +368,7 @@ struct BusinessLocalEntryView: View {
     }
 
     private func checkOriginalOperation() async {
-        guard !submitting, let saved = attempt else { return }
+        guard scopeMatches, !submitting, let saved = attempt else { return }
         submitting = true
         defer { submitting = false; loadAttempt() }
         do {
@@ -375,7 +388,7 @@ struct BusinessLocalEntryView: View {
     }
 
     private func resumeOriginal() async {
-        guard !submitting, canResumeOriginal, let stored = attempt,
+        guard scopeMatches, !submitting, canResumeOriginal, let stored = attempt,
               model.businessCloudBookAllowed else { return }
         submitting = true
         defer { submitting = false; loadAttempt() }
@@ -390,249 +403,309 @@ struct BusinessLocalEntryView: View {
         }
     }
 
-    var body: some View {
-        NavigationView {
-            Form {
-                Section(header: Text("营业日期、位置与时间")) {
-                    TXDayBar(date: guardedDate, label: "营业日期", allowFuture: false)
-                    HStack(spacing: 8) {
-                        Picker("营业位置", selection: guardedStore) {
-                            Text("请选择位置").tag("")
-                            ForEach(model.snapshot.testStores) { store in
-                                Text(store.name).tag(store.id)
-                            }
-                        }
-                        .pickerStyle(MenuPickerStyle())
-                        .accessibilityLabel("营业位置")
-                    }
-                    HStack(spacing: 5) {
-                        Text("营业时间").font(.caption)
-                        Spacer(minLength: 6)
-                        TextField("16:00", text: $startTime)
-                            .keyboardType(.numbersAndPunctuation)
-                            .multilineTextAlignment(.center)
-                            .frame(width: 61)
-                            .textFieldStyle(.roundedBorder)
-                            .accessibilityLabel("实际开摊时间")
-                        Text("—").foregroundColor(.secondary)
-                        TextField("00:10", text: $endTime)
-                            .keyboardType(.numbersAndPunctuation)
-                            .multilineTextAlignment(.center)
-                            .frame(width: 61)
-                            .textFieldStyle(.roundedBorder)
-                            .accessibilityLabel("实际收摊时间")
-                    }
-                    if let remoteRecord {
-                        Label("云端已有该日该位置营业，不能重复新增。",
-                              systemImage: "checkmark.shield")
-                            .font(.caption).foregroundColor(.orange)
-                        NavigationLink(destination: BusinessCloudDetailView(
-                            recordSyncID: remoteRecord.syncId, bookID: bookID)) {
-                            Label("查看这笔云端营业", systemImage: "doc.text.magnifyingglass")
-                        }
+    private var receiptPreview: String {
+        guard let total = TXBusinessReceiptPolicy.summary(lines) else { return "待核对" }
+        return (Double(total.combined) / 100.0).formatted(.currency(code: "CNY"))
+    }
+
+    private func closeEditor() {
+        guard !submitting else { return }
+        if let onClose { onClose(date) }
+        else { dismiss() }
+    }
+
+    private func requestClose() {
+        guard !submitting else { return }
+        if hasUnsavedInput { showCloseConfirmation = true }
+        else { closeEditor() }
+    }
+
+    private var locationFields: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TXDayBar(date: guardedDate, label: "营业日期", allowFuture: false)
+            HStack(spacing: 8) {
+                Picker("营业位置", selection: guardedStore) {
+                    Text("请选择位置").tag("")
+                    ForEach(model.snapshot.testStores) { store in
+                        Text(store.name).tag(store.id)
                     }
                 }
-                Section(header: Text("收款人及金额（元）")) {
-                    ForEach($lines) { $line in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                if model.snapshot.testPartners.count == 1,
-                                   let person = model.snapshot.testPartners.first {
-                                    Text(person.name).font(.subheadline.bold())
-                                } else {
-                                    Picker("收款人", selection: $line.partnerSyncID) {
-                                        Text("请选择收款人").tag("")
-                                        ForEach(model.snapshot.testPartners) { person in
-                                            Text(person.name).tag(person.id)
-                                        }
-                                    }
-                                }
-                                Spacer(minLength: 4)
-                                if lines.count > 1 {
-                                    Button(role: .destructive) {
-                                        lines.removeAll { $0.id == line.id }
-                                    } label: {
-                                        Image(systemName: "minus.circle")
-                                    }.accessibilityLabel("移除收款人")
-                                }
-                            }
-                            HStack(spacing: 7) {
-                                TXReceiptChannelInput(label: "微信", value: $line.wechat)
-                                TXReceiptChannelInput(label: "支付宝", value: $line.alipay)
-                                TXReceiptChannelInput(label: "现金", value: $line.cash)
-                            }
-                            if lines.count > 1,
-                               let subtotal = TXBusinessReceiptPolicy.individual(line) {
-                                HStack {
-                                    Text("该收款人小计")
-                                        .font(.caption2).foregroundColor(.secondary)
-                                    Spacer()
-                                    Text((Double(subtotal) / 100.0)
-                                         .formatted(.currency(code: "CNY")))
-                                        .font(.caption.bold())
-                                }
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    }
-                    if lines.count < 12 {
-                        Button {
-                            lines.append(BusinessCollectorDraftLine())
-                        } label: {
-                            Label("增加收款人", systemImage: "person.badge.plus")
-                        }
-                    }
-                    // One collector already sees all three channel amounts.
-                    // A second totals card only repeats those same figures.
-                    if lines.count > 1 {
-                        TXBusinessReceiptSummaryView(lines: lines)
-                    }
+                .pickerStyle(MenuPickerStyle())
+                .accessibilityLabel("营业位置")
+            }
+            HStack(spacing: 5) {
+                Text("营业时间").font(.caption)
+                Spacer(minLength: 6)
+                TextField("16:00", text: $startTime)
+                    .keyboardType(.numbersAndPunctuation)
+                    .multilineTextAlignment(.center)
+                    .frame(width: 61)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("实际开摊时间")
+                Text("—").foregroundColor(.secondary)
+                TextField("00:10", text: $endTime)
+                    .keyboardType(.numbersAndPunctuation)
+                    .multilineTextAlignment(.center)
+                    .frame(width: 61)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("实际收摊时间")
+            }
+            if let remoteRecord {
+                Label("云端已有该日该位置营业，不能重复新增。",
+                      systemImage: "checkmark.shield")
+                    .font(.caption).foregroundColor(.orange)
+                if onClose == nil {
+NavigationLink(destination: BusinessCloudDetailView(
+                    recordSyncID: remoteRecord.syncId, bookID: bookID)) {
+                    Label("查看这笔云端营业", systemImage: "doc.text.magnifyingglass")
                 }
-                Section(header: Text("营业成本与利润依据（同步前必填）")) {
-                    amount("日常开销", value: $expense)
-                    HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("开摊库存估值").font(.caption2).foregroundColor(.secondary)
-                            TXFastNumericField(text: $openingStock, label: "开摊库存估值").frame(height: 36)
+}
+            }
+        }
+    }
+
+    private var receiptFields: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach($lines) { $line in
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        if model.snapshot.testPartners.count == 1,
+                           let person = model.snapshot.testPartners.first {
+                            Text(person.name).font(.subheadline.bold())
+                        } else {
+                            Picker("收款人", selection: $line.partnerSyncID) {
+                                Text("请选择收款人").tag("")
+                                ForEach(model.snapshot.testPartners) { person in
+                                    Text(person.name).tag(person.id)
+                                }
+                            }
                         }
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("收摊库存估值").font(.caption2).foregroundColor(.secondary)
-                            TXFastNumericField(text: $closingStock, label: "收摊库存估值").frame(height: 36)
+                        Spacer(minLength: 4)
+                        if lines.count > 1 {
+                            Button(role: .destructive) {
+                                lines.removeAll { $0.id == line.id }
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }.accessibilityLabel("移除收款人")
                         }
                     }
-                    if let preview {
+                    HStack(spacing: 7) {
+                        TXReceiptChannelInput(label: "微信", value: $line.wechat)
+                        TXReceiptChannelInput(label: "支付宝", value: $line.alipay)
+                        TXReceiptChannelInput(label: "现金", value: $line.cash)
+                    }
+                    if lines.count > 1,
+                       let subtotal = TXBusinessReceiptPolicy.individual(line) {
                         HStack {
-                            Text("本摊营业额").foregroundColor(.secondary)
+                            Text("该收款人小计")
+                                .font(.caption2).foregroundColor(.secondary)
                             Spacer()
-                            Text("¥" + preview.revenue).font(.headline.bold())
+                            Text((Double(subtotal) / 100.0)
+                                 .formatted(.currency(code: "CNY")))
+                                .font(.caption.bold())
                         }
-                        HStack {
-                            Text("按填入数值计算的利润").foregroundColor(.secondary)
-                            Spacer()
-                            Text("¥" + preview.profit).font(.headline.bold())
-                        }
-                    } else {
-                        Text("确认每位收款人金额，以及支出、开摊和收摊库存估值后，显示利润预览。")
-                            .font(.caption).foregroundColor(.secondary)
                     }
-                    Text("可以先保存未填完的营业草稿。利润沿用安卓规则；云端提交前必须补齐真实成本，不能把缺失值当作零。")
-                        .font(.caption).foregroundColor(.secondary)
                 }
-                Section {
-                    TextField("营业备注（仅本机，不参与结算）", text: $note)
-                    Text("营业时间可跨午夜，格式 HH:mm；不自动扣减凌晨收款。")
+                .padding(.vertical, 4)
+            }
+            if lines.count < 12 {
+                Button {
+                    lines.append(BusinessCollectorDraftLine())
+                } label: {
+                    Label("增加收款人", systemImage: "person.badge.plus")
+                }
+            }
+            // One collector already sees all three channel amounts.
+            // A second totals card only repeats those same figures.
+            if lines.count > 1 {
+                TXBusinessReceiptSummaryView(lines: lines)
+            }
+        }
+    }
+
+    private var costFields: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            amount("日常开销", value: $expense)
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("开摊库存估值").font(.caption2).foregroundColor(.secondary)
+                    TXFastNumericField(text: $openingStock, label: "开摊库存估值").frame(height: 36)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("收摊库存估值").font(.caption2).foregroundColor(.secondary)
+                    TXFastNumericField(text: $closingStock, label: "收摊库存估值").frame(height: 36)
+                }
+            }
+            HStack(spacing: 6) {
+                TXCompactMetric(title: "本摊营业额", value: receiptPreview, tint: .green)
+                TXCompactMetric(title: "利润预览", value: preview.map { "¥" + $0.profit } ?? "待补齐", tint: .orange)
+            }
+            Text("可以先保存未填完的营业草稿。利润沿用安卓规则；云端提交前必须补齐真实成本，不能把缺失值当作零。")
+                .font(.caption).foregroundColor(.secondary)
+        }
+    }
+
+    private var remarkFields: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("营业备注（仅本机，不参与结算）", text: $note)
+            Text("营业时间可跨午夜，格式 HH:mm；不自动扣减凌晨收款。")
+                .font(.caption2).foregroundColor(.secondary)
+        }
+    }
+
+    private var submissionFields: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                if cloudWriteAvailable && cloudReady {
+                    Task { await saveThenSync() }
+                } else {
+                    save()
+                }
+            } label: {
+                Label(cloudWriteAvailable && cloudReady ?
+                          "保存并同步营业" : "保存营业草稿",
+                      systemImage: cloudWriteAvailable && cloudReady ?
+                          "icloud.and.arrow.up" : "square.and.arrow.down")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!editingAllowed || storeID.isEmpty || existingRemote ||
+                      storageError != nil || attempt != nil || submitting ||
+                      (saved && formMatchesSavedDraft &&
+                       !(cloudWriteAvailable && cloudReady)))
+            if saved && formMatchesSavedDraft {
+                Label("本机草稿已保存（云端状态见下方）",
+                      systemImage: "checkmark.circle")
+                    .foregroundColor(.green)
+            } else if saved && !formMatchesSavedDraft {
+                Label("当前有未保存的修改，上传前请先保存",
+                      systemImage: "exclamationmark.circle")
+                    .font(.caption).foregroundColor(.orange)
+            }
+            if let storageError {
+                Label(storageError, systemImage: "externaldrive.badge.exclamationmark")
+                    .font(.caption).foregroundColor(.red)
+            }
+            if cloudWriteAvailable && !cloudReady {
+                Label("待补齐：" + missingCloudFields.joined(separator: "、") +
+                      "；可以先保存本机。",
+                      systemImage: "info.circle")
+                    .font(.caption).foregroundColor(.orange)
+            }
+            if let errorText {
+                Text(errorText).font(.caption).foregroundColor(.orange)
+            }
+            if let attempt {
+                if let state = currentCloudState,
+                   state == .confirmedRemoteMissing ||
+                   state == .confirmedRemoteChanged {
+                    Label(state.label, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundColor(.orange)
+                    Button("刷新云端并复核原营业") {
+                        Task { await model.refresh(forceFull: true) }
+                    }
+                    .disabled(submitting || model.isBusy)
+                } else {
+                    Text(attempt.label).font(.caption)
+                        .foregroundColor(attempt.phase == .confirmed
+                                         ? .green : .orange)
+                }
+                Button {
+                    Task { await checkOriginalOperation() }
+                } label: {
+                    Label("查询原操作（不再次提交）", systemImage: "shield.lefthalf.filled")
+                }
+                .disabled(submitting)
+                if canResumeOriginal &&
+                   (attempt.phase == .unknown || attempt.phase == .prepared) {
+                    Button {
+                        Task { await resumeOriginal() }
+                    } label: {
+                        Label("继续原操作（同一编号，不另建账）",
+                              systemImage: "arrow.clockwise.circle")
+                    }
+                    .disabled(submitting || !model.businessCloudBookAllowed)
+                    Text("服务器需明确授权当前账本；只允许使用原操作编号恢复，不能另建重复记录。")
                         .font(.caption2).foregroundColor(.secondary)
                 }
-                Section {
-                    Button {
-                        if cloudWriteAvailable && cloudReady {
-                            Task { await saveThenSync() }
-                        } else {
-                            save()
-                        }
-                    } label: {
-                        Label(cloudWriteAvailable && cloudReady ?
-                                  "保存并同步营业" : "保存营业草稿",
-                              systemImage: cloudWriteAvailable && cloudReady ?
-                                  "icloud.and.arrow.up" : "square.and.arrow.down")
-                            .frame(maxWidth: .infinity)
+                if !model.businessCloudBookAllowed {
+                    Button("刷新服务器写入权限") {
+                        Task { await model.refreshBusinessCommitCapabilities() }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!editingAllowed || storeID.isEmpty || existingRemote ||
-                              storageError != nil || attempt != nil || submitting ||
-                              (saved && formMatchesSavedDraft &&
-                               !(cloudWriteAvailable && cloudReady)))
-                    if saved && formMatchesSavedDraft {
-                        Label("本机草稿已保存（云端状态见下方）",
-                              systemImage: "checkmark.circle")
-                            .foregroundColor(.green)
-                    } else if saved && !formMatchesSavedDraft {
-                        Label("当前有未保存的修改，上传前请先保存",
-                              systemImage: "exclamationmark.circle")
-                            .font(.caption).foregroundColor(.orange)
-                    }
-                    if let storageError {
-                        Label(storageError, systemImage: "externaldrive.badge.exclamationmark")
-                            .font(.caption).foregroundColor(.red)
-                    }
-                    if cloudWriteAvailable && !cloudReady {
-                        Label("待补齐：" + missingCloudFields.joined(separator: "、") +
-                              "；可以先保存本机。",
-                              systemImage: "info.circle")
-                            .font(.caption).foregroundColor(.orange)
-                    }
-                    if let errorText {
-                        Text(errorText).font(.caption).foregroundColor(.orange)
-                    }
-                    if let attempt {
-                        if let state = currentCloudState,
-                           state == .confirmedRemoteMissing ||
-                           state == .confirmedRemoteChanged {
-                            Label(state.label, systemImage: "exclamationmark.triangle")
-                                .font(.caption).foregroundColor(.orange)
-                            Button("刷新云端并复核原营业") {
-                                Task { await model.refresh(forceFull: true) }
-                            }
-                            .disabled(submitting || model.isBusy)
-                        } else {
-                            Text(attempt.label).font(.caption)
-                                .foregroundColor(attempt.phase == .confirmed
-                                                 ? .green : .orange)
-                        }
-                        Button {
-                            Task { await checkOriginalOperation() }
-                        } label: {
-                            Label("查询原操作（不再次提交）", systemImage: "shield.lefthalf.filled")
-                        }
-                        .disabled(submitting)
-                        if canResumeOriginal &&
-                           (attempt.phase == .unknown || attempt.phase == .prepared) {
-                            Button {
-                                Task { await resumeOriginal() }
-                            } label: {
-                                Label("继续原操作（同一编号，不另建账）",
-                                      systemImage: "arrow.clockwise.circle")
-                            }
-                            .disabled(submitting || !model.businessCloudBookAllowed)
-                            Text("服务器需明确授权当前账本；只允许使用原操作编号恢复，不能另建重复记录。")
-                                .font(.caption2).foregroundColor(.secondary)
-                        }
-                        if !model.businessCloudBookAllowed {
-                            Button("刷新服务器写入权限") {
-                                Task { await model.refreshBusinessCommitCapabilities() }
-                            }
-                            .disabled(submitting)
-                        }
-                    } else if saved && formMatchesSavedDraft &&
-                              !cloudWriteAvailable {
-                        Button("检查同步权限") {
-                            Task { await model.refreshBusinessCommitCapabilities() }
-                        }
-                        .disabled(submitting)
-                    }
-                    if submitting { ProgressView("正在核对营业事务…") }
-                    if let commitMessage {
-                        Text(commitMessage).font(.caption).foregroundColor(.orange)
-                    }
-                    if let warning = model.businessCommitError {
-                        Text(warning).font(.caption).foregroundColor(.secondary)
-                    }
-                    if !cloudWriteAvailable {
-                        Text("营业云端写入未授权，本机草稿不计入结算。")
-                            .font(.caption2).foregroundColor(.orange)
+                    .disabled(submitting)
+                }
+            } else if saved && formMatchesSavedDraft &&
+                      !cloudWriteAvailable {
+                Button("检查同步权限") {
+                    Task { await model.refreshBusinessCommitCapabilities() }
+                }
+                .disabled(submitting)
+            }
+            if submitting { ProgressView("正在核对营业事务…") }
+            if let commitMessage {
+                Text(commitMessage).font(.caption).foregroundColor(.orange)
+            }
+            if let warning = model.businessCommitError {
+                Text(warning).font(.caption).foregroundColor(.secondary)
+            }
+            if !cloudWriteAvailable {
+                Text("营业云端写入未授权，本机草稿不计入结算。")
+                    .font(.caption2).foregroundColor(.orange)
+            }
+        }
+    }
+
+    private func inlineCard<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.caption.bold()).foregroundColor(.secondary)
+            content()
+        }
+        .padding(8)
+        .background(TXTheme.header, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var inlineContent: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text("营业录入").font(.headline)
+                Spacer()
+                Button("关闭", action: requestClose).disabled(submitting)
+            }
+            Group {
+                inlineCard("营业位置与时间") { locationFields }
+                inlineCard("营业收款") { receiptFields }
+                inlineCard("日常开销与利润依据") { costFields }
+                inlineCard("备注") { remarkFields }
+            }.disabled(submitting || !scopeMatches)
+            submissionFields
+        }
+    }
+
+    @ViewBuilder private var presentation: some View {
+        if onClose != nil {
+            inlineContent
+        } else {
+            NavigationView {
+                Form {
+                    Section(header: Text("营业日期、位置与时间")) { locationFields }
+                    Section(header: Text("收款人及金额（元）")) { receiptFields }
+                    Section(header: Text("营业成本与利润依据（同步前必填）")) { costFields }
+                    Section { remarkFields }
+                    Section { submissionFields }
+                }
+                .navigationTitle("营业录入")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button("关闭", action: requestClose).disabled(submitting)
                     }
                 }
             }
-            .navigationTitle("营业录入")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("关闭") {
-                        if hasUnsavedInput { showCloseConfirmation = true }
-                        else { dismiss() }
-                    }
-                }
-            }
+        }
+    }
+
+    var body: some View {
+        presentation
             .onAppear {
                 Task { await model.refreshBusinessCommitCapabilities() }
                 if storeID.isEmpty, model.snapshot.testStores.count == 1 {
@@ -640,15 +713,15 @@ struct BusinessLocalEntryView: View {
                 }
                 loadDraft()
             }
-            .interactiveDismissDisabled(hasUnsavedInput)
+            .interactiveDismissDisabled(hasUnsavedInput || submitting)
             .alert("退出前保存营业草稿？",
                    isPresented: $showCloseConfirmation) {
                 Button("先保存本机，再关闭") {
                     save()
-                    if saved && formMatchesSavedDraft { dismiss() }
+                    if saved && formMatchesSavedDraft { closeEditor() }
                 }
-                .disabled(!editingAllowed || storageError != nil)
-                Button("放弃未保存内容并关闭", role: .destructive) { dismiss() }
+                .disabled(submitting || !editingAllowed || storageError != nil)
+                Button("放弃未保存内容并关闭", role: .destructive) { closeEditor() }
                 Button("继续编辑", role: .cancel) {}
             } message: {
                 Text("未保存的收款和成本不会保留。")
@@ -657,7 +730,7 @@ struct BusinessLocalEntryView: View {
                                 isPresented: $showSwitchConfirmation,
                                 titleVisibility: .visible) {
                 Button("先保存在本机，再切换") { saveBeforeSwitch() }
-                    .disabled(!editingAllowed || storageError != nil)
+                    .disabled(submitting || !editingAllowed || storageError != nil)
                 Button("放弃本次未保存的修改", role: .destructive) {
                     applySwitch()
                 }
@@ -668,7 +741,6 @@ struct BusinessLocalEntryView: View {
             } message: {
                 Text("切换日期或位置会替换当前输入。保存只写入本机，不会自动创建云端营业。")
             }
-        }
     }
 
     private func amount(_ title: String, value: Binding<String>) -> some View {

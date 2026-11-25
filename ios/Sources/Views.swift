@@ -87,7 +87,7 @@ private struct DashboardView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 TXMainNavigationBar(selected: $selectedTab)
-                    .disabled(model.inlinePurchaseEditing)
+                    .disabled(model.inlineLedgerEditing)
             }
             // The dashboard owns its own compact header. Do not reserve
             // a second iOS navigation bar / white safe-area region above it.
@@ -114,7 +114,7 @@ private struct DashboardView: View {
                 }
                 .pickerStyle(.menu)
                 .font(.subheadline.bold())
-                .disabled(model.inlinePurchaseEditing)
+                .disabled(model.inlineLedgerEditing)
             } else {
                 Text(model.selectedBook?.name ?? "无可用账本")
                     .font(.subheadline.bold())
@@ -310,6 +310,9 @@ private struct BusinessPage: View {
     @State private var showFilters = false
     @State private var showLocalEntry = false
     @State private var preferredStoreID: String?
+    @State private var entryAccount = ""
+    @State private var entryBookID = ""
+    @State private var entryRevision = 0
 
     private var selectedKey: String { BusinessDates.key(selectedDate) }
     private var startingKey: String {
@@ -382,6 +385,30 @@ private struct BusinessPage: View {
         }
     }
 
+    private var canEnterBusiness: Bool {
+        guard let book = model.selectedBook, book.isAvailable, model.account != nil else { return false }
+        return ["OWNER", "SUPERADMIN", "EDITOR"].contains(book.role.uppercased())
+    }
+
+    private func openBusinessEditor(storeID: String?) {
+        guard canEnterBusiness, !model.inlineLedgerEditing,
+              let account = model.account?.username, let bookID = model.selectedBookID else { return }
+        preferredStoreID = storeID
+        entryAccount = account
+        entryBookID = bookID
+        model.inlineBusinessEditing = true
+        showLocalEntry = true
+    }
+
+    private func closeBusinessEditor(_ day: Date) {
+        if model.account?.username == entryAccount && model.selectedBookID == entryBookID {
+            selectedDate = day
+        }
+        showLocalEntry = false
+        model.inlineBusinessEditing = false
+        entryRevision += 1
+    }
+
     private func moveDay(_ offset: Int) {
         selectedDate = BusinessDates.calendar.date(byAdding: .day, value: offset, to: selectedDate)
             ?? selectedDate
@@ -392,11 +419,19 @@ private struct BusinessPage: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 7) {
                 TXPageDateHeader(title: "营业", date: $model.workDate)
+                    .disabled(showLocalEntry)
                     .onChange(of: selectedDate) { _ in visibleDays = 14 }
                 if model.isBusy || model.errorMessage != nil || model.isUsingCachedAuthorization || model.lastSyncAt == nil { TXCloudSyncStatusBar() }
                 DisclosureGroup("当日库存经营分析（全账本）") {
                     TXInventory096Overview(date: selectedKey)
                 }.font(.caption)
+                if showLocalEntry {
+                    BusinessLocalEntryView(date: selectedDate, preferredStoreID: preferredStoreID,
+                        expectedAccount: entryAccount, expectedBookID: entryBookID,
+                        onClose: closeBusinessEditor)
+                        .environmentObject(model)
+                }
+                Group {
                 HStack(spacing: 8) {
                     Picker("位置", selection: $position) {
                         Text("全部位置").tag("")
@@ -409,13 +444,12 @@ private struct BusinessPage: View {
                             .font(.caption2).foregroundColor(.secondary)
                     } else {
                         Button {
-                            preferredStoreID = filteredStoreID
-                            showLocalEntry = true
+                            openBusinessEditor(storeID: filteredStoreID)
                         } label: {
                             Label("新增营业记录", systemImage: "plus")
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(model.selectedBookID == nil)
+                        .disabled(!canEnterBusiness)
                     }
                 }
                 DisclosureGroup(isExpanded: $showFilters) {
@@ -447,8 +481,7 @@ private struct BusinessPage: View {
                             .font(.subheadline.bold()).foregroundColor(.orange)
                         ForEach(draftStatusRows.filter { $0.status.needsAttention }) { item in
                             Button {
-                                preferredStoreID = item.draft.storeID
-                                showLocalEntry = true
+                                openBusinessEditor(storeID: item.draft.storeID)
                             } label: {
                                 HStack(spacing: 8) {
                                     VStack(alignment: .leading, spacing: 3) {
@@ -468,6 +501,7 @@ private struct BusinessPage: View {
                     .padding(12)
                     .background(Color(UIColor.secondarySystemGroupedBackground),
                                 in: RoundedRectangle(cornerRadius: 12))
+                    .id(entryRevision)
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
@@ -557,13 +591,15 @@ private struct BusinessPage: View {
                 }
                 // Detail actions remain scoped by account and server permissions.
                 SyncFooter()
+                }.disabled(showLocalEntry)
             }
             .padding(12)
         }
-        .sheet(isPresented: $showLocalEntry) {
-            BusinessLocalEntryView(date: selectedDate,
-                                   preferredStoreID: preferredStoreID)
-                .environmentObject(model)
+        .onChange(of: model.selectedBookID) { _ in
+            if showLocalEntry { closeBusinessEditor(selectedDate) }
+        }
+        .onChange(of: model.account?.username) { _ in
+            if showLocalEntry { closeBusinessEditor(selectedDate) }
         }
     }
 }
