@@ -1,0 +1,80 @@
+name: Publish verified Build 80 test IPA
+on:
+  push:
+    branches: [release/ios-v1.0.2-build80]
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: publish-ios-build80
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'sockc/TianXianFruit' && github.ref == 'refs/heads/release/ios-v1.0.2-build80'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: sockc/TianXianFruit
+      TARGET: 4e71946d2e20e0858605cb98b811e7df244b97c4
+      RUN: "45692320521"
+      ARTIFACT: "15060906129"
+      DIGEST: sha256:9e320c053853672447531fa2c72af4805a6f341b6c78dba1e3fb69a9fc539c58
+      TAG: ios-v1.0.2-build80
+      IPA: TianXianFruit-iOS-v1.0.2-Build80-TrollStore.ipa
+    steps:
+      - name: Verify source and exact build artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          for id in "$RUN" 45692320566 45692329848; do
+            gh api "repos/$GH_REPO/actions/runs/$id" > run.json
+            jq -e --arg target "$TARGET" '.head_sha == $target and .status == "completed" and .conclusion == "success"' run.json >/dev/null
+          done
+          gh api "repos/$GH_REPO/actions/artifacts/$ARTIFACT" > artifact.json
+          jq -e --arg target "$TARGET" --arg digest "$DIGEST" --argjson run "$RUN" '.workflow_run.head_sha == $target and .workflow_run.id == $run and .digest == $digest and .expired == false and .name == "TianXianFruit-iOS-v1.0.2-Build80-TrollStore"' artifact.json >/dev/null
+          test "$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" = "v1.4.7.135"
+          if gh release view "$TAG" >/dev/null 2>&1; then echo "Refusing to overwrite existing release"; exit 1; fi
+          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then echo "Refusing to reuse existing tag"; exit 1; fi
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: "15060906129"
+          run-id: "45692320521"
+          github-token: ${{ github.token }}
+          path: dist
+          merge-multiple: true
+      - name: Validate IPA and generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          test -s "$IPA"
+          python3 - <<'PY'
+          import os,plistlib,zipfile
+          with zipfile.ZipFile(os.environ["IPA"]) as z:
+              assert z.testzip() is None
+              paths=[p for p in z.namelist() if p.startswith("Payload/") and p.count("/")==2 and p.endswith(".app/Info.plist")]
+              assert len(paths)==1, paths
+              d=plistlib.loads(z.read(paths[0]))
+              assert d["CFBundleIdentifier"]=="com.tianxian.fruit.ios"
+              assert d["CFBundleShortVersionString"]=="1.0.2"
+              assert d["CFBundleVersion"]=="80"
+              assert d["MinimumOSVersion"]=="15.0"
+              assert paths[0].rsplit("/",1)[0]+"/"+d["CFBundleExecutable"] in z.namelist()
+          PY
+          sha256sum "$IPA" > SHA256SUMS.txt
+      - name: Publish public prerelease without changing Android Latest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > notes.md <<'EOF'
+          ## iOS V1.0.2 Build 80 · 营业表测试版
+          
+          - 正常营业页面整合凌晨收款、费用付款人、同一行位置及营业时间、实时营业额和利润预览。
+          - 正式与测试账本按服务端 V2 scope 严格匹配，提交前重新授权；原 V1 草稿及 Build 79 操作记录保持兼容。
+          - 已通过编译、XCTest 和 IPA 构建。Server V1.0.38 RC2 已通过真实 PostgreSQL、正式准入 HTTP 验证并由用户确认部署成功。
+          - 正式账本 V2 仍需本轮实机验收；Android V1.4.7.135 不变。账单补录未纳入本版。
+          - 最低 iOS 15.0，TrollStore 安装；使用已通过 CI 的原 IPA。
+          EOF
+          gh release create "$TAG" "dist/$IPA" dist/SHA256SUMS.txt --target "$TARGET" --title "iOS V1.0.2 Build 80 · 营业表测试版" --notes-file notes.md --prerelease --latest=false
+          gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '{tag_name,prerelease,draft,assets:[.assets[]|{name,state,digest}]}'
+          test "$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" = "v1.4.7.135"
