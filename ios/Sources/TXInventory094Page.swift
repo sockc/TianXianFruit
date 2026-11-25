@@ -327,70 +327,103 @@ private struct TXInventory094Card: View {
             Text(Self.text(value)).font(.caption.bold())
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 3) {
-                Text(row.name).font(.subheadline.bold()).lineLimit(1).layoutPriority(1)
-                Spacer(minLength: 0)
-                Button(action: onPrice) {
-                    Text("成本 " + (row.cost.map { Self.text($0) + "/" + row.key.unit } ?? "—") +
-                         " · 零售 " + (row.retail.map { Self.text($0) + "/" + row.retailUnit } ?? "—"))
-                        .font(.caption2).lineLimit(1).minimumScaleFactor(0.8)
-                }.buttonStyle(.plain).disabled(!editable)
-                .accessibilityLabel("成本与零售价，点击编辑")
-                Text(row.purchased > 0.000001 ? "有采购" : "无")
-                    .font(.caption2).foregroundColor(row.purchased > 0.000001 ? TXTheme.primary : .primary)
-                if row.savedID != nil && draft == nil && !row.usesLocalCost && !row.usesLocalRetail { Image(systemName: "checkmark").foregroundColor(TXTheme.primary).font(.caption) }
+    private var priceText: String {
+        let cost = row.cost.map { Self.text($0) + "/" + row.key.unit } ?? "—"
+        let retail = row.retail.map { Self.text($0) + "/" + row.retailUnit } ?? "—"
+        return "成本 " + cost + " · 零售 " + retail
+    }
+
+    private var savedOnCloud: Bool {
+        row.savedID != nil && draft == nil && !row.usesLocalCost && !row.usesLocalRetail
+    }
+
+    private var productHeader: some View {
+        HStack(spacing: 3) {
+            Text(row.name).font(.subheadline.bold()).lineLimit(1).layoutPriority(1)
+            Spacer(minLength: 0)
+            Button(action: onPrice) {
+                Text(priceText).font(.caption2).lineLimit(1).minimumScaleFactor(0.8)
             }
-            if row.usesLocalCost || row.usesLocalRetail {
-                Text("价格本地草稿 · 未同步").font(.caption2).foregroundColor(.orange)
+            .buttonStyle(.plain).disabled(!editable)
+            .accessibilityLabel("成本与零售价，点击编辑")
+            Text(row.purchased > 0.000001 ? "有采购" : "无")
+                .font(.caption2).foregroundColor(row.purchased > 0.000001 ? TXTheme.primary : .primary)
+            if savedOnCloud {
+                Image(systemName: "checkmark").foregroundColor(TXTheme.primary).font(.caption)
             }
-            HStack(spacing: 4) {
-                tile("结转", row.opening)
-                tile("采购", row.purchased)
-                tile("可售", row.available)
-                if editable && !conflict {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("损耗").font(.caption2).foregroundColor(.secondary)
-                        TXFastNumericField(text: $loss, label: "损耗")
-                            .frame(height: 34).onChange(of: loss) { _ in save() }
-                    }.frame(maxWidth: .infinity)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("剩余").font(.caption2).foregroundColor(.secondary)
-                        TXFastNumericField(text: $remaining, label: "剩余库存")
-                            .frame(height: 34).onChange(of: remaining) { _ in save() }
-                    }.frame(maxWidth: .infinity)
-                } else {
-                    tile("损耗", row.loss)
-                    tile("剩余", row.remaining)
-                }
+        }
+    }
+
+    private func numberInput(_ label: String, value: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.caption2).foregroundColor(.secondary)
+            TXFastNumericField(text: value, label: label)
+                .frame(height: 34)
+                .onChange(of: value.wrappedValue) { _ in save() }
+        }.frame(maxWidth: .infinity)
+    }
+
+    private var quantityRow: some View {
+        HStack(spacing: 4) {
+            tile("结转", row.opening)
+            tile("采购", row.purchased)
+            tile("可售", row.available)
+            if editable && !conflict {
+                numberInput("损耗", value: $loss)
+                numberInput("剩余", value: $remaining)
+            } else {
+                tile("损耗", row.loss)
+                tile("剩余", row.remaining)
             }
-            let value = TXInventory095Valuation.item(row, draft: draft)
-            DisclosureGroup("估值与规格", isExpanded: $showValuation) {
-              if let weight = row.weight { Text("规格 " + Self.text(weight) + "斤/" + row.key.unit).font(.caption2) }
-              HStack(spacing: 5) {
+        }
+    }
+
+    private var valuationText: String {
+        let value = TXInventory095Valuation.item(row, draft: draft)
+        guard value.counted && !value.anomaly else { return "待盘点" }
+        return value.closingCost.map { $0.formatted(.currency(code: "CNY")) } ?? "未知"
+    }
+
+    private var valuationDetails: some View {
+        DisclosureGroup("估值与规格", isExpanded: $showValuation) {
+            if let weight = row.weight {
+                Text("规格 " + Self.text(weight) + "斤/" + row.key.unit).font(.caption2)
+            }
+            HStack(spacing: 5) {
                 Text("加权成本 " + (row.averageCost.map { Self.text($0) } ?? "未知"))
                 Spacer(minLength: 0)
-                Text("剩余估值 " + (value.counted && !value.anomaly
-                    ? (value.closingCost.map { $0.formatted(.currency(code: "CNY")) } ?? "未知")
-                    : "待盘点"))
-              }.font(.caption2).foregroundColor(.secondary)
-            }.font(.caption2)
-            if conflict {
-                Text("云端库存或采购已变化，原草稿剩余 " + (draft?.remaining ?? "") +
-                     " / 损耗 " + (draft?.loss ?? "") + " 保留待核对，未覆盖云端。")
-                    .font(.caption2).foregroundColor(.orange)
-            } else if draft != nil {
-                Text("本地草稿 · 未同步").font(.caption2).foregroundColor(.orange)
-            } else if row.savedID == nil {
-                Text("未盘点").font(.caption2).foregroundColor(.secondary)
-            }
-            if editable && !valid {
-                Text("请输入非负数量，最多三位小数").font(.caption2).foregroundColor(.red)
-            }
-            if editable && valid, let r = Double(remaining), let l = Double(loss), r + l > row.available + 0.000001 {
-                Text("剩余加损耗超过可售数量，请核对").font(.caption2).foregroundColor(.orange)
-            }
+                Text("剩余估值 " + valuationText)
+            }.font(.caption2).foregroundColor(.secondary)
+        }.font(.caption2)
+    }
+
+    @ViewBuilder private var warnings: some View {
+        if row.usesLocalCost || row.usesLocalRetail {
+            Text("价格本地草稿 · 未同步").font(.caption2).foregroundColor(.orange)
+        }
+        if conflict {
+            Text("云端库存或采购已变化，原草稿剩余 " + (draft?.remaining ?? "") +
+                 " / 损耗 " + (draft?.loss ?? "") + " 保留待核对，未覆盖云端。")
+                .font(.caption2).foregroundColor(.orange)
+        } else if draft != nil {
+            Text("本地草稿 · 未同步").font(.caption2).foregroundColor(.orange)
+        } else if row.savedID == nil {
+            Text("未盘点").font(.caption2).foregroundColor(.secondary)
+        }
+        if editable && !valid {
+            Text("请输入非负数量，最多三位小数").font(.caption2).foregroundColor(.red)
+        }
+        if editable && valid, let r = Double(remaining), let l = Double(loss), r + l > row.available + 0.000001 {
+            Text("剩余加损耗超过可售数量，请核对").font(.caption2).foregroundColor(.orange)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            productHeader
+            quantityRow
+            valuationDetails
+            warnings
         }
         .padding(7)
         .background(Color(UIColor.secondarySystemGroupedBackground),

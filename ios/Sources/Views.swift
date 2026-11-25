@@ -87,6 +87,7 @@ private struct DashboardView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 TXMainNavigationBar(selected: $selectedTab)
+                    .disabled(model.inlinePurchaseEditing)
             }
             // The dashboard owns its own compact header. Do not reserve
             // a second iOS navigation bar / white safe-area region above it.
@@ -113,6 +114,7 @@ private struct DashboardView: View {
                 }
                 .pickerStyle(.menu)
                 .font(.subheadline.bold())
+                .disabled(model.inlinePurchaseEditing)
             } else {
                 Text(model.selectedBook?.name ?? "无可用账本")
                     .font(.subheadline.bold())

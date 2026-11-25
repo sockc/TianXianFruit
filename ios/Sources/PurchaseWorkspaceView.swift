@@ -124,6 +124,7 @@ struct PurchaseWorkspaceView: View {
     @StateObject private var workspace = PurchaseWorkspaceModel()
     private var date: Date { get { model.workDate } nonmutating set { model.workDate = newValue } }
     @State private var request: PurchaseWorkspaceEditorRequest?
+    @State private var inlineEntry = false
     @State private var showDrafts = true
     @State private var showConfirmedDrafts = false
     @State private var showPlanDetails = true
@@ -186,21 +187,24 @@ struct PurchaseWorkspaceView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 7) {
-                dateHeader
+            VStack(alignment: .leading, spacing: 7) {
+                dateHeader.disabled(inlineEntry)
                 if model.isBusy || model.errorMessage != nil || model.isUsingCachedAuthorization || model.lastSyncAt == nil { TXCloudSyncStatusBar() }
                 metrics
                 DisclosureGroup("采购与库存利润预估") {
                     TXInventory096Overview(date: day, compact: true)
                 }.font(.caption)
-                Button {
-                    request = PurchaseWorkspaceEditorRequest(original: nil)
-                } label: {
-                    Label("新增采购", systemImage: "plus.circle.fill")
-                        .frame(maxWidth: .infinity)
+                if inlineEntry {
+                    inlineEditor
+                } else {
+                    Button(action: openInlineEditor) {
+                        Label("新增采购", systemImage: "plus.circle.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canEdit || submittingID != nil || showConfirm)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!canEdit)
+                Group {
                 localDraftSection
                 DisclosureGroup(isExpanded: $showPlanDetails) {
                     VStack(alignment: .leading, spacing: 10) {
@@ -232,9 +236,11 @@ struct PurchaseWorkspaceView: View {
                         .font(.caption2).foregroundColor(.orange)
                 }
                 SyncFooter()
+                }.disabled(inlineEntry)
             }
             .padding(12)
         }
+        .navigationBarBackButtonHidden(inlineEntry)
         .sheet(item: $request, onDismiss: {
             // Offer the cloud confirmation only AFTER the editor has closed.
             // Cancel means saved locally only; no HTTP write occurs.
@@ -307,6 +313,8 @@ struct PurchaseWorkspaceView: View {
             Task { await model.refreshPurchaseCommitCapabilities() }
         }
         .onChange(of: model.selectedBookID) { _ in
+            inlineEntry = false
+            model.inlinePurchaseEditing = false
             request = nil
             savedPurchaseToConfirmID = nil
             clearReview()
@@ -314,11 +322,60 @@ struct PurchaseWorkspaceView: View {
             Task { await model.refreshPurchaseCommitCapabilities() }
         }
         .onChange(of: model.account?.username) { _ in
+            inlineEntry = false
+            model.inlinePurchaseEditing = false
             request = nil
             savedPurchaseToConfirmID = nil
             clearReview()
             reload()
             Task { await model.refreshPurchaseCommitCapabilities() }
+        }
+    }
+
+    private func openInlineEditor() {
+        guard canEdit, request == nil, !inlineEntry, !model.inlinePurchaseEditing else { return }
+        savedPurchaseToConfirmID = nil
+        model.inlinePurchaseEditing = true
+        inlineEntry = true
+    }
+
+    private func closeInlineEditor() {
+        inlineEntry = false
+        model.inlinePurchaseEditing = false
+        // The exact persisted draft is offered for confirmation only after closing.
+        // No HTTP request is made until the existing confirm action is tapped.
+        if let id = savedPurchaseToConfirmID,
+           let draft = workspace.drafts.first(where: { $0.id == id }),
+           canCommitCloud {
+            date = BusinessDates.parse(draft.date) ?? date
+            pendingCommitID = id
+            showConfirm = true
+        }
+        savedPurchaseToConfirmID = nil
+    }
+
+    @ViewBuilder private var inlineEditor: some View {
+        if let bookID = model.selectedBookID, let account = model.account?.username {
+            PurchaseWorkspaceEditorView(original: nil, date: date, account: account,
+                bookID: bookID, onClose: closeInlineEditor) { item in
+                    guard inlineEntry, model.selectedBookID == bookID,
+                          model.account?.username.lowercased() == account.lowercased(),
+                          canEdit else {
+                        workspace.message = "账号或账本已切换，草稿未保存"
+                        return false
+                    }
+                    let persisted = workspace.save(item, account: account, bookID: bookID)
+                    if persisted && canCommitCloud,
+                       let caps = model.purchaseCommitCapabilities,
+                       caps.atomic && caps.idempotency &&
+                       (!item.lines.contains(where: { $0.sourcePlanItemSyncID != nil }) || caps.supportsCompletePlan) {
+                        savedPurchaseToConfirmID = item.id
+                    }
+                    return persisted
+                }
+                .environmentObject(model)
+        } else {
+            Button("取消录入", action: closeInlineEditor)
         }
     }
 

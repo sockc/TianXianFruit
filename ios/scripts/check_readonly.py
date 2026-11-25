@@ -629,3 +629,11 @@ assert 'TXPageDateHeader(title: "库存", date: $model.workDate)' in swift["TXIn
 assert 'TXDayBar(date: $model.workDate, label: "经营日期"' in swift["Views.swift"]
 assert 'MARKETING_VERSION: "1.0.1"' in project
 print("V1.0.1 UI parity shared operating date guard PASS")
+
+assert "Button(action: openInlineEditor)" in swift["PurchaseWorkspaceView.swift"]
+assert "onClose: closeInlineEditor" in swift["PurchaseWorkspaceView.swift"]
+assert "guard !inlinePurchaseEditing else { return }" in swift["LedgerViewModel.swift"]
+assert ".disabled(model.inlinePurchaseEditing)" in swift["Views.swift"]
+assert "showDiscardConfirmation" in swift["PurchaseWorkspaceEditorView.swift"]
+assert "private var quantityRow: some View" in swift["TXInventory094Page.swift"]
+print("V1.0.1 inline purchase and inventory type-check split guard PASS")

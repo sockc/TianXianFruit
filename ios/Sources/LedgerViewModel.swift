@@ -12,6 +12,8 @@ private struct VerifiedProfile: Codable {
 final class LedgerViewModel: ObservableObject {
     // Presentation-only date. Never used as an implicit cloud-write date.
     @Published var workDate = Date()
+    // UI-only navigation guard while the inline purchase editor owns unsaved input.
+    @Published var inlinePurchaseEditing = false
     @Published private(set) var account: Account?
     @Published private(set) var books: [CloudBook] = []
     @Published private(set) var selectedBookID: String?
@@ -483,6 +485,7 @@ final class LedgerViewModel: ObservableObject {
     }
 
     func selectBook(_ bookID: String) {
+        guard !inlinePurchaseEditing else { return }
         guard books.contains(where: { $0.id == bookID }) else { return }
         errorMessage = nil
         activateBook(bookID)
@@ -567,6 +570,7 @@ final class LedgerViewModel: ObservableObject {
     }
 
     private func reset() {
+        inlinePurchaseEditing = false
         workDate = Date()
         account = nil
         books = []
