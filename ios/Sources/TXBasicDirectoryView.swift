@@ -31,6 +31,14 @@ enum TXBasicDirectoryPolicy {
         }
     }
 
+    // A cached or failed sync must not leave a previously authorized edit button active.
+    static func canEdit(scope: String, authorizedScope: String, localCandidate: Bool,
+                        synced: Bool, cached: Bool, syncFailed: Bool,
+                        busy: Bool, pending: Bool) -> Bool {
+        !scope.isEmpty && scope != "|" && scope == authorizedScope && localCandidate &&
+        synced && !cached && !syncFailed && !busy && !pending
+    }
+
     static func roleLabel(_ role: String) -> String {
         switch role {
         case "OWNER": return "所有者"
@@ -114,7 +122,12 @@ struct TXBasicDirectoryView: View {
     @State private var createScope = ""
     @State private var message = ""
     private var scope: String { (model.account?.username ?? "") + "|" + (model.selectedBookID ?? "") }
-    private var editable: Bool { authorizedScope == scope && model.v34LocalCandidate && model.lastSyncAt != nil && !model.isBusy && !model.isLedgerV33Busy && !model.v33HasPending }
+    private var editable: Bool {
+        TXBasicDirectoryPolicy.canEdit(scope: scope, authorizedScope: authorizedScope,
+            localCandidate: model.v34LocalCandidate, synced: model.lastSyncAt != nil,
+            cached: model.isUsingCachedAuthorization, syncFailed: model.errorMessage != nil,
+            busy: model.isBusy || model.isLedgerV33Busy, pending: model.v33HasPending)
+    }
     private func verifyAccess() async {
         let original = scope
         authorizedScope = ""; createScope = ""
@@ -132,13 +145,14 @@ struct TXBasicDirectoryView: View {
     }
 
     private var accessKey: String {
-        [scope, String(model.currentCursor), String(model.isUsingCachedAuthorization)].joined(separator: "|")
+        [scope, String(model.currentCursor), String(model.isUsingCachedAuthorization), String(model.errorMessage != nil)].joined(separator: "|")
     }
 
     private var statusText: String {
-        if kind == .partner { return authorizedScope == scope ? "空白测试账本可实验性改名；利润规则仅查看。" : "合伙人历史姓名受保护，利润规则仅查看。" }
+        if model.isUsingCachedAuthorization || model.errorMessage != nil { return "同步恢复后可重新核验编辑权限。" }
+        if kind == .partner { return editable ? "空白测试账本可改名；利润规则仅查看。" : "合伙人历史姓名受保护，利润规则仅查看。" }
         if createScope == scope && !scope.isEmpty { return "测试账本：新增资料为兼容性实验，请勿用于正式经营。" }
-        if authorizedScope == scope { return "支持修改现有资料；新增和删除请在安卓端操作。" }
+        if editable { return "支持修改现有资料；新增和删除请在安卓端操作。" }
         return "当前仅查看，服务端基础资料写入未授权。"
     }
 

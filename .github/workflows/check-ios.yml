@@ -1,4 +1,4 @@
-name: Check iOS V1.0.0 RC6
+name: Check iOS V1.0.0 RC7
 
 on:
   pull_request:

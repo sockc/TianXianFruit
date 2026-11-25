@@ -690,6 +690,7 @@ private struct InventoryPage: View {
 private struct MorePage: View {
     @EnvironmentObject private var model: LedgerViewModel
     @State private var showAccountDetails = false
+    @State private var showSyncRecovery = false
 
     var body: some View {
         ScrollView {
@@ -726,6 +727,9 @@ private struct MorePage: View {
                 NavigationLink(destination: TXFundHistoryView()) {
                     menuLine("资金余额与结算记录", "banknote", "每日明细 · 历史结清")
                 }
+                NavigationLink(destination: TXProfitRuleDirectoryView()) {
+                    menuLine("利润分配规则", "chart.pie", "当前比例 · 只读")
+                }
                 NavigationLink(destination: OperatingReportView()) {
                     menuLine("生成报表", "doc.text", "经营汇总 · PDF / 图片")
                 }
@@ -745,10 +749,9 @@ private struct MorePage: View {
                         if let error = model.errorMessage {
                             Text(error).foregroundColor(.orange)
                         }
-                        HStack {
-                            Button("立即同步") { Task { await model.refresh(); await model.refreshAllTestWriteCapabilities() } }
-                                .disabled(model.isBusy)
-                            Spacer()
+                        Button("立即同步") { Task { await model.refresh(); await model.refreshAllTestWriteCapabilities() } }
+                            .disabled(model.isBusy)
+                        DisclosureGroup("同步修复", isExpanded: $showSyncRecovery) {
                             Button("完整同步") { Task { await model.refresh(forceFull: true) } }
                                 .disabled(model.isBusy)
                         }

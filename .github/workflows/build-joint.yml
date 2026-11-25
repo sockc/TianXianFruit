@@ -1,0 +1,71 @@
+name: Build joint Android and iOS candidate
+on:
+  push:
+    branches:
+      - feature/ios-integration-v1.0.0
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "仅 main：已完成双端实机验收，确认正式联合发布"
+        required: true
+        type: boolean
+        default: false
+permissions:
+  contents: write
+concurrency:
+  group: joint-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  android:
+    uses: ./.github/workflows/build-apk.yml
+    secrets: inherit
+  ios:
+    uses: ./.github/workflows/build-trollstore-ipa.yml
+    secrets: inherit
+  package:
+    needs: [android, ios]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: TianXianFruit-v1.4.7.135
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: TianXianFruit-iOS-v1.0.0-Build77-TrollStore
+          path: dist
+      - name: Verify both files and checksum
+        run: |
+          set -euo pipefail
+          cd dist
+          test -s TianXianFruit-v1.4.7.135.apk
+          test -s TianXianFruit-iOS-v1.0.0-Build77-TrollStore.ipa
+          sha256sum *.apk *.ipa > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TianXianFruit-joint-RC7
+          path: dist/*
+          if-no-files-found: error
+      - name: Publish both packages together after explicit acceptance
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=v1.4.7.135
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$GITHUB_SHA"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release already exists; refusing to overwrite"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "Tag already exists; refusing to overwrite"
+            exit 1
+          else
+            test "$?" -eq 2
+          fi
+          gh release create "$TAG" dist/*.apk dist/*.ipa dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --draft --title "天鲜账本 Android V1.4.7.135 / iOS V1.0.0" \
+            --notes-file RELEASE_NOTES.md
+          gh release edit "$TAG" --draft=false --latest

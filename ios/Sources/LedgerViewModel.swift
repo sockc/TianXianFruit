@@ -706,7 +706,8 @@ extension LedgerViewModel {
     func v36SubmitBasic(_ edit: TXBasicEdit, expectedScope: String) async -> String {
         do {
             guard expectedScope == (account?.username ?? "") + "|" + (selectedBookID ?? ""),
-                  edit.valid else { throw TXSettlementAtomicError.stale }
+                  edit.valid, errorMessage == nil, !isUsingCachedAuthorization, !isBusy,
+                  !isLedgerV33Busy, !v33HasPending else { throw TXSettlementAtomicError.stale }
             let key = edit.table + "|" + edit.sync_id
             if edit.table == "partner" {
                 guard TXTestBookAccess.isCandidate(selectedBook, account: account, offline: isUsingCachedAuthorization) else { throw TXSettlementAtomicError.scope }
