@@ -685,3 +685,9 @@ assert "(supportsOvernight && !customerOvernightCovered)" in swift["LedgerViewMo
 assert "customer_overnight_coverage" in swift["LocalLedgerCache.swift"]
 assert "model.customerOvernightCovered" in swift["BusinessOvernightReference.swift"]
 print("V1.0.2 overnight source opt-in and transactional cache coverage guard PASS")
+
+v2prep = swift["BusinessV2Preparation.swift"]
+assert "TXBusinessV2Preparation" in v2prep and "body[\"protocol_version\"] = 2" in v2prep
+assert "commitBusiness(" not in v2prep and "URLSession" not in v2prep and "/v2/commit" not in v2prep
+assert (root.parent / "Tests" / "BusinessV2PreparationTests.swift").exists()
+print("V1.0.2 v2 preparation only, v1 transport retained PASS")
