@@ -706,11 +706,16 @@ extension LedgerViewModel {
     func v36SubmitBasic(_ edit: TXBasicEdit, expectedScope: String) async -> String {
         do {
             guard expectedScope == (account?.username ?? "") + "|" + (selectedBookID ?? ""),
-                  let row = snapshot.records[edit.table + "|" + edit.sync_id],
-                  row.rowVersion == edit.expected_row_version, edit.valid else { throw TXSettlementAtomicError.stale }
+                  edit.valid else { throw TXSettlementAtomicError.stale }
+            let key = edit.table + "|" + edit.sync_id
+            if edit.isCreation {
+                guard TXTestBookAccess.isCandidate(selectedBook, account: account, offline: isUsingCachedAuthorization), snapshot.versions[key] == nil else { throw TXSettlementAtomicError.scope }
+            } else {
+                guard snapshot.records[key]?.rowVersion == edit.expected_row_version else { throw TXSettlementAtomicError.stale }
+            }
             var body = try v33Body(date: BusinessDates.key(Date()), lines: nil, allocations: nil)
             body.basic_edit = edit
-            return try await v33Run(.init(feature: "basic", body: body, stockDrafts: [], priceDrafts: []), recovering: false)
+            return try await v33Run(.init(feature: edit.isCreation ? "basic_create" : "basic", body: body, stockDrafts: [], priceDrafts: []), recovering: false)
         } catch { return error.localizedDescription }
     }
     func v33SubmitDaily(date: String, allocations: [TXLedgerV33Allocation], profitOnly: Bool = false) async -> String {

@@ -9,6 +9,7 @@ struct TXLedgerV33Capabilities: Decodable {
     let operation_lookup: Bool
     let inventory: Bool
     let basic: Bool?
+    let basic_create: Bool?
     let inventory_autosave: Bool?
     let daily_generate: Bool
     let profit_save: Bool?
@@ -16,7 +17,7 @@ struct TXLedgerV33Capabilities: Decodable {
     let cutoff: Bool?
     func allows(_ feature: String, book: CloudBook? = nil) -> Bool {
         version == 1 && TXFormalLedgerAccess.scopeMatches(scope, book: book) && atomic && idempotency && operation_lookup &&
-        (["basic": basic == true, "inventory": inventory, "inventory_auto": inventory && inventory_autosave == true, "daily": daily_generate, "profit": profit_save == true, "balance": authoritative_balance == true, "cutoff": cutoff == true, "undo": cutoff == true][feature] == true)
+        (["basic_create": basic_create == true && scope == "iOS_TEST_" && book?.name.hasPrefix("iOS_TEST_") == true, "basic": basic == true, "inventory": inventory, "inventory_auto": inventory && inventory_autosave == true, "daily": daily_generate, "profit": profit_save == true, "balance": authoritative_balance == true, "cutoff": cutoff == true, "undo": cutoff == true][feature] == true)
     }
 }
 
@@ -59,7 +60,7 @@ struct TXLedgerV33Proposal: Codable {
     let priceDrafts: [TXInventory095PriceDraft]
     var scope: String { [body.account, body.book_id, body.date].joined(separator: "|") }
     var matchesFeature: Bool {
-        if feature == "basic" { return body.basic_edit != nil && body.lines == nil && body.allocations == nil && body.partner_sync_id == nil && body.expected_balance == nil && body.batch_key == nil }
+        if feature == "basic" || feature == "basic_create" { return body.basic_edit?.valid == true && body.basic_edit?.isCreation == (feature == "basic_create") && body.lines == nil && body.allocations == nil && body.partner_sync_id == nil && body.expected_balance == nil && body.batch_key == nil }
         guard body.basic_edit == nil else { return false }
         return (feature == "inventory" && body.lines?.isEmpty == false && body.allocations == nil) ||
         ((feature == "daily" || feature == "profit") && body.lines == nil && body.allocations != nil) ||
@@ -85,8 +86,8 @@ struct TXLedgerV33Receipt: Codable {
     let changes: [Change]
     let request_hash: String
     func matches(_ p: TXLedgerV33Proposal) -> Bool {
-        if feature == "basic" {
-            guard p.feature == feature, let edit = p.body.basic_edit, changes.count == 1, let c = changes.first else { return false }
+        if feature == "basic" || feature == "basic_create" {
+            guard p.feature == feature, let edit = p.body.basic_edit, edit.valid, edit.isCreation == (feature == "basic_create"), changes.count == 1, let c = changes.first else { return false }
             return ["committed", "already_committed"].contains(status) && book_id.lowercased() == p.body.book_id.lowercased() &&
                 operation_id.lowercased() == p.body.operation_id.lowercased() && date == p.body.date && sync_cursor > p.body.expected_cursor &&
                 request_hash.count == 64 && c.table_name == edit.table && c.sync_id == edit.sync_id && c.operation == "UPSERT" &&
@@ -112,8 +113,11 @@ struct TXLedgerV33Receipt: Codable {
                   (change.operation == "DELETE" ? snapshot.records[change.key] == nil :
                    snapshot.records[change.key]?.rowVersion == change.row_version)
               }) else { return false }
-        if feature == "basic" {
+        if feature == "basic" || feature == "basic_create" {
             guard let edit = p.body.basic_edit, let row = snapshot.records[edit.table + "|" + edit.sync_id] else { return false }
+            if feature == "basic_create" {
+                guard let id = AndroidNumericIdentity.exact(row.payload["id"]), id >= (Int64(1) << 50), id < (Int64(1) << 51) else { return false }
+            }
             return edit.matches(row)
         }
         if feature == "cutoff" || feature == "undo" {

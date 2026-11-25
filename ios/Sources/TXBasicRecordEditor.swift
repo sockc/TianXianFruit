@@ -28,13 +28,14 @@ struct TXBasicEdit: Codable, Equatable {
               let value = Double(text), value.isFinite else { return false }
         return abs(value) <= limit
     }
+    var isCreation: Bool { expected_row_version == 0 }
     var valid: Bool {
-        guard expected_row_version > 0, !sync_id.isEmpty, !name.isEmpty, name.count <= 80,
+        guard expected_row_version >= 0, (!isCreation || UUID(uuidString: sync_id) != nil), !sync_id.isEmpty, !name.isEmpty, name.count <= 80,
               name == name.trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
         if table == "fruit" {
             guard name != "总价", let unit = default_unit, !unit.isEmpty, unit.count <= 16,
                   unit == unit.trimmingCharacters(in: .whitespacesAndNewlines),
-                  enabled == 0 || enabled == 1 else { return false }
+                  (enabled == 0 || enabled == 1), (!isCreation || enabled == 1) else { return false }
             return address == nil && latitude == nil && longitude == nil && default_start_time == nil && default_end_time == nil
         }
         guard table == "store", let address, address.count <= 300,
@@ -112,7 +113,7 @@ struct TXBasicRecordEditor: View {
                     TextField("名称", text: $name)
                     if selection.event.tableName == "fruit" {
                         TextField("默认单位", text: $unit)
-                        Toggle("启用商品", isOn: $enabled)
+                        if selection.event.rowVersion > 0 { Toggle("启用商品", isOn: $enabled) }
                         Text("停用不会删除历史采购、库存或经营数据。").font(.caption).foregroundColor(.secondary)
                     } else {
                         TextField("地址", text: $address)
@@ -128,10 +129,10 @@ struct TXBasicRecordEditor: View {
                     if !proposal.valid { Text("请检查名称、单位或位置资料格式。").font(.caption).foregroundColor(.orange) }
                 }
             }
-            .navigationTitle("编辑资料")
+            .navigationTitle(selection.event.rowVersion == 0 ? "新增测试资料" : "编辑资料")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
-            .confirmationDialog("确认修改云端基础资料？", isPresented: $confirm, titleVisibility: .visible) {
+            .confirmationDialog(selection.event.rowVersion == 0 ? "确认新增测试资料？" : "确认修改云端基础资料？", isPresented: $confirm, titleVisibility: .visible) {
                 Button("确认保存") { guard proposal.valid else { return }; onSave(proposal) }
                 Button("取消", role: .cancel) {}
             }
