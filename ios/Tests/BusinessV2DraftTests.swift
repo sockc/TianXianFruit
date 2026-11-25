@@ -43,7 +43,7 @@ final class BusinessV2DraftTests: XCTestCase {
         let testBook = CloudBook(id: scope.book, name: "iOS_TEST_V37", role: "OWNER", deleted: nil, purged: nil)
         let formal = CloudBook(id: scope.book, name: "正式账本", role: "OWNER", deleted: nil, purged: nil)
         XCTAssertTrue(scope.permits(account, testBook))
-        XCTAssertFalse(scope.permits(account, formal))
+        XCTAssertTrue(scope.permits(account, formal)) // Local candidate only; server capability governs POST.
         var draft = TXBusinessV2LocalDraft()
         draft.end = "00:30"; draft.expense = "1"; draft.payer = payer; draft.opening = "0"; draft.closing = "0"
         draft.collectors[0].partner = partner; draft.collectors[0].wechat.natural = "10"
@@ -64,8 +64,19 @@ final class BusinessV2DraftTests: XCTestCase {
         XCTAssertEqual(body["expense_payer_sync_id"] as? String, payer)
         let natural = try XCTUnwrap(body["natural"] as? [[String: Any]])
         XCTAssertEqual(natural.first?["previous_revision"] as? Int, 4)
-        XCTAssertThrowsError(try TXBusinessV2DraftPolicy.prepare(draft, scope: scope, account: account, book: formal,
-            records: records, events: [source]))
+        XCTAssertEqual(try TXBusinessV2DraftPolicy.prepare(draft, scope: scope, account: account, book: formal,
+            records: records, events: [source]), prepared)
+        let testCaps = TXBusinessV2Capabilities(version: 2, feature: "business_atomic_commit_v2", enabled: true,
+            scope: "test", atomic: true, idempotency: true, supportsOvernight: true, supportsExpensePayer: true)
+        let formalCaps = TXBusinessV2Capabilities(version: 2, feature: "business_atomic_commit_v2", enabled: true,
+            scope: "formal", atomic: true, idempotency: true, supportsOvernight: true, supportsExpensePayer: true)
+        XCTAssertTrue(testCaps.allows(book: testBook))
+        XCTAssertFalse(testCaps.allows(book: formal))
+        XCTAssertTrue(formalCaps.allows(book: formal))
+        XCTAssertFalse(formalCaps.allows(book: testBook))
+        let disabled = TXBusinessV2Capabilities(version: 2, feature: "business_atomic_commit_v2", enabled: false,
+            scope: "formal", atomic: true, idempotency: true, supportsOvernight: true, supportsExpensePayer: true)
+        XCTAssertFalse(disabled.allows(book: formal))
         let immutable = TXBusinessV2Immutable(scope: scope, prepared: prepared)
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: folder) }

@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-/// A separate, test-ledger-only draft. V1 storage and submission never read it.
+/// An isolated V2 draft; account/book/date/store identity is unchanged from Build 79.
 struct TXBusinessV2EditorScope: Identifiable, Equatable, Codable {
     let account: String
     let book: String
@@ -10,9 +10,9 @@ struct TXBusinessV2EditorScope: Identifiable, Equatable, Codable {
     let storeName: String
     var id: String { [account.lowercased(), book.lowercased(), date, storeID].joined(separator: "|") }
 
+    // Local editor identity only. All network writes require fresh server capabilities.
     func permits(_ account: Account?, _ book: CloudBook?) -> Bool {
         guard let account, let book, book.isAvailable,
-              book.name.hasPrefix("iOS_TEST_"),
               ["OWNER", "EDITOR", "SUPERADMIN"].contains(book.role.uppercased()) else { return false }
         return account.username.lowercased() == self.account.lowercased() && book.id == self.book
     }
@@ -81,7 +81,7 @@ struct TXBusinessV2LocalDraft: Codable, Equatable {
 }
 
 /// Local-only and separate from BusinessLocalDraftStore. Never overwrite
-/// malformed data or share test and formal scope keys.
+/// malformed data or share account/book scope keys. Keep Build 79 key for recovery.
 enum TXBusinessV2DraftStore {
     static func key(_ scope: TXBusinessV2EditorScope) -> String {
         "ios.test.business.v2.draft." + scope.id
@@ -195,8 +195,8 @@ enum TXBusinessV2DraftPolicy {
 
 struct TXBusinessV2DraftEditor: View {
     @EnvironmentObject private var model: LedgerViewModel
-    @Environment(\.dismiss) private var dismiss
     let scope: TXBusinessV2EditorScope
+    let onClose: () -> Void
     @State private var draft = TXBusinessV2LocalDraft()
     @State private var saved: TXBusinessV2LocalDraft?
     @State private var loaded = false
@@ -236,7 +236,7 @@ struct TXBusinessV2DraftEditor: View {
         do {
             try TXBusinessV2DraftStore.save(draft, scope: scope)
             saved = draft
-            message = "测试草稿已保存本机，未上传"
+            message = "营业草稿已保存本机，未上传"
         } catch { message = error.localizedDescription }
     }
     private func prepare() {
@@ -247,7 +247,7 @@ struct TXBusinessV2DraftEditor: View {
         do {
             guard !((try BusinessLocalDraftStore.loadChecked(account: scope.account, bookID: scope.book))
                 .contains { $0.date == scope.date && $0.storeID == scope.storeID }) else {
-                message = "此日期位置已有 V1 草稿，禁止混用两套录入。请选择其他测试日期或位置。"; return
+                message = "此日期位置已有 V1 草稿，禁止混用两套录入。请选择其他日期或位置。"; return
             }
             let result = try TXBusinessV2DraftPolicy.prepare(draft, scope: scope, account: account,
                 book: book, records: Array(model.snapshot.records.values), events: events)
@@ -256,11 +256,24 @@ struct TXBusinessV2DraftEditor: View {
         } catch { message = error.localizedDescription }
     }
 
+    private func refreshSources() async {
+        guard !working, permitted else { return }
+        serverAllowed = false
+        await model.refresh()
+        guard permitted else { return }
+        await model.refreshCustomer()
+        guard permitted else { return }
+        do {
+            serverAllowed = try await model.checkBusinessV2(scope)
+            if !serverAllowed { message = "当前账本未获得 V2 写入授权；草稿仍可保存" }
+        } catch { message = "V2 接口未开放：" + error.localizedDescription }
+    }
+
     private func requestClose() {
         guard !working else { return }
-        if reserved != nil { dismiss(); return }
+        if reserved != nil { onClose(); return }
         if saved != draft && storageError == nil { showClose = true }
-        else { dismiss() }
+        else { onClose() }
     }
 
     private func send(_ request: TXBusinessV2Immutable) async {
@@ -296,97 +309,121 @@ struct TXBusinessV2DraftEditor: View {
 
     private var costFields: some View {
         VStack(alignment: .leading, spacing: 6) {
-            TXReceiptChannelInput(label: "日常开销", value: $draft.expense)
-            Picker("费用付款人", selection: $draft.payer) {
-                Text("请选择付款人").tag("")
-                ForEach(model.snapshot.testPartners) { Text($0.name).tag($0.id) }
+            HStack(spacing: 8) {
+                TXReceiptChannelInput(label: "日常开销", value: $draft.expense)
+                Picker("费用付款人", selection: $draft.payer) {
+                    Text("请选择付款人").tag("")
+                    ForEach(model.snapshot.testPartners) { Text($0.name).tag($0.id) }
+                }.pickerStyle(.menu).lineLimit(1)
             }
             HStack {
                 TXReceiptChannelInput(label: "开摊库存估值", value: $draft.opening)
                 TXReceiptChannelInput(label: "收摊库存估值", value: $draft.closing)
             }
+        }
+    }
+
+    private var editorLocked: Bool { !permitted || storageError != nil || reserved != nil || working }
+    private var isTest: Bool { model.selectedBook?.name.hasPrefix("iOS_TEST_") == true }
+
+    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 7, content: content)
+            .padding(9).frame(maxWidth: .infinity, alignment: .leading)
+            .background(TXTheme.header, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var header: some View {
+        card {
             HStack {
-                TextField("开摊 HH:mm", text: $draft.start).textFieldStyle(.roundedBorder)
-                TextField("收摊 HH:mm", text: $draft.end).textFieldStyle(.roundedBorder)
+                Text("营业 · " + scope.date).font(.subheadline.bold())
+                Spacer()
+                Button("关闭", action: requestClose).disabled(working)
             }
+            HStack(spacing: 5) {
+                Text(scope.storeName).font(.subheadline.bold()).lineLimit(1)
+                Spacer(minLength: 3)
+                TextField("开摊", text: $draft.start).textFieldStyle(.roundedBorder).frame(width: 70)
+                Text("—").foregroundColor(.secondary)
+                TextField("收摊", text: $draft.end).textFieldStyle(.roundedBorder).frame(width: 70)
+            }.disabled(editorLocked)
+            if isTest { Text("测试账本").font(.caption2).foregroundColor(.orange) }
+            HStack {
+                Text(serverAllowed ? "营业 V2 已授权" : "V2 未授权或待核对")
+                    .font(.caption2).foregroundColor(serverAllowed ? .green : .orange)
+                Spacer()
+                Button { Task { await refreshSources() } } label: {
+                    Label("核对来源", systemImage: "arrow.clockwise").font(.caption)
+                }.disabled(model.isBusy || model.isCustomerBusy || !permitted || working)
+            }
+            if !sourcesReady { Text("来源未在线核验，暂不计算调整金额。").font(.caption2).foregroundColor(.orange) }
+        }
+    }
+
+    private var submission: some View {
+        card {
+            if let prepared {
+                HStack {
+                    TXCompactMetric(title: "本摊营业额", value: "¥" + prepared.proposal.totalRevenue, tint: .green)
+                    TXCompactMetric(title: "利润预览", value: "¥" + prepared.proposal.profit, tint: .orange)
+                }
+                DisclosureGroup("请求指纹") {
+                    Text(prepared.hash).font(.caption2).textSelection(.enabled)
+                }.font(.caption2)
+                Text("尚未发送，不能当作云端营业或结算结果。").font(.caption2).foregroundColor(.orange)
+            }
+            if reserved == nil {
+                HStack {
+                    Button("保存本机草稿", action: save).buttonStyle(.bordered)
+                        .disabled(editorLocked || !loaded)
+                    Spacer()
+                    Button("保存营业") {
+                        prepare()
+                        if prepared != nil && serverAllowed { showSend = true }
+                    }.buttonStyle(.borderedProminent)
+                        .disabled(editorLocked || !sourcesReady || !serverAllowed)
+                }
+            } else {
+                Text("原操作已锁定，只能查询及回读；不会自动重发。").font(.caption).foregroundColor(.orange)
+                Button("查询原操作并核对") { Task { await recover() } }.disabled(working || !permitted)
+            }
+            if let storageError { Text(storageError).foregroundColor(.red).font(.caption) }
+            if !message.isEmpty { Text(message).font(.caption) }
         }
     }
 
     var body: some View {
-        NavigationView {
-            Form {
-                Section {
-                    Text(scope.date + " · " + scope.storeName).font(.subheadline.bold())
-                    Text("仅隔离测试账本。服务端 V2 明确授权后才可提交，不影响正式账本。")
-                        .font(.caption).foregroundColor(.orange)
-                    Button {
-                        Task {
-                            await model.refresh()
-                            guard permitted else { return }
-                            await model.refreshCustomer()
-                            do { serverAllowed = try await model.checkBusinessV2(scope) }
-                            catch { serverAllowed = false; message = "V2 测试接口未开放：" + error.localizedDescription }
-                        }
-                    } label: {
-                        Label(sourcesReady ? "刷新凌晨及营业来源" : "核对云端来源", systemImage: "arrow.clockwise")
-                    }.disabled(model.isBusy || model.isCustomerBusy || !permitted || working)
-                    if !sourcesReady { Text("来源未在线核验，暂不计算调整金额。").font(.caption).foregroundColor(.orange) }
-                }
-                Section(header: Text("收款人及自然日收款")) {
-                    collectorFields
-                    Button { draft.collectors.append(TXBusinessV2CollectorInput()) } label: {
-                        Label("增加收款人", systemImage: "person.badge.plus")
-                    }.disabled(draft.collectors.count >= 12)
-                }.disabled(!permitted || storageError != nil || reserved != nil || working)
-                Section(header: Text("费用及库存")) { costFields }
-                    .disabled(!permitted || storageError != nil || reserved != nil || working)
-                Section {
-                    Button("保存测试草稿到本机", action: save)
-                        .disabled(!permitted || !loaded || storageError != nil || reserved != nil || working)
-                    Button("生成 V2 请求预览", action: prepare)
-                        .disabled(!sourcesReady || storageError != nil || reserved != nil || working)
-                    if let prepared {
-                        HStack {
-                            TXCompactMetric(title: "本摊营业额", value: "¥" + prepared.proposal.totalRevenue, tint: .green)
-                            TXCompactMetric(title: "利润预览", value: "¥" + prepared.proposal.profit, tint: .orange)
-                        }
-                        Text("请求指纹：" + prepared.hash).font(.caption2).textSelection(.enabled)
-                        Text("尚未发送，不能当作云端营业或结算结果。").font(.caption).foregroundColor(.orange)
-                        Button("提交到测试账本") { showSend = true }
-                            .disabled(!serverAllowed || working || reserved != nil || !sourcesReady)
-                    }
-                    if reserved != nil {
-                        Text("原操作已锁定，只能查询及回读；不会自动重发。").font(.caption).foregroundColor(.orange)
-                        Button("查询原操作并核对") { Task { await recover() } }.disabled(working || !permitted)
-                    }
-                    if let storageError { Text(storageError).foregroundColor(.red).font(.caption) }
-                    if !message.isEmpty { Text(message).font(.caption) }
-                }
-            }
-            .navigationTitle("凌晨与费用录入")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭", action: requestClose) } }
-            .interactiveDismissDisabled(true)
+        VStack(alignment: .leading, spacing: 7) {
+            header
+            card {
+                Text("营业收款").font(.subheadline.bold())
+                collectorFields
+                Button { draft.collectors.append(TXBusinessV2CollectorInput()) } label: {
+                    Label("增加收款人", systemImage: "person.badge.plus").font(.caption)
+                }.disabled(draft.collectors.count >= 12)
+            }.disabled(editorLocked)
+            card { costFields }.disabled(editorLocked)
+            submission
+        }
             .onAppear(perform: load)
+            .task { await refreshSources() }
             .onChange(of: draft) { _ in prepared = nil; message = "" }
             .onChange(of: model.customerCursor) { _ in prepared = nil }
             .onChange(of: model.currentCursor) { _ in prepared = nil }
             .onChange(of: model.customerSyncedAt) { _ in prepared = nil }
             .onChange(of: model.lastSyncAt) { _ in prepared = nil }
             .onChange(of: sourcesReady) { ready in if !ready { prepared = nil } }
-            .onChange(of: permitted) { allowed in if !allowed { prepared = nil; dismiss() } }
-            .alert("确认提交到隔离测试账本？", isPresented: $showSend) {
+            .onChange(of: permitted) { allowed in if !allowed { prepared = nil; onClose() } }
+            .alert(isTest ? "确认保存到测试账本？" : "确认保存营业到正式账本？", isPresented: $showSend) {
                 Button("确认提交") {
                     if let prepared { let value = TXBusinessV2Immutable(scope: scope, prepared: prepared); Task { await send(value) } }
                 }
                 Button("取消", role: .cancel) {}
             }
-            .confirmationDialog("有未保存的测试草稿", isPresented: $showClose, titleVisibility: .visible) {
-                Button("保存草稿并关闭") { save(); if saved == draft { dismiss() } }
-                Button("放弃未保存修改", role: .destructive) { dismiss() }
+            .confirmationDialog("有未保存的营业草稿", isPresented: $showClose, titleVisibility: .visible) {
+                Button("保存草稿并关闭") { save(); if saved == draft { onClose() } }
+                Button("放弃未保存修改", role: .destructive) { onClose() }
                 Button("继续编辑", role: .cancel) {}
             }
-        }.navigationViewStyle(.stack)
     }
 }
 
@@ -484,7 +521,7 @@ private struct TXBusinessV2CollectorEditor: View {
                             TXReceiptChannelInput(label: "支付宝", value: $line.alipay.morning)
                             TXReceiptChannelInput(label: "现金", value: $line.cash.morning)
                         }
-                        Text("留空=未确认，输入0=确认零；仅修改测试草稿。").font(.caption2).foregroundColor(.secondary)
+                        Text("留空=未确认，输入0=确认零；仅修改营业草稿。").font(.caption2).foregroundColor(.secondary)
                     }
                 }
             }

@@ -15,9 +15,10 @@ struct TXBusinessV2Capabilities: Decodable {
         case version, feature, enabled, scope, atomic, idempotency
         case supportsOvernight = "supports_overnight", supportsExpensePayer = "supports_expense_payer"
     }
-    var allowsTest: Bool {
-        version == 2 && feature == "business_atomic_commit_v2" && enabled &&
-        scope == "test" && atomic && idempotency && supportsOvernight && supportsExpensePayer
+    func allows(book: CloudBook) -> Bool {
+        guard book.isAvailable, version == 2, feature == "business_atomic_commit_v2",
+              enabled, atomic, idempotency, supportsOvernight, supportsExpensePayer else { return false }
+        return scope == (book.name.hasPrefix("iOS_TEST_") ? "test" : "formal")
     }
 }
 
@@ -184,9 +185,9 @@ enum TXBusinessV2Readback {
 /// delete, overwrite or automatically retry. A crash after reserve is unknown.
 final class TXBusinessV2Outbox {
     static func requireV1Free(book: CloudBook, account: String, date: String, storeID: String) throws {
-        guard book.name.hasPrefix("iOS_TEST_") else { return }
         let scope = TXBusinessV2EditorScope(account: account, book: book.id, date: date, storeID: storeID, storeName: "")
-        guard try TXBusinessV2Outbox().load(scope) == nil else { throw BusinessAtomicError.locked }
+        guard try TXBusinessV2Outbox().load(scope) == nil,
+              try TXBusinessV2DraftStore.load(scope) == nil else { throw BusinessAtomicError.locked }
     }
 
     private var db: OpaquePointer?

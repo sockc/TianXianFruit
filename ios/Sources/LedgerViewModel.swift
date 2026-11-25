@@ -146,7 +146,8 @@ final class LedgerViewModel: ObservableObject {
         guard let token = accessToken, businessV2Scope(scope, token: token) else { throw BusinessAtomicError.scope }
         let caps = try await api.businessV2Capabilities(token: token, bookID: scope.book)
         guard businessV2Scope(scope, token: token) else { throw BusinessAtomicError.scope }
-        return caps.allowsTest
+        guard let book = selectedBook else { throw BusinessAtomicError.scope }
+        return caps.allows(book: book)
     }
 
     private func freshBusinessV2(_ scope: TXBusinessV2EditorScope, token: String) async throws {
@@ -172,7 +173,8 @@ final class LedgerViewModel: ObservableObject {
         guard try outbox.load(scope) == nil else { throw BusinessAtomicError.locked }
         try await freshBusinessV2(scope, token: token)
         let caps = try await api.businessV2Capabilities(token: token, bookID: scope.book)
-        guard caps.allowsTest, businessV2Scope(scope, token: token), let book = selectedBook, let user = account,
+        guard businessV2Scope(scope, token: token), let book = selectedBook, let user = account,
+              caps.allows(book: book),
               !isBusy, !isCustomerBusy else { throw BusinessAtomicError.unavailable }
         guard !(try BusinessLocalDraftStore.loadChecked(account: scope.account, bookID: scope.book))
             .contains(where: { $0.date == scope.date && $0.storeID == scope.storeID }) else { throw BusinessAtomicError.locked }
@@ -240,6 +242,8 @@ final class LedgerViewModel: ObservableObject {
               book.id == proposal.bookID,
               PurchaseWorkspaceDraftPolicy.authorized(book: book, account: user)
         else { throw BusinessAtomicError.scope }
+        try TXBusinessV2Outbox.requireV1Free(book: book, account: user.username,
+            date: proposal.date, storeID: proposal.storeSyncID)
         isBusinessCommitBusy = true
         defer { isBusinessCommitBusy = false }
         // Never use cached capability to authorize a transaction.

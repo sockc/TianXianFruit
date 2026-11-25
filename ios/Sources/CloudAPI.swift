@@ -178,7 +178,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
 
     func businessV2Commit(token: String, immutable: TXBusinessV2Immutable, book: CloudBook,
                           account: Account, capabilities: TXBusinessV2Capabilities) async throws -> TXBusinessV2Receipt {
-        guard immutable.scope.permits(account, book), capabilities.allowsTest else { throw BusinessAtomicError.scope }
+        guard immutable.scope.permits(account, book), capabilities.allows(book: book) else { throw BusinessAtomicError.scope }
         let body = try immutable.body(deviceID: Self.scopedDeviceID(account.username))
         let result = try decode(TXBusinessV2Receipt.self, from: await request("POST", "/api/v1/business/v2/commit",
             token: token, jsonBody: body))

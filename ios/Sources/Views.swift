@@ -325,6 +325,9 @@ private struct BusinessPage: View {
     @State private var entryBookID = ""
     @State private var entryRevision = 0
     @State private var v2EditorScope: TXBusinessV2EditorScope?
+    @State private var v2Ready = false
+    @State private var v2Checking = false
+    @State private var v2Message: String?
 
     private var selectedKey: String { BusinessDates.key(selectedDate) }
     private var startingKey: String {
@@ -421,6 +424,68 @@ private struct BusinessPage: View {
         entryRevision += 1
     }
 
+    private var v2CapabilityKey: String {
+        (model.account?.username ?? "") + "|" + (model.selectedBookID ?? "")
+    }
+    private func checkV2() async {
+        let key = v2CapabilityKey
+        v2Ready = false; v2Message = nil
+        guard canEnterBusiness, let account = model.account?.username,
+              let book = model.selectedBookID else { return }
+        v2Checking = true
+        defer { if key == v2CapabilityKey { v2Checking = false } }
+        do {
+            let scope = TXBusinessV2EditorScope(account: account, book: book, date: selectedKey, storeID: "", storeName: "")
+            let allowed = try await model.checkBusinessV2(scope)
+            guard !Task.isCancelled, key == v2CapabilityKey else { return }
+            v2Ready = allowed
+        } catch {
+            guard !Task.isCancelled, key == v2CapabilityKey else { return }
+            v2Message = "营业 V2 暂不可用，可使用原营业入口"
+        }
+    }
+
+    private func openV2(storeID: String, name: String) {
+        guard canEnterBusiness, !model.inlineLedgerEditing, let account = model.account?.username,
+              let book = model.selectedBookID else { return }
+        model.inlineBusinessEditing = true
+        v2EditorScope = TXBusinessV2EditorScope(account: account, book: book,
+            date: selectedKey, storeID: storeID, storeName: name)
+    }
+    private func closeV2() {
+        v2EditorScope = nil
+        model.inlineBusinessEditing = false
+        entryRevision += 1
+    }
+    private var v2LocalStores: [String] {
+        guard let account = model.account?.username, let book = model.selectedBookID,
+              let outbox = try? TXBusinessV2Outbox() else { return [] }
+        return model.snapshot.testStores.compactMap { store in
+            let scope = TXBusinessV2EditorScope(account: account, book: book, date: selectedKey, storeID: store.id, storeName: store.name)
+            do {
+                if try outbox.load(scope) != nil { return store.id }
+                if try TXBusinessV2DraftStore.load(scope) != nil { return store.id }
+                return nil
+            } catch { return store.id } // Recovery must remain accessible even for unreadable local data.
+        }
+    }
+    private var v2NewStores: [String] {
+        model.snapshot.testStores.filter { store in
+            (filteredStoreID == nil || filteredStoreID == store.id) &&
+            !model.snapshot.business.contains { $0.date == selectedKey && $0.storeName == store.name } &&
+            !localDrafts.contains { $0.storeID == store.id }
+        }.map(\.id)
+    }
+    private var v2EntryMenu: some View {
+        Menu {
+            ForEach(model.snapshot.testStores.filter { v2NewStores.contains($0.id) }) { store in
+                Button(store.name) { openV2(storeID: store.id, name: store.name) }
+            }
+        } label: { Label("新增营业记录", systemImage: "plus") }
+        .buttonStyle(.borderedProminent)
+        .disabled(v2NewStores.isEmpty || !canEnterBusiness)
+    }
+
     private func moveDay(_ offset: Int) {
         selectedDate = BusinessDates.calendar.date(byAdding: .day, value: offset, to: selectedDate)
             ?? selectedDate
@@ -439,31 +504,35 @@ private struct BusinessPage: View {
             if filteredDayAlreadyRecorded {
                 Label("当前日期与位置已有营业", systemImage: "checkmark.shield")
                     .font(.caption2).foregroundColor(.secondary)
+            } else if v2Ready {
+                v2EntryMenu
             } else {
                 Button {
                     openBusinessEditor(storeID: filteredStoreID)
                 } label: {
-                    Label("新增营业记录", systemImage: "plus")
+                    Label("新增营业记录（原接口）", systemImage: "plus")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!canEnterBusiness)
+                .disabled(!canEnterBusiness || v2Checking)
             }
         }
-        if model.selectedBook?.name.hasPrefix("iOS_TEST_") == true && canEnterBusiness {
-            Menu {
-                ForEach(model.snapshot.testStores) { store in
-                    Button(store.name) {
-                        guard let account = model.account?.username, let book = model.selectedBookID,
-                              !model.inlineLedgerEditing else { return }
-                        model.inlineBusinessEditing = true
-                        v2EditorScope = TXBusinessV2EditorScope(account: account, book: book,
-                            date: selectedKey, storeID: store.id, storeName: store.name)
-                    }
+        if canEnterBusiness && !v2Ready {
+            HStack {
+                if v2Checking { Text("正在核对营业权限…").font(.caption2) }
+                else if let v2Message { Text(v2Message).font(.caption2).foregroundColor(.secondary) }
+                Spacer()
+                Button("刷新营业权限") { Task { await checkV2() } }.font(.caption2).disabled(v2Checking)
+            }
+        }
+        if canEnterBusiness && !v2LocalStores.isEmpty {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("营业草稿及原操作核对").font(.caption.bold())
+                ForEach(model.snapshot.testStores.filter { v2LocalStores.contains($0.id) }) { store in
+                    Button { openV2(storeID: store.id, name: store.name) } label: {
+                        HStack { Text(store.name); Spacer(); Text("打开核对"); Image(systemName: "chevron.right") }
+                    }.font(.caption)
                 }
-            } label: {
-                Label("凌晨收款与费用付款人 · 测试录入", systemImage: "moon.stars")
-                    .font(.caption)
-            }.disabled(model.snapshot.testStores.isEmpty || showLocalEntry)
+            }.padding(8).background(TXTheme.header, in: RoundedRectangle(cornerRadius: 10))
         }
         DisclosureGroup(isExpanded: $showFilters) {
             VStack(spacing: 8) {
@@ -610,7 +679,7 @@ private struct BusinessPage: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 7) {
-                if !showLocalEntry {
+                if !showLocalEntry && v2EditorScope == nil {
                     TXPageDateHeader(title: "营业", date: $model.workDate)
                 }
                 if model.isBusy || model.errorMessage != nil || model.isUsingCachedAuthorization || model.lastSyncAt == nil { TXCloudSyncStatusBar() }
@@ -623,19 +692,23 @@ private struct BusinessPage: View {
                         onClose: closeBusinessEditor)
                         .environmentObject(model)
                 }
-                historyContent.disabled(showLocalEntry)
+                if let scope = v2EditorScope {
+                    TXBusinessV2DraftEditor(scope: scope, onClose: closeV2)
+                        .environmentObject(model).id(scope.id)
+                }
+                historyContent.disabled(showLocalEntry || v2EditorScope != nil)
             }
-            .padding(12)
+            .padding(8)
         }
-        .sheet(item: $v2EditorScope, onDismiss: { model.inlineBusinessEditing = false }) { scope in
-            TXBusinessV2DraftEditor(scope: scope).environmentObject(model)
-        }
+        .task(id: v2CapabilityKey) { await checkV2() }
         .onChange(of: selectedDate) { _ in visibleDays = 14 }
         .onChange(of: model.selectedBookID) { _ in
             if showLocalEntry { closeBusinessEditor(selectedDate) }
+            if v2EditorScope != nil { closeV2() }
         }
         .onChange(of: model.account?.username) { _ in
             if showLocalEntry { closeBusinessEditor(selectedDate) }
+            if v2EditorScope != nil { closeV2() }
         }
     }
 }

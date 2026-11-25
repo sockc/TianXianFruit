@@ -577,7 +577,7 @@ assert 'showConfirmedDrafts || attempt.phase != .confirmed || confirmedPurchaseC
 assert 'DisclosureGroup(isExpanded: $showAudit)' in swift['TXFundOverviewPanel.swift']
 assert '服务端库存写入未授权' in swift['TXInventory094Page.swift']
 assert 'MARKETING_VERSION: "1.0.2"' in project
-assert 'CURRENT_PROJECT_VERSION: "79"' in project
+assert 'CURRENT_PROJECT_VERSION: "80"' in project
 print("V1.0.0 RC1 PASS: routine UI, retained history, honest sync states")
 
 # RC2: directory is read-only except existing book selection.
@@ -693,13 +693,13 @@ assert (root.parent / "Tests" / "BusinessV2PreparationTests.swift").exists()
 print("V1.0.2 v2 preparation only, v1 transport retained PASS")
 
 v2editor = swift["BusinessV2DraftEditor.swift"]
-assert 'book.name.hasPrefix("iOS_TEST_")' in v2editor
+assert 'book.name.hasPrefix("iOS_TEST_") ? "test" : "formal"' in swift["BusinessV2Transaction.swift"]
 assert "ios.test.business.v2.draft." in v2editor
 assert "TXBusinessV2Preparation.adjusted" in v2editor
 assert "TXBusinessV2Preparation.canonical" in v2editor
 assert "previousRevision: pair.0.revision" in v2editor
 assert "未发送" in v2editor and "commitBusiness(" not in v2editor and "/v2/commit" not in v2editor
-assert 'Menu {' in swift["Views.swift"] and "TXBusinessV2DraftEditor(scope: scope)" in swift["Views.swift"]
+assert 'Menu {' in swift["Views.swift"] and "TXBusinessV2DraftEditor(scope: scope, onClose: closeV2)" in swift["Views.swift"]
 assert (root.parent / "Tests" / "BusinessV2DraftTests.swift").exists()
 print("V1.0.2 isolated V2 input draft and preview guard PASS")
 
@@ -712,10 +712,17 @@ v2tx = swift["BusinessV2Transaction.swift"]
 assert "INSERT INTO reserved(scope,payload)" in v2tx and "DELETE FROM reserved" not in v2tx
 assert "TXBusinessV2Readback.verified" in swift["LedgerViewModel.swift"]
 assert swift["LedgerViewModel.swift"].index("try outbox.reserve(immutable)") < swift["LedgerViewModel.swift"].index("api.businessV2Commit(token:")
-assert "capabilities.allowsTest" in regular
+assert "capabilities.allows(book: book)" in regular
 assert "查询原操作并核对" in v2editor
 print("V1.0.2 V2 test capability, immutable reserve and two-stream readback guard PASS")
 
 assert "requireV1Free" in swift["BusinessFormalSubmit.swift"] and "requireV1Free" in swift["BusinessLocalEntryView.swift"]
-assert "guard book.name.hasPrefix(\"iOS_TEST_\") else { return }" in v2tx
+assert "try TXBusinessV2DraftStore.load(scope) == nil" in v2tx
+assert "TXBusinessV2Outbox.requireV1Free(book: book" in swift["LedgerViewModel.swift"]
 print("V1.0.2 V2 reservation protects legacy test-book entry PASS")
+
+assert "caps.allows(book: book)" in swift["LedgerViewModel.swift"]
+assert "else if v2Ready" in swift["Views.swift"]
+assert "营业草稿及原操作核对" in swift["Views.swift"]
+assert "确认保存营业到正式账本" in v2editor
+print("Build 80 scope-matched capabilities, inline entry and both-scope draft isolation PASS")
