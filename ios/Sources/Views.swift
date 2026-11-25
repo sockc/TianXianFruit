@@ -123,15 +123,16 @@ private struct DashboardView: View {
             }
             Spacer(minLength: 4)
             HStack(spacing: 4) {
-                Circle().fill(model.isUsingCachedAuthorization ? Color.orange : TXTheme.primary)
+                Circle().fill(model.isUsingCachedAuthorization || model.errorMessage != nil ? Color.orange : TXTheme.primary)
                     .frame(width: 6, height: 6)
                 Text(model.isBusy ? "同步中" :
                      model.isUsingCachedAuthorization ? "离线" :
+                     model.errorMessage != nil ? "同步异常" :
                      model.lastSyncAt == nil ? "待同步" : "已同步")
                     .font(.caption2).foregroundColor(.secondary)
             }
             Button {
-                Task { await model.refresh(); await model.refreshCustomer() }
+                Task { await model.refresh(); await model.refreshAllTestWriteCapabilities(); await model.refreshCustomer() }
             } label: {
                 if model.isBusy { ProgressView().controlSize(.small) }
                 else { Image(systemName: "arrow.clockwise") }
@@ -161,7 +162,7 @@ private struct HomePage: View {
                     .foregroundColor(TXTheme.primary)
                 Text(name).font(.subheadline.bold()).foregroundColor(.primary)
                 Text(subtitle).font(.system(size: 10))
-                    .foregroundColor(.secondary).lineLimit(1)
+                    .foregroundColor(.secondary).lineLimit(1).minimumScaleFactor(0.75)
             }
             .frame(maxWidth: .infinity, minHeight: 68)
             .background(Color(UIColor.secondarySystemGroupedBackground),
@@ -177,6 +178,7 @@ private struct HomePage: View {
             HStack(spacing: 8) {
                 coreAction("营业", "录入收款", "square.and.pencil", to: .business)
                 coreAction("采购", "商品采购", "cart", to: .purchase)
+                coreAction("库存", "库存盘点", "shippingbox", to: .inventory)
                 coreAction("结算", "资金结算", "checkmark.circle", to: .settlement)
             }
         }
@@ -201,7 +203,6 @@ private struct HomePage: View {
                     Text("今日概览")
                         .font(.caption2).foregroundColor(.secondary)
                 }
-                coreOperations
                 WeatherHomeSummary()
                 if model.lastSyncAt == nil {
                     EmptyStateView(title: "尚未读取云端账本", icon: "icloud.and.arrow.down",
@@ -243,6 +244,15 @@ private struct HomePage: View {
                     }
                     // Daily figures come from saved cloud records; no estimated settlement.
                 }
+                coreOperations
+                HStack(spacing: 8) {
+                    NavigationLink(destination: CustomerInsightsView()) {
+                        Label("客户分析", systemImage: "person.2").frame(maxWidth: .infinity)
+                    }
+                    NavigationLink(destination: BusinessStatsView()) {
+                        Label("经营统计", systemImage: "chart.bar.xaxis").frame(maxWidth: .infinity)
+                    }
+                }.font(.subheadline).buttonStyle(.bordered)
                 SyncFooter()
             }
             .padding(.horizontal, 12)
@@ -722,7 +732,7 @@ private struct MorePage: View {
                             Text(error).foregroundColor(.orange)
                         }
                         HStack {
-                            Button("立即同步") { Task { await model.refresh() } }
+                            Button("立即同步") { Task { await model.refresh(); await model.refreshAllTestWriteCapabilities() } }
                                 .disabled(model.isBusy)
                             Spacer()
                             Button("完整同步") { Task { await model.refresh(forceFull: true) } }
@@ -742,7 +752,8 @@ private struct MorePage: View {
                     Label("账号与同步", systemImage: "person.crop.circle")
                         .font(.subheadline.bold())
                 }
-                Text("iOS V0.8.6 · Build 55")
+                Text(TXAppPresentation.versionLabel(version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+                    build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String))
                     .font(.caption2).foregroundColor(.secondary)
             }
             .padding(12)
@@ -845,8 +856,8 @@ struct SyncFooter: View {
         Group {
             if let time = model.lastSyncAt {
                 HStack(spacing: 5) {
-                    Image(systemName: "checkmark.icloud")
-                    Text("最近同步 " + time.formatted(date: .abbreviated, time: .shortened))
+                    Image(systemName: model.errorMessage == nil && !model.isUsingCachedAuthorization ? "checkmark.icloud" : "exclamationmark.icloud")
+                    Text((model.errorMessage == nil && !model.isUsingCachedAuthorization ? "最近同步 " : "缓存时间 ") + time.formatted(date: .abbreviated, time: .shortened))
                 }
                 .font(.caption2).foregroundColor(.secondary)
                 .padding(.vertical, 4)

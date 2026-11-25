@@ -567,3 +567,15 @@ assert '.deviceOwnerAuthentication' in swift['TXFormalLedgerAccess.swift']
 assert 'NSFaceIDUsageDescription' in (root.parent / 'Config' / 'AppInfo.plist').read_text()
 assert (root.parent / 'Tests' / 'TXFormalLedgerAccessTests.swift').exists()
 print("V0.9.9 PASS: formal book capability checks and device authentication path")
+
+
+# V1.0.0 RC1: normal pages preserve drafts and distinguish failed sync.
+assert 'TXAppPresentation.versionLabel' in swift['Views.swift']
+assert 'coreAction("库存"' in swift['Views.swift']
+assert '"同步异常"' in swift['Views.swift']
+assert 'showConfirmedDrafts || attempt.phase != .confirmed || confirmedPurchaseChanged(attempt)' in swift['PurchaseWorkspaceView.swift']
+assert 'DisclosureGroup(isExpanded: $showAudit)' in swift['TXFundOverviewPanel.swift']
+assert '服务端库存写入未授权' in swift['TXInventory094Page.swift']
+assert 'MARKETING_VERSION: "1.0.0"' in project
+assert 'CURRENT_PROJECT_VERSION: "71"' in project
+print("V1.0.0 RC1 PASS: routine UI, retained history, honest sync states")

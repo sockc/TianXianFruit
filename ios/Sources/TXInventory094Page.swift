@@ -75,8 +75,14 @@ struct TXInventory094Page: View {
     private var syncStatus: String {
         if model.isLedgerV33Busy { return "正在同步" }
         if model.v33HasPending { return "待核对上次同步结果" }
-        if !storageOK { return "库存尚未加载" }
-        if !editable { return "库存只读或等待同步" }
+        if model.isUsingCachedAuthorization { return "离线缓存 · 暂停编辑" }
+        if !storageOK { return "库存草稿不可用或尚未加载" }
+        if report == nil || loadedRevision != revision { return "等待库存同步" }
+        if report?.issues.isEmpty == false { return "历史数据异常 · 暂停编辑" }
+        if !model.v34LocalCandidate { return "当前账号无库存编辑权限" }
+        if !editable {
+            return capabilityRevision != revision ? "正在确认库存授权" : "服务端库存写入未授权"
+        }
         let count = drafts.count + prices.count
         if count > 0 { return "\(count) 项待同步" }
         return "已读取云端库存"

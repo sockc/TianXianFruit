@@ -150,6 +150,7 @@ final class LedgerViewModel: ObservableObject {
                 businessCommitError = "此账本尚未获得服务端营业写入授权；本机草稿不受影响"
             }
         } catch {
+            guard self.account?.username == user.username, self.accessToken == token, self.selectedBookID == book else { return }
             businessCommitError = "服务器未提供正式营业事务能力；本机草稿不受影响"
         }
     }
@@ -216,6 +217,7 @@ final class LedgerViewModel: ObservableObject {
             if capabilities.allows(book: book) { settlementCommitCapabilities = capabilities }
             else { settlementCommitError = "此账本尚未获得服务端结算权限" }
         } catch {
+            guard self.account?.username == user.username, self.accessToken == token, self.selectedBookID == book.id else { return }
             settlementCommitError = "无法确认服务端结算原子事务能力"
         }
     }
@@ -288,6 +290,7 @@ final class LedgerViewModel: ObservableObject {
                 purchaseCommitError = "此账本尚未获得服务端采购写入授权；本机草稿不受影响"
             }
         } catch {
+            guard self.account?.username == account.username, self.accessToken == token, self.selectedBookID == book else { return }
             purchaseCommitError = "采购云端写入未启用；本机录入仍可使用"
         }
     }
