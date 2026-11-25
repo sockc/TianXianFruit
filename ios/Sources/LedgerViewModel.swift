@@ -138,6 +138,75 @@ final class LedgerViewModel: ObservableObject {
         await refreshSettlementCapabilities()
     }
 
+    private func businessV2Scope(_ scope: TXBusinessV2EditorScope, token: String) -> Bool {
+        scope.permits(account, selectedBook) && accessToken == token && !isUsingCachedAuthorization
+    }
+
+    func checkBusinessV2(_ scope: TXBusinessV2EditorScope) async throws -> Bool {
+        guard let token = accessToken, businessV2Scope(scope, token: token) else { throw BusinessAtomicError.scope }
+        let caps = try await api.businessV2Capabilities(token: token, bookID: scope.book)
+        guard businessV2Scope(scope, token: token) else { throw BusinessAtomicError.scope }
+        return caps.allowsTest
+    }
+
+    private func freshBusinessV2(_ scope: TXBusinessV2EditorScope, token: String) async throws {
+        guard businessV2Scope(scope, token: token), !isBusy, !isCustomerBusy else { throw BusinessAtomicError.scope }
+        let before = lastSyncAt
+        let customerBefore = customerSyncedAt
+        await refresh(forceFull: true)
+        guard businessV2Scope(scope, token: token), errorMessage == nil, let last = lastSyncAt,
+              before == nil || last > before! else { throw BusinessAtomicError.cloudConflict }
+        await refreshCustomer(forceFull: true)
+        guard businessV2Scope(scope, token: token), customerError == nil, customerAPIAvailable,
+              customerOvernightCovered, let latest = customerSyncedAt,
+              customerBefore == nil || latest > customerBefore! else { throw BusinessAtomicError.cloudConflict }
+    }
+
+    func submitBusinessV2(_ immutable: TXBusinessV2Immutable, draft: TXBusinessV2LocalDraft) async throws {
+        let scope = immutable.scope
+        guard !isBusinessCommitBusy, !isPurchaseCommitBusy, !isSettlementCommitBusy, !isLedgerV33Busy,
+              let token = accessToken, businessV2Scope(scope, token: token) else { throw BusinessAtomicError.scope }
+        isBusinessCommitBusy = true
+        defer { isBusinessCommitBusy = false }
+        let outbox = try TXBusinessV2Outbox()
+        guard try outbox.load(scope) == nil else { throw BusinessAtomicError.locked }
+        try await freshBusinessV2(scope, token: token)
+        let caps = try await api.businessV2Capabilities(token: token, bookID: scope.book)
+        guard caps.allowsTest, businessV2Scope(scope, token: token), let book = selectedBook, let user = account,
+              !isBusy, !isCustomerBusy else { throw BusinessAtomicError.unavailable }
+        guard !(try BusinessLocalDraftStore.loadChecked(account: scope.account, bookID: scope.book))
+            .contains(where: { $0.date == scope.date && $0.storeID == scope.storeID }) else { throw BusinessAtomicError.locked }
+        let rebuilt = try TXBusinessV2DraftPolicy.prepare(draft, scope: scope, account: user, book: book,
+            records: Array(snapshot.records.values), events: Array(customerSnapshot.events.values))
+        guard rebuilt == immutable.prepared else { throw BusinessAtomicError.cloudConflict }
+        // Persist exact request before the only POST. Any failure is query-only.
+        try TXBusinessV2DraftStore.save(draft, scope: scope)
+        try outbox.reserve(immutable)
+        let receipt = try await api.businessV2Commit(token: token, immutable: immutable,
+            book: book, account: user, capabilities: caps)
+        try await verifyBusinessV2(immutable, receipt: receipt, token: token)
+    }
+
+    func recoverBusinessV2(_ immutable: TXBusinessV2Immutable) async throws {
+        guard !isBusinessCommitBusy, let token = accessToken,
+              businessV2Scope(immutable.scope, token: token),
+              try TXBusinessV2Outbox().load(immutable.scope) == immutable else { throw BusinessAtomicError.scope }
+        isBusinessCommitBusy = true
+        defer { isBusinessCommitBusy = false }
+        guard let receipt = try await api.businessV2Operation(token: token, immutable: immutable) else {
+            throw BusinessAtomicError.missingResult
+        }
+        try await verifyBusinessV2(immutable, receipt: receipt, token: token)
+    }
+
+    private func verifyBusinessV2(_ immutable: TXBusinessV2Immutable, receipt: TXBusinessV2Receipt,
+                                  token: String) async throws {
+        try await freshBusinessV2(immutable.scope, token: token)
+        guard TXBusinessV2Readback.verified(immutable, receipt: receipt,
+            records: Array(snapshot.records.values), events: Array(customerSnapshot.events.values),
+            ledgerCursor: currentCursor) else { throw BusinessAtomicError.readback }
+    }
+
     func refreshBusinessCommitCapabilities() async {
         businessCommitCapabilities = nil
         businessCommitError = nil

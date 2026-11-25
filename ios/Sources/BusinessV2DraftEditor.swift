@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 
 /// A separate, test-ledger-only draft. V1 storage and submission never read it.
-struct TXBusinessV2EditorScope: Identifiable, Equatable {
+struct TXBusinessV2EditorScope: Identifiable, Equatable, Codable {
     let account: String
     let book: String
     let date: String
@@ -117,7 +117,7 @@ enum TXBusinessV2DraftPolicy {
         let morning: Morning
         let revision: Int64
     }
-    struct Prepared {
+    struct Prepared: Codable, Equatable {
         let proposal: BusinessCommitProposal
         let canonical: Data
         let hash: String
@@ -204,6 +204,10 @@ struct TXBusinessV2DraftEditor: View {
     @State private var message = ""
     @State private var prepared: TXBusinessV2DraftPolicy.Prepared?
     @State private var showClose = false
+    @State private var reserved: TXBusinessV2Immutable?
+    @State private var serverAllowed = false
+    @State private var working = false
+    @State private var showSend = false
 
     private var permitted: Bool { scope.permits(model.account, model.selectedBook) }
     private var sourcesReady: Bool {
@@ -224,10 +228,11 @@ struct TXBusinessV2DraftEditor: View {
                 draft.collectors[0].partner = p.id
             }
             saved = draft
+            reserved = try TXBusinessV2Outbox().load(scope)
         } catch { storageError = error.localizedDescription }
     }
     private func save() {
-        guard permitted, loaded, storageError == nil else { return }
+        guard permitted, loaded, storageError == nil, reserved == nil, !working else { return }
         do {
             try TXBusinessV2DraftStore.save(draft, scope: scope)
             saved = draft
@@ -236,7 +241,7 @@ struct TXBusinessV2DraftEditor: View {
     }
     private func prepare() {
         prepared = nil
-        guard sourcesReady, let account = model.account, let book = model.selectedBook else {
+        guard sourcesReady, reserved == nil, !working, let account = model.account, let book = model.selectedBook else {
             message = "请先完成在线营业及凌晨同步"; return
         }
         do {
@@ -252,8 +257,32 @@ struct TXBusinessV2DraftEditor: View {
     }
 
     private func requestClose() {
+        guard !working else { return }
+        if reserved != nil { dismiss(); return }
         if saved != draft && storageError == nil { showClose = true }
         else { dismiss() }
+    }
+
+    private func send(_ request: TXBusinessV2Immutable) async {
+        guard !working, permitted, reserved == nil, prepared == request.prepared else { return }
+        working = true
+        defer { working = false }
+        do {
+            try await model.submitBusinessV2(request, draft: draft)
+            message = "营业、凌晨来源及费用付款人均已云端回读核对"
+        } catch { message = error.localizedDescription }
+        do { reserved = try TXBusinessV2Outbox().load(scope) }
+        catch { storageError = error.localizedDescription }
+        prepared = nil
+    }
+    private func recover() async {
+        guard !working, let reserved, permitted else { return }
+        working = true
+        defer { working = false }
+        do {
+            try await model.recoverBusinessV2(reserved)
+            message = "原操作已确认：营业与凌晨来源均回读一致"
+        } catch { message = error.localizedDescription }
     }
 
     private var collectorFields: some View {
@@ -288,17 +317,19 @@ struct TXBusinessV2DraftEditor: View {
             Form {
                 Section {
                     Text(scope.date + " · " + scope.storeName).font(.subheadline.bold())
-                    Text("仅隔离测试账本，V2 本地录入及预览。未开放网络提交，不影响正式账本。")
+                    Text("仅隔离测试账本。服务端 V2 明确授权后才可提交，不影响正式账本。")
                         .font(.caption).foregroundColor(.orange)
                     Button {
                         Task {
                             await model.refresh()
                             guard permitted else { return }
                             await model.refreshCustomer()
+                            do { serverAllowed = try await model.checkBusinessV2(scope) }
+                            catch { serverAllowed = false; message = "V2 测试接口未开放：" + error.localizedDescription }
                         }
                     } label: {
                         Label(sourcesReady ? "刷新凌晨及营业来源" : "核对云端来源", systemImage: "arrow.clockwise")
-                    }.disabled(model.isBusy || model.isCustomerBusy || !permitted)
+                    }.disabled(model.isBusy || model.isCustomerBusy || !permitted || working)
                     if !sourcesReady { Text("来源未在线核验，暂不计算调整金额。").font(.caption).foregroundColor(.orange) }
                 }
                 Section(header: Text("收款人及自然日收款")) {
@@ -306,14 +337,14 @@ struct TXBusinessV2DraftEditor: View {
                     Button { draft.collectors.append(TXBusinessV2CollectorInput()) } label: {
                         Label("增加收款人", systemImage: "person.badge.plus")
                     }.disabled(draft.collectors.count >= 12)
-                }.disabled(!permitted || storageError != nil)
+                }.disabled(!permitted || storageError != nil || reserved != nil || working)
                 Section(header: Text("费用及库存")) { costFields }
-                    .disabled(!permitted || storageError != nil)
+                    .disabled(!permitted || storageError != nil || reserved != nil || working)
                 Section {
                     Button("保存测试草稿到本机", action: save)
-                        .disabled(!permitted || !loaded || storageError != nil)
+                        .disabled(!permitted || !loaded || storageError != nil || reserved != nil || working)
                     Button("生成 V2 请求预览", action: prepare)
-                        .disabled(!sourcesReady || storageError != nil)
+                        .disabled(!sourcesReady || storageError != nil || reserved != nil || working)
                     if let prepared {
                         HStack {
                             TXCompactMetric(title: "本摊营业额", value: "¥" + prepared.proposal.totalRevenue, tint: .green)
@@ -321,6 +352,12 @@ struct TXBusinessV2DraftEditor: View {
                         }
                         Text("请求指纹：" + prepared.hash).font(.caption2).textSelection(.enabled)
                         Text("尚未发送，不能当作云端营业或结算结果。").font(.caption).foregroundColor(.orange)
+                        Button("提交到测试账本") { showSend = true }
+                            .disabled(!serverAllowed || working || reserved != nil || !sourcesReady)
+                    }
+                    if reserved != nil {
+                        Text("原操作已锁定，只能查询及回读；不会自动重发。").font(.caption).foregroundColor(.orange)
+                        Button("查询原操作并核对") { Task { await recover() } }.disabled(working || !permitted)
                     }
                     if let storageError { Text(storageError).foregroundColor(.red).font(.caption) }
                     if !message.isEmpty { Text(message).font(.caption) }
@@ -338,6 +375,12 @@ struct TXBusinessV2DraftEditor: View {
             .onChange(of: model.lastSyncAt) { _ in prepared = nil }
             .onChange(of: sourcesReady) { ready in if !ready { prepared = nil } }
             .onChange(of: permitted) { allowed in if !allowed { prepared = nil; dismiss() } }
+            .confirmationDialog("确认提交到隔离测试账本？", isPresented: $showSend, titleVisibility: .visible) {
+                Button("确认提交") {
+                    if let prepared { let value = TXBusinessV2Immutable(scope: scope, prepared: prepared); Task { await send(value) } }
+                }
+                Button("取消", role: .cancel) {}
+            }
             .confirmationDialog("有未保存的测试草稿", isPresented: $showClose, titleVisibility: .visible) {
                 Button("保存草稿并关闭") { save(); if saved == draft { dismiss() } }
                 Button("放弃未保存修改", role: .destructive) { dismiss() }

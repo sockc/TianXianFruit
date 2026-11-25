@@ -3,13 +3,18 @@ import CryptoKit
 
 /// V1.0.37 RC1 wire preparation ONLY. No network write, no v1 fallback.
 /// The existing v1 proposal and outbox are not modified.
-struct TXBusinessV2Morning: Equatable {
+struct TXBusinessV2Morning: Equatable, Codable {
     let wechat: String
     let alipay: String
     let cash: String
     let wechatRecorded: Bool
     let alipayRecorded: Bool
     let cashRecorded: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case wechat, alipay, cash
+        case wechatRecorded = "wechat_recorded", alipayRecorded = "alipay_recorded", cashRecorded = "cash_recorded"
+    }
 
     func values() throws -> [Int64] {
         let amounts = try [wechat, alipay, cash].map {
@@ -28,7 +33,7 @@ struct TXBusinessV2Morning: Equatable {
     }
 }
 
-struct TXBusinessV2Natural: Equatable {
+struct TXBusinessV2Natural: Equatable, Codable {
     let partnerSyncID: String
     let wechat: String
     let alipay: String
@@ -39,6 +44,11 @@ struct TXBusinessV2Natural: Equatable {
     let previousRevision: Int64
     let followingRevision: Int64
     let following: TXBusinessV2Morning?
+    enum CodingKeys: String, CodingKey {
+        case partnerSyncID = "partner_sync_id", wechat, alipay, cash
+        case deductWechat = "deduct_wechat", deductAlipay = "deduct_alipay", deductCash = "deduct_cash"
+        case previousRevision = "previous_revision", followingRevision = "following_revision", following
+    }
 
     var wire: [String: Any] {
         var value: [String: Any] = [

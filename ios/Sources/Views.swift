@@ -455,6 +455,7 @@ private struct BusinessPage: View {
                     Button(store.name) {
                         guard let account = model.account?.username, let book = model.selectedBookID,
                               !model.inlineLedgerEditing else { return }
+                        model.inlineBusinessEditing = true
                         v2EditorScope = TXBusinessV2EditorScope(account: account, book: book,
                             date: selectedKey, storeID: store.id, storeName: store.name)
                     }
@@ -626,7 +627,7 @@ private struct BusinessPage: View {
             }
             .padding(12)
         }
-        .sheet(item: $v2EditorScope) { scope in
+        .sheet(item: $v2EditorScope, onDismiss: { model.inlineBusinessEditing = false }) { scope in
             TXBusinessV2DraftEditor(scope: scope).environmentObject(model)
         }
         .onChange(of: selectedDate) { _ in visibleDays = 14 }

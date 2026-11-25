@@ -707,3 +707,11 @@ assert "matchesSources(previous: previousRevision, following: followingRevision)
 assert "确认采用当前来源版本" in v2editor
 assert '$0.kind == "NATURAL"' in v2editor
 print("V1.0.2 explicit overnight source revision acknowledgement guard PASS")
+
+v2tx = swift["BusinessV2Transaction.swift"]
+assert "INSERT INTO reserved(scope,payload)" in v2tx and "DELETE FROM reserved" not in v2tx
+assert "TXBusinessV2Readback.verified" in swift["LedgerViewModel.swift"]
+assert swift["LedgerViewModel.swift"].index("try outbox.reserve(immutable)") < swift["LedgerViewModel.swift"].index("api.businessV2Commit(token:")
+assert "capabilities.allowsTest" in regular
+assert "查询原操作并核对" in v2editor
+print("V1.0.2 V2 test capability, immutable reserve and two-stream readback guard PASS")
