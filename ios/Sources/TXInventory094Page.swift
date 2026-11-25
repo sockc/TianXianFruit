@@ -50,6 +50,9 @@ struct TXInventory094Page: View {
     @State private var loadedScope = ""
     @State private var error = ""
     @State private var storageOK = false
+    @State private var autoEnabled = false
+    @State private var autosaveDelay: Task<Void, Never>?
+    @State private var autoMessage = ""
 
     private var date: String { BusinessDates.key(day) }
     private var scope: String {
@@ -65,6 +68,7 @@ struct TXInventory094Page: View {
     }
 
     private func reload() {
+        autosaveDelay?.cancel(); autosaveDelay = nil
         loadedScope = ""; loadedRevision = ""
         report = nil; priceEditor = nil
         drafts = []; prices = []; error = ""; storageOK = false
@@ -79,6 +83,32 @@ struct TXInventory094Page: View {
             TXInventory094Policy.evaluate(model.snapshot, date: date, prices: prices)
     }
 
+    /// Only fresh edits schedule auto-submit. Existing drafts restored from disk
+    /// are never silently uploaded. Delay is cancellable; the durable operation
+    /// itself is not attached to a view task, so navigation cannot cancel it.
+    private func queueAutosave() {
+        autosaveDelay?.cancel()
+        guard autoEnabled, editable else { return }
+        let originalScope = scope, originalRevision = revision
+        let originalDate = date, cursor = model.currentCursor
+        autosaveDelay = Task { @MainActor in
+            do { try await Task.sleep(nanoseconds: 1_500_000_000) }
+            catch { return }
+            guard !Task.isCancelled, originalRevision == revision,
+                  originalScope == scope, editable, !model.isBusy,
+                  !model.isLedgerV33Busy, !model.v33HasPending else { return }
+            // Do not cancel an already submitted operation when the view
+            // disappears or the cursor advances during readback.
+            Task { @MainActor in
+                let result = await model.v33SubmitInventory(date: originalDate, automatic: true,
+                    expectedScope: originalScope, expectedCursor: cursor)
+                guard scope == originalScope else { return }
+                reload()
+                autoMessage = result
+            }
+        }
+    }
+
     private func save(_ draft: TXInventory094Draft) {
         guard editable, TXInventory094DraftStore.valid(draft.remaining),
               TXInventory094DraftStore.valid(draft.loss) else { return }
@@ -86,7 +116,7 @@ struct TXInventory094Page: View {
         next.append(draft)
         do {
             try TXInventory094DraftStore.save(next, scope: scope)
-            drafts = next; error = ""
+            drafts = next; error = ""; queueAutosave()
         } catch { self.error = "本地草稿保存失败，请保留输入并重试"; storageOK = false }
     }
 
@@ -108,7 +138,7 @@ struct TXInventory094Page: View {
             try TXInventory095PriceStore.save(next, scope: scope)
             prices = next
             report = TXInventory094Policy.evaluate(model.snapshot, date: date, prices: prices)
-            priceEditor = nil; error = ""
+            priceEditor = nil; error = ""; queueAutosave()
         } catch { self.error = "价格草稿保存失败，未覆盖原记录" }
     }
 
@@ -163,6 +193,11 @@ struct TXInventory094Page: View {
                     .font(.caption2).foregroundColor(.secondary)
                 if !error.isEmpty { Text(error).font(.caption).foregroundColor(.red) }
                 TXLedgerV33InventoryActions(date: date, count: drafts.count + prices.count, onReload: reload)
+                if autoEnabled {
+                    Text("测试账本云端自动保存已启用 · 输入停止后提交；未同步草稿仍会保留")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+                if !autoMessage.isEmpty { Text(autoMessage).font(.caption2).foregroundColor(.secondary) }
                 if let report, loadedRevision == revision {
                     summary(report.rows)
                     NavigationLink(destination: TXInventory096Detail(initialDate: day)) {
@@ -213,7 +248,17 @@ struct TXInventory094Page: View {
                 SyncFooter()
             }.padding(12)
         }
-        .task(id: revision) { reload() }
+        .task(id: revision) {
+            autoEnabled = false
+            reload()
+            let original = revision
+            let allowed = await model.v33Capability("inventory_auto")
+            if original == revision { autoEnabled = allowed }
+        }
+        .onChange(of: scope) { _ in
+            autosaveDelay?.cancel(); autoMessage = ""; autoEnabled = false
+        }
+        .onDisappear { autosaveDelay?.cancel() }
         .sheet(item: $priceEditor) { row in
             TXInventory095PriceEditor(row: row, date: date, revision: revision,
                 onSave: savePrice)

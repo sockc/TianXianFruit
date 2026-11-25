@@ -8,13 +8,14 @@ struct TXLedgerV33Capabilities: Decodable {
     let idempotency: Bool
     let operation_lookup: Bool
     let inventory: Bool
+    let inventory_autosave: Bool?
     let daily_generate: Bool
     let profit_save: Bool?
     let authoritative_balance: Bool?
     let cutoff: Bool?
     func allows(_ feature: String) -> Bool {
         version == 1 && scope == "iOS_TEST_" && atomic && idempotency && operation_lookup &&
-        (["inventory": inventory, "daily": daily_generate, "profit": profit_save == true, "balance": authoritative_balance == true, "cutoff": cutoff == true, "undo": cutoff == true][feature] == true)
+        (["inventory": inventory, "inventory_auto": inventory && inventory_autosave == true, "daily": daily_generate, "profit": profit_save == true, "balance": authoritative_balance == true, "cutoff": cutoff == true, "undo": cutoff == true][feature] == true)
     }
 }
 
@@ -252,9 +253,9 @@ struct TXLedgerV33InventoryActions: View {
                         onReload()
                     }
                 }.buttonStyle(.borderedProminent)
-                .disabled(count == 0 || pending || model.isLedgerV33Busy || model.isBusy)
+                .disabled(count == 0 || pending || model.v33HasPending || model.isLedgerV33Busy || model.isBusy)
             }
-            if pending {
+            if pending || model.v33HasPending {
                 Button("核对上次库存／结算操作") {
                     Task {
                         message = await model.v33Recover()
@@ -322,7 +323,7 @@ struct TXLedgerV33DailyActions: View {
                 }.buttonStyle(.borderedProminent)
                  .disabled(pending || model.isLedgerV33Busy || model.isBusy)
             }
-            if pending {
+            if pending || model.v33HasPending {
                 Button("核对上次库存／结算操作") {
                     Task { message = await model.v33Recover(); pending = model.v33HasPending }
                 }.disabled(model.isLedgerV33Busy || model.isBusy)

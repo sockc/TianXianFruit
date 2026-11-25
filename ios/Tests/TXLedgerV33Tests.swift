@@ -11,6 +11,21 @@ final class TXLedgerV33Tests: XCTestCase {
         XCTAssertFalse(c.allows("daily"))
         XCTAssertFalse(c.allows("formal"))
     }
+    func testAutosaveRequiresExplicitServerGateAndInventoryPermission() throws {
+        for (inventory, auto, expected) in [(true, false, false), (false, true, false), (true, true, true)] {
+            let json = """
+            {"version":1,"scope":"iOS_TEST_","atomic":true,"idempotency":true,"operation_lookup":true,"inventory":\(inventory),"inventory_autosave":\(auto),"daily_generate":false}
+            """
+            let c = try JSONDecoder().decode(TXLedgerV33Capabilities.self, from: Data(json.utf8))
+            XCTAssertEqual(c.allows("inventory_auto"), expected)
+        }
+        let legacy = """
+        {"version":1,"scope":"iOS_TEST_","atomic":true,"idempotency":true,"operation_lookup":true,"inventory":true,"daily_generate":false}
+        """
+        let c = try JSONDecoder().decode(TXLedgerV33Capabilities.self, from: Data(legacy.utf8))
+        XCTAssertFalse(c.allows("inventory_auto"))
+    }
+
     func testReceiptRequiresExactScopeAndReadback() throws {
         let body = TXLedgerV33Body(protocol_version: 1,
             book_id: "11111111-2222-4333-8444-555555555555", account: "tester",

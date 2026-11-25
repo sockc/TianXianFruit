@@ -670,17 +670,19 @@ extension LedgerViewModel {
             operation_id: UUID().uuidString.lowercased(), device_id: try CloudAPI.scopedDeviceID(name),
             date: date, expected_cursor: currentCursor, lines: lines, allocations: allocations)
     }
-    func v33SubmitInventory(date: String) async -> String {
+    func v33SubmitInventory(date: String, automatic: Bool = false, expectedScope: String? = nil, expectedCursor: Int64? = nil) async -> String {
         do {
             guard let name = account?.username, let book = selectedBookID else { throw TXSettlementAtomicError.scope }
             let scope = [name, book, date].joined(separator: "|")
+            guard !automatic || (expectedScope == scope && expectedCursor == currentCursor)
+            else { throw TXSettlementAtomicError.stale }
             let stocks = try TXInventory094DraftStore.load(scope: scope)
             let prices = try TXInventory095PriceStore.load(scope: scope)
             let lines = try TXLedgerV33Policy.inventory(snapshot: snapshot, date: date, stocks: stocks, prices: prices)
             let p = TXLedgerV33Proposal(feature: "inventory",
                 body: try v33Body(date: date, lines: lines, allocations: nil),
                 stockDrafts: stocks, priceDrafts: prices)
-            return try await v33Run(p, recovering: false)
+            return try await v33Run(p, recovering: false, automatic: automatic)
         } catch { return error.localizedDescription }
     }
     func v33SubmitDaily(date: String, allocations: [TXLedgerV33Allocation], profitOnly: Bool = false) async -> String {
@@ -698,7 +700,7 @@ extension LedgerViewModel {
             return try await v33Run(p, recovering: true)
         } catch { return error.localizedDescription }
     }
-    private func v33Run(_ p: TXLedgerV33Proposal, recovering: Bool) async throws -> String {
+    private func v33Run(_ p: TXLedgerV33Proposal, recovering: Bool, automatic: Bool = false) async throws -> String {
         guard !isLedgerV33Busy, !isBusy, !isSettlementCommitBusy,
               !isBusinessCommitBusy, !isPurchaseCommitBusy, v33Authorized,
               let token = accessToken, let name = account?.username, let book = selectedBookID,
@@ -712,7 +714,7 @@ extension LedgerViewModel {
                 self.account?.username == name && self.v33Authorized
         }
         let cap = try await api.v33Capabilities(token: token, bookID: book)
-        guard stillScoped(), cap.allows(p.feature) else { throw TXSettlementAtomicError.unavailable }
+        guard stillScoped(), cap.allows(automatic ? "inventory_auto" : p.feature) else { throw TXSettlementAtomicError.unavailable }
         var receipt: TXLedgerV33Receipt?
         if recovering {
             receipt = try await api.v33Operation(token: token, proposal: p)

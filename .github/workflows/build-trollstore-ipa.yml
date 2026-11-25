@@ -63,8 +63,8 @@ jobs:
           ldid -S "$TARGET/TianXianFruit"
           cd "$RUNNER_TEMP/trollstore"
           ditto -c -k --sequesterRsrc --keepParent Payload \
-            "$RUNNER_TEMP/TianXianFruit-iOS-v0.9.7-Build67-TrollStore.ipa"
-          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v0.9.7-Build67-TrollStore.ipa"
+            "$RUNNER_TEMP/TianXianFruit-iOS-v0.9.7-Build68-TrollStore.ipa"
+          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v0.9.7-Build68-TrollStore.ipa"
       - name: Verify app bundle structure and deployment target
         shell: bash
         run: |
@@ -72,7 +72,7 @@ jobs:
           python3 - <<'PY'
           import os, plistlib, zipfile
           from pathlib import Path
-          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v0.9.7-Build67-TrollStore.ipa"
+          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v0.9.7-Build68-TrollStore.ipa"
           with zipfile.ZipFile(p) as z:
               names = set(z.namelist())
               base = "Payload/TianXianFruit.app/"
@@ -105,8 +105,8 @@ jobs:
       - name: Upload installable-by-TrollStore test IPA
         uses: actions/upload-artifact@v4
         with:
-          name: TianXianFruit-iOS-v0.9.7-Build67-TrollStore
-          path: ${{ runner.temp }}/TianXianFruit-iOS-v0.9.7-Build67-TrollStore.ipa
+          name: TianXianFruit-iOS-v0.9.7-Build68-TrollStore
+          path: ${{ runner.temp }}/TianXianFruit-iOS-v0.9.7-Build68-TrollStore.ipa
           if-no-files-found: error
           retention-days: 14
 
