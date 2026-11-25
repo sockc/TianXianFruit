@@ -245,8 +245,8 @@ struct TXLedgerV33InventoryActions: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if enabled {
-                Button("同步库存及价格草稿（\(count)项）") {
+            if enabled && count > 0 {
+                Button("同步待提交记录（\(count)项）") {
                     Task {
                         message = await model.v33SubmitInventory(date: date)
                         pending = model.v33HasPending
@@ -387,6 +387,11 @@ struct TXLedgerV33DailyActions: View {
 
 
 enum TXLedgerV33AutosavePolicy {
+    static func quantityText(_ n: Double) -> String {
+        let raw = String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), n)
+        let result = raw.replacingOccurrences(of: #"\.?0+$"#, with: "", options: .regularExpression)
+        return result.isEmpty || result == "-0" ? "0" : result
+    }
     static func canSubmit(enabled: Bool, fresh: Bool,
                           originalScope: String, currentScope: String,
                           originalRevision: String, currentRevision: String,

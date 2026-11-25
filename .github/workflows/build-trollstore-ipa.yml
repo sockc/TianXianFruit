@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: trollstore-ipa-${{ github.ref }}
@@ -63,8 +63,8 @@ jobs:
           ldid -S "$TARGET/TianXianFruit"
           cd "$RUNNER_TEMP/trollstore"
           ditto -c -k --sequesterRsrc --keepParent Payload \
-            "$RUNNER_TEMP/TianXianFruit-iOS-v0.9.7-Build68-TrollStore.ipa"
-          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v0.9.7-Build68-TrollStore.ipa"
+            "$RUNNER_TEMP/TianXianFruit-iOS-v0.9.8-Build69-TrollStore.ipa"
+          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v0.9.8-Build69-TrollStore.ipa"
       - name: Verify app bundle structure and deployment target
         shell: bash
         run: |
@@ -72,7 +72,7 @@ jobs:
           python3 - <<'PY'
           import os, plistlib, zipfile
           from pathlib import Path
-          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v0.9.7-Build68-TrollStore.ipa"
+          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v0.9.8-Build69-TrollStore.ipa"
           with zipfile.ZipFile(p) as z:
               names = set(z.namelist())
               base = "Payload/TianXianFruit.app/"
@@ -86,7 +86,7 @@ jobs:
           print("Verified arm64 TrollStore IPA, iOS minimum 15.0, no Apple profile")
           PY
       - name: Run iOS XCTest before beta publication
-        if: github.ref == 'refs/heads/feature/ios-ledger-v33-v0.9.7'
+        if: github.ref == 'refs/heads/feature/ios-inventory-autosave-v0.9.8'
         shell: bash
         run: |
           set -euo pipefail
@@ -105,9 +105,22 @@ jobs:
       - name: Upload installable-by-TrollStore test IPA
         uses: actions/upload-artifact@v4
         with:
-          name: TianXianFruit-iOS-v0.9.7-Build68-TrollStore
-          path: ${{ runner.temp }}/TianXianFruit-iOS-v0.9.7-Build68-TrollStore.ipa
+          name: TianXianFruit-iOS-v0.9.8-Build69-TrollStore
+          path: ${{ runner.temp }}/TianXianFruit-iOS-v0.9.8-Build69-TrollStore.ipa
           if-no-files-found: error
           retention-days: 14
 
-      # Joint V33 integration candidate: CI artifact only until PostgreSQL and Android interoperability are validated.
+
+      - name: Publish iOS v0.9.8 beta after XCTest
+        if: github.ref == 'refs/heads/feature/ios-inventory-autosave-v0.9.8'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="$RUNNER_TEMP/TianXianFruit-iOS-v0.9.8-Build69-TrollStore.ipa"
+          test -s "$FILE"
+          gh release create "ios-v0.9.8-beta" "$FILE" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "天鲜账本 iOS V0.9.8 Beta (Build 69)" \
+            --notes "库存自动保存状态精简；修复零数量输入及旧草稿校验；冲突时保留原草稿，未同步不显示已保存勾。V1.0.33 可独立开启测试账本自动上传，正式账本新写入权限仍保持关闭。不改变安卓当日结算。" --latest=false

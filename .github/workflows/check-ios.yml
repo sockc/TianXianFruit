@@ -1,4 +1,4 @@
-name: Check iOS V0.9.7 ledger V33 integration
+name: Check iOS V0.9.8 inventory autosave
 
 on:
   pull_request:

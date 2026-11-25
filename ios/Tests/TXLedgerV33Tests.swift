@@ -11,6 +11,13 @@ final class TXLedgerV33Tests: XCTestCase {
         XCTAssertFalse(c.allows("daily"))
         XCTAssertFalse(c.allows("formal"))
     }
+    func testInventoryQuantityTextKeepsZeroAndDecimalDigits() {
+        XCTAssertEqual(TXLedgerV33AutosavePolicy.quantityText(0), "0")
+        XCTAssertEqual(TXLedgerV33AutosavePolicy.quantityText(10), "10")
+        XCTAssertEqual(TXLedgerV33AutosavePolicy.quantityText(1.25), "1.25")
+        XCTAssertEqual(TXLedgerV33AutosavePolicy.quantityText(0.005), "0.005")
+    }
+
     func testAutosaveRequiresExplicitServerGateAndInventoryPermission() throws {
         for (inventory, auto, expected) in [(true, false, false), (false, true, false), (true, true, true)] {
             let json = """
