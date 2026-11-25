@@ -26,8 +26,8 @@ final class TXSettlementAtomicCoordinator: ObservableObject {
             // Avoid creating a durable unknown-operation lock when the current
             // book/account/capability already forbids submission.
             guard scopeMatches(proposal, model), !model.isBusy,
-                  !model.isSettlementCommitBusy,
-                  model.settlementCommitCapabilities?.allowsWrite == true else {
+                  !model.isSettlementCommitBusy, !model.isLedgerV33Busy, !model.v33HasPending,
+                  model.settlementCloudBookAllowed else {
                 throw TXSettlementAtomicError.scope
             }
             guard let store else { throw TXSettlementAtomicError.storage }
@@ -36,6 +36,12 @@ final class TXSettlementAtomicCoordinator: ObservableObject {
             else { throw TXSettlementAtomicError.locked }
             guard TXSettlementCommitReadback.original(proposal, in: model.snapshot)
             else { throw TXSettlementAtomicError.stale }
+            if model.settlementCommitCapabilities?.scope == "formal" {
+                try await TXFormalLedgerAccess.confirmFinance()
+                guard scopeMatches(proposal, model), model.settlementCloudBookAllowed,
+                      !model.isBusy, !model.isLedgerV33Busy, !model.v33HasPending,
+                      TXSettlementCommitReadback.original(proposal, in: model.snapshot) else { throw TXSettlementAtomicError.stale }
+            }
             // Save immutable account/book/UUID/expected versions BEFORE any POST.
             let locked = TXSettlementCommitAttempt(
                 proposal: proposal, phase: .unknown, receipt: nil, updatedAt: Date())
@@ -93,8 +99,7 @@ final class TXSettlementAtomicCoordinator: ObservableObject {
 
     private func scopeMatches(_ proposal: TXSettlementLocalPreparation,
                               _ model: LedgerViewModel) -> Bool {
-        TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
-                                     offline: model.isUsingCachedAuthorization) &&
+        model.v34LocalCandidate &&
         model.selectedBookID?.lowercased() == proposal.bookID.lowercased() &&
         model.account?.username.lowercased() == proposal.account.lowercased()
     }
@@ -128,13 +133,12 @@ struct TXSettlementAtomicSubmitView: View {
     let proposal: TXSettlementLocalPreparation
 
     private var matchingTestBook: Bool {
-        TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
-                                     offline: model.isUsingCachedAuthorization) &&
+        model.v34LocalCandidate &&
         model.selectedBookID?.lowercased() == proposal.bookID.lowercased() &&
         model.account?.username.lowercased() == proposal.account.lowercased()
     }
     private var canSubmit: Bool {
-        matchingTestBook && model.settlementCommitCapabilities?.allowsWrite == true
+        matchingTestBook && model.settlementCloudBookAllowed
     }
 
     var body: some View {
@@ -161,11 +165,11 @@ struct TXSettlementAtomicSubmitView: View {
                 }
                 .font(.caption).foregroundColor(.secondary)
                 if !matchingTestBook {
-                    Label("账号或测试账本已变化，资金操作禁止执行。",
+                    Label("账号或账本已变化，资金操作禁止执行。",
                           systemImage: "lock.shield.fill")
                         .font(.caption).foregroundColor(.orange)
                 } else if !canSubmit {
-                    Label("服务器 V1.0.31 原子结算尚未启用或权限不匹配。",
+                    Label("服务器结算权限未启用或权限不匹配。",
                           systemImage: "lock.shield.fill")
                         .font(.caption).foregroundColor(.orange)
                 } else {

@@ -58,7 +58,7 @@ enum TXSettlementPreparationError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .forbiddenScope: return "仅在线、有编辑权限的 iOS_TEST_ 测试账本可以准备结算操作"
+        case .forbiddenScope: return "仅在线且具备结算授权的账本可以准备结算操作"
         case .noUniqueDaily: return "必须存在唯一已同步的正式日结快照"
         case .invalidTransfer: return "请选择同日有效的已保存当日转账方案"
         case .unsupportedAction: return "生成日结、周期结清及利润分配需服务端事务计算，不能在 iOS 预演生成"
@@ -119,9 +119,11 @@ enum TXSettlementPreparationPolicy {
     static func prepare(book: CloudBook?, account: Account?, offline: Bool,
                         snapshot: ReadOnlySnapshot, date: String,
                         transferID: String, action: TXSettlementTestAction,
-                        typedAmount: String, operationID: String = UUID().uuidString)
+                        typedAmount: String, operationID: String = UUID().uuidString,
+                        capability: TXSettlementCommitCapabilities? = nil)
         throws -> TXSettlementLocalPreparation {
-        guard TXTestBookAccess.isCandidate(book, account: account, offline: offline),
+        guard TXTestBookAccess.isCandidate(book, account: account, offline: offline) ||
+              (TXFormalLedgerAccess.localCandidate(book, account: account, offline: offline) && capability?.allows(book: book) == true),
               let book, let account, !account.username.isEmpty,
               UUID(uuidString: book.id) != nil else {
             throw TXSettlementPreparationError.forbiddenScope
@@ -242,7 +244,7 @@ struct TXSettlementTestWorkbenchView: View {
 
     private var candidate: Bool {
         TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
-                                     offline: model.isUsingCachedAuthorization)
+                                     offline: model.isUsingCachedAuthorization) || model.settlementCloudBookAllowed
     }
     private var dateKey: String { BusinessDates.key(date) }
     private var validDay: Bool {
@@ -295,7 +297,7 @@ struct TXSettlementTestWorkbenchView: View {
                     Label(operationLockError, systemImage: "exclamationmark.shield")
                         .font(.caption).foregroundColor(.red)
                 }
-                if candidate && model.settlementCommitCapabilities?.allowsWrite != true {
+                if candidate && !model.settlementCloudBookAllowed {
                     Label(model.settlementCommitError ?? "正在核对服务器结算权限",
                           systemImage: "lock.shield")
                         .font(.caption).foregroundColor(.orange)
@@ -389,12 +391,13 @@ struct TXSettlementTestWorkbenchView: View {
                                     date: dateKey,
                                     transferID: transferID,
                                     action: action,
-                                    typedAmount: amount)
+                                    typedAmount: amount,
+                                    capability: model.settlementCommitCapabilities)
                             } catch { errorText = error.localizedDescription }
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(chosen == nil || operationLocked || model.isBusy ||
-                                  model.settlementCommitCapabilities?.allowsWrite != true)
+                                  !model.settlementCloudBookAllowed)
                     }
 
                     if !errorText.isEmpty {

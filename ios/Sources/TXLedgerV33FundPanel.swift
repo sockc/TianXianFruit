@@ -61,17 +61,17 @@ struct TXLedgerV33FundPanel: View {
         } catch { if scope == key { message = error.localizedDescription } }
     }
     var body: some View {
-        if TXTestBookAccess.isCandidate(model.selectedBook, account: model.account, offline: model.isUsingCachedAuthorization) {
+        if model.v34LocalCandidate {
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text("服务端累计余额 · 联合测试").font(.subheadline.bold())
+                    Text("累计资金余额").font(.subheadline.bold())
                     Spacer()
                     Button("核对") { Task { message = ""; await reload() } }.font(.caption)
                         .disabled(model.isLedgerV33Busy || model.isBusy)
                 }
                 if let r = report, reportKey == key {
                     let agrees = r.agrees(with: model.snapshot)
-                    Text(agrees ? "服务端与本机重算一致，仍需安卓实机核验。" : "服务端与本机重算不一致，禁止周期结清。")
+                    Text(agrees ? "余额已核对" : "服务端与本机重算不一致，禁止周期结清。")
                         .font(.caption2).foregroundColor(agrees ? .secondary : .orange)
                     ForEach(r.rows) { row in
                         HStack {
@@ -104,7 +104,7 @@ struct TXLedgerV33FundPanel: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("确认实际转账登记").font(.headline)
                     Text(row.partner_name + " · 截至 " + date + " · " + row.current_balance + " 元")
-                    Text("仅测试账本。确认表示实际款项已转账，不是计划转账。").font(.caption)
+                    Text("确认表示实际款项已转账，不是计划转账。正式账本需设备身份验证。").font(.caption)
                     Button("确认已实际转账") {
                         guard let r = report, reportKey == key else { confirm = nil; return }
                         confirm = nil

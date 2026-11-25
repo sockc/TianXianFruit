@@ -129,8 +129,7 @@ enum TXInventory096Readout {
         var drafts: [TXInventory094Draft] = []
         var prices: [TXInventory095PriceDraft] = []
         var issues: [String] = []
-        if TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
-                                        offline: model.isUsingCachedAuthorization),
+        if model.v34LocalCandidate,
            let username = model.account?.username, let book = model.selectedBookID {
             let scope = [username, book, date].joined(separator: "|")
             do {

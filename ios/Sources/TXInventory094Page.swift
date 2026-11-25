@@ -52,6 +52,8 @@ struct TXInventory094Page: View {
     @State private var error = ""
     @State private var storageOK = false
     @State private var autoEnabled = false
+    @State private var cloudInventoryAllowed = false
+    @State private var capabilityRevision = ""
     @State private var freshAutosaveSession = false
     @State private var autosaveDelay: Task<Void, Never>?
     @State private var autoMessage = ""
@@ -65,16 +67,16 @@ struct TXInventory094Page: View {
     }
     private var editable: Bool {
         loadedScope == scope && loadedRevision == revision && storageOK && !model.isLedgerV33Busy && !model.v33HasPending && report?.issues.isEmpty == true &&
-        TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
-                                     offline: model.isUsingCachedAuthorization)
+        (TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
+                                     offline: model.isUsingCachedAuthorization) ||
+         (model.v34LocalCandidate && cloudInventoryAllowed && capabilityRevision == revision))
     }
 
     private var syncStatus: String {
         if model.isLedgerV33Busy { return "正在同步" }
         if model.v33HasPending { return "待核对上次同步结果" }
         if !storageOK { return "库存尚未加载" }
-        if !TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
-                                         offline: model.isUsingCachedAuthorization) { return "库存只读" }
+        if !editable { return "库存只读或等待同步" }
         let count = drafts.count + prices.count
         if count > 0 { return "\(count) 项待同步" }
         return "已读取云端库存"
@@ -275,14 +277,15 @@ struct TXInventory094Page: View {
             }.padding(12)
         }
         .task(id: revision) {
-            autoEnabled = false
+            autoEnabled = false; cloudInventoryAllowed = false; capabilityRevision = ""
             reload()
             let original = revision
+            let write = await model.v33Capability("inventory")
             let allowed = await model.v33Capability("inventory_auto")
-            if original == revision { autoEnabled = allowed }
+            if original == revision { cloudInventoryAllowed = write; autoEnabled = allowed; capabilityRevision = original }
         }
         .onChange(of: scope) { _ in
-            autosaveDelay?.cancel(); autoMessage = ""; autoEnabled = false
+            autosaveDelay?.cancel(); autoMessage = ""; autoEnabled = false; cloudInventoryAllowed = false; capabilityRevision = ""
         }
         .onDisappear { autosaveDelay?.cancel() }
         .sheet(item: $priceEditor) { row in

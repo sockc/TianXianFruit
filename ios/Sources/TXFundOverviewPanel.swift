@@ -86,7 +86,7 @@ struct TXFundOverviewPanel: View {
             VStack(alignment: .leading, spacing: 6) {
                 Label("资金余额 · 合伙人明细", systemImage: "wallet.pass")
                     .font(.headline)
-                Text("累计余额已支持按云端完整历史进行条件式核算。结果须与安卓同账本、同截止日核对；未验证前不得用于实际转账。以下原始日差额仍保留。")
+                Text("累计余额包含历史未结金额，近7天筛选仅影响明细。")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

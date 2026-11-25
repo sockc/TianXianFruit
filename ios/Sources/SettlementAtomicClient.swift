@@ -18,8 +18,12 @@ struct TXSettlementCommitCapabilities: Decodable {
     }
     var allowsWrite: Bool {
         version == 1 && feature == "settlement_transfer_atomic_v1" &&
-        enabled && atomic && idempotency && operationLookup && scope == "iOS_TEST_" &&
+        enabled && atomic && idempotency && operationLookup && (scope == "iOS_TEST_" || scope == "formal") &&
         Set(["PARTIAL", "FULL", "RESET"]).isSubset(of: Set(actions))
+    }
+    func allows(book: CloudBook?) -> Bool {
+        guard let book else { return false }
+        return allowsWrite && TXFormalLedgerAccess.scopeMatches(scope, book: book)
     }
 }
 
