@@ -42,6 +42,7 @@ final class LedgerViewModel: ObservableObject {
     @Published private(set) var customerError: String?
     @Published private(set) var isCustomerBusy = false
     @Published private(set) var customerAPIAvailable = false
+    @Published private(set) var customerOvernightCovered = false
     @Published private(set) var weatherOverview: WeatherForecastResponse?
     @Published private(set) var selectedWeatherStoreID = ""
     @Published private(set) var weatherCheckedAt: Date?
@@ -383,6 +384,7 @@ final class LedgerViewModel: ObservableObject {
         customerCursor = 0
         customerSyncedAt = nil
         customerAPIAvailable = false
+        customerOvernightCovered = false
         customerError = nil
         purchaseCommitCapabilities = nil
         purchaseCommitError = nil
@@ -404,6 +406,7 @@ final class LedgerViewModel: ObservableObject {
                 customerSnapshot = customer.snapshot
                 customerCursor = customer.cursor
                 customerSyncedAt = customer.syncedAt
+                customerOvernightCovered = customer.overnightCovered
             }
             selectedWeatherStoreID = snapshot.weatherLocations.first?.id ?? ""
         } catch {
@@ -589,6 +592,7 @@ final class LedgerViewModel: ObservableObject {
         customerSyncedAt = nil
         customerError = nil
         customerAPIAvailable = false
+        customerOvernightCovered = false
         isCustomerBusy = false
         businessCommitCapabilities = nil
         businessCommitError = nil
@@ -613,7 +617,11 @@ final class LedgerViewModel: ObservableObject {
         defer { isCustomerBusy = false }
         do {
             let caps = try await api.customerCapabilities(token: token, bookID: book)
-            let replace = forceFull || customerSyncedAt == nil
+            let supportsOvernight = caps.offers("overnight_rollover")
+            // The old filtered cursor skipped historical OVERNIGHT/NATURAL events.
+            // Only a complete replay with the flag enabled proves coverage.
+            let replace = forceFull || customerSyncedAt == nil ||
+                (supportsOvernight && !customerOvernightCovered)
             var candidate = replace ? CustomerReadSnapshot() : customerSnapshot
             var cursor = replace ? Int64(0) : customerCursor
             var updates: [CustomerChangeEvent] = []
@@ -647,11 +655,13 @@ final class LedgerViewModel: ObservableObject {
             }
             try cache.commitCustomer(account: username, book: book,
                                      events: updates, cursor: cursor,
-                                     replace: replace, at: finishedAt)
+                                     replace: replace, at: finishedAt,
+                                     overnightCovered: supportsOvernight)
             customerSnapshot = candidate
             customerCursor = cursor
             customerSyncedAt = finishedAt
             customerAPIAvailable = true
+            customerOvernightCovered = supportsOvernight
         } catch {
             customerError = error.localizedDescription
         }

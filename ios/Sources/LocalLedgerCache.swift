@@ -98,6 +98,18 @@ final class LocalLedgerCache {
           PRIMARY KEY (account, book_id)
         )
         """)
+        // Coverage is committed with the matching cursor and timestamp.
+        // An older app can still read the unchanged customer_state schema;
+        // if it advances that state, the marker no longer matches.
+        try run("""
+        CREATE TABLE IF NOT EXISTS customer_overnight_coverage (
+          account TEXT NOT NULL,
+          book_id TEXT NOT NULL,
+          cursor INTEGER NOT NULL,
+          synced_at_ms INTEGER NOT NULL,
+          PRIMARY KEY (account, book_id)
+        )
+        """)
     }
 
     deinit { if database != nil { sqlite3_close(database) } }
@@ -254,13 +266,18 @@ struct CustomerCacheLoaded {
     let snapshot: CustomerReadSnapshot
     let cursor: Int64
     let syncedAt: Date
+    let overnightCovered: Bool
 }
 
 extension LocalLedgerCache {
     func loadCustomer(account: String, book: String) throws -> CustomerCacheLoaded? {
         let account = Self.scope(account)
         let meta = try prepare("""
-            SELECT cursor,synced_at_ms FROM customer_state WHERE account=? AND book_id=?
+            SELECT s.cursor,s.synced_at_ms,
+                   EXISTS(SELECT 1 FROM customer_overnight_coverage c
+                     WHERE c.account=s.account AND c.book_id=s.book_id
+                       AND c.cursor=s.cursor AND c.synced_at_ms=s.synced_at_ms)
+            FROM customer_state s WHERE s.account=? AND s.book_id=?
         """)
         defer { sqlite3_finalize(meta) }
         bind(account, 1, meta)
@@ -268,6 +285,7 @@ extension LocalLedgerCache {
         guard sqlite3_step(meta) == SQLITE_ROW else { return nil }
         let cursor = sqlite3_column_int64(meta, 0)
         let at = sqlite3_column_int64(meta, 1)
+        let overnightCovered = sqlite3_column_int(meta, 2) == 1
 
         let rows = try prepare("""
             SELECT event FROM customer_rows WHERE account=? AND book_id=?
@@ -291,11 +309,13 @@ extension LocalLedgerCache {
             throw LocalCacheError.sql(String(cString: sqlite3_errmsg(database)))
         }
         return CustomerCacheLoaded(snapshot: snapshot, cursor: cursor,
-                                   syncedAt: Date(timeIntervalSince1970: Double(at) / 1000))
+                                   syncedAt: Date(timeIntervalSince1970: Double(at) / 1000),
+                                   overnightCovered: overnightCovered)
     }
 
     func commitCustomer(account: String, book: String, events: [CustomerChangeEvent],
-                        cursor: Int64, replace: Bool, at: Date = Date()) throws {
+                        cursor: Int64, replace: Bool, at: Date = Date(),
+                        overnightCovered: Bool = false) throws {
         guard cursor >= 0, !account.isEmpty, !book.isEmpty else {
             throw LocalCacheError.invalidEvent
         }
@@ -341,8 +361,29 @@ extension LocalLedgerCache {
             bind(account, 1, state)
             bind(book, 2, state)
             sqlite3_bind_int64(state, 3, cursor)
-            sqlite3_bind_int64(state, 4, Int64(at.timeIntervalSince1970 * 1000))
+            let timestamp = Int64(at.timeIntervalSince1970 * 1000)
+            sqlite3_bind_int64(state, 4, timestamp)
             try step(state)
+            if overnightCovered {
+                let coverage = try prepare("""
+                    INSERT INTO customer_overnight_coverage(account,book_id,cursor,synced_at_ms)
+                    VALUES(?,?,?,?)
+                    ON CONFLICT(account,book_id) DO UPDATE SET
+                      cursor=excluded.cursor,synced_at_ms=excluded.synced_at_ms
+                """)
+                defer { sqlite3_finalize(coverage) }
+                bind(account, 1, coverage)
+                bind(book, 2, coverage)
+                sqlite3_bind_int64(coverage, 3, cursor)
+                sqlite3_bind_int64(coverage, 4, timestamp)
+                try step(coverage)
+            } else {
+                let clear = try prepare("DELETE FROM customer_overnight_coverage WHERE account=? AND book_id=?")
+                defer { sqlite3_finalize(clear) }
+                bind(account, 1, clear)
+                bind(book, 2, clear)
+                try step(clear)
+            }
             try run("COMMIT")
         } catch {
             try? run("ROLLBACK")

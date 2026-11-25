@@ -99,7 +99,7 @@ struct TXBusinessOvernightReferenceView: View {
             VStack(alignment: .leading, spacing: 3) {
                 if let reference = TXBusinessOvernightReferencePolicy.reference(
                     Array(model.customerSnapshot.events.values), businessDate: date, partner: partner),
-                   model.customerSyncedAt != nil {
+                   model.customerSyncedAt != nil, model.customerOvernightCovered {
                     row("昨日凌晨", morning: reference.previous)
                     row("本次凌晨", morning: reference.following)
                     if reference.previous != .missing || reference.following != .missing {
@@ -107,7 +107,7 @@ struct TXBusinessOvernightReferenceView: View {
                             .font(.caption2).foregroundColor(.secondary)
                     }
                 }
-                if model.customerError != nil || model.isUsingCachedAuthorization || !model.customerAPIAvailable {
+                if model.customerError != nil || model.isUsingCachedAuthorization || !model.customerAPIAvailable || !model.customerOvernightCovered {
                     Text("凌晨云端来源未完成在线核验；未显示不等于零。")
                         .font(.caption2).foregroundColor(.orange)
                 }

@@ -198,4 +198,22 @@ final class CustomerReadOnlyTests: XCTestCase {
         XCTAssertEqual(business.financeTransfers.first?.amount, 500)
         XCTAssertEqual(business.financeTransfers.first?.recordedSettled, 200)
     }
+    func testOvernightCoverageIsDurableScopedAndClearedWithOldProtocol() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("coverage.sqlite")
+        let cache = try LocalLedgerCache(url: url)
+        try cache.commitCustomer(account: "owner", book: "one", events: [], cursor: 20, replace: true)
+        XCTAssertFalse(try XCTUnwrap(cache.loadCustomer(account: "owner", book: "one")).overnightCovered)
+        try cache.commitCustomer(account: "owner", book: "one", events: [], cursor: 30, replace: true, overnightCovered: true)
+        let reopened = try LocalLedgerCache(url: url)
+        XCTAssertTrue(try XCTUnwrap(reopened.loadCustomer(account: "owner", book: "one")).overnightCovered)
+        XCTAssertNil(try reopened.loadCustomer(account: "other", book: "one"))
+        try reopened.commitCustomer(account: "owner", book: "two", events: [], cursor: 30, replace: true)
+        XCTAssertFalse(try XCTUnwrap(reopened.loadCustomer(account: "owner", book: "two")).overnightCovered)
+        try reopened.commitCustomer(account: "owner", book: "one", events: [], cursor: 31, replace: false)
+        XCTAssertFalse(try XCTUnwrap(reopened.loadCustomer(account: "owner", book: "one")).overnightCovered)
+    }
+
 }

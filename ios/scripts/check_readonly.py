@@ -679,3 +679,9 @@ assert "未自动扣减或计入营业额" in reference_ui
 assert "commitBusiness(" not in reference_ui and "sync/push" not in reference_ui
 assert (root.parent / "Tests" / "BusinessOvernightReferenceTests.swift").exists()
 print("V1.0.2 read-only collector/date overnight reference guard PASS")
+
+assert '("overnight_rollover", "include_overnight")' in swift["CloudAPI.swift"]
+assert "(supportsOvernight && !customerOvernightCovered)" in swift["LedgerViewModel.swift"]
+assert "customer_overnight_coverage" in swift["LocalLedgerCache.swift"]
+assert "model.customerOvernightCovered" in swift["BusinessOvernightReference.swift"]
+print("V1.0.2 overnight source opt-in and transactional cache coverage guard PASS")

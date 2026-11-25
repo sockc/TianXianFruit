@@ -376,7 +376,8 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             ("bill_collector", "include_collectors"),
             ("receipt_analysis_state", "include_analysis"),
             ("analysis_settings", "include_settings"),
-            ("bill_source_links", "include_source_links")
+            ("bill_source_links", "include_source_links"),
+            ("overnight_rollover", "include_overnight")
         ] where capabilities.offers(feature) {
             query.append(URLQueryItem(name: flag, value: "true"))
         }
