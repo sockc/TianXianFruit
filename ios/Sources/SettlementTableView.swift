@@ -185,7 +185,7 @@ struct SettlementTableView: View {
                             .font(.caption2).foregroundColor(.secondary)
                     }
                     Spacer()
-                    if model.selectedBook?.name.hasPrefix("iOS_TEST_") != true {
+                    if !model.settlementCloudBookAllowed && model.selectedBook?.name.hasPrefix("iOS_TEST_") != true {
                         Label("只读", systemImage: "lock.shield")
                             .font(.caption2).foregroundColor(.secondary)
                     }
@@ -217,7 +217,7 @@ struct SettlementTableView: View {
                 }
                 if TXTestBookAccess.isCandidate(model.selectedBook,
                                                  account: model.account,
-                                                 offline: model.isUsingCachedAuthorization) {
+                                                 offline: model.isUsingCachedAuthorization) || model.settlementCloudBookAllowed {
                     NavigationLink(destination: TXSettlementTestWorkbenchView(initialDate: selectedDate)) {
                         HStack(spacing: 8) {
                             Label("办理已保存转账", systemImage: "checkmark.circle")
@@ -675,8 +675,8 @@ private struct SettlementTransferDetailRow: View {
     let item: FinanceTransferRow
 
     private var canOperate: Bool {
-        TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
-                                     offline: model.isUsingCachedAuthorization) &&
+        (TXTestBookAccess.isCandidate(model.selectedBook, account: model.account,
+                                     offline: model.isUsingCachedAuthorization) || model.settlementCloudBookAllowed) &&
         TXSettlementPreparationPolicy.canEditSavedTransfer(
             model.snapshot, date: item.date, transferID: item.id)
     }

@@ -13,8 +13,8 @@ struct TXLedgerV33Capabilities: Decodable {
     let profit_save: Bool?
     let authoritative_balance: Bool?
     let cutoff: Bool?
-    func allows(_ feature: String) -> Bool {
-        version == 1 && scope == "iOS_TEST_" && atomic && idempotency && operation_lookup &&
+    func allows(_ feature: String, book: CloudBook? = nil) -> Bool {
+        version == 1 && TXFormalLedgerAccess.scopeMatches(scope, book: book) && atomic && idempotency && operation_lookup &&
         (["inventory": inventory, "inventory_auto": inventory && inventory_autosave == true, "daily": daily_generate, "profit": profit_save == true, "balance": authoritative_balance == true, "cutoff": cutoff == true, "undo": cutoff == true][feature] == true)
     }
 }
@@ -351,7 +351,7 @@ struct TXLedgerV33DailyActions: View {
                         } else {
                             Text("沿用当天已保存的利润／亏损分配。")
                         }
-                        Text("仅测试账本。服务端按原始营业、采购及分配记录生成；已有实际转账时拒绝重建。")
+                        Text("按已同步的营业、采购及利润分配生成；已有实际转账时拒绝重建。正式账本需要设备身份验证。")
                             .font(.caption).foregroundColor(.secondary)
                     }
                     Button("确认生成并保存") {

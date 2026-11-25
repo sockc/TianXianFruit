@@ -18,8 +18,12 @@ struct TXSettlementCommitCapabilities: Decodable {
     }
     var allowsWrite: Bool {
         version == 1 && feature == "settlement_transfer_atomic_v1" &&
-        enabled && atomic && idempotency && operationLookup && scope == "iOS_TEST_" &&
+        enabled && atomic && idempotency && operationLookup && (scope == "iOS_TEST_" || scope == "formal") &&
         Set(["PARTIAL", "FULL", "RESET"]).isSubset(of: Set(actions))
+    }
+    func allows(book: CloudBook?) -> Bool {
+        guard let book else { return false }
+        return allowsWrite && TXFormalLedgerAccess.scopeMatches(scope, book: book)
     }
 }
 
@@ -27,8 +31,8 @@ enum TXSettlementAtomicError: LocalizedError {
     case scope, unavailable, stale, locked, invalidReceipt, storage, unknown
     var errorDescription: String? {
         switch self {
-        case .scope: return "账号或测试账本已变化，禁止结算"
-        case .unavailable: return "测试账本资金事务未启用或服务器版本不足"
+        case .scope: return "账号或账本已变化，禁止结算"
+        case .unavailable: return "账本资金事务未启用或权限不足"
         case .stale: return "云端原始版本已变化，请同步后重新核对"
         case .locked: return "存在未完成结算，须先查询原操作结果，不能换ID重发"
         case .invalidReceipt: return "服务器回执不符合原操作，已锁定等待核查"

@@ -203,9 +203,9 @@ final class LedgerViewModel: ObservableObject {
         settlementCommitError = nil
         guard let user = account, let token = accessToken,
               let book = selectedBook, !isUsingCachedAuthorization,
-              TXTestBookAccess.isCandidate(book, account: user, offline: false)
+              TXFormalLedgerAccess.localCandidate(book, account: user, offline: false)
         else {
-            settlementCommitError = "正式账本、离线授权及只读成员禁止结算"
+            settlementCommitError = "离线授权及只读成员禁止结算"
             return
         }
         do {
@@ -213,8 +213,8 @@ final class LedgerViewModel: ObservableObject {
                 token: token, bookID: book.id)
             guard self.account?.username == user.username,
                   self.accessToken == token, self.selectedBookID == book.id else { return }
-            if capabilities.allowsWrite { settlementCommitCapabilities = capabilities }
-            else { settlementCommitError = "服务器 V1.0.31 测试账本结算功能未启用" }
+            if capabilities.allows(book: book) { settlementCommitCapabilities = capabilities }
+            else { settlementCommitError = "此账本尚未获得服务端结算权限" }
         } catch {
             settlementCommitError = "无法确认服务端结算原子事务能力"
         }
@@ -222,10 +222,11 @@ final class LedgerViewModel: ObservableObject {
 
     func commitSettlement(_ prepared: TXSettlementLocalPreparation)
         async throws -> TXSettlementCommitReceipt {
-        guard !isSettlementCommitBusy, !isBusy,
+        guard !isSettlementCommitBusy, !isBusy, !isLedgerV33Busy, !v33HasPending,
+              !isBusinessCommitBusy, !isPurchaseCommitBusy,
               let user = account, let book = selectedBook, let token = accessToken,
               !isUsingCachedAuthorization,
-              TXTestBookAccess.isCandidate(book, account: user, offline: false),
+              TXFormalLedgerAccess.localCandidate(book, account: user, offline: false),
               user.username.lowercased() == prepared.account.lowercased(),
               book.id.lowercased() == prepared.bookID.lowercased()
         else { throw TXSettlementAtomicError.scope }
@@ -234,7 +235,7 @@ final class LedgerViewModel: ObservableObject {
         // Never rely only on a cached capability or an old test-book selection.
         let capabilities = try await api.settlementCapabilities(
             token: token, bookID: book.id)
-        guard capabilities.allowsWrite, self.accessToken == token,
+        guard capabilities.allows(book: book), self.accessToken == token,
               self.selectedBookID == book.id,
               self.account?.username == user.username else {
             throw TXSettlementAtomicError.unavailable
@@ -252,7 +253,7 @@ final class LedgerViewModel: ObservableObject {
         async throws -> TXSettlementCommitReceipt? {
         guard !isSettlementCommitBusy, !isUsingCachedAuthorization,
               let user = account, let book = selectedBook, let token = accessToken,
-              TXTestBookAccess.isCandidate(book, account: user, offline: false),
+              TXFormalLedgerAccess.localCandidate(book, account: user, offline: false),
               user.username.lowercased() == prepared.account.lowercased(),
               book.id.lowercased() == prepared.bookID.lowercased()
         else { throw TXSettlementAtomicError.scope }
@@ -645,9 +646,13 @@ final class LedgerViewModel: ObservableObject {
 
 
 extension LedgerViewModel {
-    private var v33Authorized: Bool {
-        TXTestBookAccess.isCandidate(selectedBook, account: account, offline: isUsingCachedAuthorization)
+    var v34LocalCandidate: Bool {
+        TXFormalLedgerAccess.localCandidate(selectedBook, account: account, offline: isUsingCachedAuthorization)
     }
+    var settlementCloudBookAllowed: Bool {
+        v34LocalCandidate && settlementCommitCapabilities?.allows(book: selectedBook) == true
+    }
+    private var v33Authorized: Bool { v34LocalCandidate }
     var v33HasPending: Bool {
         guard let name = account?.username, let book = selectedBookID else { return false }
         do { return try TXLedgerV33Store.load(name, book) != nil }
@@ -659,7 +664,7 @@ extension LedgerViewModel {
         guard let cap = try? await api.v33Capabilities(token: token, bookID: book),
               self.account?.username == name, selectedBookID == book,
               accessToken == token, v33Authorized else { return false }
-        return cap.allows(feature)
+        return cap.allows(feature, book: selectedBook)
     }
     private func v33Body(date: String, lines: [TXLedgerV33Line]?,
                          allocations: [TXLedgerV33Allocation]?) throws -> TXLedgerV33Body {
@@ -714,7 +719,7 @@ extension LedgerViewModel {
                 self.account?.username == name && self.v33Authorized
         }
         let cap = try await api.v33Capabilities(token: token, bookID: book)
-        guard stillScoped(), cap.allows(automatic ? "inventory_auto" : p.feature) else { throw TXSettlementAtomicError.unavailable }
+        guard stillScoped(), cap.allows(automatic ? "inventory_auto" : p.feature, book: selectedBook) else { throw TXSettlementAtomicError.unavailable }
         var receipt: TXLedgerV33Receipt?
         if recovering {
             receipt = try await api.v33Operation(token: token, proposal: p)
@@ -725,9 +730,21 @@ extension LedgerViewModel {
         } else {
             guard try TXLedgerV33Store.load(name, book) == nil else { throw TXSettlementAtomicError.locked }
             guard currentCursor == p.body.expected_cursor else { throw TXSettlementAtomicError.stale }
+            if p.feature != "inventory" {
+                let transfer = try TXSettlementCommitStore().load(account: name, book: book)
+                guard transfer == nil || transfer?.phase == .confirmed else { throw TXSettlementAtomicError.locked }
+                if cap.scope == "formal" {
+                    try await TXFormalLedgerAccess.confirmFinance()
+                    guard stillScoped(), currentCursor == p.body.expected_cursor else { throw TXSettlementAtomicError.stale }
+                }
+            }
             try TXLedgerV33Store.save(p)
         }
         if receipt == nil {
+            if recovering && cap.scope == "formal" && p.feature != "inventory" {
+                try await TXFormalLedgerAccess.confirmFinance()
+                guard stillScoped(), currentCursor == p.body.expected_cursor else { throw TXSettlementAtomicError.stale }
+            }
             do { receipt = try await api.v33Commit(token: token, proposal: p) }
             catch let error as CloudAPIError where [400, 403, 409, 422, 503].contains(error.status) {
                 // A definitive server rejection, followed by a lookup of the
@@ -741,7 +758,10 @@ extension LedgerViewModel {
         guard stillScoped(), let receipt, receipt.matches(p) else {
             throw TXSettlementAtomicError.invalidReceipt
         }
-        await refresh(forceFull: true)
+        await refresh()
+        if stillScoped(), !receipt.readback(p, snapshot: snapshot, cursor: currentCursor), errorMessage == nil {
+            await refresh(forceFull: true)
+        }
         guard stillScoped(), receipt.readback(p, snapshot: snapshot, cursor: currentCursor) else {
             return "服务端已提交，等待原操作同步回读；本地草稿保留，不能重复提交"
         }
@@ -761,12 +781,13 @@ extension LedgerViewModel {
         guard v33Authorized, let token = accessToken, let name = account?.username,
               let book = selectedBookID, lastSyncAt != nil else { throw TXSettlementAtomicError.scope }
         let cap = try await api.v33Capabilities(token: token, bookID: book)
-        guard cap.allows("balance"), accessToken == token, account?.username == name,
+        guard cap.allows("balance", book: selectedBook), accessToken == token, account?.username == name,
               selectedBookID == book else { throw TXSettlementAtomicError.unavailable }
         let result = try await api.v33Balance(token: token, bookID: book, date: date)
         guard v33Authorized, accessToken == token, account?.username == name,
               selectedBookID == book, result.book_id.lowercased() == book.lowercased(),
-              result.date == date, result.scope == "iOS_TEST_", result.sync_cursor == currentCursor
+              result.date == date, TXFormalLedgerAccess.scopeMatches(result.scope, book: selectedBook),
+              result.scope == cap.scope, result.sync_cursor == currentCursor
         else { throw TXSettlementAtomicError.stale }
         return result
     }

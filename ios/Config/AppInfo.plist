@@ -12,6 +12,7 @@
   <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
   <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
   <key>CFBundleIconName</key><string>AppIcon</string>
+  <key>NSFaceIDUsageDescription</key><string>确认正式账本的利润分配、资金结算和撤销操作。</string>
   <key>LSRequiresIPhoneOS</key><true/>
   <key>UILaunchScreen</key><dict/>
   <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>
