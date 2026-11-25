@@ -1,0 +1,3 @@
+# Android/iOS integration candidate
+
+Base Android V1.4.7.134 at f9b3d1a799994ed88703c4b9b91e0c1e6ecc7f08, with test-ledger-only master ID pilot. iOS subtree copied exactly from RC6 8bdb387103d61657316c23665580f8eee4ff7465. No Android version bump, no production release, no automatic deployment. Build workflow runs XCTest on this integration branch but release publication remains limited to original RC6. Server V1.0.36 deployment keeps all new master-data flags disabled; Android formal creation, partner rename and profit-rule changes remain blocked on identity compatibility and real-device verification.
