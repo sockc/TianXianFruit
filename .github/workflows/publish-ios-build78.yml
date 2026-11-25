@@ -1,0 +1,83 @@
+name: Publish verified iOS Build 78 prerelease
+on:
+  push:
+    branches: [release/ios-v1.0.1-build78]
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: publish-ios-v1.0.1-build78
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'sockc/TianXianFruit' && github.ref == 'refs/heads/release/ios-v1.0.1-build78'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: sockc/TianXianFruit
+      TARGET: 9536760a83264c2aacb0ae8f0dedffce53d5feb7
+      TAG: ios-v1.0.1-build78
+      RUN_ID: "45605931585"
+      ARTIFACT_ID: "15018895704"
+      IPA: TianXianFruit-iOS-v1.0.1-Build78-TrollStore.ipa
+    steps:
+      - name: Verify original successful run and immutable artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/actions/runs/$RUN_ID" > run.json
+          gh api "repos/$GH_REPO/actions/artifacts/$ARTIFACT_ID" > artifact.json
+          python3 - <<'PY'
+          import json,os
+          r=json.load(open("run.json"))
+          a=json.load(open("artifact.json"))
+          assert r["head_sha"] == os.environ["TARGET"] and r["conclusion"] == "success"
+          assert str(a["id"]) == os.environ["ARTIFACT_ID"]
+          assert not a["expired"]
+          assert a["workflow_run"]["head_sha"] == os.environ["TARGET"]
+          assert str(a["workflow_run"]["id"]) == os.environ["RUN_ID"]
+          assert a["digest"] == "sha256:be2aaf4f23634496203129cd551aeb2fc06181de20f2d1d3ffe0547caad836e1"
+          PY
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Existing release; refusing overwrite"; exit 1
+          fi
+          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "Existing tag; refusing overwrite"; exit 1
+          fi
+      - name: Download and verify exact artifact
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: "15018895704"
+          run-id: "45605931585"
+          github-token: ${{ github.token }}
+          path: dist
+      - name: Verify IPA and publish only the prerelease
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          test -s "$IPA"
+          python3 - <<'PY'
+          import os,plistlib,zipfile
+          with zipfile.ZipFile(os.environ["IPA"]) as z:
+              assert z.testzip() is None
+              base="Payload/TianXianFruit.app/"
+              p=plistlib.loads(z.read(base+"Info.plist"))
+              assert p["CFBundleIdentifier"]=="com.tianxian.fruit.ios"
+              assert p["CFBundleShortVersionString"]=="1.0.1"
+              assert p["CFBundleVersion"]=="78"
+              assert p["MinimumOSVersion"]=="15.0"
+              assert base+"TianXianFruit" in z.namelist()
+          PY
+          sha256sum "$IPA" > SHA256SUMS.txt
+          cat > notes.md <<'EOF'
+          ## iOS V1.0.1 Build 78 · UI 对齐测试版
+          - 统一经营日期、首页、采购及营业内嵌录入、库存紧凑布局、客户分析、结算和更多页面。
+          - 优化键盘、长商品名称及 iOS 15/16 布局兼容。
+          - 已通过自动回归、XCTest 和 TrollStore IPA 构建；尚待 iPhone 实机验收。
+          - 仅供 TrollStore 安装测试，Android 正式版、服务端及原结算算法保持不变。
+          - 未完成的凌晨收款、账单导入等功能不在本版新增范围。
+          - 不替换当前联合正式版，不设为 Latest。
+          EOF
+          gh release create "$TAG" "$IPA" SHA256SUMS.txt --target "$TARGET" --title "iOS V1.0.1 Build 78 · UI 对齐测试版" --notes-file notes.md --prerelease --latest=false
+          gh release view "$TAG" --json tagName,isPrerelease,isDraft,assets,url
