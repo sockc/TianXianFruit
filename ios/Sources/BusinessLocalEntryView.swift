@@ -420,46 +420,63 @@ struct BusinessLocalEntryView: View {
         else { closeEditor() }
     }
 
+    private var locationPicker: some View {
+        Picker("营业位置", selection: guardedStore) {
+            Text("请选择位置").tag("")
+            ForEach(model.snapshot.testStores) { store in
+                Text(store.name).tag(store.id)
+            }
+        }
+        .pickerStyle(MenuPickerStyle())
+        .font(.subheadline)
+        .lineLimit(1)
+        .accessibilityLabel("营业位置")
+    }
+
+    private var timeFields: some View {
+        HStack(spacing: 3) {
+            TextField("16:00", text: $startTime)
+                .keyboardType(.numbersAndPunctuation)
+                .multilineTextAlignment(.center)
+                .font(.subheadline)
+                .frame(width: 59)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("实际开摊时间")
+            Text("—").foregroundColor(.secondary)
+            TextField("00:10", text: $endTime)
+                .keyboardType(.numbersAndPunctuation)
+                .multilineTextAlignment(.center)
+                .font(.subheadline)
+                .frame(width: 59)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("实际收摊时间")
+        }.fixedSize(horizontal: true, vertical: false)
+    }
+
     private var locationFields: some View {
         VStack(alignment: .leading, spacing: 6) {
             TXDayBar(date: guardedDate, label: "营业日期", allowFuture: false)
-            HStack(spacing: 8) {
-                Picker("营业位置", selection: guardedStore) {
-                    Text("请选择位置").tag("")
-                    ForEach(model.snapshot.testStores) { store in
-                        Text(store.name).tag(store.id)
-                    }
-                }
-                .pickerStyle(MenuPickerStyle())
-                .accessibilityLabel("营业位置")
-            }
             HStack(spacing: 5) {
-                Text("营业时间").font(.caption)
-                Spacer(minLength: 6)
-                TextField("16:00", text: $startTime)
-                    .keyboardType(.numbersAndPunctuation)
-                    .multilineTextAlignment(.center)
-                    .frame(width: 61)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityLabel("实际开摊时间")
-                Text("—").foregroundColor(.secondary)
-                TextField("00:10", text: $endTime)
-                    .keyboardType(.numbersAndPunctuation)
-                    .multilineTextAlignment(.center)
-                    .frame(width: 61)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityLabel("实际收摊时间")
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("营业位置").font(.caption2).foregroundColor(.secondary)
+                    locationPicker
+                }
+                Spacer(minLength: 3)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("实际营业时间").font(.caption2).foregroundColor(.secondary)
+                    timeFields
+                }
             }
             if let remoteRecord {
                 Label("云端已有该日该位置营业，不能重复新增。",
                       systemImage: "checkmark.shield")
                     .font(.caption).foregroundColor(.orange)
                 if onClose == nil {
-NavigationLink(destination: BusinessCloudDetailView(
-                    recordSyncID: remoteRecord.syncId, bookID: bookID)) {
-                    Label("查看这笔云端营业", systemImage: "doc.text.magnifyingglass")
+                    NavigationLink(destination: BusinessCloudDetailView(
+                        recordSyncID: remoteRecord.syncId, bookID: bookID)) {
+                        Label("查看这笔云端营业", systemImage: "doc.text.magnifyingglass")
+                    }
                 }
-}
             }
         }
     }

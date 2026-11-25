@@ -415,12 +415,176 @@ private struct BusinessPage: View {
         visibleDays = 14
     }
 
+    private var historyContent: some View {
+        VStack(alignment: .leading, spacing: 7) {
+        HStack(spacing: 8) {
+            Picker("位置", selection: $position) {
+                Text("全部位置").tag("")
+                ForEach(model.snapshot.locations, id: \.self) { Text($0).tag($0) }
+            }
+            .pickerStyle(.menu)
+            Spacer()
+            if filteredDayAlreadyRecorded {
+                Label("当前日期与位置已有营业", systemImage: "checkmark.shield")
+                    .font(.caption2).foregroundColor(.secondary)
+            } else {
+                Button {
+                    openBusinessEditor(storeID: filteredStoreID)
+                } label: {
+                    Label("新增营业记录", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canEnterBusiness)
+            }
+        }
+        DisclosureGroup(isExpanded: $showFilters) {
+            VStack(spacing: 8) {
+                Picker("日期范围", selection: $period) {
+                    Text("单日").tag("单日")
+                    Text("近7天").tag("近7天")
+                    Text("近30天").tag("近30天")
+                    Text("全部").tag("全部")
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: period) { _ in visibleDays = 14 }
+                SearchField(placeholder: "搜索日期或位置", text: $searchText)
+            }
+            .padding(.top, 7)
+        } label: {
+            HStack {
+                Label("筛选与历史", systemImage: "line.3.horizontal.decrease")
+                Spacer()
+                Text("\(rows.count) 条记录")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            .font(.caption)
+        }
+        if draftStatusRows.contains(where: { $0.status.needsAttention }) {
+            VStack(alignment: .leading, spacing: 7) {
+                Label("本机营业事项（仅显示待处理）",
+                      systemImage: "square.and.pencil")
+                    .font(.subheadline.bold()).foregroundColor(.orange)
+                ForEach(draftStatusRows.filter { $0.status.needsAttention }) { item in
+                    Button {
+                        openBusinessEditor(storeID: item.draft.storeID)
+                    } label: {
+                        HStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.draft.storeName)
+                                    .foregroundColor(.primary)
+                                Text(item.status.label)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(12)
+            .background(Color(UIColor.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 12))
+            .id(entryRevision)
+        }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(period == "单日" ? "当天营业额" : "营业额").foregroundColor(.secondary)
+                Spacer()
+                Text(sum(rows, \.revenue).formatted(.currency(code: "CNY")))
+                    .font(.headline.bold())
+            }
+            HStack {
+                Text("已存利润").foregroundColor(.secondary)
+                Spacer()
+                Text(sum(rows, \.profit).formatted(.currency(code: "CNY")))
+                    .font(.subheadline.bold())
+            }
+            .font(.subheadline)
+        }
+        .padding(12)
+        .background(Color(UIColor.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 12))
+        if rows.isEmpty {
+            EmptyStateView(title: "此范围没有已同步营业记录", icon: "chart.bar")
+        }
+        if !rows.isEmpty { Text(period == "单日" ? "当天营业记录" : "营业记录").font(.subheadline.bold()) }
+        ForEach(Array(grouped.prefix(visibleDays)), id: \.date) { day in
+            VStack(alignment: .leading, spacing: 9) {
+                HStack {
+                    Text(day.date).font(.subheadline.bold())
+                    Spacer()
+                    Text("合计 \(sum(day.rows, \.revenue).formatted(.currency(code: "CNY")))")
+                        .font(.caption.bold())
+                }
+                if day.rows.count > 1 {
+                    Text("\(day.rows.count) 个位置 · 已存利润 \(sum(day.rows, \.profit).formatted(.currency(code: "CNY")))")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+                ForEach(day.rows) { row in
+                    HStack(spacing: 8) {
+                        NavigationLink(destination: BusinessCloudDetailView(
+                            recordSyncID: row.id,
+                            bookID: model.selectedBookID ?? "")) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(row.storeName).font(.subheadline)
+                                    .foregroundColor(.primary)
+                                Text("已存利润：" +
+                                     row.profit.formatted(.currency(code: "CNY")))
+                                    .font(.caption2).foregroundColor(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        TXBusinessCustomerShortcut(recordSyncID: row.id)
+                        NavigationLink(destination: BusinessCloudDetailView(
+                            recordSyncID: row.id,
+                            bookID: model.selectedBookID ?? "")) {
+                            HStack(spacing: 4) {
+                                Text(row.revenue.formatted(.currency(code: "CNY")))
+                                    .font(.subheadline.bold())
+                                    .foregroundColor(.primary)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2).foregroundColor(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Divider()
+                }
+            }
+            .padding(12)
+            .background(Color(UIColor.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 12))
+        }
+        if grouped.count > visibleDays {
+            Button("加载更早营业记录") { visibleDays += 14 }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+        }
+        // Android: selected day above, then the previous seven
+        // actual BUSINESS days. Other date-range modes already show
+        // those days in the main filtered list, so don't duplicate.
+        if period == "单日" {
+            Divider()
+            TXRecentBusinessDaysView(selectedDate: selectedKey) {
+                period = "全部"
+                showFilters = true
+                visibleDays = 14
+            }
+        }
+        // Detail actions remain scoped by account and server permissions.
+        SyncFooter()
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 7) {
-                TXPageDateHeader(title: "营业", date: $model.workDate)
-                    .disabled(showLocalEntry)
-                    .onChange(of: selectedDate) { _ in visibleDays = 14 }
+                if !showLocalEntry {
+                    TXPageDateHeader(title: "营业", date: $model.workDate)
+                }
                 if model.isBusy || model.errorMessage != nil || model.isUsingCachedAuthorization || model.lastSyncAt == nil { TXCloudSyncStatusBar() }
                 DisclosureGroup("当日库存经营分析（全账本）") {
                     TXInventory096Overview(date: selectedKey)
@@ -431,170 +595,11 @@ private struct BusinessPage: View {
                         onClose: closeBusinessEditor)
                         .environmentObject(model)
                 }
-                Group {
-                HStack(spacing: 8) {
-                    Picker("位置", selection: $position) {
-                        Text("全部位置").tag("")
-                        ForEach(model.snapshot.locations, id: \.self) { Text($0).tag($0) }
-                    }
-                    .pickerStyle(.menu)
-                    Spacer()
-                    if filteredDayAlreadyRecorded {
-                        Label("当前日期与位置已有营业", systemImage: "checkmark.shield")
-                            .font(.caption2).foregroundColor(.secondary)
-                    } else {
-                        Button {
-                            openBusinessEditor(storeID: filteredStoreID)
-                        } label: {
-                            Label("新增营业记录", systemImage: "plus")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!canEnterBusiness)
-                    }
-                }
-                DisclosureGroup(isExpanded: $showFilters) {
-                    VStack(spacing: 8) {
-                        Picker("日期范围", selection: $period) {
-                            Text("单日").tag("单日")
-                            Text("近7天").tag("近7天")
-                            Text("近30天").tag("近30天")
-                            Text("全部").tag("全部")
-                        }
-                        .pickerStyle(.segmented)
-                        .onChange(of: period) { _ in visibleDays = 14 }
-                        SearchField(placeholder: "搜索日期或位置", text: $searchText)
-                    }
-                    .padding(.top, 7)
-                } label: {
-                    HStack {
-                        Label("筛选与历史", systemImage: "line.3.horizontal.decrease")
-                        Spacer()
-                        Text("\(rows.count) 条记录")
-                            .font(.caption).foregroundColor(.secondary)
-                    }
-                    .font(.caption)
-                }
-                if draftStatusRows.contains(where: { $0.status.needsAttention }) {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Label("本机营业事项（仅显示待处理）",
-                              systemImage: "square.and.pencil")
-                            .font(.subheadline.bold()).foregroundColor(.orange)
-                        ForEach(draftStatusRows.filter { $0.status.needsAttention }) { item in
-                            Button {
-                                openBusinessEditor(storeID: item.draft.storeID)
-                            } label: {
-                                HStack(spacing: 8) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(item.draft.storeName)
-                                            .foregroundColor(.primary)
-                                        Text(item.status.label)
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary)
-                                    }
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                }
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(12)
-                    .background(Color(UIColor.secondarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 12))
-                    .id(entryRevision)
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(period == "单日" ? "当天营业额" : "营业额").foregroundColor(.secondary)
-                        Spacer()
-                        Text(sum(rows, \.revenue).formatted(.currency(code: "CNY")))
-                            .font(.headline.bold())
-                    }
-                    HStack {
-                        Text("已存利润").foregroundColor(.secondary)
-                        Spacer()
-                        Text(sum(rows, \.profit).formatted(.currency(code: "CNY")))
-                            .font(.subheadline.bold())
-                    }
-                    .font(.subheadline)
-                }
-                .padding(12)
-                .background(Color(UIColor.secondarySystemGroupedBackground),
-                            in: RoundedRectangle(cornerRadius: 12))
-                if rows.isEmpty {
-                    EmptyStateView(title: "此范围没有已同步营业记录", icon: "chart.bar")
-                }
-                if !rows.isEmpty { Text(period == "单日" ? "当天营业记录" : "营业记录").font(.subheadline.bold()) }
-                ForEach(Array(grouped.prefix(visibleDays)), id: \.date) { day in
-                    VStack(alignment: .leading, spacing: 9) {
-                        HStack {
-                            Text(day.date).font(.subheadline.bold())
-                            Spacer()
-                            Text("合计 \(sum(day.rows, \.revenue).formatted(.currency(code: "CNY")))")
-                                .font(.caption.bold())
-                        }
-                        if day.rows.count > 1 {
-                            Text("\(day.rows.count) 个位置 · 已存利润 \(sum(day.rows, \.profit).formatted(.currency(code: "CNY")))")
-                                .font(.caption2).foregroundColor(.secondary)
-                        }
-                        ForEach(day.rows) { row in
-                            HStack(spacing: 8) {
-                                NavigationLink(destination: BusinessCloudDetailView(
-                                    recordSyncID: row.id,
-                                    bookID: model.selectedBookID ?? "")) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(row.storeName).font(.subheadline)
-                                            .foregroundColor(.primary)
-                                        Text("已存利润：" +
-                                             row.profit.formatted(.currency(code: "CNY")))
-                                            .font(.caption2).foregroundColor(.secondary)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                                .buttonStyle(.plain)
-                                TXBusinessCustomerShortcut(recordSyncID: row.id)
-                                NavigationLink(destination: BusinessCloudDetailView(
-                                    recordSyncID: row.id,
-                                    bookID: model.selectedBookID ?? "")) {
-                                    HStack(spacing: 4) {
-                                        Text(row.revenue.formatted(.currency(code: "CNY")))
-                                            .font(.subheadline.bold())
-                                            .foregroundColor(.primary)
-                                        Image(systemName: "chevron.right")
-                                            .font(.caption2).foregroundColor(.secondary)
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            Divider()
-                        }
-                    }
-                    .padding(12)
-                    .background(Color(UIColor.secondarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 12))
-                }
-                if grouped.count > visibleDays {
-                    Button("加载更早营业记录") { visibleDays += 14 }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                }
-                // Android: selected day above, then the previous seven
-                // actual BUSINESS days. Other date-range modes already show
-                // those days in the main filtered list, so don't duplicate.
-                if period == "单日" {
-                    Divider()
-                    TXRecentBusinessDaysView(selectedDate: selectedKey) {
-                        period = "全部"
-                        showFilters = true
-                        visibleDays = 14
-                    }
-                }
-                // Detail actions remain scoped by account and server permissions.
-                SyncFooter()
-                }.disabled(showLocalEntry)
+                historyContent.disabled(showLocalEntry)
             }
             .padding(12)
         }
+        .onChange(of: selectedDate) { _ in visibleDays = 14 }
         .onChange(of: model.selectedBookID) { _ in
             if showLocalEntry { closeBusinessEditor(selectedDate) }
         }
