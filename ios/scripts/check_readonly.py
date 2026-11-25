@@ -702,3 +702,8 @@ assert "未发送" in v2editor and "commitBusiness(" not in v2editor and "/v2/co
 assert 'Menu {' in swift["Views.swift"] and "TXBusinessV2DraftEditor(scope: scope)" in swift["Views.swift"]
 assert (root.parent / "Tests" / "BusinessV2DraftTests.swift").exists()
 print("V1.0.2 isolated V2 input draft and preview guard PASS")
+
+assert "matchesSources(previous: previousRevision, following: followingRevision)" in v2editor
+assert "确认采用当前来源版本" in v2editor
+assert '$0.kind == "NATURAL"' in v2editor
+print("V1.0.2 explicit overnight source revision acknowledgement guard PASS")

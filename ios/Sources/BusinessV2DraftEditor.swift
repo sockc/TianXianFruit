@@ -32,10 +32,25 @@ struct TXBusinessV2CollectorInput: Codable, Equatable, Identifiable {
     var alipay = TXBusinessV2ChannelDraft()
     var cash = TXBusinessV2ChannelDraft()
     var replaceFollowing = false
+    // Persist the last explicitly acknowledged source revisions with the draft.
+    var boundPreviousRevision: Int64?
+    var boundFollowingRevision: Int64?
+
+    mutating func acknowledge(previous: Int64, following: Int64) {
+        boundPreviousRevision = previous
+        boundFollowingRevision = following
+    }
+
+    func matchesSources(previous: Int64, following: Int64) -> Bool {
+        boundPreviousRevision == previous && boundFollowingRevision == following
+    }
 
     var channels: [TXBusinessV2ChannelDraft] { [wechat, alipay, cash] }
 
     func request(previousRevision: Int64, followingRevision: Int64) throws -> TXBusinessV2Natural {
+        guard matchesSources(previous: previousRevision, following: followingRevision) else {
+            throw BusinessAtomicError.cloudConflict
+        }
         let values = channels
         let replacement: TXBusinessV2Morning?
         if replaceFollowing {
@@ -152,6 +167,12 @@ enum TXBusinessV2DraftPolicy {
         var natural: [TXBusinessV2Natural] = []
         var lines: [BusinessCollectorDraftLine] = []
         for input in draft.collectors {
+            let key = scope.date + "|" + input.partner
+            guard !events.contains(where: { $0.kind == "NATURAL" &&
+                ($0.key == key || ($0.payload["date"] == .string(scope.date) &&
+                 $0.payload["partner_sync_id"] == .string(input.partner))) }) else {
+                throw BusinessAtomicError.cloudConflict
+            }
             let pair = try sources(events, date: scope.date, partner: input.partner)
             let request = try input.request(previousRevision: pair.0.revision, followingRevision: pair.1.revision)
             let adjusted = try TXBusinessV2Preparation.adjusted(request,
@@ -342,7 +363,18 @@ private struct TXBusinessV2CollectorEditor: View {
         if case .recorded(let x)? = morning { return [x.wechat, x.alipay, x.cash] }
         return [nil, nil, nil]
     }
+    private var sourcePair: (TXBusinessV2DraftPolicy.Source, TXBusinessV2DraftPolicy.Source)? {
+        guard sourcesReady, !line.partner.isEmpty else { return nil }
+        return try? TXBusinessV2DraftPolicy.sources(events, date: date, partner: line.partner)
+    }
+
+    private var sourceMatches: Bool {
+        guard let pair = sourcePair else { return false }
+        return line.matchesSources(previous: pair.0.revision, following: pair.1.revision)
+    }
+
     private func changeFollowing(_ enabled: Bool) {
+        guard sourceMatches else { return }
         if enabled {
             let values = amounts(reference?.following)
             line.wechat.morning = values[0].map(BusinessCommitPolicy.money) ?? ""
@@ -389,8 +421,20 @@ private struct TXBusinessV2CollectorEditor: View {
                 if reference.previous == .invalid || reference.following == .invalid {
                     Text("凌晨来源异常，请在安卓核对").font(.caption).foregroundColor(.orange)
                 } else {
+                    let next = amounts(reference.following)
+                    if next.contains(where: { $0 != nil }) {
+                        Text("云端本次凌晨： " + next.map { $0.map(BusinessCommitPolicy.money) ?? "未确认" }.joined(separator: " / "))
+                            .font(.caption2).foregroundColor(.secondary)
+                    }
+                    if let pair = sourcePair, !sourceMatches {
+                        Text("首次录入或来源版本已变化，请核对以上云端金额；不会自动覆盖已输入数据。")
+                            .font(.caption2).foregroundColor(.orange)
+                        Button("确认采用当前来源版本") {
+                            line.acknowledge(previous: pair.0.revision, following: pair.1.revision)
+                        }.font(.caption)
+                    }
                     Toggle("登记／修改本次凌晨", isOn: Binding(get: { line.replaceFollowing }, set: changeFollowing))
-                        .font(.caption)
+                        .font(.caption).disabled(!sourceMatches)
                     if line.replaceFollowing {
                         HStack(spacing: 5) {
                             TXReceiptChannelInput(label: "微信", value: $line.wechat.morning)
@@ -398,12 +442,6 @@ private struct TXBusinessV2CollectorEditor: View {
                             TXReceiptChannelInput(label: "现金", value: $line.cash.morning)
                         }
                         Text("留空=未确认，输入0=确认零；仅修改测试草稿。").font(.caption2).foregroundColor(.secondary)
-                    } else {
-                        let next = amounts(reference.following)
-                        if next.contains(where: { $0 != nil }) {
-                            Text("本次凌晨（已同步）： " + next.map { $0.map(BusinessCommitPolicy.money) ?? "未确认" }.joined(separator: " / "))
-                                .font(.caption2).foregroundColor(.secondary)
-                        }
                     }
                 }
             }
@@ -412,6 +450,7 @@ private struct TXBusinessV2CollectorEditor: View {
         .onChange(of: line.partner) { _ in
             // Never copy one collector's morning replacement to another.
             line.replaceFollowing = false
+            line.boundPreviousRevision = nil; line.boundFollowingRevision = nil
             line.wechat.morning = ""; line.alipay.morning = ""; line.cash.morning = ""
             line.wechat.deduct = true; line.alipay.deduct = true; line.cash.deduct = true
         }

@@ -10,11 +10,20 @@ final class BusinessV2DraftTests: XCTestCase {
         var input = TXBusinessV2CollectorInput()
         input.partner = partner
         input.replaceFollowing = true
+        input.acknowledge(previous: 0, following: 0)
         input.wechat.morning = "0"
         let request = try input.request(previousRevision: 0, followingRevision: 0)
         XCTAssertEqual(request.following?.wechatRecorded, true)
         XCTAssertEqual(request.following?.alipayRecorded, false)
         XCTAssertEqual(request.following?.alipay, "0.00")
+    }
+    func testSourceRevisionChangeRequiresExplicitReview() throws {
+        var input = TXBusinessV2CollectorInput()
+        input.partner = partner
+        XCTAssertThrowsError(try input.request(previousRevision: 4, followingRevision: 1))
+        input.acknowledge(previous: 4, following: 1)
+        XCTAssertNoThrow(try input.request(previousRevision: 4, followingRevision: 1))
+        XCTAssertThrowsError(try input.request(previousRevision: 4, followingRevision: 2))
     }
     func testSeparateStorageAndMalformedDraftProtection() throws {
         let name = "v2draft-tests-" + UUID().uuidString
@@ -39,6 +48,7 @@ final class BusinessV2DraftTests: XCTestCase {
         draft.end = "00:30"; draft.expense = "1"; draft.payer = payer; draft.opening = "0"; draft.closing = "0"
         draft.collectors[0].partner = partner; draft.collectors[0].wechat.natural = "10"
         draft.collectors[0].replaceFollowing = true; draft.collectors[0].wechat.morning = "2"
+        draft.collectors[0].acknowledge(previous: 4, following: 0)
         let records = [SyncEvent(tableName: "store", syncId: scope.storeID, rowVersion: 1, operation: "UPSERT", payload: ["name": .string(scope.storeName)]),
             SyncEvent(tableName: "partner", syncId: partner, rowVersion: 1, operation: "UPSERT", payload: ["name": .string("收款人")]),
             SyncEvent(tableName: "partner", syncId: payer, rowVersion: 1, operation: "UPSERT", payload: ["name": .string("付款人")])]
