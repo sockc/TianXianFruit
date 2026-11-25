@@ -1,84 +1,110 @@
-name: Publish verified iOS Build 78 prerelease
+name: Promote accepted iOS Build 78 after release checks
 on:
   push:
     branches: [release/ios-v1.0.1-build78]
 permissions:
   contents: write
   actions: read
+  checks: read
+  pull-requests: write
 concurrency:
-  group: publish-ios-v1.0.1-build78
+  group: promote-ios-v1.0.1-build78
   cancel-in-progress: false
 jobs:
-  publish:
+  promote:
     if: github.repository == 'sockc/TianXianFruit' && github.ref == 'refs/heads/release/ios-v1.0.1-build78'
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: sockc/TianXianFruit
-      TARGET: 9536760a83264c2aacb0ae8f0dedffce53d5feb7
+      BASE: d713ec03093453c2f7da96647f451647f761a72f
+      ACCEPTED: 9536760a83264c2aacb0ae8f0dedffce53d5feb7
+      HEAD: 40d94faad57176eb3a8816f9914ca3aefa6d5994
       TAG: ios-v1.0.1-build78
-      RUN_ID: "45605931585"
-      ARTIFACT_ID: "15018895704"
-      IPA: TianXianFruit-iOS-v1.0.1-Build78-TrollStore.ipa
+      RELEASE_ID: "458137960"
     steps:
-      - name: Verify original successful run and immutable artifact
+      - name: Verify release preparation and original accepted binary
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/$GH_REPO/actions/runs/$RUN_ID" > run.json
-          gh api "repos/$GH_REPO/actions/artifacts/$ARTIFACT_ID" > artifact.json
+          gh api "repos/$GH_REPO/compare/$ACCEPTED...$HEAD" > compare.json
+          gh api "repos/$GH_REPO/releases/$RELEASE_ID" > release.json
+          gh api "repos/$GH_REPO/git/ref/tags/$TAG" > tag.json
+          gh api "repos/$GH_REPO/pulls/97" > pr.json
+          gh api "repos/$GH_REPO/git/ref/heads/main" > main.json
+          gh api "repos/$GH_REPO/releases/latest" > latest.json
           python3 - <<'PY'
           import json,os
-          r=json.load(open("run.json"))
-          a=json.load(open("artifact.json"))
-          assert r["head_sha"] == os.environ["TARGET"] and r["conclusion"] == "success"
-          assert str(a["id"]) == os.environ["ARTIFACT_ID"]
-          assert not a["expired"]
-          assert a["workflow_run"]["head_sha"] == os.environ["TARGET"]
-          assert str(a["workflow_run"]["id"]) == os.environ["RUN_ID"]
-          assert a["digest"] == "sha256:be2aaf4f23634496203129cd551aeb2fc06181de20f2d1d3ffe0547caad836e1"
+          def read(name): return json.load(open(name+".json"))
+          env=os.environ
+          c=read("compare")
+          assert c["status"]=="ahead" and c["behind_by"]==0 and c["ahead_by"]==1
+          assert {x["filename"] for x in c["files"]} == {
+            ".github/workflows/build-ios-ui-candidate.yml",
+            ".github/workflows/build-joint.yml",
+            ".github/workflows/build-trollstore-ipa.yml",
+            ".github/workflows/check-ios.yml",
+            "README.md","RELEASE_NOTES.md","ios/README.md","ios/scripts/release_metadata.py"}
+          r=read("release")
+          assert r["tag_name"]==env["TAG"] and r["prerelease"] and not r["draft"]
+          assert read("tag")["object"]["sha"]==env["ACCEPTED"]
+          assert read("latest")["tag_name"]=="v1.4.7.135"
+          assert {a["name"]:(a["id"],a["digest"],a["state"]) for a in r["assets"]} == {
+            "TianXianFruit-iOS-v1.0.1-Build78-TrollStore.ipa":(791626536,"sha256:75451270f8761c08446375275c08247c11526d25b006944dc1daa93fac2d68bb","uploaded"),
+            "SHA256SUMS.txt":(791626535,"sha256:a40f78bf19dfaf47c58ec17be19d84f47f6224884cbf581f3c71bdefe35c4494","uploaded")}
+          p=read("pr")
+          assert p["state"]=="open" and not p["draft"] and p["head"]["sha"]==env["HEAD"] and p["base"]["sha"]==env["BASE"]
+          assert read("main")["object"]["sha"]==env["BASE"]
           PY
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Existing release; refusing overwrite"; exit 1
-          fi
-          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
-            echo "Existing tag; refusing overwrite"; exit 1
-          fi
-      - name: Download and verify exact artifact
-        uses: actions/download-artifact@v4
-        with:
-          artifact-ids: "15018895704"
-          run-id: "45605931585"
-          github-token: ${{ github.token }}
-          path: dist
-          merge-multiple: true
-      - name: Verify IPA and publish only the prerelease
+      - name: Require all exact-head CI checks to succeed
         shell: bash
         run: |
           set -euo pipefail
-          cd dist
-          test -s "$IPA"
+          for run in 45623019297 45623007675 45623007415; do
+            gh api "repos/$GH_REPO/actions/runs/$run" --jq '.head_sha' | grep -Fx "$HEAD"
+            gh run watch "$run" --exit-status --interval 15
+          done
+          gh api "repos/$GH_REPO/commits/$HEAD/check-runs?per_page=100" > checks.json
           python3 - <<'PY'
-          import os,plistlib,zipfile
-          with zipfile.ZipFile(os.environ["IPA"]) as z:
-              assert z.testzip() is None
-              base="Payload/TianXianFruit.app/"
-              p=plistlib.loads(z.read(base+"Info.plist"))
-              assert p["CFBundleIdentifier"]=="com.tianxian.fruit.ios"
-              assert p["CFBundleShortVersionString"]=="1.0.1"
-              assert p["CFBundleVersion"]=="78"
-              assert p["MinimumOSVersion"]=="15.0"
-              assert base+"TianXianFruit" in z.namelist()
+          import json
+          c=json.load(open("checks.json"))["check_runs"]
+          assert len(c)>=3
+          assert all(x["status"]=="completed" and x["conclusion"]=="success" for x in c), [(x["name"],x["status"],x["conclusion"]) for x in c]
           PY
-          sha256sum "$IPA" > SHA256SUMS.txt
-          cat > notes.md <<'EOF'
-          ## iOS V1.0.1 Build 78 · UI 对齐测试版
-          - 统一经营日期、首页、采购及营业内嵌录入、库存紧凑布局、客户分析、结算和更多页面。
-          - 优化键盘、长商品名称及 iOS 15/16 布局兼容。
-          - 已通过自动回归、XCTest 和 TrollStore IPA 构建；尚待 iPhone 实机验收。
-          - 仅供 TrollStore 安装测试，Android 正式版、服务端及原结算算法保持不变。
-          - 未完成的凌晨收款、账单导入等功能不在本版新增范围。
-          - 不替换当前联合正式版，不设为 Latest。
-          EOF
-          gh release create "$TAG" "$IPA" SHA256SUMS.txt --target "$TARGET" --title "iOS V1.0.1 Build 78 · UI 对齐测试版" --notes-file notes.md --prerelease --latest=false
-          gh release view "$TAG" --json tagName,isPrerelease,isDraft,assets,url
+      - name: Merge exact approved PR without bypassing repository rules
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)" = "$BASE"
+          gh api --method PUT "repos/$GH_REPO/pulls/97/merge" \
+            -f sha="$HEAD" -f merge_method=merge \
+            -f commit_title="Merge accepted iOS V1.0.1 Build 78" \
+            -f commit_message="User-confirmed device acceptance; preserve Android, server and accepted IPA." > merged.json
+          MERGED="$(jq -er 'select(.merged == true) | .sha' merged.json)"
+          test "$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)" = "$MERGED"
+          test "$(gh api "repos/$GH_REPO/compare/$HEAD...$MERGED" --jq .behind_by)" = 0
+      - name: Promote existing release metadata only
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GH_REPO/releases/$RELEASE_ID" > before.json
+          gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq .object.sha | grep -Fx "$ACCEPTED"
+          gh api "repos/$GH_REPO/contents/RELEASE_NOTES.md?ref=$HEAD" --jq .content | base64 -d > notes.md
+          python3 - <<'PY'
+          import json
+          r=json.load(open("before.json"))
+          assert r["prerelease"] and not r["draft"]
+          assert {a["id"]:a["digest"] for a in r["assets"]}=={791626535:"sha256:a40f78bf19dfaf47c58ec17be19d84f47f6224884cbf581f3c71bdefe35c4494",791626536:"sha256:75451270f8761c08446375275c08247c11526d25b006944dc1daa93fac2d68bb"}
+          json.dump({"prerelease":False,"draft":False,"make_latest":"false","name":"天鲜账本 iOS V1.0.1 · Build 78 正式版","body":open("notes.md").read()},open("patch.json","w"),ensure_ascii=False)
+          PY
+          gh api --method PATCH "repos/$GH_REPO/releases/$RELEASE_ID" --input patch.json > after.json
+          python3 - <<'PY'
+          import json
+          b=json.load(open("before.json"))
+          a=json.load(open("after.json"))
+          assert not a["prerelease"] and not a["draft"] and a["tag_name"]==b["tag_name"]
+          assert {x["id"]:x["digest"] for x in a["assets"]}=={x["id"]:x["digest"] for x in b["assets"]}
+          print(a["html_url"])
+          PY
+          test "$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" = "v1.4.7.135"
