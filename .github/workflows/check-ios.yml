@@ -1,4 +1,4 @@
-name: Check iOS V0.9.8 inventory autosave
+name: Check iOS V0.9.9 formal ledger permission
 
 on:
   pull_request:

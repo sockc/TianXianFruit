@@ -41,6 +41,8 @@ final class TXSettlementAtomicCoordinator: ObservableObject {
                 guard scopeMatches(proposal, model), model.settlementCloudBookAllowed,
                       !model.isBusy, !model.isLedgerV33Busy, !model.v33HasPending,
                       TXSettlementCommitReadback.original(proposal, in: model.snapshot) else { throw TXSettlementAtomicError.stale }
+                let latest = try store.load(account: proposal.account, book: proposal.bookID)
+                guard TXSettlementSubmissionPolicy.canBegin(proposal, prior: latest) else { throw TXSettlementAtomicError.locked }
             }
             // Save immutable account/book/UUID/expected versions BEFORE any POST.
             let locked = TXSettlementCommitAttempt(

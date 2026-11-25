@@ -490,7 +490,7 @@ assert "capabilities.allows(book: book, proposal: proposal)" in swift["LedgerVie
 assert "model.businessCloudBookAllowed" in swift["BusinessLocalEntryView.swift"]
 assert "canCommitCloud" in swift["PurchaseWorkspaceView.swift"]
 assert (root.parent / "Tests" / "FormalWriteScopeTests.swift").exists()
-print("V0.8.2 PASS: formal capability scope; production settlement stays read-only")
+print("V0.8.2 PASS: formal business/purchase capability scopes; new settlement scope is independently checked")
 
 # V0.8.3: server authorization cannot be bypassed by formal purchase builder.
 assert 'capabilities?.eligible(book: book) == true' in swift["PurchaseCommitPlanningPolicy.swift"]
@@ -555,3 +555,15 @@ assert "TXRecentPurchaseDaysView(selectedDate: day)" in swift["PurchaseWorkspace
 assert "PurchaseCloudDetailView" in recent and "BusinessCloudDetailView" in recent
 assert (root.parent / "Tests" / "TXRecentLedgerHistoryTests.swift").exists()
 print("V0.8.6 PASS: 7 actual previous business/purchase days, detail links, same-day exclusion")
+
+
+# V0.9.9: never trust a formal response for a test book or a test response
+# for a formal book; formal cash operations require device identity.
+assert 'TXFormalLedgerAccess.scopeMatches(scope, book: book)' in swift['TXLedgerV33.swift']
+assert 'capabilities.allows(book: book)' in swift['LedgerViewModel.swift']
+assert 'try await TXFormalLedgerAccess.confirmFinance()' in swift['LedgerViewModel.swift']
+assert 'try await TXFormalLedgerAccess.confirmFinance()' in swift['SettlementAtomicSubmitView.swift']
+assert '.deviceOwnerAuthentication' in swift['TXFormalLedgerAccess.swift']
+assert 'NSFaceIDUsageDescription' in (root.parent / 'Config' / 'AppInfo.plist').read_text()
+assert (root.parent / 'Tests' / 'TXFormalLedgerAccessTests.swift').exists()
+print("V0.9.9 PASS: formal book capability checks and device authentication path")
