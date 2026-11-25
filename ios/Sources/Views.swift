@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct RootView: View {
     @EnvironmentObject private var model: LedgerViewModel
@@ -70,6 +71,7 @@ private struct LoginView: View {
 private struct DashboardView: View {
     @EnvironmentObject private var model: LedgerViewModel
     @State private var selectedTab: TXMainTab = .home
+    @State private var keyboardVisible = false
 
     var body: some View {
         NavigationView {
@@ -86,12 +88,26 @@ private struct DashboardView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                TXMainNavigationBar(selected: $selectedTab)
+                if !keyboardVisible {
+                    TXMainNavigationBar(selected: $selectedTab)
+                        .disabled(model.inlineLedgerEditing)
+                }
             }
             // The dashboard owns its own compact header. Do not reserve
             // a second iOS navigation bar / white safe-area region above it.
             .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
             .navigationBarHidden(true)
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+                keyboardVisible = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+                keyboardVisible = false
+            }
+            .onChange(of: selectedTab) { tab in
+                if tab != .purchase && tab != .more {
+                    model.workDate = TXWorkDayPolicy.clamped(model.workDate, allowFuture: false)
+                }
+            }
         }
         .navigationViewStyle(StackNavigationViewStyle())
         .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
@@ -108,6 +124,9 @@ private struct DashboardView: View {
                 }
                 .pickerStyle(.menu)
                 .font(.subheadline.bold())
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .disabled(model.inlineLedgerEditing)
             } else {
                 Text(model.selectedBook?.name ?? "无可用账本")
                     .font(.subheadline.bold())
@@ -123,7 +142,7 @@ private struct DashboardView: View {
             }
             Spacer(minLength: 4)
             HStack(spacing: 4) {
-                Circle().fill(model.isUsingCachedAuthorization || model.errorMessage != nil ? Color.orange : TXTheme.primary)
+                Circle().fill(model.isUsingCachedAuthorization || model.errorMessage != nil || model.lastSyncAt == nil ? Color.orange : TXTheme.primary)
                     .frame(width: 6, height: 6)
                 Text(model.isBusy ? "同步中" :
                      model.isUsingCachedAuthorization ? "离线" :
@@ -184,9 +203,20 @@ private struct HomePage: View {
         }
     }
 
-    private var today: String { BusinessDates.key(Date()) }
-    private var week: [StoreDailyRow] { model.snapshot.sales(since: BusinessDates.daysAgo(6), until: today) }
-    private var month: [StoreDailyRow] { model.snapshot.sales(since: BusinessDates.daysAgo(29), until: today) }
+    @State private var profitReport: TXInventory096Analysis.Report?
+    @State private var profitReportKey = ""
+    private var today: String { BusinessDates.key(model.workDate) }
+    private var week: [StoreDailyRow] { model.snapshot.sales(since: BusinessDates.daysAgo(6, from: model.workDate), until: today) }
+    private var reportKey: String { [model.account?.username ?? "", model.selectedBookID ?? "", today, String(model.currentCursor), String(model.lastSyncAt?.timeIntervalSince1970 ?? 0)].joined(separator: "|") }
+    private var report: TXInventory096Analysis.Report? { profitReportKey == reportKey ? profitReport : nil }
+    private var estimate: String {
+        guard let r = report else { return "—" }
+        if !r.issues.isEmpty { return "待核对" }
+        if !r.hasAvailable { return "—" }
+        if r.missingAvailable > 0 { return "缺\(r.missingAvailable)项" }
+        return r.knownAvailable.formatted(.currency(code: "CNY").precision(.fractionLength(0)))
+    }
+    private func money(_ n: Double) -> String { n.formatted(.currency(code: "CNY")) }
     private var daily: [StoreDailyRow] { model.snapshot.sales(since: today, until: today) }
 
     var body: some View {
@@ -196,33 +226,40 @@ private struct HomePage: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("天鲜果业").font(.headline.bold())
                             .foregroundColor(TXTheme.primary)
-                        Text("经营概览 · " + BusinessDates.key(Date()))
-                            .font(.caption2).foregroundColor(.secondary)
+                        Text("经营概览").font(.caption2).foregroundColor(.secondary)
                     }
                     Spacer(minLength: 4)
-                    Text("今日概览")
+                    Text(today == BusinessDates.key(Date()) ? "今日概览" : "历史经营")
                         .font(.caption2).foregroundColor(.secondary)
                 }
-                WeatherHomeSummary()
+                TXDayBar(date: $model.workDate, label: "经营日期", allowFuture: false)
                 if model.lastSyncAt == nil {
                     EmptyStateView(title: "尚未读取云端账本", icon: "icloud.and.arrow.down",
                                    detail: "点击右上角刷新；首次成功后可离线查看")
                 } else {
-                    HStack(spacing: 6) {
-                        AmountCard(title: "今日营业额", value: sum(daily, \.revenue), color: TXTheme.primary)
-                        AmountCard(title: "今日采购额",
-                                   value: sum(model.snapshot.purchases.filter { $0.date == today },
-                                              \.totalCost), color: .primary)
-                        AmountCard(title: "今日已存利润", value: sum(daily, \.profit), color: .primary)
+                    Text(today == BusinessDates.key(Date()) ? "今日经营" : "当日经营").font(.headline)
+                    Text(daily.isEmpty ? "无已同步营业位置" : Array(Set(daily.map(\.storeName))).sorted().joined(separator: " · "))
+                        .font(.caption).foregroundColor(.secondary).lineLimit(2)
+                    HStack(spacing: 7) {
+                        TXCompactMetric(title: "营业额", value: money(sum(daily, \.revenue)), tint: .orange)
+                        TXCompactMetric(title: "采购金额", value: money(sum(model.snapshot.purchases.filter { $0.date == today }, \.totalCost)), tint: .blue)
                     }
-                    TXInventory096Overview(date: today, compact: true)
-                    HStack(spacing: 8) {
-                        AmountCard(title: "近7天营业", value: sum(week, \.revenue), color: .primary)
-                        AmountCard(title: "近30天营业", value: sum(month, \.revenue), color: .primary)
+                    HStack(spacing: 7) {
+                        TXCompactMetric(title: "实际利润", value: report?.recordedProfit.map { money($0) } ?? "—", tint: .green)
+                        NavigationLink(destination: TXInventory096Detail(initialDate: model.workDate)) {
+                            TXCompactMetric(title: "预估利润", value: estimate, tint: .purple)
+                        }.buttonStyle(.plain)
                     }
+                    if report?.hasLocal == true {
+                        Text("预估含本地草稿 · 未同步").font(.caption2).foregroundColor(.orange)
+                    }
+                    coreOperations
+                    DisclosureGroup("库存与利润明细") {
+                        TXInventory096Overview(date: today, compact: true)
+                    }.font(.caption)
                     VStack(alignment: .leading, spacing: 7) {
                         Text("最近7天营业表现").font(.headline)
-                        ForEach(BusinessDates.recentDays(7), id: \.self) { day in
+                        ForEach(BusinessDates.recentDays(7, from: model.workDate), id: \.self) { day in
                             let rows = week.filter { $0.date == day }
                             HStack {
                                 Text(day.dropFirst(5)).font(.caption).frame(width: 46, alignment: .leading)
@@ -239,12 +276,12 @@ private struct HomePage: View {
                     .background(Color(UIColor.secondarySystemGroupedBackground),
                                 in: RoundedRectangle(cornerRadius: 12))
                     if daily.count > 1 {
-                        Text("今日有 \(daily.count) 条位置营业记录，已分别计入合计。")
+                        Text("当日有 \(daily.count) 条位置营业记录，已分别计入合计。")
                             .font(.caption).foregroundColor(.secondary)
                     }
                     // Daily figures come from saved cloud records; no estimated settlement.
                 }
-                coreOperations
+                WeatherHomeSummary()
                 HStack(spacing: 8) {
                     NavigationLink(destination: CustomerInsightsView()) {
                         Label("客户分析", systemImage: "person.2").frame(maxWidth: .infinity)
@@ -259,6 +296,12 @@ private struct HomePage: View {
             .padding(.vertical, 8)
         }
         .background(Color(UIColor.systemGroupedBackground))
+        .task(id: reportKey) {
+            profitReport = nil; profitReportKey = ""
+            guard model.lastSyncAt != nil else { return }
+            profitReport = TXInventory096Readout.report(model, date: today)
+            profitReportKey = reportKey
+        }
     }
 }
 
@@ -271,13 +314,16 @@ private struct BusinessDraftDisplayRow: Identifiable {
 private struct BusinessPage: View {
     @EnvironmentObject private var model: LedgerViewModel
     @State private var period = "单日"
-    @State private var selectedDate = Date()
+    private var selectedDate: Date { get { model.workDate } nonmutating set { model.workDate = newValue } }
     @State private var position = ""
     @State private var searchText = ""
     @State private var visibleDays = 14
     @State private var showFilters = false
     @State private var showLocalEntry = false
     @State private var preferredStoreID: String?
+    @State private var entryAccount = ""
+    @State private var entryBookID = ""
+    @State private var entryRevision = 0
 
     private var selectedKey: String { BusinessDates.key(selectedDate) }
     private var startingKey: String {
@@ -350,187 +396,226 @@ private struct BusinessPage: View {
         }
     }
 
+    private var canEnterBusiness: Bool {
+        guard let book = model.selectedBook, book.isAvailable, model.account != nil else { return false }
+        return ["OWNER", "SUPERADMIN", "EDITOR"].contains(book.role.uppercased())
+    }
+
+    private func openBusinessEditor(storeID: String?) {
+        guard canEnterBusiness, !model.inlineLedgerEditing,
+              let account = model.account?.username, let bookID = model.selectedBookID else { return }
+        preferredStoreID = storeID
+        entryAccount = account
+        entryBookID = bookID
+        model.inlineBusinessEditing = true
+        showLocalEntry = true
+    }
+
+    private func closeBusinessEditor(_ day: Date) {
+        if model.account?.username == entryAccount && model.selectedBookID == entryBookID {
+            selectedDate = day
+        }
+        showLocalEntry = false
+        model.inlineBusinessEditing = false
+        entryRevision += 1
+    }
+
     private func moveDay(_ offset: Int) {
         selectedDate = BusinessDates.calendar.date(byAdding: .day, value: offset, to: selectedDate)
             ?? selectedDate
         visibleDays = 14
     }
 
+    private var historyContent: some View {
+        VStack(alignment: .leading, spacing: 7) {
+        HStack(spacing: 8) {
+            Picker("位置", selection: $position) {
+                Text("全部位置").tag("")
+                ForEach(model.snapshot.locations, id: \.self) { Text($0).tag($0) }
+            }
+            .pickerStyle(.menu)
+            Spacer()
+            if filteredDayAlreadyRecorded {
+                Label("当前日期与位置已有营业", systemImage: "checkmark.shield")
+                    .font(.caption2).foregroundColor(.secondary)
+            } else {
+                Button {
+                    openBusinessEditor(storeID: filteredStoreID)
+                } label: {
+                    Label("新增营业记录", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canEnterBusiness)
+            }
+        }
+        DisclosureGroup(isExpanded: $showFilters) {
+            VStack(spacing: 8) {
+                Picker("日期范围", selection: $period) {
+                    Text("单日").tag("单日")
+                    Text("近7天").tag("近7天")
+                    Text("近30天").tag("近30天")
+                    Text("全部").tag("全部")
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: period) { _ in visibleDays = 14 }
+                SearchField(placeholder: "搜索日期或位置", text: $searchText)
+            }
+            .padding(.top, 7)
+        } label: {
+            HStack {
+                Label("筛选与历史", systemImage: "line.3.horizontal.decrease")
+                Spacer()
+                Text("\(rows.count) 条记录")
+                    .font(.caption).foregroundColor(.secondary)
+            }
+            .font(.caption)
+        }
+        if draftStatusRows.contains(where: { $0.status.needsAttention }) {
+            VStack(alignment: .leading, spacing: 7) {
+                Label("本机营业事项（仅显示待处理）",
+                      systemImage: "square.and.pencil")
+                    .font(.subheadline.bold()).foregroundColor(.orange)
+                ForEach(draftStatusRows.filter { $0.status.needsAttention }) { item in
+                    Button {
+                        openBusinessEditor(storeID: item.draft.storeID)
+                    } label: {
+                        HStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.draft.storeName)
+                                    .foregroundColor(.primary)
+                                Text(item.status.label)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(12)
+            .background(Color(UIColor.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 12))
+            .id(entryRevision)
+        }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(period == "单日" ? "当天营业额" : "营业额").foregroundColor(.secondary)
+                Spacer()
+                Text(sum(rows, \.revenue).formatted(.currency(code: "CNY")))
+                    .font(.headline.bold())
+            }
+            HStack {
+                Text("已存利润").foregroundColor(.secondary)
+                Spacer()
+                Text(sum(rows, \.profit).formatted(.currency(code: "CNY")))
+                    .font(.subheadline.bold())
+            }
+            .font(.subheadline)
+        }
+        .padding(12)
+        .background(Color(UIColor.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 12))
+        if rows.isEmpty {
+            EmptyStateView(title: "此范围没有已同步营业记录", icon: "chart.bar")
+        }
+        if !rows.isEmpty { Text(period == "单日" ? "当天营业记录" : "营业记录").font(.subheadline.bold()) }
+        ForEach(Array(grouped.prefix(visibleDays)), id: \.date) { day in
+            VStack(alignment: .leading, spacing: 9) {
+                HStack {
+                    Text(day.date).font(.subheadline.bold())
+                    Spacer()
+                    Text("合计 \(sum(day.rows, \.revenue).formatted(.currency(code: "CNY")))")
+                        .font(.caption.bold())
+                }
+                if day.rows.count > 1 {
+                    Text("\(day.rows.count) 个位置 · 已存利润 \(sum(day.rows, \.profit).formatted(.currency(code: "CNY")))")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+                ForEach(day.rows) { row in
+                    HStack(spacing: 8) {
+                        NavigationLink(destination: BusinessCloudDetailView(
+                            recordSyncID: row.id,
+                            bookID: model.selectedBookID ?? "")) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(row.storeName).font(.subheadline)
+                                    .foregroundColor(.primary)
+                                Text("已存利润：" +
+                                     row.profit.formatted(.currency(code: "CNY")))
+                                    .font(.caption2).foregroundColor(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        TXBusinessCustomerShortcut(recordSyncID: row.id)
+                        NavigationLink(destination: BusinessCloudDetailView(
+                            recordSyncID: row.id,
+                            bookID: model.selectedBookID ?? "")) {
+                            HStack(spacing: 4) {
+                                Text(row.revenue.formatted(.currency(code: "CNY")))
+                                    .font(.subheadline.bold())
+                                    .foregroundColor(.primary)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2).foregroundColor(.secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Divider()
+                }
+            }
+            .padding(12)
+            .background(Color(UIColor.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 12))
+        }
+        if grouped.count > visibleDays {
+            Button("加载更早营业记录") { visibleDays += 14 }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+        }
+        // Android: selected day above, then the previous seven
+        // actual BUSINESS days. Other date-range modes already show
+        // those days in the main filtered list, so don't duplicate.
+        if period == "单日" {
+            Divider()
+            TXRecentBusinessDaysView(selectedDate: selectedKey) {
+                period = "全部"
+                showFilters = true
+                visibleDays = 14
+            }
+        }
+        // Detail actions remain scoped by account and server permissions.
+        SyncFooter()
+        }
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                TXDayBar(date: $selectedDate, label: "营业日期", allowFuture: false)
-                    .onChange(of: selectedDate) { _ in visibleDays = 14 }
-                TXCloudSyncStatusBar()
+            VStack(alignment: .leading, spacing: 7) {
+                if !showLocalEntry {
+                    TXPageDateHeader(title: "营业", date: $model.workDate)
+                }
+                if model.isBusy || model.errorMessage != nil || model.isUsingCachedAuthorization || model.lastSyncAt == nil { TXCloudSyncStatusBar() }
                 DisclosureGroup("当日库存经营分析（全账本）") {
                     TXInventory096Overview(date: selectedKey)
                 }.font(.caption)
-                HStack(spacing: 8) {
-                    Picker("位置", selection: $position) {
-                        Text("全部位置").tag("")
-                        ForEach(model.snapshot.locations, id: \.self) { Text($0).tag($0) }
-                    }
-                    .pickerStyle(.menu)
-                    Spacer()
-                    if filteredDayAlreadyRecorded {
-                        Label("当前日期与位置已有营业", systemImage: "checkmark.shield")
-                            .font(.caption2).foregroundColor(.secondary)
-                    } else {
-                        Button {
-                            preferredStoreID = filteredStoreID
-                            showLocalEntry = true
-                        } label: {
-                            Label("营业录入", systemImage: "plus")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(model.selectedBookID == nil)
-                    }
+                if showLocalEntry {
+                    BusinessLocalEntryView(date: selectedDate, preferredStoreID: preferredStoreID,
+                        expectedAccount: entryAccount, expectedBookID: entryBookID,
+                        onClose: closeBusinessEditor)
+                        .environmentObject(model)
                 }
-                DisclosureGroup(isExpanded: $showFilters) {
-                    VStack(spacing: 8) {
-                        Picker("日期范围", selection: $period) {
-                            Text("单日").tag("单日")
-                            Text("近7天").tag("近7天")
-                            Text("近30天").tag("近30天")
-                            Text("全部").tag("全部")
-                        }
-                        .pickerStyle(.segmented)
-                        .onChange(of: period) { _ in visibleDays = 14 }
-                        SearchField(placeholder: "搜索日期或位置", text: $searchText)
-                    }
-                    .padding(.top, 7)
-                } label: {
-                    HStack {
-                        Label("筛选与历史", systemImage: "line.3.horizontal.decrease")
-                        Spacer()
-                        Text("\(rows.count) 条记录")
-                            .font(.caption).foregroundColor(.secondary)
-                    }
-                    .font(.caption)
-                }
-                if draftStatusRows.contains(where: { $0.status.needsAttention }) {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Label("本机营业事项（仅显示待处理）",
-                              systemImage: "square.and.pencil")
-                            .font(.subheadline.bold()).foregroundColor(.orange)
-                        ForEach(draftStatusRows.filter { $0.status.needsAttention }) { item in
-                            Button {
-                                preferredStoreID = item.draft.storeID
-                                showLocalEntry = true
-                            } label: {
-                                HStack(spacing: 8) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(item.draft.storeName)
-                                            .foregroundColor(.primary)
-                                        Text(item.status.label)
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary)
-                                    }
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                }
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(12)
-                    .background(Color(UIColor.secondarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 12))
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("营业额").foregroundColor(.secondary)
-                        Spacer()
-                        Text(sum(rows, \.revenue).formatted(.currency(code: "CNY")))
-                            .font(.headline.bold())
-                    }
-                    HStack {
-                        Text("已存利润").foregroundColor(.secondary)
-                        Spacer()
-                        Text(sum(rows, \.profit).formatted(.currency(code: "CNY")))
-                            .font(.subheadline.bold())
-                    }
-                    .font(.subheadline)
-                }
-                .padding(12)
-                .background(Color(UIColor.secondarySystemGroupedBackground),
-                            in: RoundedRectangle(cornerRadius: 12))
-                if rows.isEmpty {
-                    EmptyStateView(title: "此范围没有已同步营业记录", icon: "chart.bar")
-                }
-                ForEach(Array(grouped.prefix(visibleDays)), id: \.date) { day in
-                    VStack(alignment: .leading, spacing: 9) {
-                        HStack {
-                            Text(day.date).font(.subheadline.bold())
-                            Spacer()
-                            Text("合计 \(sum(day.rows, \.revenue).formatted(.currency(code: "CNY")))")
-                                .font(.caption.bold())
-                        }
-                        if day.rows.count > 1 {
-                            Text("\(day.rows.count) 个位置 · 已存利润 \(sum(day.rows, \.profit).formatted(.currency(code: "CNY")))")
-                                .font(.caption2).foregroundColor(.secondary)
-                        }
-                        ForEach(day.rows) { row in
-                            HStack(spacing: 8) {
-                                NavigationLink(destination: BusinessCloudDetailView(
-                                    recordSyncID: row.id,
-                                    bookID: model.selectedBookID ?? "")) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(row.storeName).font(.subheadline)
-                                            .foregroundColor(.primary)
-                                        Text("已存利润：" +
-                                             row.profit.formatted(.currency(code: "CNY")))
-                                            .font(.caption2).foregroundColor(.secondary)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                                .buttonStyle(.plain)
-                                TXBusinessCustomerShortcut(recordSyncID: row.id)
-                                NavigationLink(destination: BusinessCloudDetailView(
-                                    recordSyncID: row.id,
-                                    bookID: model.selectedBookID ?? "")) {
-                                    HStack(spacing: 4) {
-                                        Text(row.revenue.formatted(.currency(code: "CNY")))
-                                            .font(.subheadline.bold())
-                                            .foregroundColor(.primary)
-                                        Image(systemName: "chevron.right")
-                                            .font(.caption2).foregroundColor(.secondary)
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            Divider()
-                        }
-                    }
-                    .padding(12)
-                    .background(Color(UIColor.secondarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 12))
-                }
-                if grouped.count > visibleDays {
-                    Button("加载更早营业记录") { visibleDays += 14 }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                }
-                // Android: selected day above, then the previous seven
-                // actual BUSINESS days. Other date-range modes already show
-                // those days in the main filtered list, so don't duplicate.
-                if period == "单日" {
-                    Divider()
-                    TXRecentBusinessDaysView(selectedDate: selectedKey) {
-                        period = "全部"
-                        showFilters = true
-                        visibleDays = 14
-                    }
-                }
-                // Detail actions remain scoped by account and server permissions.
-                SyncFooter()
+                historyContent.disabled(showLocalEntry)
             }
             .padding(12)
         }
-        .sheet(isPresented: $showLocalEntry) {
-            BusinessLocalEntryView(date: selectedDate,
-                                   preferredStoreID: preferredStoreID)
-                .environmentObject(model)
+        .onChange(of: selectedDate) { _ in visibleDays = 14 }
+        .onChange(of: model.selectedBookID) { _ in
+            if showLocalEntry { closeBusinessEditor(selectedDate) }
+        }
+        .onChange(of: model.account?.username) { _ in
+            if showLocalEntry { closeBusinessEditor(selectedDate) }
         }
     }
 }
@@ -694,46 +779,56 @@ private struct MorePage: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 11) {
-                Text("基础管理").font(.headline)
-                NavigationLink(destination: TXBookDirectoryView()) {
-                    menuLine("账本管理", "books.vertical", "查看与切换账本")
+            VStack(alignment: .leading, spacing: 8) {
+                menuSection("经营数据") {
+                    NavigationLink(destination: PurchasesHistoryView()) {
+                        menuLine("采购历史", "clock.arrow.circlepath", "按日期查看")
+                    }
+                    Divider().padding(.leading, 36)
+                    NavigationLink(destination: BusinessStatsView()) {
+                        menuLine("经营统计", "chart.bar.xaxis", "位置 · 趋势")
+                    }
+                    Divider().padding(.leading, 36)
+                    NavigationLink(destination: CustomerInsightsView()) {
+                        menuLine("客户分析", "person.2", "客流 · 账单")
+                    }
+                    Divider().padding(.leading, 36)
+                    NavigationLink(destination: OperatingReportView()) {
+                        menuLine("生成报表", "doc.text", "经营汇总")
+                    }
                 }
-                NavigationLink(destination: TXBasicDirectoryView(kind: .fruit)) {
-                    menuLine("商品管理", "shippingbox", "查看商品资料")
+                menuSection("经营资料") {
+                    NavigationLink(destination: TXBasicDirectoryView(kind: .partner)) {
+                        menuLine("合伙人管理", "person.2", "查看资料")
+                    }
+                    Divider().padding(.leading, 36)
+                    NavigationLink(destination: TXProfitRuleDirectoryView()) {
+                        menuLine("利润分配规则", "chart.pie", "当前比例 · 只读")
+                    }
+                    Divider().padding(.leading, 36)
+                    NavigationLink(destination: TXBasicDirectoryView(kind: .store)) {
+                        menuLine("位置管理", "mappin.and.ellipse", "查看营业位置")
+                    }
+                    Divider().padding(.leading, 36)
+                    NavigationLink(destination: TXBasicDirectoryView(kind: .fruit)) {
+                        menuLine("商品管理", "shippingbox", "查看商品资料")
+                    }
                 }
-                NavigationLink(destination: TXBasicDirectoryView(kind: .store)) {
-                    menuLine("位置管理", "mappin.and.ellipse", "查看营业位置")
+                menuSection("账本与数据") {
+                    NavigationLink(destination: TXBookDirectoryView()) {
+                        menuLine("账本管理", "books.vertical", "查看与切换")
+                    }
+                    Divider().padding(.leading, 36)
+                    NavigationLink(destination: TXFundHistoryView()) {
+                        menuLine("资金余额与结算记录", "banknote", "历史结清")
+                    }
                 }
-                NavigationLink(destination: TXBasicDirectoryView(kind: .partner)) {
-                    menuLine("合伙人管理", "person.2", "查看合伙人资料")
+                menuSection("设置") {
+                    NavigationLink(destination: WeatherAlertsView()) {
+                        menuLine("天气提醒", "cloud.rain", "未来7天")
+                    }
                 }
-                Divider().padding(.vertical, 2)
-                Text("经营与分析").font(.headline)
-                NavigationLink(destination: CustomerInsightsView()) {
-                    menuLine("客户分析", "person.2", "微信、支付宝 · 逐小时")
-                }
-                NavigationLink(destination: BusinessStatsView()) {
-                    menuLine("经营统计", "chart.bar.xaxis", "位置 · 趋势")
-                }
-                NavigationLink(destination: PurchasesHistoryView()) {
-                    menuLine("采购历史", "clock.arrow.circlepath", "按日期查看")
-                }
-                NavigationLink(destination: WeatherAlertsView()) {
-                    menuLine("天气提醒", "cloud.rain", "未来7天")
-                }
-                Divider().padding(.vertical, 2)
-                Text("资金与报表").font(.headline)
-                NavigationLink(destination: TXFundHistoryView()) {
-                    menuLine("资金余额与结算记录", "banknote", "每日明细 · 历史结清")
-                }
-                NavigationLink(destination: TXProfitRuleDirectoryView()) {
-                    menuLine("利润分配规则", "chart.pie", "当前比例 · 只读")
-                }
-                NavigationLink(destination: OperatingReportView()) {
-                    menuLine("生成报表", "doc.text", "经营汇总 · PDF / 图片")
-                }
-                Divider().padding(.vertical, 2)
+                Text("账号与同步").font(.caption.bold()).foregroundColor(.secondary)
                 DisclosureGroup(isExpanded: $showAccountDetails) {
                     VStack(alignment: .leading, spacing: 12) {
                         Label(model.account?.displayName ?? "未登录",
@@ -766,32 +861,40 @@ private struct MorePage: View {
                                 in: RoundedRectangle(cornerRadius: 11))
                     .padding(.top, 8)
                 } label: {
-                    Label("账号与同步", systemImage: "person.crop.circle")
+                    Label(model.account?.displayName ?? "账号详情", systemImage: "person.crop.circle")
                         .font(.subheadline.bold())
                 }
                 Text(TXAppPresentation.versionLabel(version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
                     build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String))
                     .font(.caption2).foregroundColor(.secondary)
             }
-            .padding(12)
+            .padding(8)
+        }
+    }
+
+    private func menuSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption.bold()).foregroundColor(.secondary)
+                .padding(.leading, 4)
+            VStack(spacing: 0) { content() }
+                .background(TXTheme.header, in: RoundedRectangle(cornerRadius: 10))
         }
     }
 
     private func menuLine(_ title: String, _ symbol: String,
                           _ detail: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: symbol).font(.title3).foregroundColor(TXTheme.primary)
-                .frame(width: 28)
-            Text(title).font(.subheadline.bold()).foregroundColor(.primary)
+        HStack(spacing: 7) {
+            Image(systemName: symbol).font(.subheadline).foregroundColor(TXTheme.primary)
+                .frame(width: 24)
+            Text(title).font(.subheadline).foregroundColor(.primary).layoutPriority(1)
             Spacer(minLength: 4)
             Text(detail).font(.caption2).foregroundColor(.secondary)
                 .lineLimit(1)
             Image(systemName: "chevron.right").font(.caption2).foregroundColor(.secondary)
         }
-        .padding(.horizontal, 12)
-        .frame(minHeight: 51)
-        .background(Color(UIColor.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 11))
+        .padding(.horizontal, 8)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
     }
 }
 

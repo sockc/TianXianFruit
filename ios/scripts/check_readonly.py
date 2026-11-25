@@ -325,12 +325,12 @@ assert (root.parent / "Tests" / "FastEntryFieldTests.swift").exists()
 
 # V0.6.3 settlement visual presentation: zero new financial write routes.
 settlement_ui = swift["SettlementTableView.swift"]
-assert "TXDayBar(date: $selectedDate" in settlement_ui
+assert 'TXPageDateHeader(title: "当日结算", date: $model.workDate)' in settlement_ui
 assert "snapshotState" in settlement_ui
 assert "day.uniqueSnapshot" in settlement_ui
 assert "day.savedDaily.count > 1" in settlement_ui
 assert "SettlementDateDetail(day: day)" in settlement_ui
-assert "await model.refresh()" in settlement_ui
+assert "TXCloudSyncStatusBar()" in settlement_ui
 assert (root.parent / "Tests" / "SettlementCompactPresentationTests.swift").exists()
 
 
@@ -576,8 +576,8 @@ assert '"同步异常"' in swift['Views.swift']
 assert 'showConfirmedDrafts || attempt.phase != .confirmed || confirmedPurchaseChanged(attempt)' in swift['PurchaseWorkspaceView.swift']
 assert 'DisclosureGroup(isExpanded: $showAudit)' in swift['TXFundOverviewPanel.swift']
 assert '服务端库存写入未授权' in swift['TXInventory094Page.swift']
-assert 'MARKETING_VERSION: "1.0.0"' in project
-assert 'CURRENT_PROJECT_VERSION: "77"' in project
+assert 'MARKETING_VERSION: "1.0.1"' in project
+assert 'CURRENT_PROJECT_VERSION: "78"' in project
 print("V1.0.0 RC1 PASS: routine UI, retained history, honest sync states")
 
 # RC2: directory is read-only except existing book selection.
@@ -620,3 +620,54 @@ assert 'TXProfitRuleDirectoryView()' in swift['TXBasicDirectoryView.swift']
 assert '"/api/v1/sync/push"' not in swift['TXProfitRuleDirectoryView.swift']
 assert (root.parent / 'Tests' / 'TXProfitRuleDirectoryTests.swift').exists()
 print("V1.0.0 RC7 PASS: test-only partner rename and read-only rule directory")
+
+assert '@Published var workDate = Date()' in swift["LedgerViewModel.swift"]
+assert 'TXWorkDayPolicy.swipeDays' in swift["AndroidStyleShell.swift"]
+assert 'TXPageDateHeader(title: "营业", date: $model.workDate)' in swift["Views.swift"]
+assert 'TXPageDateHeader(title: "采购", date: $model.workDate' in swift["PurchaseWorkspaceView.swift"]
+assert 'TXPageDateHeader(title: "库存", date: $model.workDate)' in swift["TXInventory094Page.swift"]
+assert 'TXDayBar(date: $model.workDate, label: "经营日期"' in swift["Views.swift"]
+assert 'MARKETING_VERSION: "1.0.1"' in project
+print("V1.0.1 UI parity shared operating date guard PASS")
+
+assert "Button(action: openInlineEditor)" in swift["PurchaseWorkspaceView.swift"]
+assert "onClose: closeInlineEditor" in swift["PurchaseWorkspaceView.swift"]
+assert "guard !inlineLedgerEditing else { return }" in swift["LedgerViewModel.swift"]
+assert ".disabled(model.inlineLedgerEditing)" in swift["Views.swift"]
+assert "showDiscardConfirmation" in swift["PurchaseWorkspaceEditorView.swift"]
+assert "private var quantityRow: some View" in swift["TXInventory094Page.swift"]
+print("V1.0.1 inline purchase and inventory type-check split guard PASS")
+
+assert "openBusinessEditor(storeID: filteredStoreID)" in swift["Views.swift"]
+assert "onClose: closeBusinessEditor" in swift["Views.swift"]
+assert ".sheet(isPresented: $showLocalEntry)" not in swift["Views.swift"]
+assert "expectedBookID == bookID" in swift["BusinessLocalEntryView.swift"]
+assert "guard scopeMatches, !submitting" in swift["BusinessLocalEntryView.swift"]
+assert "inlinePurchaseEditing || inlineBusinessEditing" in swift["LedgerViewModel.swift"]
+assert "showCloseConfirmation" in swift["BusinessLocalEntryView.swift"]
+print("V1.0.1 inline business entry and account/book isolation guard PASS")
+
+assert "unitPriceForExactLineTotal" in swift["PurchaseDraftModels.swift"]
+assert "guard try subtotal(candidate) == desired" in swift["PurchaseDraftModels.swift"]
+assert "TXPurchaseLineTotalEditor" in swift["PurchaseWorkspaceEditorView.swift"]
+assert "receiptList" in swift["ReadOnlyInsightsViews.swift"]
+assert "hourlyAmounts" in swift["ReadOnlyInsightsViews.swift"]
+print("V1.0.1 exact line-total reverse and compact customer analysis guard PASS")
+
+assert "resultKey == previewKey" in swift["TXDailySettlement092.swift"]
+assert "model.errorMessage == nil" in swift["TXDailySettlement092.swift"]
+assert swift["SettlementTableView.swift"].index('Text("实际利润分配 · 原始记录")') < swift["SettlementTableView.swift"].index('Text("合伙人资金轧差 · 原始记录")')
+assert 'menuSection("账本与数据")' in swift["Views.swift"]
+print("V1.0.1 settlement presentation and grouped settings guard PASS")
+
+assert "keyboardWillShowNotification" in swift["Views.swift"]
+assert "keyboardWillHideNotification" in swift["Views.swift"]
+assert "if !keyboardVisible" in swift["Views.swift"]
+assert swift["TXInventory094Page.swift"].count("TXAdaptiveHorizontal {") == 2
+adaptive_ui = swift["AndroidStyleShell.swift"].split("struct TXAdaptiveHorizontal<", 1)[1].split("struct TXCompactMetric", 1)[0]
+assert "if #available(iOS 16.0, *)" in adaptive_ui
+assert "ViewThatFits(in: .horizontal)" in adaptive_ui
+assert "else {\n            stacked" in adaptive_ui
+assert 'IPHONEOS_DEPLOYMENT_TARGET: "15.0"' in project
+assert "if persisted { date = BusinessDates.parse(item.date) ?? date }" in swift["PurchaseWorkspaceView.swift"]
+print("V1.0.1 compact layout and keyboard guard PASS")

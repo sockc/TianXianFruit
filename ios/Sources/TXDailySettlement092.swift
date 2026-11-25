@@ -307,8 +307,23 @@ struct TXDailySettlement092Panel: View {
     @EnvironmentObject private var model: LedgerViewModel
     let date: String
     @State private var result: TXDailySettlement092Policy.Report?
-    @State private var showRows = false
+    @State private var resultKey = ""
+    @State private var showRows = true
+    @State private var showRowDetails = false
+    @State private var showCostDetails = false
     @State private var showTransfers = true
+
+    private var previewKey: String {
+        [model.account?.username ?? "", model.selectedBookID ?? "", date,
+         String(model.currentCursor), String(model.lastSyncAt?.timeIntervalSince1970 ?? 0),
+         String(model.isUsingCachedAuthorization), String(model.errorMessage != nil)].joined(separator: "|")
+    }
+
+    private var currentResult: TXDailySettlement092Policy.Report? {
+        guard resultKey == previewKey, !model.isUsingCachedAuthorization,
+              model.errorMessage == nil, !model.isBusy else { return nil }
+        return result
+    }
 
     private func amount(_ name: String, _ value: Double) -> some View {
         HStack {
@@ -321,29 +336,36 @@ struct TXDailySettlement092Panel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("当日实时计算").font(.subheadline.bold())
+                Text("当日结算预览").font(.subheadline.bold())
                 Spacer()
                 Button("计算预览") {
                     result = TXDailySettlement092Policy.evaluate(model.snapshot, date: date)
+                    resultKey = previewKey
                 }
                 .font(.caption.bold())
-                .disabled(model.isBusy || model.lastSyncAt == nil || model.isUsingCachedAuthorization)
+                .disabled(model.isBusy || model.lastSyncAt == nil || model.isUsingCachedAuthorization || model.errorMessage != nil)
             }
-            Text("按安卓当日现金轧差规则读取已同步数据，不写入结算记录。")
+            Text("实时预览 · 不写入结算记录")
                 .font(.caption2).foregroundColor(.secondary)
-            if let result {
+            if let result = currentResult {
                 if result.blocker == nil || result.revenue > 0 {
                     HStack(spacing: 5) {
-                        tile("营业额", result.revenue)
-                        tile("采购金额", result.purchase)
-                        tile("当日利润", result.profit)
+                        TXCompactMetric(title: "营业额", value: result.revenue.formatted(.currency(code: "CNY")), tint: .green)
+                        TXCompactMetric(title: "采购金额", value: result.purchase.formatted(.currency(code: "CNY")), tint: .purple)
+                        TXCompactMetric(title: "当日利润", value: result.profit.formatted(.currency(code: "CNY")), tint: .orange)
                     }
-                    amount("费用", result.expense)
-                    amount("库存估值差", result.inventoryDelta)
+                    DisclosureGroup("费用与库存估值差", isExpanded: $showCostDetails) {
+                        amount("费用", result.expense)
+                        amount("库存估值差", result.inventoryDelta)
+                    }.font(.caption2)
                 }
                 if let blocker = result.blocker {
                     Label(blocker, systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundColor(.orange)
+                }
+                if result.blocker == nil && !result.rows.isEmpty {
+                    Text("当日已存利润份额").font(.subheadline.bold())
+                    ForEach(result.rows) { row in amount(row.name, row.profit) }
                 }
                 if !result.rows.isEmpty {
                     DisclosureGroup(isExpanded: $showRows) {
@@ -356,14 +378,18 @@ struct TXDailySettlement092Panel: View {
                                         .font(.subheadline.bold())
                                         .foregroundColor(row.balance < 0 ? .red : TXTheme.primary)
                                 }
-                                amount("收款", row.receipt)
-                                amount("采购垫付", row.purchase)
-                                amount("费用垫付", row.expense)
-                                amount("已存利润份额", row.profit)
-                                amount("应留存", row.keep)
+                                if showRowDetails {
+                                    amount("收款", row.receipt)
+                                    amount("采购垫付", row.purchase)
+                                    amount("费用垫付", row.expense)
+                                    amount("已存利润份额", row.profit)
+                                    amount("应留存", row.keep)
+                                }
                                 Divider()
                             }
                         }
+                        Button(showRowDetails ? "收起轧差明细" : "查看轧差明细") { showRowDetails.toggle() }
+                            .font(.caption)
                     } label: { Text("合伙人资金轧差").font(.subheadline.bold()) }
                 }
                 if result.blocker == nil {
@@ -399,6 +425,7 @@ struct TXDailySettlement092Panel: View {
                     }
                 } label: { Text("采购垫付与当日资金登记").font(.caption.bold()) }
             }
+            Divider()
             TXLedgerV33DailyActions(date: date)
             Text("采购垫付随当日转账逐笔结算；不会单独推断采购款已结清。")
                 .font(.caption2).foregroundColor(.secondary)
@@ -406,10 +433,7 @@ struct TXDailySettlement092Panel: View {
         .padding(10)
         .background(Color(UIColor.secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 10))
-        .onChange(of: date) { _ in result = nil }
-        .onChange(of: model.lastSyncAt) { _ in result = nil }
-        .onChange(of: model.selectedBookID) { _ in result = nil }
-        .onChange(of: model.isUsingCachedAuthorization) { _ in result = nil }
+        .onChange(of: previewKey) { _ in result = nil; resultKey = ""; showRowDetails = false }
     }
 
     private func tile(_ label: String, _ value: Double) -> some View {

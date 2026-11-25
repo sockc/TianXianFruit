@@ -25,6 +25,8 @@ struct TXFastNumericField: UIViewRepresentable {
         field.delegate = context.coordinator
         field.borderStyle = .roundedRect
         field.font = UIFont.preferredFont(forTextStyle: .subheadline)
+        field.adjustsFontSizeToFitWidth = true
+        field.minimumFontSize = 11
         field.textAlignment = .right
         field.keyboardType = .decimalPad
         field.clearButtonMode = .never

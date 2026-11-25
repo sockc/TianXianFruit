@@ -27,33 +27,43 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Read release metadata
+        id: version
+        run: python3 ios/scripts/release_metadata.py >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
-          name: TianXianFruit-v1.4.7.135
+          name: ${{ steps.version.outputs.android_artifact }}
           path: dist
       - uses: actions/download-artifact@v4
         with:
-          name: TianXianFruit-iOS-v1.0.0-Build77-TrollStore
+          name: ${{ steps.version.outputs.ios_artifact }}
           path: dist
       - name: Verify both files and checksum
+        env:
+          APK: ${{ steps.version.outputs.apk }}
+          IPA: ${{ steps.version.outputs.ipa }}
         run: |
           set -euo pipefail
           cd dist
-          test -s TianXianFruit-v1.4.7.135.apk
-          test -s TianXianFruit-iOS-v1.0.0-Build77-TrollStore.ipa
-          sha256sum *.apk *.ipa > SHA256SUMS.txt
+          test -s "$APK"
+          test -s "$IPA"
+          sha256sum "$APK" "$IPA" > SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: TianXianFruit-joint-RC7
+          name: ${{ steps.version.outputs.joint_artifact }}
           path: dist/*
           if-no-files-found: error
       - name: Publish both packages together after explicit acceptance
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release
         env:
           GH_TOKEN: ${{ github.token }}
+          ANDROID_VERSION: ${{ steps.version.outputs.android_version }}
+          IOS_VERSION: ${{ steps.version.outputs.ios_version }}
+          APK: ${{ steps.version.outputs.apk }}
+          IPA: ${{ steps.version.outputs.ipa }}
         run: |
           set -euo pipefail
-          TAG=v1.4.7.135
+          TAG="v$ANDROID_VERSION"
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$GITHUB_SHA"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release already exists; refusing to overwrite"
@@ -65,7 +75,7 @@ jobs:
           else
             test "$?" -eq 2
           fi
-          gh release create "$TAG" dist/*.apk dist/*.ipa dist/SHA256SUMS.txt \
-            --target "$GITHUB_SHA" --draft --title "天鲜账本 Android V1.4.7.135 / iOS V1.0.0" \
+          gh release create "$TAG" "dist/$APK" "dist/$IPA" dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --draft --title "天鲜账本 Android V$ANDROID_VERSION / iOS V$IOS_VERSION" \
             --notes-file RELEASE_NOTES.md
           gh release edit "$TAG" --draft=false --latest

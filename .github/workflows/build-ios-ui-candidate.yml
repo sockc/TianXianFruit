@@ -1,0 +1,11 @@
+name: Build iOS UI candidate
+on:
+  push:
+    branches:
+      - feature/ios-v1.0.1-ui-parity
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: ./.github/workflows/build-trollstore-ipa.yml

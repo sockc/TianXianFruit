@@ -11,6 +11,7 @@ struct PurchaseWorkspaceEditorView: View {
     let account: String
     let bookID: String
     let onSave: (PurchaseWorkspaceDraft) -> Bool
+    private let onClose: (() -> Void)?
 
     @State private var date: Date
     @State private var buyerSyncID: String
@@ -31,11 +32,13 @@ struct PurchaseWorkspaceEditorView: View {
          account: String, bookID: String,
          initialBuyerSyncID: String? = nil,
          initialLines: [PurchaseDraftLine]? = nil,
+         onClose: (() -> Void)? = nil,
          onSave: @escaping (PurchaseWorkspaceDraft) -> Bool) {
         self.original = original
         self.account = account
         self.bookID = bookID
         self.onSave = onSave
+        self.onClose = onClose
         let startingDate = original.flatMap { BusinessDates.parse($0.date) } ?? date
         let startingBuyerID = original?.buyerSyncID ?? initialBuyerSyncID ?? ""
         let startingType = original?.purchaseType ?? "PLANNED"
@@ -78,136 +81,153 @@ struct PurchaseWorkspaceEditorView: View {
         lines.contains { $0.sourcePlanItemSyncID != nil }
     }
 
-    var body: some View {
-        NavigationView {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text(original == nil ? "新增采购" : "修改采购")
-                            .font(.headline)
-                        Spacer()
-                        Text("本机待提交")
-                            .font(.caption.bold()).foregroundColor(.orange)
-                    }
-                    if model.selectedBook.map({ book in
-                        model.purchaseCommitCapabilities?.eligible(book: book) != true
-                    }) ?? true {
-                        Label("本机草稿 · 云端未授权，不计入结算",
-                              systemImage: "lock.shield")
-                            .font(.caption2).foregroundColor(.secondary)
-                    }
+    private func closeEditor() {
+        if let onClose { onClose() }
+        else { dismiss() }
+    }
 
-                    TXDayBar(date: $date, label: "采购日期")
-                        .disabled(hasPlanSource)
-                    HStack(spacing: 8) {
-                        Picker("采购人", selection: $buyerSyncID) {
-                            Text("请选择采购人").tag("")
-                            ForEach(model.snapshot.testPartners) { buyer in
-                                Text(buyer.name).tag(buyer.id)
-                            }
-                        }
-                        .pickerStyle(MenuPickerStyle())
-                        Picker("类型", selection: $purchaseType) {
-                            Text("计划").tag("PLANNED")
-                            Text("临时").tag("TEMPORARY")
-                        }
-                        .pickerStyle(MenuPickerStyle())
-                    }
-                    .disabled(hasPlanSource)
-                    if hasPlanSource {
-                        Label("已关联安卓待采购计划：采购日期与采购人已锁定",
-                              systemImage: "link.circle")
-                            .font(.caption).foregroundColor(.green)
-                        Text("计划数量仅作为初始值，实际数量、单价、重量请按采购结果填写；提交后服务器会同步完成状态。")
-                            .font(.caption2).foregroundColor(.secondary)
-                    }
-                    Button {
-                        showImportPicker = true
-                    } label: {
-                        Label("导入库存 / 待采购计划", systemImage: "square.and.arrow.down.on.square")
-                    }
-                    .font(.subheadline)
-                    .disabled(!canEdit || hasPlanSource)
-                    if let importNotice {
-                        Text(importNotice)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                     HStack {
-                        Text("商品明细").font(.subheadline.bold())
-                        Spacer()
-                        Text("共 " + String(lines.count) + " 种")
-                            .font(.caption).foregroundColor(.secondary)
-                        Text(total.map { "¥" + PurchaseDraftPolicy.display($0) } ?? "金额待核对")
-                            .font(.caption.bold())
-                            .foregroundColor(total == nil ? .orange : TXTheme.primary)
-                        Button {
-                            if lines.count < PurchaseDraftPolicy.maxLines {
-                                lines.append(.blank())
-                            }
-                        } label: {
-                            Label("新增商品", systemImage: "plus.circle")
-                        }
-                        .disabled(lines.count >= PurchaseDraftPolicy.maxLines || hasPlanSource)
-                    }
-                    ForEach($lines) { $line in
-                        PurchaseWorkspaceLineCard(
-                            line: $line,
-                            fruits: model.snapshot.testFruits,
-                            purchaseDate: BusinessDates.key(date),
-                            canDelete: lines.count > 1,
-                            onDelete: {
-                                lines.removeAll { $0.id == line.id }
-                            })
-                    }
-                    VStack(spacing: 6) {
-                        HStack {
-                            Text("本单合计").font(.subheadline.bold())
-                            Spacer()
-                            Text(total.map {
-                                "¥" + PurchaseDraftPolicy.display($0)
-                            } ?? "待核对")
-                                .font(.headline.bold())
-                                .foregroundColor(total == nil ? .orange : .green)
-                        }
-                        TextField("采购备注（可选）", text: $remark)
-                            .textFieldStyle(.roundedBorder)
-                        Text("单价优先真实填写；采购总额按商品明细计算，不把“总价”当作商品单价。")
-                            .font(.caption2).foregroundColor(.secondary)
-                    }
-                    .padding(9)
-                    .background(Color(UIColor.secondarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 12))
-                    if let errorText {
-                        Label(errorText, systemImage: "exclamationmark.triangle")
-                            .font(.caption).foregroundColor(.orange)
-                    }
-                    Button(action: save) {
-                        Label(model.selectedBook.map { book in
-                                  model.purchaseCommitCapabilities?.eligible(book: book) == true
-                              } == true
-                              ? "保存并准备同步" : "保存采购录入",
-                              systemImage: "square.and.arrow.down")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!canEdit || model.isBusy)
-                    Text(model.selectedBook.map { book in
-                            model.purchaseCommitCapabilities?.eligible(book: book) == true
-                                ? "保存后提示确认同步；服务器原子提交并回读成功才算已完成。"
-                                : "本机录入不改变安卓采购与结算，此账本尚未授权云端写入。"
-                         } ?? "请先选择账本")
-                        .font(.caption2).foregroundColor(.secondary)
-                }
-                .padding(12)
+    private func requestClose() {
+        if hasUnsavedInput { showDiscardConfirmation = true }
+        else { closeEditor() }
+    }
+
+    private var editorContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(original == nil ? "新增采购" : "修改采购")
+                    .font(.headline)
+                Spacer()
+                Text("本机待提交")
+                    .font(.caption.bold()).foregroundColor(.orange)
+                if onClose != nil { Button("取消", action: requestClose).font(.caption) }
             }
-            .navigationBarTitle("采购录入", displayMode: .inline)
-            .navigationBarItems(leading: Button("取消") {
-                if hasUnsavedInput { showDiscardConfirmation = true }
-                else { dismiss() }
-            })
+            if model.selectedBook.map({ book in
+                model.purchaseCommitCapabilities?.eligible(book: book) != true
+            }) ?? true {
+                Label("本机草稿 · 云端未授权，不计入结算",
+                      systemImage: "lock.shield")
+                    .font(.caption2).foregroundColor(.secondary)
+            }
+
+            TXDayBar(date: $date, label: "采购日期")
+                .disabled(hasPlanSource)
+            HStack(spacing: 8) {
+                Picker("采购人", selection: $buyerSyncID) {
+                    Text("请选择采购人").tag("")
+                    ForEach(model.snapshot.testPartners) { buyer in
+                        Text(buyer.name).tag(buyer.id)
+                    }
+                }
+                .pickerStyle(MenuPickerStyle())
+                Picker("类型", selection: $purchaseType) {
+                    Text("计划").tag("PLANNED")
+                    Text("临时").tag("TEMPORARY")
+                }
+                .pickerStyle(MenuPickerStyle())
+            }
+            .disabled(hasPlanSource)
+            if hasPlanSource {
+                Label("已关联安卓待采购计划：采购日期与采购人已锁定",
+                      systemImage: "link.circle")
+                    .font(.caption).foregroundColor(.green)
+                Text("计划数量仅作为初始值，实际数量、单价、重量请按采购结果填写；提交后服务器会同步完成状态。")
+                    .font(.caption2).foregroundColor(.secondary)
+            }
+            Button {
+                showImportPicker = true
+            } label: {
+                Label("导入库存 / 待采购计划", systemImage: "square.and.arrow.down.on.square")
+            }
+            .font(.subheadline)
+            .disabled(!canEdit || hasPlanSource)
+            if let importNotice {
+                Text(importNotice)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+             HStack {
+                Text("商品明细").font(.subheadline.bold())
+                Spacer()
+                Text("共 " + String(lines.count) + " 种")
+                    .font(.caption).foregroundColor(.secondary)
+                Text(total.map { "¥" + PurchaseDraftPolicy.display($0) } ?? "金额待核对")
+                    .font(.caption.bold())
+                    .foregroundColor(total == nil ? .orange : TXTheme.primary)
+                Button {
+                    if lines.count < PurchaseDraftPolicy.maxLines {
+                        lines.append(.blank())
+                    }
+                } label: {
+                    Label("添加商品", systemImage: "plus.circle")
+                }
+                .disabled(lines.count >= PurchaseDraftPolicy.maxLines || hasPlanSource)
+            }
+            ForEach($lines) { $line in
+                PurchaseWorkspaceLineCard(
+                    line: $line,
+                    fruits: model.snapshot.testFruits,
+                    purchaseDate: BusinessDates.key(date),
+                    canDelete: lines.count > 1,
+                    onDelete: {
+                        lines.removeAll { $0.id == line.id }
+                    })
+            }
+            VStack(spacing: 6) {
+                HStack {
+                    Text("本单合计").font(.subheadline.bold())
+                    Spacer()
+                    Text(total.map {
+                        "¥" + PurchaseDraftPolicy.display($0)
+                    } ?? "待核对")
+                        .font(.headline.bold())
+                        .foregroundColor(total == nil ? .orange : .green)
+                }
+                TextField("采购备注（可选）", text: $remark)
+                    .textFieldStyle(.roundedBorder)
+                Text("单价优先真实填写；采购总额按商品明细计算，不把“总价”当作商品单价。")
+                    .font(.caption2).foregroundColor(.secondary)
+            }
+            .padding(9)
+            .background(Color(UIColor.secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 12))
+            if let errorText {
+                Label(errorText, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundColor(.orange)
+            }
+            Button(action: save) {
+                Label(model.selectedBook.map { book in
+                          model.purchaseCommitCapabilities?.eligible(book: book) == true
+                      } == true
+                      ? "保存并准备同步" : "保存采购录入",
+                      systemImage: "square.and.arrow.down")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!canEdit || model.isBusy)
+            Text(model.selectedBook.map { book in
+                    model.purchaseCommitCapabilities?.eligible(book: book) == true
+                        ? "保存后提示确认同步；服务器原子提交并回读成功才算已完成。"
+                        : "本机录入不改变安卓采购与结算，此账本尚未授权云端写入。"
+                 } ?? "请先选择账本")
+                .font(.caption2).foregroundColor(.secondary)
         }
-        .navigationViewStyle(StackNavigationViewStyle())
+    }
+
+    @ViewBuilder private var presentation: some View {
+        if onClose != nil {
+            editorContent.padding(8)
+                .background(TXTheme.header, in: RoundedRectangle(cornerRadius: 10))
+        } else {
+            NavigationView {
+                ScrollView { editorContent.padding(12) }
+                    .navigationBarTitle("采购录入", displayMode: .inline)
+                    .navigationBarItems(leading: Button("取消", action: requestClose))
+            }.navigationViewStyle(StackNavigationViewStyle())
+        }
+    }
+
+    var body: some View {
+        presentation
         .onAppear {
             if original == nil, buyerSyncID.isEmpty,
                model.snapshot.testPartners.count == 1 {
@@ -218,7 +238,7 @@ struct PurchaseWorkspaceEditorView: View {
         .confirmationDialog("采购内容尚未保存",
                             isPresented: $showDiscardConfirmation,
                             titleVisibility: .visible) {
-            Button("放弃未保存的采购输入", role: .destructive) { dismiss() }
+            Button("放弃未保存的采购输入", role: .destructive) { closeEditor() }
             Button("继续录入", role: .cancel) {}
         } message: {
             Text("离开后本次未保存的数量、单价和商品明细会丢失；已保存的本机采购不受影响。")
@@ -263,7 +283,7 @@ struct PurchaseWorkspaceEditorView: View {
             guard onSave(proposed) else {
                 throw PurchaseWorkspaceStoreError.invalid
             }
-            dismiss()
+            closeEditor()
         } catch {
             errorText = error.localizedDescription
         }
@@ -284,6 +304,7 @@ private struct PurchaseWorkspaceLineCard: View {
     let purchaseDate: String
     let canDelete: Bool
     let onDelete: () -> Void
+    @State private var showTotalEditor = false
 
     private var subtotal: Decimal? {
         try? PurchaseDraftPolicy.subtotal(line)
@@ -298,8 +319,8 @@ private struct PurchaseWorkspaceLineCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
                 Picker("商品", selection: $line.fruitSyncID) {
                     Text("请选择商品").tag("")
                     ForEach(fruits) { fruit in
@@ -307,6 +328,8 @@ private struct PurchaseWorkspaceLineCard: View {
                     }
                 }
                 .pickerStyle(MenuPickerStyle())
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
                 .disabled(line.sourcePlanItemSyncID != nil)
                 .onChange(of: line.fruitSyncID) { next in
                     // Different goods must not inherit the previous goods'
@@ -339,20 +362,32 @@ private struct PurchaseWorkspaceLineCard: View {
             HStack(alignment: .bottom, spacing: 7) {
                 input("数量", value: $line.quantity)
                 input("单价（元）", value: $line.unitPrice)
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text("小计").font(.caption2).foregroundColor(.secondary)
-                    Text(subtotal.map { "¥" + PurchaseDraftPolicy.display($0) } ??
-                         "待核对")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("总价").font(.caption2).foregroundColor(.secondary)
+                    Button {
+                        showTotalEditor = true
+                    } label: {
+                        HStack(spacing: 3) {
+                            Spacer(minLength: 0)
+                            Text(subtotal.map { PurchaseDraftPolicy.display($0) } ?? "待核对")
+                                .lineLimit(1).minimumScaleFactor(0.7)
+                            Image(systemName: "pencil").font(.caption2)
+                        }
                         .font(.subheadline.bold())
                         .foregroundColor(subtotal == nil ? .orange : TXTheme.primary)
-                        .lineLimit(1).minimumScaleFactor(0.65)
-                        .frame(height: 36, alignment: .center)
-                }
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.horizontal, 5)
+                        .frame(height: 36)
+                        .background(TXTheme.header, in: RoundedRectangle(cornerRadius: 5))
+                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.3)))
+                    }.buttonStyle(.plain)
+                    .disabled(line.fruitSyncID.isEmpty || line.fruitName.trimmingCharacters(in: .whitespacesAndNewlines) == "总价")
+                    .accessibilityLabel("编辑商品总价")
+                }.frame(maxWidth: .infinity)
+
             }
             if let lastPrice {
                 HStack(spacing: 7) {
-                    Text("截至采购日的历史有效进价 ¥" +
+                    Text("上次有效进价 ¥" +
                          String(format: "%.2f", lastPrice.price) +
                          "/" + lastPrice.unit + " · " + lastPrice.date)
                         .font(.caption2).foregroundColor(.secondary)
@@ -371,9 +406,14 @@ private struct PurchaseWorkspaceLineCard: View {
                 input("每件重量（斤）", value: $line.unitWeightJin)
             }
          }
-        .padding(12)
+        .padding(8)
         .background(Color(UIColor.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 12))
+                    in: RoundedRectangle(cornerRadius: 10))
+        .sheet(isPresented: $showTotalEditor) {
+            TXPurchaseLineTotalEditor(line: line, initialTotal: subtotal.map(PurchaseDraftPolicy.display) ?? "") { price in
+                line.unitPrice = price
+            }
+        }
     }
 
     private func input(_ name: String, value: Binding<String>,
@@ -394,5 +434,54 @@ private struct PurchaseWorkspaceLineCard: View {
             }
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// Explicit confirmation keeps incomplete/invalid totals from leaking into a
+/// persisted draft; existing order construction still sums quantity × price.
+private struct TXPurchaseLineTotalEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    let line: PurchaseDraftLine
+    let onApply: (String) -> Void
+    @State private var amount: String
+
+    init(line: PurchaseDraftLine, initialTotal: String, onApply: @escaping (String) -> Void) {
+        self.line = line
+        self.onApply = onApply
+        _amount = State(initialValue: initialTotal)
+    }
+
+    private var result: Result<String, Error> {
+        Result { try PurchaseDraftPolicy.unitPriceForExactLineTotal(amount, line: line) }
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    Text(line.fruitName + " · " + line.quantity + line.unit)
+                    HStack {
+                        Text("商品总价")
+                        Spacer()
+                        TXFastNumericField(text: $amount, label: "商品总价").frame(width: 125, height: 36)
+                    }
+                    switch result {
+                    case .success(let price):
+                        Text("反算单价 ¥" + price + "/" + line.unit).foregroundColor(TXTheme.primary)
+                    case .failure:
+                        Text("请填写有效总价；两位小数单价必须能精确对应总价，不自动改变实付金额。")
+                            .font(.caption).foregroundColor(.orange)
+                    }
+                }
+                Button("确定并填入单价") {
+                    guard case .success(let price) = result else { return }
+                    onApply(price)
+                    dismiss()
+                }.disabled((try? result.get()) == nil)
+            }
+            .navigationTitle("修改商品总价")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
+        }.navigationViewStyle(StackNavigationViewStyle())
     }
 }

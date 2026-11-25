@@ -1,10 +1,13 @@
-name: Check iOS V1.0.0 RC7
+name: Check iOS V1.0.1 UI parity
 
 on:
   pull_request:
     paths:
       - "ios/**"
       - ".github/workflows/check-ios.yml"
+      - ".github/workflows/build-trollstore-ipa.yml"
+      - ".github/workflows/build-joint.yml"
+      - ".github/workflows/build-ios-ui-candidate.yml"
   push:
     branches:
       - "feature/ios-*"
@@ -25,6 +28,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Validate release metadata
+        run: python3 ios/scripts/release_metadata.py
       - name: Guard staging-write isolation
         run: python3 ios/scripts/check_readonly.py
       - name: Install XcodeGen

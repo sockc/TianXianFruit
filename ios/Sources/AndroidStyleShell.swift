@@ -7,36 +7,164 @@ enum TXTheme {
     static let header = Color(UIColor.secondarySystemGroupedBackground)
 }
 
-/// Android-like adjacent-day control shared by business and purchasing.
+/// Shared operating-day presentation. Explicit confirmation preserves guarded
+/// bindings used by editors; selecting a calendar day never submits a record.
+enum TXWorkDayPolicy {
+    static func shifted(_ date: Date, days: Int, allowFuture: Bool, now: Date = Date()) -> Date {
+        let next = BusinessDates.calendar.date(byAdding: .day, value: days, to: date) ?? date
+        return !allowFuture && BusinessDates.key(next) > BusinessDates.key(now) ? date : next
+    }
+
+    static func swipeDays(horizontal: CGFloat, vertical: CGFloat) -> Int {
+        guard abs(horizontal) >= 55, abs(horizontal) > abs(vertical) * 1.5 else { return 0 }
+        return horizontal < 0 ? 1 : -1
+    }
+
+    static func clamped(_ date: Date, allowFuture: Bool, now: Date = Date()) -> Date {
+        !allowFuture && BusinessDates.key(date) > BusinessDates.key(now) ? now : date
+    }
+}
+
 struct TXDayBar: View {
     @Binding var date: Date
     let label: String
     var allowFuture = true
-    private var today: String { BusinessDates.key(Date()) }
+    @State private var showCalendar = false
+    @State private var calendarDraft = Date()
+
+    private var displayDate: String {
+        let formatter = DateFormatter()
+        formatter.calendar = BusinessDates.calendar
+        formatter.timeZone = BusinessDates.calendar.timeZone
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日 EEE"
+        return formatter.string(from: date)
+    }
+
     var body: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 5) {
             Button { step(-1) } label: {
-                Image(systemName: "chevron.left").frame(width: 36, height: 38)
-                    .background(Color(UIColor.secondarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 10))
+                Image(systemName: "chevron.left").frame(width: 32, height: 40)
             }.accessibilityLabel("上一日")
-            Spacer(minLength: 0)
-            DatePicker(label, selection: $date, displayedComponents: .date)
-                .labelsHidden().datePickerStyle(.compact)
-                .frame(minWidth: 130).accessibilityLabel(label)
-            Spacer(minLength: 0)
-            Button { step(1) } label: {
-                Image(systemName: "chevron.right").frame(width: 36, height: 38)
-                    .background(Color(UIColor.secondarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 10))
+            Button {
+                calendarDraft = TXWorkDayPolicy.clamped(date, allowFuture: allowFuture)
+                showCalendar = true
+            } label: {
+                HStack(spacing: 5) {
+                    Spacer(minLength: 0)
+                    Text(displayDate).font(.subheadline.bold()).lineLimit(1).minimumScaleFactor(0.8)
+                    Spacer(minLength: 0)
+                    Image(systemName: "calendar").font(.caption)
+                }
+                .frame(maxWidth: .infinity, minHeight: 40)
+                .padding(.horizontal, 5)
+                .background(TXTheme.header, in: RoundedRectangle(cornerRadius: 8))
             }
-            .disabled(!allowFuture && BusinessDates.key(date) >= today)
+            .accessibilityLabel(label + " " + displayDate)
+            .simultaneousGesture(DragGesture(minimumDistance: 30).onEnded { value in
+                let days = TXWorkDayPolicy.swipeDays(horizontal: value.translation.width,
+                                                     vertical: value.translation.height)
+                if days != 0 { step(days) }
+            })
+            Button { step(1) } label: {
+                Image(systemName: "chevron.right").frame(width: 32, height: 40)
+            }
+            .disabled(!allowFuture && BusinessDates.key(date) >= BusinessDates.key(Date()))
             .accessibilityLabel("下一日")
         }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showCalendar) {
+            NavigationView {
+                VStack(spacing: 10) {
+                    Group {
+                        if allowFuture {
+                            DatePicker(label, selection: $calendarDraft, displayedComponents: .date)
+                        } else {
+                            DatePicker(label, selection: $calendarDraft, in: ...Date(), displayedComponents: .date)
+                        }
+                    }
+                    .datePickerStyle(.graphical)
+                    .environment(\.locale, Locale(identifier: "zh_CN"))
+                    .environment(\.calendar, BusinessDates.calendar)
+                    .environment(\.timeZone, BusinessDates.calendar.timeZone)
+                    Button("今天") { calendarDraft = Date() }
+                    Spacer(minLength: 0)
+                }
+                .padding(12)
+                .navigationTitle(label)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("取消") { showCalendar = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("确定") {
+                            let next = TXWorkDayPolicy.clamped(calendarDraft, allowFuture: allowFuture)
+                            showCalendar = false
+                            date = next
+                        }
+                    }
+                }
+            }.navigationViewStyle(StackNavigationViewStyle())
+        }
     }
+
     private func step(_ days: Int) {
-        let next = BusinessDates.calendar.date(byAdding: .day, value: days, to: date) ?? date
-        if allowFuture || BusinessDates.key(next) <= today { date = next }
+        date = TXWorkDayPolicy.shifted(date, days: days, allowFuture: allowFuture)
+    }
+}
+
+struct TXPageDateHeader: View {
+    let title: String
+    @Binding var date: Date
+    var allowFuture = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(title).font(.headline.bold()).fixedSize()
+            TXDayBar(date: $date, label: title + "日期", allowFuture: allowFuture)
+        }
+    }
+}
+
+/// iOS 16 can measure intrinsic widths; iOS 15 deliberately uses the
+/// readable stacked layout. Keep the existing deployment target unchanged.
+struct TXAdaptiveHorizontal<Compact: View, Stacked: View>: View {
+    private let compact: Compact
+    private let stacked: Stacked
+
+    init(@ViewBuilder compact: () -> Compact, @ViewBuilder stacked: () -> Stacked) {
+        self.compact = compact()
+        self.stacked = stacked()
+    }
+
+    var body: some View {
+        if #available(iOS 16.0, *) {
+            ViewThatFits(in: .horizontal) {
+                compact
+                stacked
+            }
+        } else {
+            stacked
+        }
+    }
+}
+
+/// Small tinted metric tile, readable in both device appearances.
+struct TXCompactMetric: View {
+    let title: String
+    let value: String
+    let tint: Color
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption).foregroundColor(.secondary).lineLimit(1).minimumScaleFactor(0.8)
+            Text(value).font(.headline.bold()).foregroundColor(.primary)
+                .monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
+        }
+        .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+        .padding(7)
+        .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+        .accessibilityElement(children: .combine)
     }
 }
 

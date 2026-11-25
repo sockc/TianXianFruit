@@ -122,11 +122,12 @@ private struct PurchaseWorkspaceEditorRequest: Identifiable {
 struct PurchaseWorkspaceView: View {
     @EnvironmentObject private var model: LedgerViewModel
     @StateObject private var workspace = PurchaseWorkspaceModel()
-    @State private var date = Date()
+    private var date: Date { get { model.workDate } nonmutating set { model.workDate = newValue } }
     @State private var request: PurchaseWorkspaceEditorRequest?
+    @State private var inlineEntry = false
     @State private var showDrafts = true
     @State private var showConfirmedDrafts = false
-    @State private var showPlanDetails = false
+    @State private var showPlanDetails = true
     @State private var reconcilingID: String?
     @State private var reviewedID: String?
     @State private var review: PurchaseCloudReconcileReport?
@@ -186,21 +187,26 @@ struct PurchaseWorkspaceView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 10) {
-                dateHeader
-                TXCloudSyncStatusBar()
-                metrics
-                DisclosureGroup("采购与库存利润预估") {
-                    TXInventory096Overview(date: day, compact: true)
-                }.font(.caption)
-                Button {
-                    request = PurchaseWorkspaceEditorRequest(original: nil)
-                } label: {
-                    Label("新增采购", systemImage: "plus.circle.fill")
-                        .frame(maxWidth: .infinity)
+            VStack(alignment: .leading, spacing: 7) {
+                if !inlineEntry { dateHeader }
+                if model.isBusy || model.errorMessage != nil || model.isUsingCachedAuthorization || model.lastSyncAt == nil { TXCloudSyncStatusBar() }
+                if !inlineEntry {
+                    metrics
+                    DisclosureGroup("采购与库存利润预估") {
+                        TXInventory096Overview(date: day, compact: true)
+                    }.font(.caption)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!canEdit)
+                if inlineEntry {
+                    inlineEditor
+                } else {
+                    Button(action: openInlineEditor) {
+                        Label("新增采购", systemImage: "plus.circle.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canEdit || submittingID != nil || showConfirm)
+                }
+                Group {
                 localDraftSection
                 DisclosureGroup(isExpanded: $showPlanDetails) {
                     VStack(alignment: .leading, spacing: 10) {
@@ -232,9 +238,11 @@ struct PurchaseWorkspaceView: View {
                         .font(.caption2).foregroundColor(.orange)
                 }
                 SyncFooter()
+                }.disabled(inlineEntry)
             }
             .padding(12)
         }
+        .navigationBarBackButtonHidden(inlineEntry)
         .sheet(item: $request, onDismiss: {
             // Offer the cloud confirmation only AFTER the editor has closed.
             // Cancel means saved locally only; no HTTP write occurs.
@@ -307,6 +315,8 @@ struct PurchaseWorkspaceView: View {
             Task { await model.refreshPurchaseCommitCapabilities() }
         }
         .onChange(of: model.selectedBookID) { _ in
+            inlineEntry = false
+            model.inlinePurchaseEditing = false
             request = nil
             savedPurchaseToConfirmID = nil
             clearReview()
@@ -314,6 +324,8 @@ struct PurchaseWorkspaceView: View {
             Task { await model.refreshPurchaseCommitCapabilities() }
         }
         .onChange(of: model.account?.username) { _ in
+            inlineEntry = false
+            model.inlinePurchaseEditing = false
             request = nil
             savedPurchaseToConfirmID = nil
             clearReview()
@@ -322,9 +334,57 @@ struct PurchaseWorkspaceView: View {
         }
     }
 
+    private func openInlineEditor() {
+        guard canEdit, request == nil, !inlineEntry, !model.inlineLedgerEditing else { return }
+        savedPurchaseToConfirmID = nil
+        model.inlinePurchaseEditing = true
+        inlineEntry = true
+    }
+
+    private func closeInlineEditor() {
+        inlineEntry = false
+        model.inlinePurchaseEditing = false
+        // The exact persisted draft is offered for confirmation only after closing.
+        // No HTTP request is made until the existing confirm action is tapped.
+        if let id = savedPurchaseToConfirmID,
+           let draft = workspace.drafts.first(where: { $0.id == id }),
+           canCommitCloud {
+            date = BusinessDates.parse(draft.date) ?? date
+            pendingCommitID = id
+            showConfirm = true
+        }
+        savedPurchaseToConfirmID = nil
+    }
+
+    @ViewBuilder private var inlineEditor: some View {
+        if let bookID = model.selectedBookID, let account = model.account?.username {
+            PurchaseWorkspaceEditorView(original: nil, date: date, account: account,
+                bookID: bookID, onClose: closeInlineEditor) { item in
+                    guard inlineEntry, model.selectedBookID == bookID,
+                          model.account?.username.lowercased() == account.lowercased(),
+                          canEdit else {
+                        workspace.message = "账号或账本已切换，草稿未保存"
+                        return false
+                    }
+                    let persisted = workspace.save(item, account: account, bookID: bookID)
+                    if persisted { date = BusinessDates.parse(item.date) ?? date }
+                    if persisted && canCommitCloud,
+                       let caps = model.purchaseCommitCapabilities,
+                       caps.atomic && caps.idempotency &&
+                       (!item.lines.contains(where: { $0.sourcePlanItemSyncID != nil }) || caps.supportsCompletePlan) {
+                        savedPurchaseToConfirmID = item.id
+                    }
+                    return persisted
+                }
+                .environmentObject(model)
+        } else {
+            Button("取消录入", action: closeInlineEditor)
+        }
+    }
+
     private var dateHeader: some View {
         HStack(spacing: 6) {
-            TXDayBar(date: $date, label: "采购日期")
+            TXPageDateHeader(title: "采购", date: $model.workDate, allowFuture: true)
             Button {
                 Task { await model.refresh() }
             } label: {
@@ -336,22 +396,16 @@ struct PurchaseWorkspaceView: View {
     }
 
     private var metrics: some View {
-        VStack(spacing: 7) {
-            HStack(spacing: 7) {
-                PurchaseWorkspaceMetric(
-                    title: "计划金额",
-                    value: money(planning.plannedAmount))
-                PurchaseWorkspaceMetric(
-                    title: "已完成金额",
-                    value: money(planning.completedAmount))
-                PurchaseWorkspaceMetric(
-                    title: "云端采购额",
-                    value: syncedPurchaseAmount)
-            }
-            Text("计划金额为原计划数据，云端采购额只统计当日已同步订单，不将本机草稿计入结算。")
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text("计划金额 " + money(planning.plannedAmount))
+                Spacer(minLength: 3)
+                Text("已采购金额 " + syncedPurchaseAmount).foregroundColor(TXTheme.primary)
+            }.font(.caption).lineLimit(1).minimumScaleFactor(0.75)
+            Text("计划已完成 " + money(planning.completedAmount) + " · 已采购只统计云端订单")
                 .font(.caption2).foregroundColor(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(.horizontal, 5)
     }
 
     private var pendingSection: some View {
