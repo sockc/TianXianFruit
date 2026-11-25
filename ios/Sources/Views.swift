@@ -694,6 +694,20 @@ private struct MorePage: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 11) {
+                Text("基础管理").font(.headline)
+                NavigationLink(destination: TXBookDirectoryView()) {
+                    menuLine("账本管理", "books.vertical", "查看与切换账本")
+                }
+                NavigationLink(destination: TXBasicDirectoryView(kind: .fruit)) {
+                    menuLine("商品管理", "shippingbox", "查看商品资料")
+                }
+                NavigationLink(destination: TXBasicDirectoryView(kind: .store)) {
+                    menuLine("位置管理", "mappin.and.ellipse", "查看营业位置")
+                }
+                NavigationLink(destination: TXBasicDirectoryView(kind: .partner)) {
+                    menuLine("合伙人管理", "person.2", "查看合伙人资料")
+                }
+                Divider().padding(.vertical, 2)
                 Text("经营与分析").font(.headline)
                 NavigationLink(destination: CustomerInsightsView()) {
                     menuLine("客户分析", "person.2", "微信、支付宝 · 逐小时")
