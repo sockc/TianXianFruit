@@ -104,6 +104,18 @@ struct TXBasicDirectoryView: View {
     @EnvironmentObject private var model: LedgerViewModel
     let kind: TXBasicDirectoryKind
     @State private var query = ""
+    @State private var selected: TXBasicEditorSelection?
+    @State private var authorizedScope = ""
+    @State private var message = ""
+    private var scope: String { (model.account?.username ?? "") + "|" + (model.selectedBookID ?? "") }
+    private var editable: Bool { kind != .partner && authorizedScope == scope && model.v34LocalCandidate && model.lastSyncAt != nil && !model.isBusy && !model.isLedgerV33Busy && !model.v33HasPending }
+    private func verifyAccess() async {
+        let original = scope
+        authorizedScope = ""
+        guard kind != .partner else { return }
+        let allowed = await model.v33Capability("basic")
+        if scope == original && !Task.isCancelled { authorizedScope = allowed ? original : "" }
+    }
     private var rows: [TXBasicDirectoryEntry] {
         TXBasicDirectoryPolicy.entries(model.snapshot, kind: kind, query: query)
     }
@@ -119,16 +131,48 @@ struct TXBasicDirectoryView: View {
                 } else if model.isUsingCachedAuthorization || model.errorMessage != nil {
                     Text("当前显示缓存资料").font(.caption).foregroundColor(.orange)
                 }
-                Text("本版仅查看已同步资料，新增、修改和删除请在安卓端操作。")
+                Text(kind == .partner ? "合伙人资料仅查看；权限及利润规则请在安卓端管理。" :
+                     authorizedScope == scope ? "支持修改现有资料，新增和删除请在安卓端操作。" : "当前仅查看，服务端基础资料写入未授权。")
                     .font(.caption).foregroundColor(.secondary)
+                if model.v33HasPending {
+                    Button("核对上次操作") {
+                        Task { message = await model.v33Recover(); await verifyAccess() }
+                    }.disabled(model.isBusy || model.isLedgerV33Busy)
+                }
+                if !message.isEmpty { Text(message).font(.caption).foregroundColor(.secondary) }
             }
             Section("共 \(rows.count) 条") {
                 if rows.isEmpty {
                     Text("没有匹配资料").foregroundColor(.secondary)
                 }
                 ForEach(rows) { row in
-                    Text(row.name)
+                    let event = model.snapshot.records[kind.rawValue + "|" + row.id]
+                    HStack {
+                        Text(row.name)
+                        Spacer()
+                        if kind == .fruit, let event {
+                            Text(event.payload["default_unit"]?.text ?? "").font(.caption).foregroundColor(.secondary)
+                            if TXFundDataAdapter.number(event.payload["enabled"]) == 0 {
+                                Text("已停用").font(.caption).foregroundColor(.orange)
+                            }
+                        }
+                        if editable, let event, event.rowVersion > 0, row.name != "总价" {
+                            Button("编辑") {
+                                selected = TXBasicEditorSelection(event: event, scope: scope)
+                            }.font(.caption)
+                        }
+                    }
                 }
+            }
+        }
+        .task(id: scope + "|" + String(model.currentCursor) + "|" + String(model.isUsingCachedAuthorization)) {
+            await verifyAccess()
+        }
+        .onChange(of: scope) { _ in selected = nil; message = ""; authorizedScope = "" }
+        .sheet(item: $selected) { item in
+            TXBasicRecordEditor(selection: item) { edit in
+                selected = nil
+                Task { message = await model.v36SubmitBasic(edit, expectedScope: item.scope); await verifyAccess() }
             }
         }
         .searchable(text: $query, prompt: "搜索名称")
@@ -137,7 +181,7 @@ struct TXBasicDirectoryView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
-                    Task { await model.refresh() }
+                    Task { await model.refresh(); await verifyAccess() }
                 } label: { Image(systemName: "arrow.clockwise") }
                     .disabled(model.isBusy)
             }

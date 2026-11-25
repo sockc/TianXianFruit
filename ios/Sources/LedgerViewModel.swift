@@ -693,6 +693,16 @@ extension LedgerViewModel {
             return try await v33Run(p, recovering: false, automatic: automatic)
         } catch { return error.localizedDescription }
     }
+    func v36SubmitBasic(_ edit: TXBasicEdit, expectedScope: String) async -> String {
+        do {
+            guard expectedScope == (account?.username ?? "") + "|" + (selectedBookID ?? ""),
+                  let row = snapshot.records[edit.table + "|" + edit.sync_id],
+                  row.rowVersion == edit.expected_row_version, edit.valid else { throw TXSettlementAtomicError.stale }
+            var body = try v33Body(date: BusinessDates.key(Date()), lines: nil, allocations: nil)
+            body.basic_edit = edit
+            return try await v33Run(.init(feature: "basic", body: body, stockDrafts: [], priceDrafts: []), recovering: false)
+        } catch { return error.localizedDescription }
+    }
     func v33SubmitDaily(date: String, allocations: [TXLedgerV33Allocation], profitOnly: Bool = false) async -> String {
         do {
             let p = TXLedgerV33Proposal(feature: profitOnly ? "profit" : "daily",
@@ -737,7 +747,8 @@ extension LedgerViewModel {
                 let transfer = try TXSettlementCommitStore().load(account: name, book: book)
                 guard transfer == nil || transfer?.phase == .confirmed else { throw TXSettlementAtomicError.locked }
                 if cap.scope == "formal" {
-                    try await TXFormalLedgerAccess.confirmFinance()
+                    if p.feature == "basic" { try await TXFormalLedgerAccess.confirmFinance(reason: "验证身份后修改正式账本基础资料") }
+                    else { try await TXFormalLedgerAccess.confirmFinance() }
                     guard stillScoped(), currentCursor == p.body.expected_cursor else { throw TXSettlementAtomicError.stale }
                 }
             }
@@ -745,7 +756,8 @@ extension LedgerViewModel {
         }
         if receipt == nil {
             if recovering && cap.scope == "formal" && p.feature != "inventory" {
-                try await TXFormalLedgerAccess.confirmFinance()
+                if p.feature == "basic" { try await TXFormalLedgerAccess.confirmFinance(reason: "验证身份后恢复基础资料修改") }
+                else { try await TXFormalLedgerAccess.confirmFinance() }
                 guard stillScoped(), currentCursor == p.body.expected_cursor else { throw TXSettlementAtomicError.stale }
             }
             do { receipt = try await api.v33Commit(token: token, proposal: p) }

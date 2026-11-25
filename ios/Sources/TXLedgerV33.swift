@@ -8,6 +8,7 @@ struct TXLedgerV33Capabilities: Decodable {
     let idempotency: Bool
     let operation_lookup: Bool
     let inventory: Bool
+    let basic: Bool?
     let inventory_autosave: Bool?
     let daily_generate: Bool
     let profit_save: Bool?
@@ -15,7 +16,7 @@ struct TXLedgerV33Capabilities: Decodable {
     let cutoff: Bool?
     func allows(_ feature: String, book: CloudBook? = nil) -> Bool {
         version == 1 && TXFormalLedgerAccess.scopeMatches(scope, book: book) && atomic && idempotency && operation_lookup &&
-        (["inventory": inventory, "inventory_auto": inventory && inventory_autosave == true, "daily": daily_generate, "profit": profit_save == true, "balance": authoritative_balance == true, "cutoff": cutoff == true, "undo": cutoff == true][feature] == true)
+        (["basic": basic == true, "inventory": inventory, "inventory_auto": inventory && inventory_autosave == true, "daily": daily_generate, "profit": profit_save == true, "balance": authoritative_balance == true, "cutoff": cutoff == true, "undo": cutoff == true][feature] == true)
     }
 }
 
@@ -48,6 +49,7 @@ struct TXLedgerV33Body: Codable {
     var partner_sync_id: String? = nil
     var expected_balance: String? = nil
     var batch_key: String? = nil
+    var basic_edit: TXBasicEdit? = nil
 }
 
 struct TXLedgerV33Proposal: Codable {
@@ -57,7 +59,9 @@ struct TXLedgerV33Proposal: Codable {
     let priceDrafts: [TXInventory095PriceDraft]
     var scope: String { [body.account, body.book_id, body.date].joined(separator: "|") }
     var matchesFeature: Bool {
-        (feature == "inventory" && body.lines?.isEmpty == false && body.allocations == nil) ||
+        if feature == "basic" { return body.basic_edit != nil && body.lines == nil && body.allocations == nil && body.partner_sync_id == nil && body.expected_balance == nil && body.batch_key == nil }
+        guard body.basic_edit == nil else { return false }
+        return (feature == "inventory" && body.lines?.isEmpty == false && body.allocations == nil) ||
         ((feature == "daily" || feature == "profit") && body.lines == nil && body.allocations != nil) ||
         (feature == "cutoff" && body.lines == nil && body.allocations == nil && body.partner_sync_id?.isEmpty == false && body.expected_balance != nil) ||
         (feature == "undo" && body.lines == nil && body.allocations == nil && body.batch_key?.isEmpty == false)
@@ -81,6 +85,13 @@ struct TXLedgerV33Receipt: Codable {
     let changes: [Change]
     let request_hash: String
     func matches(_ p: TXLedgerV33Proposal) -> Bool {
+        if feature == "basic" {
+            guard p.feature == feature, let edit = p.body.basic_edit, changes.count == 1, let c = changes.first else { return false }
+            return ["committed", "already_committed"].contains(status) && book_id.lowercased() == p.body.book_id.lowercased() &&
+                operation_id.lowercased() == p.body.operation_id.lowercased() && date == p.body.date && sync_cursor > p.body.expected_cursor &&
+                request_hash.count == 64 && c.table_name == edit.table && c.sync_id == edit.sync_id && c.operation == "UPSERT" &&
+                edit.expected_row_version < Int64.max && c.row_version == edit.expected_row_version + 1
+        }
         let tables: Set<String> = feature == "inventory" ?
             ["inventory_snapshot", "product_cost_reference", "daily_retail_price"] :
             ["profit_distribution", "daily_cash_settlement", "settlement_partner", "settlement_transfer"]
@@ -101,6 +112,10 @@ struct TXLedgerV33Receipt: Codable {
                   (change.operation == "DELETE" ? snapshot.records[change.key] == nil :
                    snapshot.records[change.key]?.rowVersion == change.row_version)
               }) else { return false }
+        if feature == "basic" {
+            guard let edit = p.body.basic_edit, let row = snapshot.records[edit.table + "|" + edit.sync_id] else { return false }
+            return edit.matches(row)
+        }
         if feature == "cutoff" || feature == "undo" {
             let rows = changes.compactMap { snapshot.records[$0.key] }
             guard rows.count == changes.count, rows.allSatisfy({

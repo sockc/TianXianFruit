@@ -228,7 +228,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
 
     func v33Commit(token: String, proposal: TXLedgerV33Proposal) async throws -> TXLedgerV33Receipt {
         guard proposal.matchesFeature else { throw TXSettlementAtomicError.scope }
-        let endpoints = ["inventory": "inventory/commit", "daily": "daily/generate",
+        let endpoints = ["basic": "basic/commit", "inventory": "inventory/commit", "daily": "daily/generate",
                          "profit": "profit/save", "cutoff": "funds/cutoff", "undo": "funds/undo"]
         guard let endpoint = endpoints[proposal.feature] else { throw TXSettlementAtomicError.scope }
         let path = "/api/v1/ledger-v33/" + endpoint
