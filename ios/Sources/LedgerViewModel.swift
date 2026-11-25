@@ -683,9 +683,9 @@ extension LedgerViewModel {
             return try await v33Run(p, recovering: false)
         } catch { return error.localizedDescription }
     }
-    func v33SubmitDaily(date: String, allocations: [TXLedgerV33Allocation]) async -> String {
+    func v33SubmitDaily(date: String, allocations: [TXLedgerV33Allocation], profitOnly: Bool = false) async -> String {
         do {
-            let p = TXLedgerV33Proposal(feature: "daily",
+            let p = TXLedgerV33Proposal(feature: profitOnly ? "profit" : "daily",
                 body: try v33Body(date: date, lines: nil, allocations: allocations),
                 stockDrafts: [], priceDrafts: [])
             return try await v33Run(p, recovering: false)
@@ -751,5 +751,41 @@ extension LedgerViewModel {
         }
         try TXLedgerV33Store.clear(p)
         return "服务端提交成功，已同步核对全部变更记录"
+    }
+}
+
+extension LedgerViewModel {
+    func v33FundReport(date: String) async throws -> TXLedgerV33FundReport {
+        guard v33Authorized, let token = accessToken, let name = account?.username,
+              let book = selectedBookID, lastSyncAt != nil else { throw TXSettlementAtomicError.scope }
+        let cap = try await api.v33Capabilities(token: token, bookID: book)
+        guard cap.allows("balance"), accessToken == token, account?.username == name,
+              selectedBookID == book else { throw TXSettlementAtomicError.unavailable }
+        let result = try await api.v33Balance(token: token, bookID: book, date: date)
+        guard v33Authorized, accessToken == token, account?.username == name,
+              selectedBookID == book, result.book_id.lowercased() == book.lowercased(),
+              result.date == date, result.scope == "iOS_TEST_", result.sync_cursor == currentCursor
+        else { throw TXSettlementAtomicError.stale }
+        return result
+    }
+    func v33SubmitCutoff(report: TXLedgerV33FundReport, row: TXLedgerV33FundRow) async -> String {
+        do {
+            guard report.sync_cursor == currentCursor, report.book_id.lowercased() == selectedBookID?.lowercased(),
+                  report.agrees(with: snapshot), !row.is_center,
+                  report.rows.contains(where: { $0.id == row.id && $0.current_balance == row.current_balance }),
+                  let amount = Double(row.current_balance), abs(amount) > 0.005
+            else { throw TXSettlementAtomicError.stale }
+            var body = try v33Body(date: report.date, lines: nil, allocations: nil)
+            body.partner_sync_id = row.partner_sync_id; body.expected_balance = row.current_balance
+            return try await v33Run(.init(feature: "cutoff", body: body, stockDrafts: [], priceDrafts: []), recovering: false)
+        } catch { return error.localizedDescription }
+    }
+    func v33SubmitUndo(date: String, batch: String, expectedCursor: Int64) async -> String {
+        do {
+            guard currentCursor == expectedCursor, !batch.isEmpty else { throw TXSettlementAtomicError.stale }
+            var body = try v33Body(date: date, lines: nil, allocations: nil)
+            body.batch_key = batch
+            return try await v33Run(.init(feature: "undo", body: body, stockDrafts: [], priceDrafts: []), recovering: false)
+        } catch { return error.localizedDescription }
     }
 }

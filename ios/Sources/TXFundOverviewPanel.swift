@@ -96,6 +96,7 @@ struct TXFundOverviewPanel: View {
                         in: RoundedRectangle(cornerRadius: 12))
 
             TXDayBar(date: $cutoff, label: "资金截止日期", allowFuture: false)
+            TXLedgerV33FundPanel(date: endDate)
             if model.lastSyncAt != nil {
                 VStack(alignment: .leading, spacing: 7) {
                     HStack {

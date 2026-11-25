@@ -47,6 +47,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             || path == "/api/v1/business/capabilities"
             || path == "/api/v1/settlements/capabilities"
             || path == "/api/v1/ledger-v33/capabilities"
+            || path == "/api/v1/ledger-v33/funds/balance"
             || path.hasPrefix("/api/v1/ledger-v33/operations/")
             || path.hasPrefix("/api/v1/settlements/operations/")
             || path.hasPrefix("/api/v1/business/operations/")
@@ -61,6 +62,9 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             || path == "/api/v1/settlements/commit"
             || path == "/api/v1/ledger-v33/inventory/commit"
             || path == "/api/v1/ledger-v33/daily/generate"
+            || path == "/api/v1/ledger-v33/profit/save"
+            || path == "/api/v1/ledger-v33/funds/cutoff"
+            || path == "/api/v1/ledger-v33/funds/undo"
         guard (method == "GET" && permittedGET) || (method == "POST" && permittedPOST),
               let base = URL(string: root + path),
               var parts = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
@@ -209,6 +213,12 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         }
     }
 
+    func v33Balance(token: String, bookID: String, date: String) async throws -> TXLedgerV33FundReport {
+        let data = try await request("GET", "/api/v1/ledger-v33/funds/balance", token: token,
+            query: [URLQueryItem(name: "book_id", value: bookID), URLQueryItem(name: "date", value: date)])
+        return try decode(TXLedgerV33FundReport.self, from: data)
+    }
+
     func v33Capabilities(token: String, bookID: String) async throws -> TXLedgerV33Capabilities {
         guard UUID(uuidString: bookID) != nil else { throw TXSettlementAtomicError.scope }
         return try decode(TXLedgerV33Capabilities.self, from: await request("GET",
@@ -218,8 +228,10 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
 
     func v33Commit(token: String, proposal: TXLedgerV33Proposal) async throws -> TXLedgerV33Receipt {
         guard proposal.matchesFeature else { throw TXSettlementAtomicError.scope }
-        let path = proposal.feature == "inventory" ? "/api/v1/ledger-v33/inventory/commit" :
-            "/api/v1/ledger-v33/daily/generate"
+        let endpoints = ["inventory": "inventory/commit", "daily": "daily/generate",
+                         "profit": "profit/save", "cutoff": "funds/cutoff", "undo": "funds/undo"]
+        guard let endpoint = endpoints[proposal.feature] else { throw TXSettlementAtomicError.scope }
+        let path = "/api/v1/ledger-v33/" + endpoint
         let data = try await request("POST", path, token: token, jsonBody: JSONEncoder().encode(proposal.body))
         let receipt = try decode(TXLedgerV33Receipt.self, from: data)
         guard receipt.matches(proposal) else { throw TXSettlementAtomicError.invalidReceipt }

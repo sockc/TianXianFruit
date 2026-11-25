@@ -9,9 +9,12 @@ struct TXLedgerV33Capabilities: Decodable {
     let operation_lookup: Bool
     let inventory: Bool
     let daily_generate: Bool
+    let profit_save: Bool?
+    let authoritative_balance: Bool?
+    let cutoff: Bool?
     func allows(_ feature: String) -> Bool {
         version == 1 && scope == "iOS_TEST_" && atomic && idempotency && operation_lookup &&
-        (feature == "inventory" ? inventory : feature == "daily" && daily_generate)
+        (["inventory": inventory, "daily": daily_generate, "profit": profit_save == true, "balance": authoritative_balance == true, "cutoff": cutoff == true, "undo": cutoff == true][feature] == true)
     }
 }
 
@@ -41,6 +44,9 @@ struct TXLedgerV33Body: Codable {
     let expected_cursor: Int64
     let lines: [TXLedgerV33Line]?
     let allocations: [TXLedgerV33Allocation]?
+    var partner_sync_id: String? = nil
+    var expected_balance: String? = nil
+    var batch_key: String? = nil
 }
 
 struct TXLedgerV33Proposal: Codable {
@@ -51,7 +57,9 @@ struct TXLedgerV33Proposal: Codable {
     var scope: String { [body.account, body.book_id, body.date].joined(separator: "|") }
     var matchesFeature: Bool {
         (feature == "inventory" && body.lines?.isEmpty == false && body.allocations == nil) ||
-        (feature == "daily" && body.lines == nil && body.allocations != nil)
+        ((feature == "daily" || feature == "profit") && body.lines == nil && body.allocations != nil) ||
+        (feature == "cutoff" && body.lines == nil && body.allocations == nil && body.partner_sync_id?.isEmpty == false && body.expected_balance != nil) ||
+        (feature == "undo" && body.lines == nil && body.allocations == nil && body.batch_key?.isEmpty == false)
     }
 }
 
@@ -92,6 +100,27 @@ struct TXLedgerV33Receipt: Codable {
                   (change.operation == "DELETE" ? snapshot.records[change.key] == nil :
                    snapshot.records[change.key]?.rowVersion == change.row_version)
               }) else { return false }
+        if feature == "cutoff" || feature == "undo" {
+            let rows = changes.compactMap { snapshot.records[$0.key] }
+            guard rows.count == changes.count, rows.allSatisfy({
+                $0.tableName == "settlement_transfer" && $0.payload["date"]?.text == p.body.date &&
+                TXFundDataAdapter.number($0.payload["settlement_id"]) == 0 &&
+                ["CUTOFF", "CUTOFF_CENTER"].contains($0.payload["settlement_kind"]?.text ?? "")
+            }) else { return false }
+            if feature == "undo" {
+                return rows.allSatisfy { $0.payload["batch_key"]?.text == p.body.batch_key &&
+                    TXFundDataAdapter.number($0.payload["settled_amount"]) == 0 }
+            }
+            guard rows.count == 1, let row = rows.first, let sid = p.body.partner_sync_id,
+                  let partner = snapshot.records["partner|" + sid],
+                  let pid = AndroidNumericIdentity.exact(partner.payload["id"]),
+                  let balance = p.body.expected_balance.flatMap({ Double($0) }),
+                  TXFundDataAdapter.number(row.payload["amount"]) == abs(balance),
+                  TXFundDataAdapter.number(row.payload["settled_amount"]) == abs(balance),
+                  AndroidNumericIdentity.exact(row.payload["focus_partner_id"]) == pid,
+                  row.payload["batch_key"]?.text == p.body.operation_id else { return false }
+            return true
+        }
         guard feature == "inventory" else { return true }
         guard let lines = p.body.lines else { return false }
         return lines.allSatisfy { line in
@@ -247,6 +276,7 @@ struct TXLedgerV33DailyActions: View {
     @State private var message = ""
     @State private var showEditor = false
     @State private var custom = false
+    @State private var profitEnabled = false
     @State private var percents: [String: String] = [:]
     @State private var editorKey = ""
     private var scope: String { (model.account?.username ?? "") + "|" + (model.selectedBookID ?? "") + "|" + date }
@@ -270,6 +300,7 @@ struct TXLedgerV33DailyActions: View {
     }
     private func refresh() async {
         enabled = await model.v33Capability("daily")
+        profitEnabled = await model.v33Capability("profit")
         pending = model.v33HasPending
     }
     var body: some View {
@@ -333,6 +364,19 @@ struct TXLedgerV33DailyActions: View {
                             pending = model.v33HasPending
                         }
                     }.disabled(!valid || editorKey != key)
+                    if profitEnabled && custom {
+                        Button("只保存利润／亏损分配") {
+                            guard editorKey == key else { showEditor = false; return }
+                            let values: [TXLedgerV33Allocation] = partners.map {
+                                .init(partner_sync_id: $0.syncId, percent: percents[$0.syncId] ?? "")
+                            }
+                            showEditor = false
+                            Task {
+                                message = await model.v33SubmitDaily(date: date, allocations: values, profitOnly: true)
+                                pending = model.v33HasPending
+                            }
+                        }.disabled(!valid || editorKey != key)
+                    }
                 }.navigationTitle("生成日结")
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { showEditor = false } } }
             }.navigationViewStyle(.stack)
