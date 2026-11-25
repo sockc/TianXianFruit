@@ -42,7 +42,7 @@ struct TXMainNavigationBar: View {
                             .font(.system(size: 10, weight: selected == tab ? .semibold : .regular))
                     }
                     .foregroundColor(selected == tab ? TXTheme.primary : .secondary)
-                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .frame(maxWidth: .infinity, minHeight: 52)
                     .background(selected == tab ? TXTheme.primary.opacity(0.10) : Color.clear,
                                 in: RoundedRectangle(cornerRadius: 8))
                     .contentShape(Rectangle())

@@ -180,12 +180,25 @@ struct TXInventory094Page: View {
         let missing = values.count - known.count
         let purchased = rows.filter { $0.purchased > 0.000001 }.count
         let carried = rows.filter { $0.purchased <= 0.000001 && $0.opening > 0.000001 }.count
+        let closing = known.isEmpty ? "—" : known.compactMap(\.closingCost).reduce(0,+).formatted(.currency(code: "CNY").precision(.fractionLength(0)))
         return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 4) {
-                TXCompactMetric(title: "库存商品", value: "\(rows.count)种", tint: .green)
-                TXCompactMetric(title: "今日采购", value: "\(purchased)种", tint: .blue)
-                TXCompactMetric(title: "仅结转", value: "\(carried)种", tint: .orange)
-                TXCompactMetric(title: "剩余价值", value: known.isEmpty ? "—" : known.compactMap(\.closingCost).reduce(0,+).formatted(.currency(code: "CNY").precision(.fractionLength(0))), tint: .purple)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 4) {
+                    TXCompactMetric(title: "库存商品", value: "\(rows.count)种", tint: .green).frame(minWidth: 65)
+                    TXCompactMetric(title: "今日采购", value: "\(purchased)种", tint: .blue).frame(minWidth: 65)
+                    TXCompactMetric(title: "仅结转", value: "\(carried)种", tint: .orange).frame(minWidth: 65)
+                    TXCompactMetric(title: "剩余价值", value: closing, tint: .purple).frame(minWidth: 90)
+                }
+                VStack(spacing: 4) {
+                    HStack(spacing: 4) {
+                        TXCompactMetric(title: "库存商品", value: "\(rows.count)种", tint: .green)
+                        TXCompactMetric(title: "今日采购", value: "\(purchased)种", tint: .blue)
+                    }
+                    HStack(spacing: 4) {
+                        TXCompactMetric(title: "仅结转", value: "\(carried)种", tint: .orange)
+                        TXCompactMetric(title: "剩余价值", value: closing, tint: .purple)
+                    }
+                }
             }
             DisclosureGroup("估值明细 · 已盘点已知成本") {
                 Text("损耗成本 " + (known.isEmpty ? "—" : known.compactMap(\.lossCost).reduce(0,+).formatted(.currency(code: "CNY"))))
@@ -337,19 +350,39 @@ private struct TXInventory094Card: View {
         row.savedID != nil && draft == nil && !row.usesLocalCost && !row.usesLocalRetail
     }
 
-    private var productHeader: some View {
+    private var productStatus: some View {
         HStack(spacing: 3) {
-            Text(row.name).font(.subheadline.bold()).lineLimit(1).layoutPriority(1)
-            Spacer(minLength: 0)
-            Button(action: onPrice) {
-                Text(priceText).font(.caption2).lineLimit(1).minimumScaleFactor(0.8)
-            }
-            .buttonStyle(.plain).disabled(!editable)
-            .accessibilityLabel("成本与零售价，点击编辑")
             Text(row.purchased > 0.000001 ? "有采购" : "无")
                 .font(.caption2).foregroundColor(row.purchased > 0.000001 ? TXTheme.primary : .primary)
             if savedOnCloud {
                 Image(systemName: "checkmark").foregroundColor(TXTheme.primary).font(.caption)
+            }
+        }.fixedSize()
+    }
+
+    private var productPrice: some View {
+        Button(action: onPrice) {
+            Text(priceText).font(.caption2).foregroundColor(.secondary)
+        }
+        .buttonStyle(.plain).disabled(!editable)
+        .accessibilityLabel(priceText + "，点击编辑")
+    }
+
+    private var productHeader: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 3) {
+                Text(row.name).font(.subheadline.bold()).fixedSize()
+                Spacer(minLength: 0)
+                productPrice.fixedSize()
+                productStatus
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(row.name).font(.subheadline.bold()).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 3)
+                    productStatus
+                }
+                productPrice.fixedSize(horizontal: false, vertical: true)
             }
         }
     }

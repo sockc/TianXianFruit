@@ -134,7 +134,7 @@ struct TXCompactMetric: View {
     let tint: Color
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption).foregroundColor(.secondary).lineLimit(1)
+            Text(title).font(.caption).foregroundColor(.secondary).lineLimit(1).minimumScaleFactor(0.8)
             Text(value).font(.headline.bold()).foregroundColor(.primary)
                 .monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
         }

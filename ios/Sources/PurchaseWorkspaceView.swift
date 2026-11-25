@@ -188,12 +188,14 @@ struct PurchaseWorkspaceView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 7) {
-                dateHeader.disabled(inlineEntry)
+                if !inlineEntry { dateHeader }
                 if model.isBusy || model.errorMessage != nil || model.isUsingCachedAuthorization || model.lastSyncAt == nil { TXCloudSyncStatusBar() }
-                metrics
-                DisclosureGroup("采购与库存利润预估") {
-                    TXInventory096Overview(date: day, compact: true)
-                }.font(.caption)
+                if !inlineEntry {
+                    metrics
+                    DisclosureGroup("采购与库存利润预估") {
+                        TXInventory096Overview(date: day, compact: true)
+                    }.font(.caption)
+                }
                 if inlineEntry {
                     inlineEditor
                 } else {
@@ -365,6 +367,7 @@ struct PurchaseWorkspaceView: View {
                         return false
                     }
                     let persisted = workspace.save(item, account: account, bookID: bookID)
+                    if persisted { date = BusinessDates.parse(item.date) ?? date }
                     if persisted && canCommitCloud,
                        let caps = model.purchaseCommitCapabilities,
                        caps.atomic && caps.idempotency &&

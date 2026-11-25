@@ -328,6 +328,8 @@ private struct PurchaseWorkspaceLineCard: View {
                     }
                 }
                 .pickerStyle(MenuPickerStyle())
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
                 .disabled(line.sourcePlanItemSyncID != nil)
                 .onChange(of: line.fruitSyncID) { next in
                     // Different goods must not inherit the previous goods'

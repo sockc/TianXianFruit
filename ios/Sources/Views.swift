@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct RootView: View {
     @EnvironmentObject private var model: LedgerViewModel
@@ -70,6 +71,7 @@ private struct LoginView: View {
 private struct DashboardView: View {
     @EnvironmentObject private var model: LedgerViewModel
     @State private var selectedTab: TXMainTab = .home
+    @State private var keyboardVisible = false
 
     var body: some View {
         NavigationView {
@@ -86,13 +88,21 @@ private struct DashboardView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                TXMainNavigationBar(selected: $selectedTab)
-                    .disabled(model.inlineLedgerEditing)
+                if !keyboardVisible {
+                    TXMainNavigationBar(selected: $selectedTab)
+                        .disabled(model.inlineLedgerEditing)
+                }
             }
             // The dashboard owns its own compact header. Do not reserve
             // a second iOS navigation bar / white safe-area region above it.
             .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
             .navigationBarHidden(true)
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+                keyboardVisible = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+                keyboardVisible = false
+            }
             .onChange(of: selectedTab) { tab in
                 if tab != .purchase && tab != .more {
                     model.workDate = TXWorkDayPolicy.clamped(model.workDate, allowFuture: false)
@@ -114,6 +124,8 @@ private struct DashboardView: View {
                 }
                 .pickerStyle(.menu)
                 .font(.subheadline.bold())
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
                 .disabled(model.inlineLedgerEditing)
             } else {
                 Text(model.selectedBook?.name ?? "无可用账本")
@@ -130,7 +142,7 @@ private struct DashboardView: View {
             }
             Spacer(minLength: 4)
             HStack(spacing: 4) {
-                Circle().fill(model.isUsingCachedAuthorization || model.errorMessage != nil ? Color.orange : TXTheme.primary)
+                Circle().fill(model.isUsingCachedAuthorization || model.errorMessage != nil || model.lastSyncAt == nil ? Color.orange : TXTheme.primary)
                     .frame(width: 6, height: 6)
                 Text(model.isBusy ? "同步中" :
                      model.isUsingCachedAuthorization ? "离线" :
@@ -214,8 +226,7 @@ private struct HomePage: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("天鲜果业").font(.headline.bold())
                             .foregroundColor(TXTheme.primary)
-                        Text("经营概览 · " + today)
-                            .font(.caption2).foregroundColor(.secondary)
+                        Text("经营概览").font(.caption2).foregroundColor(.secondary)
                     }
                     Spacer(minLength: 4)
                     Text(today == BusinessDates.key(Date()) ? "今日概览" : "历史经营")

@@ -659,3 +659,10 @@ assert "model.errorMessage == nil" in swift["TXDailySettlement092.swift"]
 assert swift["SettlementTableView.swift"].index('Text("实际利润分配 · 原始记录")') < swift["SettlementTableView.swift"].index('Text("合伙人资金轧差 · 原始记录")')
 assert 'menuSection("账本与数据")' in swift["Views.swift"]
 print("V1.0.1 settlement presentation and grouped settings guard PASS")
+
+assert "keyboardWillShowNotification" in swift["Views.swift"]
+assert "keyboardWillHideNotification" in swift["Views.swift"]
+assert "if !keyboardVisible" in swift["Views.swift"]
+assert "ViewThatFits(in: .horizontal)" in swift["TXInventory094Page.swift"]
+assert "if persisted { date = BusinessDates.parse(item.date) ?? date }" in swift["PurchaseWorkspaceView.swift"]
+print("V1.0.1 compact layout and keyboard guard PASS")
