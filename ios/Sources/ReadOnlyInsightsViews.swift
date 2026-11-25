@@ -8,12 +8,12 @@ struct CustomerInsightsView: View {
     @State private var period = "单日"
     @State private var platform = ""
     @State private var storeID: String
-    @State private var showFilters = false
     @State private var showHourComparison = false
     @State private var showDetails = false
     @State private var hourlyAmounts = false
     @State private var visibleReceipts = 40
     @State private var customStart: Date?
+    @State private var rangeDraftStart = Date()
     @State private var showRangePicker = false
     let contextNotice: String
 
@@ -62,6 +62,7 @@ struct CustomerInsightsView: View {
                 }
                 Spacer(minLength: 3)
                 Button {
+                    rangeDraftStart = min(customStart ?? selectedDate, selectedDate)
                     showRangePicker = true
                 } label: {
                     Text(period == "单日" ? "单日" : startDate + " 至 " + endDate)
@@ -124,9 +125,11 @@ struct CustomerInsightsView: View {
                     Button("近30天") { period = "近30天"; showRangePicker = false }
                 }
                 Section(header: Text("自定义日期范围")) {
-                    DatePicker("开始", selection: Binding(get: { customStart ?? selectedDate }, set: { customStart = $0 }),
+                    DatePicker("开始", selection: $rangeDraftStart,
                                in: ...selectedDate, displayedComponents: .date)
                     Button("确定范围") {
+                        customStart = rangeDraftStart
+                        visibleReceipts = 40
                         period = "自定义"
                         showRangePicker = false
                     }
