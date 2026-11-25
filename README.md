@@ -4,6 +4,8 @@
 
 当前 Android 源码版本：**V1.4.7.135**，versionCode **173**（以 `app/build.gradle` 为准）。实际已发布安装包以 GitHub Releases 页面为准；正式 APK 必须经自动测试、签名验证和 GitHub Release 发布；跨设备并发冲突仍需持续监测。
 
+当前 iOS 源码版本：**V1.0.1 Build 78**（以 `ios/project.yml` 为准），最低 iOS 15.0，TrollStore 安装。此次仅 iOS 升级；Android V1.4.7.135 与服务端 V1.0.36 保持原样。[iOS 下载](https://github.com/sockc/TianXianFruit/releases/tag/ios-v1.0.1-build78)。
+
 ## 经营口径
 
 - 实际利润和资金结算使用正式营业/采购账目。
@@ -21,7 +23,7 @@ python3 -m unittest discover -s tests -v
 gradle :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
-正式发布工作流使用 GitHub Secrets `SIGNING_KEY_BASE64`、`KEYSTORE_PASSWORD`、`KEY_ALIAS`，构建并验证签名。V1.4.7.135 采用联合工作流：双端候选包验证和实机验收后，在 main 明确确认 APK 与 IPA 联合发布。
+正式发布工作流使用 GitHub Secrets `SIGNING_KEY_BASE64`、`KEYSTORE_PASSWORD`、`KEY_ALIAS`，构建并验证签名。联合构建根据 Android/iOS 项目版本读取产物名称。只有 main 手动确认且目标 Android 版本标签/Release 不存在时才联合发布；已有版本拒绝覆盖。iOS 独立升级使用已验收的原 IPA，保留 Android 正式 Release 及 Latest 指向。
 
 ## 检查
 

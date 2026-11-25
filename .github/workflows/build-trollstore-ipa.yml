@@ -17,6 +17,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Read release metadata
+        id: version
+        run: python3 ios/scripts/release_metadata.py >> "$GITHUB_OUTPUT"
       - name: Verify isolated write endpoints and no generic business push
         run: python3 ios/scripts/check_readonly.py
       - name: Install iOS build utilities
@@ -42,6 +45,8 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
       - name: Fake-sign executable and package TrollStore IPA
+        env:
+          IPA: ${{ steps.version.outputs.ipa }}
         shell: bash
         run: |
           set -euo pipefail
@@ -58,16 +63,20 @@ jobs:
           ldid -S "$TARGET/TianXianFruit"
           cd "$RUNNER_TEMP/trollstore"
           ditto -c -k --sequesterRsrc --keepParent Payload \
-            "$RUNNER_TEMP/TianXianFruit-iOS-v1.0.0-Build77-TrollStore.ipa"
-          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v1.0.0-Build77-TrollStore.ipa"
+            "$RUNNER_TEMP/$IPA"
+          test -s "$RUNNER_TEMP/$IPA"
       - name: Verify app bundle structure and deployment target
+        env:
+          IPA: ${{ steps.version.outputs.ipa }}
+          IOS_VERSION: ${{ steps.version.outputs.ios_version }}
+          IOS_BUILD: ${{ steps.version.outputs.ios_build }}
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import os, plistlib, zipfile
           from pathlib import Path
-          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v1.0.0-Build77-TrollStore.ipa"
+          p = Path(os.environ["RUNNER_TEMP"]) / os.environ["IPA"]
           with zipfile.ZipFile(p) as z:
               names = set(z.namelist())
               base = "Payload/TianXianFruit.app/"
@@ -76,8 +85,8 @@ jobs:
               info = plistlib.loads(z.read(base + "Info.plist"))
               assert info["CFBundleIdentifier"] == "com.tianxian.fruit.ios"
               assert info["CFBundleExecutable"] == "TianXianFruit"
-              assert info["CFBundleShortVersionString"] == "1.0.0"
-              assert info["CFBundleVersion"] == "77"
+              assert info["CFBundleShortVersionString"] == os.environ["IOS_VERSION"]
+              assert info["CFBundleVersion"] == os.environ["IOS_BUILD"]
               assert info["NSFaceIDUsageDescription"]
               assert tuple(map(int, info["MinimumOSVersion"].split("."))) <= (15, 0)
               assert not any(name.endswith(".mobileprovision") for name in names)
@@ -102,7 +111,7 @@ jobs:
       - name: Upload installable-by-TrollStore test IPA
         uses: actions/upload-artifact@v4
         with:
-          name: TianXianFruit-iOS-v1.0.0-Build77-TrollStore
-          path: ${{ runner.temp }}/TianXianFruit-iOS-v1.0.0-Build77-TrollStore.ipa
+          name: ${{ steps.version.outputs.ios_artifact }}
+          path: ${{ runner.temp }}/${{ steps.version.outputs.ipa }}
           if-no-files-found: error
           retention-days: 14
