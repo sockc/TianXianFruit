@@ -577,7 +577,7 @@ assert 'showConfirmedDrafts || attempt.phase != .confirmed || confirmedPurchaseC
 assert 'DisclosureGroup(isExpanded: $showAudit)' in swift['TXFundOverviewPanel.swift']
 assert '服务端库存写入未授权' in swift['TXInventory094Page.swift']
 assert 'MARKETING_VERSION: "1.0.0"' in project
-assert 'CURRENT_PROJECT_VERSION: "73"' in project
+assert 'CURRENT_PROJECT_VERSION: "74"' in project
 print("V1.0.0 RC1 PASS: routine UI, retained history, honest sync states")
 
 # RC2: directory is read-only except existing book selection.
@@ -597,3 +597,11 @@ assert 'kind != .partner' in swift['TXBasicDirectoryView.swift']
 assert '"/api/v1/sync/push"' not in swift['TXBasicRecordEditor.swift']
 assert (root.parent / 'Tests' / 'TXBasicEditTests.swift').exists()
 print("V1.0.0 RC3 PASS: existing master-data editing only")
+
+assert 'private var directoryList: some View' in swift['TXBasicDirectoryView.swift']
+assert 'func bookMembers(token:' in swift['CloudAPI.swift']
+assert '"/members"' in swift['CloudAPI.swift']
+assert 'readBookMembers(expectedScope:' in swift['LedgerViewModel.swift']
+assert '"/api/v1/sync/push"' not in swift['TXBookMemberDirectoryView.swift']
+assert (root.parent / 'Tests' / 'TXMemberReadTests.swift').exists()
+print("V1.0.0 RC4 PASS: split directory view and read-only book membership")

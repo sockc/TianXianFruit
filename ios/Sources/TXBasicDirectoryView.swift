@@ -88,6 +88,11 @@ struct TXBookDirectoryView: View {
                 if model.isUsingCachedAuthorization {
                     Text("离线缓存：无法确认实时授权").font(.caption).foregroundColor(.orange)
                 }
+                if model.selectedBook != nil {
+                    NavigationLink(destination: TXBookMemberDirectoryView()) {
+                        Label("账本成员与权限", systemImage: "person.2")
+                    }
+                }
                 Button("刷新当前账本及权限") {
                     Task { await model.refresh(); await model.refreshAllTestWriteCapabilities() }
                 }.disabled(switchingBlocked)
@@ -120,71 +125,122 @@ struct TXBasicDirectoryView: View {
         TXBasicDirectoryPolicy.entries(model.snapshot, kind: kind, query: query)
     }
 
-    var body: some View {
-        List {
-            Section {
-                if let book = model.selectedBook {
-                    Text(book.name).font(.caption).foregroundColor(.secondary)
-                }
-                if model.lastSyncAt == nil {
-                    Text("尚未同步资料").font(.caption).foregroundColor(.orange)
-                } else if model.isUsingCachedAuthorization || model.errorMessage != nil {
-                    Text("当前显示缓存资料").font(.caption).foregroundColor(.orange)
-                }
-                Text(kind == .partner ? "合伙人资料仅查看；权限及利润规则请在安卓端管理。" :
-                     authorizedScope == scope ? "支持修改现有资料，新增和删除请在安卓端操作。" : "当前仅查看，服务端基础资料写入未授权。")
-                    .font(.caption).foregroundColor(.secondary)
-                if model.v33HasPending {
-                    Button("核对上次操作") {
-                        Task { message = await model.v33Recover(); await verifyAccess() }
-                    }.disabled(model.isBusy || model.isLedgerV33Busy)
-                }
-                if !message.isEmpty { Text(message).font(.caption).foregroundColor(.secondary) }
+    private var accessKey: String {
+        [scope, String(model.currentCursor), String(model.isUsingCachedAuthorization)].joined(separator: "|")
+    }
+
+    private var statusText: String {
+        if kind == .partner { return "合伙人资料及已同步规则仅查看。" }
+        if authorizedScope == scope { return "支持修改现有资料；新增和删除请在安卓端操作。" }
+        return "当前仅查看，服务端基础资料写入未授权。"
+    }
+
+    @ViewBuilder private var statusSection: some View {
+        Section {
+            if let book = model.selectedBook {
+                Text(book.name).font(.caption).foregroundColor(.secondary)
             }
-            Section("共 \(rows.count) 条") {
-                if rows.isEmpty {
-                    Text("没有匹配资料").foregroundColor(.secondary)
-                }
-                ForEach(rows) { row in
-                    let event = model.snapshot.records[kind.rawValue + "|" + row.id]
-                    HStack {
-                        Text(row.name)
-                        Spacer()
-                        if kind == .fruit, let event {
-                            Text(event.payload["default_unit"]?.text ?? "").font(.caption).foregroundColor(.secondary)
-                            if TXFundDataAdapter.number(event.payload["enabled"]) == 0 {
-                                Text("已停用").font(.caption).foregroundColor(.orange)
-                            }
-                        }
-                        if editable, let event, event.rowVersion > 0, row.name != "总价" {
-                            Button("编辑") {
-                                selected = TXBasicEditorSelection(event: event, scope: scope)
-                            }.font(.caption)
-                        }
-                    }
-                }
+            if model.lastSyncAt == nil {
+                Text("尚未同步资料").font(.caption).foregroundColor(.orange)
+            } else if model.isUsingCachedAuthorization || model.errorMessage != nil {
+                Text("当前显示缓存资料").font(.caption).foregroundColor(.orange)
+            }
+            Text(statusText).font(.caption).foregroundColor(.secondary)
+            if model.v33HasPending {
+                Button("核对上次操作") {
+                    Task { message = await model.v33Recover(); await verifyAccess() }
+                }.disabled(model.isBusy || model.isLedgerV33Busy)
+            }
+            if !message.isEmpty {
+                Text(message).font(.caption).foregroundColor(.secondary)
             }
         }
-        .task(id: scope + "|" + String(model.currentCursor) + "|" + String(model.isUsingCachedAuthorization)) {
+    }
+
+    @ViewBuilder private func directoryRow(_ row: TXBasicDirectoryEntry) -> some View {
+        if let event = model.snapshot.records[kind.rawValue + "|" + row.id] {
+            TXBasicDirectoryRowView(kind: kind, entry: row, event: event,
+                editable: editable && event.rowVersion > 0 && row.name != "总价") {
+                selected = TXBasicEditorSelection(event: event, scope: scope)
+            }
+        } else {
+            Text(row.name)
+        }
+    }
+
+    private var directoryList: some View {
+        List {
+            statusSection
+            Section("共 \(rows.count) 条") {
+                if rows.isEmpty { Text("没有匹配资料").foregroundColor(.secondary) }
+                ForEach(rows) { row in directoryRow(row) }
+            }
+        }
+    }
+
+    private func save(_ edit: TXBasicEdit, selection: TXBasicEditorSelection) {
+        selected = nil
+        Task {
+            let original = selection.scope
+            let result = await model.v36SubmitBasic(edit, expectedScope: original)
+            guard original == scope else { return }
+            message = result
             await verifyAccess()
         }
-        .onChange(of: scope) { _ in selected = nil; message = ""; authorizedScope = "" }
-        .sheet(item: $selected) { item in
-            TXBasicRecordEditor(selection: item) { edit in
-                selected = nil
-                Task { message = await model.v36SubmitBasic(edit, expectedScope: item.scope); await verifyAccess() }
+    }
+
+    var body: some View {
+        directoryList
+            .searchable(text: $query, prompt: "搜索名称")
+            .navigationTitle(kind.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .task(id: accessKey) { await verifyAccess() }
+            .onChange(of: scope) { _ in selected = nil; message = ""; authorizedScope = "" }
+            .sheet(item: $selected) { item in
+                TXBasicRecordEditor(selection: item) { edit in save(edit, selection: item) }
             }
-        }
-        .searchable(text: $query, prompt: "搜索名称")
-        .navigationTitle(kind.title)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    Task { await model.refresh(); await verifyAccess() }
-                } label: { Image(systemName: "arrow.clockwise") }
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        Task { await model.refresh(); await verifyAccess() }
+                    } label: { Image(systemName: "arrow.clockwise") }
                     .disabled(model.isBusy)
+                }
             }
+    }
+}
+
+private struct TXBasicDirectoryRowView: View {
+    let kind: TXBasicDirectoryKind
+    let entry: TXBasicDirectoryEntry
+    let event: SyncEvent
+    let editable: Bool
+    let onEdit: () -> Void
+
+    private var subtitle: String {
+        switch kind {
+        case .fruit: return event.payload["default_unit"]?.text ?? ""
+        case .store:
+            let address = event.payload["address"]?.text ?? ""
+            let start = event.payload["default_start_time"]?.text ?? ""
+            let end = event.payload["default_end_time"]?.text ?? ""
+            let hours = start.isEmpty || end.isEmpty ? "" : start + "–" + end
+            return [address, hours].filter { !$0.isEmpty }.joined(separator: " · ")
+        case .partner: return ""
+        }
+    }
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(entry.name)
+                if !subtitle.isEmpty { Text(subtitle).font(.caption).foregroundColor(.secondary) }
+            }
+            Spacer()
+            if TXFundDataAdapter.number(event.payload["enabled"]) == 0 {
+                Text("已停用").font(.caption).foregroundColor(.orange)
+            }
+            if editable { Button("编辑", action: onEdit).font(.caption).buttonStyle(.borderless) }
         }
     }
 }

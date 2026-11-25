@@ -304,6 +304,12 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         return list.filter(\.isAvailable)
     }
 
+    func bookMembers(token: String, bookID: String) async throws -> [TXBookMember] {
+        guard let id = UUID(uuidString: bookID) else { throw TXSettlementAtomicError.scope }
+        let data = try await request("GET", "/api/v1/books/" + id.uuidString.lowercased() + "/members", token: token)
+        return try decode([TXBookMember].self, from: data)
+    }
+
     func signIn(username: String, password: String) async throws -> (String, Account) {
         let trimmed = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty && !password.isEmpty else {
@@ -315,7 +321,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             "POST", "/api/v1/auth/login", body: [
                 "username": trimmed, "password": password,
                 "device_id": scopedID, "device_name": deviceName,
-                "platform": "ios", "app_version": "0.7.1"
+                "platform": "ios", "app_version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
             ])
         let auth: LoginResponse = try decode(LoginResponse.self, from: loginData)
         let me = try await account(token: auth.accessToken)
@@ -323,7 +329,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         _ = try await request("POST", "/api/v1/devices/register",
                               token: auth.accessToken, body: [
             "device_id": scopedID, "name": deviceName,
-            "platform": "ios", "app_version": "0.7.1"
+            "platform": "ios", "app_version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
         ])
         return (auth.accessToken, me)
     }

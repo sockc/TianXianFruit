@@ -693,6 +693,16 @@ extension LedgerViewModel {
             return try await v33Run(p, recovering: false, automatic: automatic)
         } catch { return error.localizedDescription }
     }
+    func readBookMembers(expectedScope: String) async throws -> [TXBookMember] {
+        guard !isUsingCachedAuthorization, let token = accessToken,
+              let name = account?.username, let book = selectedBookID,
+              expectedScope == name + "|" + book else { throw TXSettlementAtomicError.scope }
+        let rows = try await api.bookMembers(token: token, bookID: book)
+        guard accessToken == token, account?.username == name, selectedBookID == book,
+              !isUsingCachedAuthorization else { throw TXSettlementAtomicError.scope }
+        return rows
+    }
+
     func v36SubmitBasic(_ edit: TXBasicEdit, expectedScope: String) async -> String {
         do {
             guard expectedScope == (account?.username ?? "") + "|" + (selectedBookID ?? ""),
