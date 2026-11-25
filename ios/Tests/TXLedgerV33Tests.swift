@@ -26,6 +26,22 @@ final class TXLedgerV33Tests: XCTestCase {
         XCTAssertFalse(c.allows("inventory_auto"))
     }
 
+    func testAutosaveDoesNotUploadRestoredDraftsOrChangedScope() {
+        func maySend(fresh: Bool = true, scope: String = "test|book|day",
+                     revision: String = "r1", busy: Bool = false, pending: Bool = false) -> Bool {
+            TXLedgerV33AutosavePolicy.canSubmit(enabled: true, fresh: fresh,
+                originalScope: "test|book|day", currentScope: scope,
+                originalRevision: "r1", currentRevision: revision,
+                editable: true, busy: busy, pending: pending)
+        }
+        XCTAssertTrue(maySend())
+        XCTAssertFalse(maySend(fresh: false))
+        XCTAssertFalse(maySend(scope: "test|other|day"))
+        XCTAssertFalse(maySend(revision: "r2"))
+        XCTAssertFalse(maySend(busy: true))
+        XCTAssertFalse(maySend(pending: true))
+    }
+
     func testReceiptRequiresExactScopeAndReadback() throws {
         let body = TXLedgerV33Body(protocol_version: 1,
             book_id: "11111111-2222-4333-8444-555555555555", account: "tester",

@@ -384,3 +384,14 @@ struct TXLedgerV33DailyActions: View {
         }
     }
 }
+
+
+enum TXLedgerV33AutosavePolicy {
+    static func canSubmit(enabled: Bool, fresh: Bool,
+                          originalScope: String, currentScope: String,
+                          originalRevision: String, currentRevision: String,
+                          editable: Bool, busy: Bool, pending: Bool) -> Bool {
+        enabled && fresh && !originalScope.isEmpty && originalScope == currentScope &&
+        originalRevision == currentRevision && editable && !busy && !pending
+    }
+}

@@ -51,6 +51,7 @@ struct TXInventory094Page: View {
     @State private var error = ""
     @State private var storageOK = false
     @State private var autoEnabled = false
+    @State private var freshAutosaveSession = false
     @State private var autosaveDelay: Task<Void, Never>?
     @State private var autoMessage = ""
 
@@ -69,7 +70,7 @@ struct TXInventory094Page: View {
 
     private func reload() {
         autosaveDelay?.cancel(); autosaveDelay = nil
-        loadedScope = ""; loadedRevision = ""
+        loadedScope = ""; loadedRevision = ""; freshAutosaveSession = false
         report = nil; priceEditor = nil
         drafts = []; prices = []; error = ""; storageOK = false
         guard model.account != nil, model.selectedBookID != nil else { return }
@@ -77,6 +78,7 @@ struct TXInventory094Page: View {
             drafts = try TXInventory094DraftStore.load(scope: scope)
             prices = try TXInventory095PriceStore.load(scope: scope)
             loadedScope = scope; storageOK = true
+            freshAutosaveSession = drafts.isEmpty && prices.isEmpty
         } catch { self.error = "本地库存或价格草稿读取失败，已禁用编辑；原文件未覆盖" }
         loadedRevision = revision
         report = model.lastSyncAt == nil ? nil :
@@ -88,14 +90,17 @@ struct TXInventory094Page: View {
     /// itself is not attached to a view task, so navigation cannot cancel it.
     private func queueAutosave() {
         autosaveDelay?.cancel()
-        guard autoEnabled, editable else { return }
+        guard autoEnabled, freshAutosaveSession, editable else { return }
         let originalScope = scope, originalRevision = revision
         let originalDate = date, cursor = model.currentCursor
         autosaveDelay = Task { @MainActor in
             do { try await Task.sleep(nanoseconds: 1_500_000_000) }
             catch { return }
-            guard !Task.isCancelled, originalRevision == revision,
-                  originalScope == scope, editable, !model.isBusy,
+            guard !Task.isCancelled, TXLedgerV33AutosavePolicy.canSubmit(enabled: autoEnabled,
+                  fresh: freshAutosaveSession, originalScope: originalScope, currentScope: scope,
+                  originalRevision: originalRevision, currentRevision: revision,
+                  editable: editable, busy: model.isBusy || model.isLedgerV33Busy,
+                  pending: model.v33HasPending),
                   !model.isLedgerV33Busy, !model.v33HasPending else { return }
             // Do not cancel an already submitted operation when the view
             // disappears or the cursor advances during readback.
@@ -194,7 +199,7 @@ struct TXInventory094Page: View {
                 if !error.isEmpty { Text(error).font(.caption).foregroundColor(.red) }
                 TXLedgerV33InventoryActions(date: date, count: drafts.count + prices.count, onReload: reload)
                 if autoEnabled {
-                    Text("测试账本云端自动保存已启用 · 输入停止后提交；未同步草稿仍会保留")
+                    Text(freshAutosaveSession ? "测试账本云端自动保存已启用 · 输入停止后提交" : "有上次遗留草稿，请先手动核对并同步；不会静默上传旧草稿")
                         .font(.caption2).foregroundColor(.secondary)
                 }
                 if !autoMessage.isEmpty { Text(autoMessage).font(.caption2).foregroundColor(.secondary) }
