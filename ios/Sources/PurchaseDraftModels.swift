@@ -88,6 +88,25 @@ enum PurchaseDraftPolicy {
         return amount
     }
 
+    /// Convert a single product's explicitly entered line total to the existing
+    /// two-decimal unit price. Never use an entire-order "总价" placeholder as
+    /// a real product price, nor silently round away an entered amount.
+    static func unitPriceForExactLineTotal(_ raw: String, line: PurchaseDraftLine) throws -> String {
+        guard !line.fruitName.isEmpty,
+              line.fruitName.trimmingCharacters(in: .whitespacesAndNewlines) != "总价" else {
+            throw TestWriteError.missingData("请先选择实际商品；整单总价不反算单品")
+        }
+        let count = try quantity(line.quantity)
+        let desired = try unitPrice(raw)
+        let price = rounded(desired / count)
+        var candidate = line
+        candidate.unitPrice = display(price)
+        guard try subtotal(candidate) == desired else {
+            throw TestWriteError.invalidNumber("两位小数单价无法精确对应此总价，请核对数量与实际单价")
+        }
+        return candidate.unitPrice
+    }
+
     static func total(_ lines: [PurchaseDraftLine]) throws -> Decimal {
         guard !lines.isEmpty, lines.count <= maxLines else {
             throw TestWriteError.missingData("商品数量应在 1–30 种之间")

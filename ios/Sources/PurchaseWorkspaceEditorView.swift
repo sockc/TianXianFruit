@@ -304,6 +304,7 @@ private struct PurchaseWorkspaceLineCard: View {
     let purchaseDate: String
     let canDelete: Bool
     let onDelete: () -> Void
+    @State private var showTotalEditor = false
 
     private var subtotal: Decimal? {
         try? PurchaseDraftPolicy.subtotal(line)
@@ -359,20 +360,32 @@ private struct PurchaseWorkspaceLineCard: View {
             HStack(alignment: .bottom, spacing: 7) {
                 input("数量", value: $line.quantity)
                 input("单价（元）", value: $line.unitPrice)
-                VStack(alignment: .trailing, spacing: 4) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("总价").font(.caption2).foregroundColor(.secondary)
-                    Text(subtotal.map { "¥" + PurchaseDraftPolicy.display($0) } ??
-                         "待核对")
+                    Button {
+                        showTotalEditor = true
+                    } label: {
+                        HStack(spacing: 3) {
+                            Spacer(minLength: 0)
+                            Text(subtotal.map { PurchaseDraftPolicy.display($0) } ?? "待核对")
+                                .lineLimit(1).minimumScaleFactor(0.7)
+                            Image(systemName: "pencil").font(.caption2)
+                        }
                         .font(.subheadline.bold())
                         .foregroundColor(subtotal == nil ? .orange : TXTheme.primary)
-                        .lineLimit(1).minimumScaleFactor(0.65)
-                        .frame(height: 36, alignment: .center)
-                }
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                        .padding(.horizontal, 5)
+                        .frame(height: 36)
+                        .background(TXTheme.header, in: RoundedRectangle(cornerRadius: 5))
+                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.secondary.opacity(0.3)))
+                    }.buttonStyle(.plain)
+                    .disabled(line.fruitSyncID.isEmpty || line.fruitName.trimmingCharacters(in: .whitespacesAndNewlines) == "总价")
+                    .accessibilityLabel("编辑商品总价")
+                }.frame(maxWidth: .infinity)
+
             }
             if let lastPrice {
                 HStack(spacing: 7) {
-                    Text("截至采购日的历史有效进价 ¥" +
+                    Text("上次有效进价 ¥" +
                          String(format: "%.2f", lastPrice.price) +
                          "/" + lastPrice.unit + " · " + lastPrice.date)
                         .font(.caption2).foregroundColor(.secondary)
@@ -394,6 +407,11 @@ private struct PurchaseWorkspaceLineCard: View {
         .padding(8)
         .background(Color(UIColor.secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 10))
+        .sheet(isPresented: $showTotalEditor) {
+            TXPurchaseLineTotalEditor(line: line, initialTotal: subtotal.map(PurchaseDraftPolicy.display) ?? "") { price in
+                line.unitPrice = price
+            }
+        }
     }
 
     private func input(_ name: String, value: Binding<String>,
@@ -414,5 +432,54 @@ private struct PurchaseWorkspaceLineCard: View {
             }
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// Explicit confirmation keeps incomplete/invalid totals from leaking into a
+/// persisted draft; existing order construction still sums quantity × price.
+private struct TXPurchaseLineTotalEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    let line: PurchaseDraftLine
+    let onApply: (String) -> Void
+    @State private var amount: String
+
+    init(line: PurchaseDraftLine, initialTotal: String, onApply: @escaping (String) -> Void) {
+        self.line = line
+        self.onApply = onApply
+        _amount = State(initialValue: initialTotal)
+    }
+
+    private var result: Result<String, Error> {
+        Result { try PurchaseDraftPolicy.unitPriceForExactLineTotal(amount, line: line) }
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    Text(line.fruitName + " · " + line.quantity + line.unit)
+                    HStack {
+                        Text("商品总价")
+                        Spacer()
+                        TXFastNumericField(text: $amount, label: "商品总价").frame(width: 125, height: 36)
+                    }
+                    switch result {
+                    case .success(let price):
+                        Text("反算单价 ¥" + price + "/" + line.unit).foregroundColor(TXTheme.primary)
+                    case .failure:
+                        Text("请填写有效总价；两位小数单价必须能精确对应总价，不自动改变实付金额。")
+                            .font(.caption).foregroundColor(.orange)
+                    }
+                }
+                Button("确定并填入单价") {
+                    guard case .success(let price) = result else { return }
+                    onApply(price)
+                    dismiss()
+                }.disabled((try? result.get()) == nil)
+            }
+            .navigationTitle("修改商品总价")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
+        }.navigationViewStyle(StackNavigationViewStyle())
     }
 }

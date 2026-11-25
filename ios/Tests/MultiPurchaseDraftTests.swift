@@ -55,6 +55,19 @@ final class MultiPurchaseDraftTests: XCTestCase {
         XCTAssertEqual(PurchaseDraftPolicy.display(free), "0.00")
     }
 
+    func testExactTotalReversePriceDoesNotChangeActualAmount() throws {
+        let item = line("one", "红提", "10", "0")
+        XCTAssertEqual(try PurchaseDraftPolicy.unitPriceForExactLineTotal("650", line: item), "65.00")
+        var fractional = line("box", "苹果", "2.5", "0")
+        fractional.unitPrice = try PurchaseDraftPolicy.unitPriceForExactLineTotal("75", line: fractional)
+        XCTAssertEqual(try PurchaseDraftPolicy.subtotal(fractional), Decimal(75))
+        XCTAssertEqual(try PurchaseDraftPolicy.unitPriceForExactLineTotal("0", line: item), "0.00")
+        XCTAssertThrowsError(try PurchaseDraftPolicy.unitPriceForExactLineTotal("100", line: line("three", "香蕉", "3", "0")))
+        XCTAssertThrowsError(try PurchaseDraftPolicy.unitPriceForExactLineTotal("1.001", line: item))
+        XCTAssertThrowsError(try PurchaseDraftPolicy.unitPriceForExactLineTotal("50", line: line("zero", "苹果", "0", "0")))
+        XCTAssertThrowsError(try PurchaseDraftPolicy.unitPriceForExactLineTotal("50", line: line("all", "总价", "1", "0")))
+    }
+
     func testDifferentUnitsDecimalsAndWeight() throws {
         let a = PurchaseDraftLine(
             id: "box", fruitSyncID: "fruit-box", fruitName: "红提",

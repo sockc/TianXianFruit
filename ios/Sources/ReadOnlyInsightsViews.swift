@@ -10,6 +10,11 @@ struct CustomerInsightsView: View {
     @State private var storeID: String
     @State private var showFilters = false
     @State private var showHourComparison = false
+    @State private var showDetails = false
+    @State private var hourlyAmounts = false
+    @State private var visibleReceipts = 40
+    @State private var customStart: Date?
+    @State private var showRangePicker = false
     let contextNotice: String
 
     init(initialDate: String? = nil, initialStoreID: String = "",
@@ -25,6 +30,7 @@ struct CustomerInsightsView: View {
         switch period {
         case "近7天": return BusinessDates.daysAgo(6, from: selectedDate)
         case "近30天": return BusinessDates.daysAgo(29, from: selectedDate)
+        case "自定义": return min(customStart.map(BusinessDates.key) ?? endDate, endDate)
         default: return endDate
         }
     }
@@ -35,71 +41,112 @@ struct CustomerInsightsView: View {
     private var totals: CustomerSummary { model.customerSnapshot.summary(rows) }
     private var showAny: Bool { model.customerSyncedAt != nil }
 
+    private var storeTitle: String {
+        if storeID.isEmpty { return "全部位置" }
+        if storeID == "__unmatched__" { return "未匹配位置" }
+        return model.snapshot.storeLabels[storeID] ?? "未知位置 " + String(storeID.prefix(6))
+    }
+
+    private var filterHeader: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            TXDayBar(date: $selectedDate, label: "客流日期", allowFuture: false)
+            HStack(spacing: 5) {
+                Menu {
+                    Button("全部位置") { storeID = "" }
+                    Button("未匹配位置") { storeID = "__unmatched__" }
+                    ForEach(model.customerSnapshot.assignedStores, id: \.self) { id in
+                        Button(model.snapshot.storeLabels[id] ?? "未知位置 " + String(id.prefix(6))) { storeID = id }
+                    }
+                } label: {
+                    Label(storeTitle, systemImage: "mappin").lineLimit(1)
+                }
+                Spacer(minLength: 3)
+                Button {
+                    showRangePicker = true
+                } label: {
+                    Text(period == "单日" ? "单日" : startDate + " 至 " + endDate)
+                        .lineLimit(1).minimumScaleFactor(0.7)
+                }
+                Button {
+                    Task { await model.refreshCustomer() }
+                } label: {
+                    if model.isCustomerBusy { ProgressView().controlSize(.small) }
+                    else { Image(systemName: "arrow.clockwise") }
+                }.disabled(model.isCustomerBusy).accessibilityLabel("刷新账单")
+            }.font(.caption)
+            Picker("渠道", selection: $platform) {
+                Text("合并").tag("")
+                Text("微信").tag("WECHAT")
+                Text("支付宝").tag("ALIPAY")
+            }.pickerStyle(.segmented)
+        }
+    }
+
+    private var receiptList: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("有效付款账单").font(.subheadline.bold())
+                Spacer()
+                Text("\(rows.count) 笔").font(.caption).foregroundColor(.secondary)
+            }
+            if rows.isEmpty {
+                Text("暂无已导入的有效付款").font(.caption).foregroundColor(.secondary)
+            }
+            LazyVStack(spacing: 4) {
+                ForEach(Array(rows.prefix(visibleReceipts))) { receipt in
+                    HStack(spacing: 6) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(receipt.platform == "WECHAT" ? "微信" : "支付宝").font(.caption.bold())
+                            Text(receipt.date + " · " + (receipt.hour.map { String(format: "%02d时", $0) } ?? "时段未知"))
+                                .font(.caption2).foregroundColor(.secondary)
+                        }
+                        Spacer(minLength: 3)
+                        Text(receipt.storeSyncID.isEmpty ? "未匹配" : (model.snapshot.storeLabels[receipt.storeSyncID] ?? "未知位置"))
+                            .font(.caption2).foregroundColor(.secondary).lineLimit(1)
+                        Text(money(receipt.netAmount)).font(.subheadline.bold()).monospacedDigit()
+                    }
+                    .padding(7)
+                    .background(TXTheme.header, in: RoundedRectangle(cornerRadius: 7))
+                }
+            }
+            if visibleReceipts < rows.count {
+                Button("加载更多账单") { visibleReceipts += 40 }.frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private var rangePicker: some View {
+        NavigationView {
+            Form {
+                Section {
+                    Button("单日") { period = "单日"; showRangePicker = false }
+                    Button("近7天") { period = "近7天"; showRangePicker = false }
+                    Button("近30天") { period = "近30天"; showRangePicker = false }
+                }
+                Section(header: Text("自定义日期范围")) {
+                    DatePicker("开始", selection: Binding(get: { customStart ?? selectedDate }, set: { customStart = $0 }),
+                               in: ...selectedDate, displayedComponents: .date)
+                    Button("确定范围") {
+                        period = "自定义"
+                        showRangePicker = false
+                    }
+                }
+            }
+            .environment(\.calendar, BusinessDates.calendar)
+            .environment(\.timeZone, BusinessDates.calendar.timeZone)
+            .environment(\.locale, Locale(identifier: "zh_CN"))
+            .navigationTitle("日期范围")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { showRangePicker = false } } }
+        }.navigationViewStyle(StackNavigationViewStyle())
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                TXDayBar(date: $selectedDate, label: "客流日期", allowFuture: false)
+            VStack(alignment: .leading, spacing: 6) {
+                filterHeader
                 if !contextNotice.isEmpty {
-                    Label(contextNotice, systemImage: "info.circle")
-                        .font(.caption2).foregroundColor(.secondary)
-                }
-                HStack(spacing: 7) {
-                    Picker("渠道", selection: $platform) {
-                        Text("合并").tag("")
-                        Text("微信").tag("WECHAT")
-                        Text("支付宝").tag("ALIPAY")
-                    }
-                    .pickerStyle(.segmented)
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            showFilters.toggle()
-                        }
-                    } label: {
-                        Image(systemName: showFilters ? "line.3.horizontal.decrease.circle.fill"
-                            : "line.3.horizontal.decrease.circle")
-                            .font(.title3)
-                            .foregroundColor(TXTheme.primary)
-                    }
-                    .accessibilityLabel("日期范围和位置筛选")
-                }
-                if showFilters {
-                    VStack(spacing: 8) {
-                        Picker("范围", selection: $period) {
-                            Text("单日").tag("单日")
-                            Text("近7天").tag("近7天")
-                            Text("近30天").tag("近30天")
-                        }
-                        .pickerStyle(.segmented)
-                        Picker("位置", selection: $storeID) {
-                            Text("全部位置").tag("")
-                            Text("未匹配").tag("__unmatched__")
-                            ForEach(model.customerSnapshot.assignedStores, id: \.self) { id in
-                                Text(model.snapshot.storeLabels[id] ??
-                                     ("未知位置 " + String(id.prefix(6)))).tag(id)
-                            }
-                            if !storeID.isEmpty && storeID != "__unmatched__" &&
-                               !model.customerSnapshot.assignedStores.contains(storeID) {
-                                Text(model.snapshot.storeLabels[storeID] ?? "当前未导入该位置账单")
-                                    .tag(storeID)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                    }
-                    .padding(9)
-                    .background(Color(UIColor.secondarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 9))
-                }
-                if !storeID.isEmpty && storeID != "__unmatched__" {
-                    HStack {
-                        Label("位置：" +
-                              (model.snapshot.storeLabels[storeID] ?? "已关联位置"),
-                              systemImage: "mappin")
-                            .font(.caption)
-                        Spacer()
-                        Button("切换") { showFilters = true }
-                            .font(.caption2)
-                    }
-                    .foregroundColor(.secondary)
+                    Label(contextNotice, systemImage: "info.circle").font(.caption2).foregroundColor(.secondary)
                 }
                 if let error = model.customerError {
                     Text(error).font(.caption).foregroundColor(.orange)
@@ -111,9 +158,9 @@ struct CustomerInsightsView: View {
                                   icon: "person.3")
                 } else {
                     HStack(spacing: 8) {
-                        InfoNumber(title: "付款笔数", text: "\(totals.paymentCount)")
-                        InfoNumber(title: "收款净额", text: money(totals.amount))
-                        InfoNumber(title: "笔均收款", text: money(totals.average))
+                        TXCompactMetric(title: "电子收款", value: money(totals.amount), tint: .green)
+                        TXCompactMetric(title: "付款笔数", value: "\(totals.paymentCount)", tint: .blue)
+                        TXCompactMetric(title: "笔均收款", value: money(totals.average), tint: .orange)
                     }
                     if rows.isEmpty {
                         Text("当前日期/位置未观察到有效已导入账单，不能解释成当天没有顾客。")
@@ -134,8 +181,10 @@ struct CustomerInsightsView: View {
                     HStack {
                         Text("逐小时付款表现").font(.headline)
                         Spacer()
-                        Text("笔数 · 按实际交易时间")
-                            .font(.caption2).foregroundColor(.secondary)
+                        Picker("统计", selection: $hourlyAmounts) {
+                            Text("笔数").tag(false)
+                            Text("金额").tag(true)
+                        }.pickerStyle(.segmented).frame(width: 120)
                     }
                     hourly
                     if period == "单日" && !storeID.isEmpty && storeID != "__unmatched__" {
@@ -151,8 +200,11 @@ struct CustomerInsightsView: View {
                     }
                     .font(.caption)
                     .foregroundColor(.secondary)
-                    Text("数据依据微信/支付宝二维码账单云端同步，仅统计有效正向交易；排除设置以已同步规则为准。未导入日期未知，不按零客流计算。新老客需要可靠身份或官方数据，此页不伪造身份。")
-                        .font(.caption2).foregroundColor(.secondary)
+                    receiptList
+                    DisclosureGroup("统计口径与数据说明", isExpanded: $showDetails) {
+                        Text("数据依据微信/支付宝二维码账单云端同步，仅统计有效正向交易；排除设置以已同步规则为准。未导入日期未知，不按零客流计算。新老客需要可靠身份或官方数据，此页不伪造身份。")
+                            .font(.caption2).foregroundColor(.secondary)
+                    }.font(.caption)
                 }
                 HStack {
                     Button {
@@ -173,9 +225,17 @@ struct CustomerInsightsView: View {
                         .font(.caption2).foregroundColor(.orange)
                 }
             }
-            .padding(12)
+            .padding(8)
         }
         .navigationBarTitle("客户分析", displayMode: .inline)
+        .sheet(isPresented: $showRangePicker) { rangePicker }
+        .onChange(of: selectedDate) { _ in
+            if let start = customStart, start > selectedDate { customStart = selectedDate }
+            visibleReceipts = 40
+        }
+        .onChange(of: period) { _ in visibleReceipts = 40 }
+        .onChange(of: platform) { _ in visibleReceipts = 40 }
+        .onChange(of: storeID) { _ in visibleReceipts = 40 }
         .onAppear {
             if model.customerSyncedAt == nil && !model.isCustomerBusy {
                 Task { await model.refreshCustomer() }
@@ -185,25 +245,25 @@ struct CustomerInsightsView: View {
 
     private var hourly: some View {
         let hourly = model.customerSnapshot.hourly(rows)
-        let top = max(1, hourly.map(\.paymentCount).max() ?? 1)
+        let top = max(1.0, hourly.map { hourlyAmounts ? $0.amount : Double($0.paymentCount) }.max() ?? 1)
         return VStack(alignment: .leading, spacing: 9) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .bottom, spacing: 11) {
                     ForEach(hourly) { item in
                         VStack(spacing: 5) {
-                            Text(item.paymentCount == 0 ? "" : String(item.paymentCount))
+                            Text(hourlyAmounts ? (item.amount > 0 ? String(format: "%.0f", item.amount) : "") : (item.paymentCount == 0 ? "" : String(item.paymentCount)))
                                 .font(.caption2).foregroundColor(.secondary)
                                 .frame(height: 16)
                             RoundedRectangle(cornerRadius: 3)
                                 .fill(item.paymentCount == 0 ? Color.gray.opacity(0.2) : Color.green)
                                 .frame(width: 15, height: max(CGFloat(3),
-                                    CGFloat(item.paymentCount) / CGFloat(top) * 92))
+                                    CGFloat(hourlyAmounts ? item.amount : Double(item.paymentCount)) / CGFloat(top) * 75))
                             Text(String(format: "%02d", item.hour))
                                 .font(.caption2).foregroundColor(.secondary)
                         }
                     }
                 }
-                .frame(height: 132, alignment: .bottom)
+                .frame(height: 112, alignment: .bottom)
                 .padding(.horizontal, 4)
             }
             if rows.contains(where: { $0.hour == nil }) {
@@ -236,12 +296,12 @@ struct CustomerInsightsView: View {
                             HStack(spacing: 6) {
                                 Text(String(format: "%02d:00", hour.hour))
                                     .frame(width: 46, alignment: .leading)
-                                Text(String(hour.currentCount))
+                                Text(hourlyAmounts ? money(hour.currentAmount) : String(hour.currentCount))
                                     .frame(maxWidth: .infinity, alignment: .trailing)
-                                Text(String(format: "%.1f", hour.previousDailyCount))
+                                Text(hourlyAmounts ? money(hour.previousDailyAmount) : String(format: "%.1f", hour.previousDailyCount))
                                     .frame(maxWidth: .infinity, alignment: .trailing)
-                                Text(String(format: "%+.1f", hour.countDifference))
-                                    .foregroundColor(hour.countDifference < 0 ? .red : TXTheme.primary)
+                                Text(hourlyAmounts ? String(format: "%+.2f", hour.amountDifference) : String(format: "%+.1f", hour.countDifference))
+                                    .foregroundColor((hourlyAmounts ? hour.amountDifference : hour.countDifference) < 0 ? .red : TXTheme.primary)
                                     .frame(maxWidth: .infinity, alignment: .trailing)
                             }
                             .font(.caption)

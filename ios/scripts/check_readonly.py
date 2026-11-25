@@ -646,3 +646,10 @@ assert "guard scopeMatches, !submitting" in swift["BusinessLocalEntryView.swift"
 assert "inlinePurchaseEditing || inlineBusinessEditing" in swift["LedgerViewModel.swift"]
 assert "showCloseConfirmation" in swift["BusinessLocalEntryView.swift"]
 print("V1.0.1 inline business entry and account/book isolation guard PASS")
+
+assert "unitPriceForExactLineTotal" in swift["PurchaseDraftModels.swift"]
+assert "guard try subtotal(candidate) == desired" in swift["PurchaseDraftModels.swift"]
+assert "TXPurchaseLineTotalEditor" in swift["PurchaseWorkspaceEditorView.swift"]
+assert "receiptList" in swift["ReadOnlyInsightsViews.swift"]
+assert "hourlyAmounts" in swift["ReadOnlyInsightsViews.swift"]
+print("V1.0.1 exact line-total reverse and compact customer analysis guard PASS")
