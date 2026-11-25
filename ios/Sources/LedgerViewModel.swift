@@ -708,6 +708,9 @@ extension LedgerViewModel {
             guard expectedScope == (account?.username ?? "") + "|" + (selectedBookID ?? ""),
                   edit.valid else { throw TXSettlementAtomicError.stale }
             let key = edit.table + "|" + edit.sync_id
+            if edit.table == "partner" {
+                guard TXTestBookAccess.isCandidate(selectedBook, account: account, offline: isUsingCachedAuthorization) else { throw TXSettlementAtomicError.scope }
+            }
             if edit.isCreation {
                 guard TXTestBookAccess.isCandidate(selectedBook, account: account, offline: isUsingCachedAuthorization), snapshot.versions[key] == nil else { throw TXSettlementAtomicError.scope }
             } else {
@@ -715,7 +718,7 @@ extension LedgerViewModel {
             }
             var body = try v33Body(date: BusinessDates.key(Date()), lines: nil, allocations: nil)
             body.basic_edit = edit
-            return try await v33Run(.init(feature: edit.isCreation ? "basic_create" : "basic", body: body, stockDrafts: [], priceDrafts: []), recovering: false)
+            return try await v33Run(.init(feature: edit.table == "partner" ? "basic_partner" : (edit.isCreation ? "basic_create" : "basic"), body: body, stockDrafts: [], priceDrafts: []), recovering: false)
         } catch { return error.localizedDescription }
     }
     func v33SubmitDaily(date: String, allocations: [TXLedgerV33Allocation], profitOnly: Bool = false) async -> String {
@@ -747,7 +750,11 @@ extension LedgerViewModel {
                 self.account?.username == name && self.v33Authorized
         }
         let cap = try await api.v33Capabilities(token: token, bookID: book)
-        guard stillScoped(), cap.allows(automatic ? "inventory_auto" : p.feature, book: selectedBook) else { throw TXSettlementAtomicError.unavailable }
+        let writeAllowed = cap.allows(automatic ? "inventory_auto" : p.feature, book: selectedBook)
+        // A prior pristine-test rename may be followed by new history. Allow
+        // GET-only recovery even when the rename capability is no longer true.
+        let partnerReadbackOnly = recovering && p.feature == "basic_partner" && cap.scope == "iOS_TEST_" && TXTestBookAccess.isCandidate(selectedBook, account: account, offline: isUsingCachedAuthorization)
+        guard stillScoped(), writeAllowed || partnerReadbackOnly else { throw TXSettlementAtomicError.unavailable }
         var receipt: TXLedgerV33Receipt?
         if recovering {
             receipt = try await api.v33Operation(token: token, proposal: p)
@@ -770,6 +777,7 @@ extension LedgerViewModel {
             try TXLedgerV33Store.save(p)
         }
         if receipt == nil {
+            guard writeAllowed else { return "原操作暂未查到且改名权限已关闭，保留原操作，不重新提交" }
             if recovering && cap.scope == "formal" && p.feature != "inventory" {
                 if p.feature == "basic" { try await TXFormalLedgerAccess.confirmFinance(reason: "验证身份后恢复基础资料修改") }
                 else { try await TXFormalLedgerAccess.confirmFinance() }
