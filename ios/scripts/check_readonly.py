@@ -576,7 +576,7 @@ assert '"同步异常"' in swift['Views.swift']
 assert 'showConfirmedDrafts || attempt.phase != .confirmed || confirmedPurchaseChanged(attempt)' in swift['PurchaseWorkspaceView.swift']
 assert 'DisclosureGroup(isExpanded: $showAudit)' in swift['TXFundOverviewPanel.swift']
 assert '服务端库存写入未授权' in swift['TXInventory094Page.swift']
-assert 'MARKETING_VERSION: "1.0.0"' in project
+assert 'MARKETING_VERSION: "1.0.1"' in project
 assert 'CURRENT_PROJECT_VERSION: "78"' in project
 print("V1.0.0 RC1 PASS: routine UI, retained history, honest sync states")
 
