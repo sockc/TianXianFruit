@@ -691,3 +691,14 @@ assert "TXBusinessV2Preparation" in v2prep and "body[\"protocol_version\"] = 2" 
 assert "commitBusiness(" not in v2prep and "URLSession" not in v2prep and "/v2/commit" not in v2prep
 assert (root.parent / "Tests" / "BusinessV2PreparationTests.swift").exists()
 print("V1.0.2 v2 preparation only, v1 transport retained PASS")
+
+v2editor = swift["BusinessV2DraftEditor.swift"]
+assert 'book.name.hasPrefix("iOS_TEST_")' in v2editor
+assert "ios.test.business.v2.draft." in v2editor
+assert "TXBusinessV2Preparation.adjusted" in v2editor
+assert "TXBusinessV2Preparation.canonical" in v2editor
+assert "previousRevision: pair.0.revision" in v2editor
+assert "未发送" in v2editor and "commitBusiness(" not in v2editor and "/v2/commit" not in v2editor
+assert 'Menu {' in swift["Views.swift"] and "TXBusinessV2DraftEditor(scope: scope)" in swift["Views.swift"]
+assert (root.parent / "Tests" / "BusinessV2DraftTests.swift").exists()
+print("V1.0.2 isolated V2 input draft and preview guard PASS")

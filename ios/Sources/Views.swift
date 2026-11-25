@@ -324,6 +324,7 @@ private struct BusinessPage: View {
     @State private var entryAccount = ""
     @State private var entryBookID = ""
     @State private var entryRevision = 0
+    @State private var v2EditorScope: TXBusinessV2EditorScope?
 
     private var selectedKey: String { BusinessDates.key(selectedDate) }
     private var startingKey: String {
@@ -447,6 +448,21 @@ private struct BusinessPage: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(!canEnterBusiness)
             }
+        }
+        if model.selectedBook?.name.hasPrefix("iOS_TEST_") == true && canEnterBusiness {
+            Menu {
+                ForEach(model.snapshot.testStores) { store in
+                    Button(store.name) {
+                        guard let account = model.account?.username, let book = model.selectedBookID,
+                              !model.inlineLedgerEditing else { return }
+                        v2EditorScope = TXBusinessV2EditorScope(account: account, book: book,
+                            date: selectedKey, storeID: store.id, storeName: store.name)
+                    }
+                }
+            } label: {
+                Label("凌晨收款与费用付款人 · 测试录入", systemImage: "moon.stars")
+                    .font(.caption)
+            }.disabled(model.snapshot.testStores.isEmpty || showLocalEntry)
         }
         DisclosureGroup(isExpanded: $showFilters) {
             VStack(spacing: 8) {
@@ -609,6 +625,9 @@ private struct BusinessPage: View {
                 historyContent.disabled(showLocalEntry)
             }
             .padding(12)
+        }
+        .sheet(item: $v2EditorScope) { scope in
+            TXBusinessV2DraftEditor(scope: scope).environmentObject(model)
         }
         .onChange(of: selectedDate) { _ in visibleDays = 14 }
         .onChange(of: model.selectedBookID) { _ in
