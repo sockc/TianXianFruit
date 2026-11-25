@@ -42,6 +42,7 @@ final class LedgerViewModel: ObservableObject {
     @Published private(set) var customerError: String?
     @Published private(set) var isCustomerBusy = false
     @Published private(set) var customerAPIAvailable = false
+    @Published private(set) var customerOvernightCovered = false
     @Published private(set) var weatherOverview: WeatherForecastResponse?
     @Published private(set) var selectedWeatherStoreID = ""
     @Published private(set) var weatherCheckedAt: Date?
@@ -137,6 +138,77 @@ final class LedgerViewModel: ObservableObject {
         await refreshSettlementCapabilities()
     }
 
+    private func businessV2Scope(_ scope: TXBusinessV2EditorScope, token: String) -> Bool {
+        scope.permits(account, selectedBook) && accessToken == token && !isUsingCachedAuthorization
+    }
+
+    func checkBusinessV2(_ scope: TXBusinessV2EditorScope) async throws -> Bool {
+        guard let token = accessToken, businessV2Scope(scope, token: token) else { throw BusinessAtomicError.scope }
+        let caps = try await api.businessV2Capabilities(token: token, bookID: scope.book)
+        guard businessV2Scope(scope, token: token) else { throw BusinessAtomicError.scope }
+        guard let book = selectedBook else { throw BusinessAtomicError.scope }
+        return caps.allows(book: book)
+    }
+
+    private func freshBusinessV2(_ scope: TXBusinessV2EditorScope, token: String) async throws {
+        guard businessV2Scope(scope, token: token), !isBusy, !isCustomerBusy else { throw BusinessAtomicError.scope }
+        let before = lastSyncAt
+        let customerBefore = customerSyncedAt
+        await refresh(forceFull: true)
+        guard businessV2Scope(scope, token: token), errorMessage == nil, let last = lastSyncAt,
+              before == nil || last > before! else { throw BusinessAtomicError.cloudConflict }
+        await refreshCustomer(forceFull: true)
+        guard businessV2Scope(scope, token: token), customerError == nil, customerAPIAvailable,
+              customerOvernightCovered, let latest = customerSyncedAt,
+              customerBefore == nil || latest > customerBefore! else { throw BusinessAtomicError.cloudConflict }
+    }
+
+    func submitBusinessV2(_ immutable: TXBusinessV2Immutable, draft: TXBusinessV2LocalDraft) async throws {
+        let scope = immutable.scope
+        guard !isBusinessCommitBusy, !isPurchaseCommitBusy, !isSettlementCommitBusy, !isLedgerV33Busy,
+              let token = accessToken, businessV2Scope(scope, token: token) else { throw BusinessAtomicError.scope }
+        isBusinessCommitBusy = true
+        defer { isBusinessCommitBusy = false }
+        let outbox = try TXBusinessV2Outbox()
+        guard try outbox.load(scope) == nil else { throw BusinessAtomicError.locked }
+        try await freshBusinessV2(scope, token: token)
+        let caps = try await api.businessV2Capabilities(token: token, bookID: scope.book)
+        guard businessV2Scope(scope, token: token), let book = selectedBook, let user = account,
+              caps.allows(book: book),
+              !isBusy, !isCustomerBusy else { throw BusinessAtomicError.unavailable }
+        guard !(try BusinessLocalDraftStore.loadChecked(account: scope.account, bookID: scope.book))
+            .contains(where: { $0.date == scope.date && $0.storeID == scope.storeID }) else { throw BusinessAtomicError.locked }
+        let rebuilt = try TXBusinessV2DraftPolicy.prepare(draft, scope: scope, account: user, book: book,
+            records: Array(snapshot.records.values), events: Array(customerSnapshot.events.values))
+        guard rebuilt == immutable.prepared else { throw BusinessAtomicError.cloudConflict }
+        // Persist exact request before the only POST. Any failure is query-only.
+        try TXBusinessV2DraftStore.save(draft, scope: scope)
+        try outbox.reserve(immutable)
+        let receipt = try await api.businessV2Commit(token: token, immutable: immutable,
+            book: book, account: user, capabilities: caps)
+        try await verifyBusinessV2(immutable, receipt: receipt, token: token)
+    }
+
+    func recoverBusinessV2(_ immutable: TXBusinessV2Immutable) async throws {
+        guard !isBusinessCommitBusy, let token = accessToken,
+              businessV2Scope(immutable.scope, token: token),
+              try TXBusinessV2Outbox().load(immutable.scope) == immutable else { throw BusinessAtomicError.scope }
+        isBusinessCommitBusy = true
+        defer { isBusinessCommitBusy = false }
+        guard let receipt = try await api.businessV2Operation(token: token, immutable: immutable) else {
+            throw BusinessAtomicError.missingResult
+        }
+        try await verifyBusinessV2(immutable, receipt: receipt, token: token)
+    }
+
+    private func verifyBusinessV2(_ immutable: TXBusinessV2Immutable, receipt: TXBusinessV2Receipt,
+                                  token: String) async throws {
+        try await freshBusinessV2(immutable.scope, token: token)
+        guard TXBusinessV2Readback.verified(immutable, receipt: receipt,
+            records: Array(snapshot.records.values), events: Array(customerSnapshot.events.values),
+            ledgerCursor: currentCursor) else { throw BusinessAtomicError.readback }
+    }
+
     func refreshBusinessCommitCapabilities() async {
         businessCommitCapabilities = nil
         businessCommitError = nil
@@ -170,6 +242,8 @@ final class LedgerViewModel: ObservableObject {
               book.id == proposal.bookID,
               PurchaseWorkspaceDraftPolicy.authorized(book: book, account: user)
         else { throw BusinessAtomicError.scope }
+        try TXBusinessV2Outbox.requireV1Free(book: book, account: user.username,
+            date: proposal.date, storeID: proposal.storeSyncID)
         isBusinessCommitBusy = true
         defer { isBusinessCommitBusy = false }
         // Never use cached capability to authorize a transaction.
@@ -383,6 +457,7 @@ final class LedgerViewModel: ObservableObject {
         customerCursor = 0
         customerSyncedAt = nil
         customerAPIAvailable = false
+        customerOvernightCovered = false
         customerError = nil
         purchaseCommitCapabilities = nil
         purchaseCommitError = nil
@@ -404,6 +479,7 @@ final class LedgerViewModel: ObservableObject {
                 customerSnapshot = customer.snapshot
                 customerCursor = customer.cursor
                 customerSyncedAt = customer.syncedAt
+                customerOvernightCovered = customer.overnightCovered
             }
             selectedWeatherStoreID = snapshot.weatherLocations.first?.id ?? ""
         } catch {
@@ -589,6 +665,7 @@ final class LedgerViewModel: ObservableObject {
         customerSyncedAt = nil
         customerError = nil
         customerAPIAvailable = false
+        customerOvernightCovered = false
         isCustomerBusy = false
         businessCommitCapabilities = nil
         businessCommitError = nil
@@ -613,7 +690,11 @@ final class LedgerViewModel: ObservableObject {
         defer { isCustomerBusy = false }
         do {
             let caps = try await api.customerCapabilities(token: token, bookID: book)
-            let replace = forceFull || customerSyncedAt == nil
+            let supportsOvernight = caps.offers("overnight_rollover")
+            // The old filtered cursor skipped historical OVERNIGHT/NATURAL events.
+            // Only a complete replay with the flag enabled proves coverage.
+            let replace = forceFull || customerSyncedAt == nil ||
+                (supportsOvernight && !customerOvernightCovered)
             var candidate = replace ? CustomerReadSnapshot() : customerSnapshot
             var cursor = replace ? Int64(0) : customerCursor
             var updates: [CustomerChangeEvent] = []
@@ -647,11 +728,13 @@ final class LedgerViewModel: ObservableObject {
             }
             try cache.commitCustomer(account: username, book: book,
                                      events: updates, cursor: cursor,
-                                     replace: replace, at: finishedAt)
+                                     replace: replace, at: finishedAt,
+                                     overnightCovered: supportsOvernight)
             customerSnapshot = candidate
             customerCursor = cursor
             customerSyncedAt = finishedAt
             customerAPIAvailable = true
+            customerOvernightCovered = supportsOvernight
         } catch {
             customerError = error.localizedDescription
         }

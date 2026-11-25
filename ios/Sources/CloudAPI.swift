@@ -45,6 +45,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             || path == "/api/v1/weather/overview"
             || path == "/api/v1/purchases/capabilities"
             || path == "/api/v1/business/capabilities"
+            || path == "/api/v1/business/v2/capabilities"
             || path == "/api/v1/settlements/capabilities"
             || path == "/api/v1/ledger-v33/capabilities"
             || path == "/api/v1/ledger-v33/funds/balance"
@@ -59,6 +60,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             || path == "/api/v1/devices/register"
             || path == "/api/v1/purchases/commit"
             || path == "/api/v1/business/commit"
+            || path == "/api/v1/business/v2/commit"
             || path == "/api/v1/settlements/commit"
             || path == "/api/v1/ledger-v33/inventory/commit"
             || path == "/api/v1/ledger-v33/daily/generate"
@@ -166,6 +168,33 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         } catch let error as CloudAPIError where error.status == 404 {
             return nil
         }
+    }
+
+    func businessV2Capabilities(token: String, bookID: String) async throws -> TXBusinessV2Capabilities {
+        guard UUID(uuidString: bookID) != nil else { throw BusinessAtomicError.scope }
+        return try decode(TXBusinessV2Capabilities.self, from: await request("GET", "/api/v1/business/v2/capabilities",
+            token: token, query: [URLQueryItem(name: "book_id", value: bookID)]))
+    }
+
+    func businessV2Commit(token: String, immutable: TXBusinessV2Immutable, book: CloudBook,
+                          account: Account, capabilities: TXBusinessV2Capabilities) async throws -> TXBusinessV2Receipt {
+        guard immutable.scope.permits(account, book), capabilities.allows(book: book) else { throw BusinessAtomicError.scope }
+        let body = try immutable.body(deviceID: Self.scopedDeviceID(account.username))
+        let result = try decode(TXBusinessV2Receipt.self, from: await request("POST", "/api/v1/business/v2/commit",
+            token: token, jsonBody: body))
+        guard result.matches(immutable) else { throw BusinessAtomicError.badReceipt }
+        return result
+    }
+
+    func businessV2Operation(token: String, immutable: TXBusinessV2Immutable) async throws -> TXBusinessV2Receipt? {
+        let w = try immutable.validated()
+        do {
+            let result = try decode(TXBusinessV2Receipt.self, from: await request("GET",
+                "/api/v1/business/operations/" + w.operation_id, token: token,
+                query: [URLQueryItem(name: "book_id", value: w.book_id)]))
+            guard result.matches(immutable) else { throw BusinessAtomicError.badReceipt }
+            return result
+        } catch let error as CloudAPIError where error.status == 404 { return nil }
     }
 
     func businessCapabilities(token: String, bookID: String)
@@ -376,7 +405,8 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             ("bill_collector", "include_collectors"),
             ("receipt_analysis_state", "include_analysis"),
             ("analysis_settings", "include_settings"),
-            ("bill_source_links", "include_source_links")
+            ("bill_source_links", "include_source_links"),
+            ("overnight_rollover", "include_overnight")
         ] where capabilities.offers(feature) {
             query.append(URLQueryItem(name: flag, value: "true"))
         }
