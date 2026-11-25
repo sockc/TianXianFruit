@@ -51,6 +51,7 @@ jobs:
           run-id: "45605931585"
           github-token: ${{ github.token }}
           path: dist
+          merge-multiple: true
       - name: Verify IPA and publish only the prerelease
         shell: bash
         run: |
