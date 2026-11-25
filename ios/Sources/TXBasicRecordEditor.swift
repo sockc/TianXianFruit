@@ -32,6 +32,9 @@ struct TXBasicEdit: Codable, Equatable {
     var valid: Bool {
         guard expected_row_version >= 0, (!isCreation || UUID(uuidString: sync_id) != nil), !sync_id.isEmpty, !name.isEmpty, name.count <= 80,
               name == name.trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
+        if table == "partner" {
+            return !isCreation && default_unit == nil && enabled == nil && address == nil && latitude == nil && longitude == nil && default_start_time == nil && default_end_time == nil
+        }
         if table == "fruit" {
             guard name != "总价", let unit = default_unit, !unit.isEmpty, unit.count <= 16,
                   unit == unit.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -49,6 +52,7 @@ struct TXBasicEdit: Codable, Equatable {
     func matches(_ row: SyncEvent) -> Bool {
         guard valid, row.tableName == table, row.syncId == sync_id,
               row.payload["name"]?.text == name else { return false }
+        if table == "partner" { return true }
         if table == "fruit" {
             return row.payload["default_unit"]?.text == default_unit &&
                 TXFundDataAdapter.number(row.payload["enabled"]) == enabled.map { Double($0) }
@@ -103,7 +107,7 @@ struct TXBasicRecordEditor: View {
         var p = TXBasicEdit(table: selection.event.tableName, sync_id: selection.event.syncId,
             expected_row_version: selection.event.rowVersion, name: name.trimmingCharacters(in: .whitespacesAndNewlines))
         if p.table == "fruit" { p.default_unit = unit.trimmingCharacters(in: .whitespacesAndNewlines); p.enabled = enabled ? 1 : 0 }
-        else { p.address = address; p.latitude = lat; p.longitude = lon; p.default_start_time = start; p.default_end_time = end }
+        else if p.table == "store" { p.address = address; p.latitude = lat; p.longitude = lon; p.default_start_time = start; p.default_end_time = end }
         return p
     }
     var body: some View {
@@ -115,13 +119,15 @@ struct TXBasicRecordEditor: View {
                         TextField("默认单位", text: $unit)
                         if selection.event.rowVersion > 0 { Toggle("启用商品", isOn: $enabled) }
                         Text("停用不会删除历史采购、库存或经营数据。").font(.caption).foregroundColor(.secondary)
-                    } else {
+                    } else if selection.event.tableName == "store" {
                         TextField("地址", text: $address)
                         TextField("纬度（可空）", text: $lat).keyboardType(.numbersAndPunctuation)
                         TextField("经度（可空）", text: $lon).keyboardType(.numbersAndPunctuation)
                         TextField("开始时间，例如 16:00", text: $start).keyboardType(.numbersAndPunctuation)
                         TextField("结束时间，例如 24:00", text: $end).keyboardType(.numbersAndPunctuation)
                         Text("经纬度必须同时填写或同时清空；默认营业时间不能跨日。").font(.caption).foregroundColor(.secondary)
+                    } else {
+                        Text("仅无历史业务记录的测试账本允许改名，不修改利润规则或历史资金记录。").font(.caption).foregroundColor(.secondary)
                     }
                 }
                 Section {

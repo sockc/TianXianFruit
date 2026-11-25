@@ -114,11 +114,15 @@ struct TXBasicDirectoryView: View {
     @State private var createScope = ""
     @State private var message = ""
     private var scope: String { (model.account?.username ?? "") + "|" + (model.selectedBookID ?? "") }
-    private var editable: Bool { kind != .partner && authorizedScope == scope && model.v34LocalCandidate && model.lastSyncAt != nil && !model.isBusy && !model.isLedgerV33Busy && !model.v33HasPending }
+    private var editable: Bool { authorizedScope == scope && model.v34LocalCandidate && model.lastSyncAt != nil && !model.isBusy && !model.isLedgerV33Busy && !model.v33HasPending }
     private func verifyAccess() async {
         let original = scope
         authorizedScope = ""; createScope = ""
-        guard kind != .partner else { return }
+        if kind == .partner {
+            let allowed = await model.v33Capability("basic_partner")
+            if scope == original && !Task.isCancelled { authorizedScope = allowed ? original : "" }
+            return
+        }
         let allowed = await model.v33Capability("basic")
         let create = await model.v33Capability("basic_create")
         if scope == original && !Task.isCancelled { authorizedScope = allowed ? original : ""; createScope = create ? original : "" }
@@ -132,7 +136,7 @@ struct TXBasicDirectoryView: View {
     }
 
     private var statusText: String {
-        if kind == .partner { return "合伙人资料及已同步规则仅查看。" }
+        if kind == .partner { return authorizedScope == scope ? "空白测试账本可实验性改名；利润规则仅查看。" : "合伙人历史姓名受保护，利润规则仅查看。" }
         if createScope == scope && !scope.isEmpty { return "测试账本：新增资料为兼容性实验，请勿用于正式经营。" }
         if authorizedScope == scope { return "支持修改现有资料；新增和删除请在安卓端操作。" }
         return "当前仅查看，服务端基础资料写入未授权。"
@@ -149,7 +153,12 @@ struct TXBasicDirectoryView: View {
                 Text("当前显示缓存资料").font(.caption).foregroundColor(.orange)
             }
             Text(statusText).font(.caption).foregroundColor(.secondary)
-            if editable && createScope == scope && TXTestBookAccess.isCandidate(model.selectedBook, account: model.account, offline: model.isUsingCachedAuthorization) {
+            if kind == .partner {
+                NavigationLink(destination: TXProfitRuleDirectoryView()) {
+                    Label("利润分配规则", systemImage: "chart.pie")
+                }
+            }
+            if kind != .partner && editable && createScope == scope && TXTestBookAccess.isCandidate(model.selectedBook, account: model.account, offline: model.isUsingCachedAuthorization) {
                 Button(kind == .fruit ? "新增测试商品" : "新增测试位置") {
                     let event = SyncEvent(tableName: kind.rawValue, syncId: UUID().uuidString.lowercased(), rowVersion: 0, operation: "UPSERT", payload: ["default_unit": .string("件"), "enabled": .number(1)])
                     selected = TXBasicEditorSelection(event: event, scope: scope)

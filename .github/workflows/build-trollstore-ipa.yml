@@ -63,8 +63,8 @@ jobs:
           ldid -S "$TARGET/TianXianFruit"
           cd "$RUNNER_TEMP/trollstore"
           ditto -c -k --sequesterRsrc --keepParent Payload \
-            "$RUNNER_TEMP/TianXianFruit-iOS-v1.0.0-Build75-TrollStore.ipa"
-          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v1.0.0-Build75-TrollStore.ipa"
+            "$RUNNER_TEMP/TianXianFruit-iOS-v1.0.0-Build76-TrollStore.ipa"
+          test -s "$RUNNER_TEMP/TianXianFruit-iOS-v1.0.0-Build76-TrollStore.ipa"
       - name: Verify app bundle structure and deployment target
         shell: bash
         run: |
@@ -72,7 +72,7 @@ jobs:
           python3 - <<'PY'
           import os, plistlib, zipfile
           from pathlib import Path
-          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v1.0.0-Build75-TrollStore.ipa"
+          p = Path(os.environ["RUNNER_TEMP"]) / "TianXianFruit-iOS-v1.0.0-Build76-TrollStore.ipa"
           with zipfile.ZipFile(p) as z:
               names = set(z.namelist())
               base = "Payload/TianXianFruit.app/"
@@ -82,14 +82,14 @@ jobs:
               assert info["CFBundleIdentifier"] == "com.tianxian.fruit.ios"
               assert info["CFBundleExecutable"] == "TianXianFruit"
               assert info["CFBundleShortVersionString"] == "1.0.0"
-              assert info["CFBundleVersion"] == "75"
+              assert info["CFBundleVersion"] == "76"
               assert info["NSFaceIDUsageDescription"]
               assert tuple(map(int, info["MinimumOSVersion"].split("."))) <= (15, 0)
               assert not any(name.endswith(".mobileprovision") for name in names)
           print("Verified arm64 TrollStore IPA, iOS minimum 15.0, no Apple profile")
           PY
       - name: Run iOS XCTest before beta publication
-        if: github.ref == 'refs/heads/feature/ios-v1.0.0-rc5'
+        if: github.ref == 'refs/heads/feature/ios-v1.0.0-rc6'
         shell: bash
         run: |
           set -euo pipefail
@@ -108,22 +108,22 @@ jobs:
       - name: Upload installable-by-TrollStore test IPA
         uses: actions/upload-artifact@v4
         with:
-          name: TianXianFruit-iOS-v1.0.0-Build75-TrollStore
-          path: ${{ runner.temp }}/TianXianFruit-iOS-v1.0.0-Build75-TrollStore.ipa
+          name: TianXianFruit-iOS-v1.0.0-Build76-TrollStore
+          path: ${{ runner.temp }}/TianXianFruit-iOS-v1.0.0-Build76-TrollStore.ipa
           if-no-files-found: error
           retention-days: 14
 
 
-      - name: Publish iOS v1.0.0 RC5 after XCTest
-        if: github.ref == 'refs/heads/feature/ios-v1.0.0-rc5'
+      - name: Publish iOS v1.0.0 RC6 after XCTest
+        if: github.ref == 'refs/heads/feature/ios-v1.0.0-rc6'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          FILE="$RUNNER_TEMP/TianXianFruit-iOS-v1.0.0-Build75-TrollStore.ipa"
+          FILE="$RUNNER_TEMP/TianXianFruit-iOS-v1.0.0-Build76-TrollStore.ipa"
           test -s "$FILE"
-          gh release create "ios-v1.0.0-rc5" "$FILE" \
+          gh release create "ios-v1.0.0-rc6" "$FILE" \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
-            --title "天鲜账本 iOS V1.0.0 RC5 (Build 75)" \
-            --notes "新增测试账本商品/位置创建实验入口，独立能力开关、唯一身份、回读校验。正式账本新增仍关闭，旧安卓自增 ID 兼容尚待完成。兼容 V1.0.35，不修改正式财务权限或计算。" --latest=false
+            --title "天鲜账本 iOS V1.0.0 RC6 (Build 76)" \
+            --notes "新增已同步利润规则及资金中心标记查看；无历史业务记录的测试账本可实验性修改合伙人名称，正式账本改名、利润规则写入及新增主资料仍未开放。兼容线上 V1.0.35，未改变结算算法。" --latest=false
