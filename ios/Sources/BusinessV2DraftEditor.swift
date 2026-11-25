@@ -419,41 +419,72 @@ struct TXBusinessV2DraftEditor: View {
         }
     }
 
-    var body: some View {
+    private var receiptCard: some View {
+        card {
+            Text("营业收款").font(.subheadline.bold())
+            collectorFields
+            Button {
+                draft.collectors.append(TXBusinessV2CollectorInput())
+            } label: {
+                Label("增加收款人", systemImage: "person.badge.plus").font(.caption)
+            }.disabled(draft.collectors.count >= 12)
+        }.disabled(editorLocked)
+    }
+
+    private var editorContent: some View {
         VStack(alignment: .leading, spacing: 7) {
             header
-            card {
-                Text("营业收款").font(.subheadline.bold())
-                collectorFields
-                Button { draft.collectors.append(TXBusinessV2CollectorInput()) } label: {
-                    Label("增加收款人", systemImage: "person.badge.plus").font(.caption)
-                }.disabled(draft.collectors.count >= 12)
-            }.disabled(editorLocked)
+            receiptCard
             card { costFields }.disabled(editorLocked)
             submission
         }
+    }
+
+    private var observedContent: some View {
+        editorContent
             .onAppear(perform: load)
             .task { await refreshSources() }
             .onChange(of: draft) { _ in prepared = nil; message = "" }
             .onChange(of: model.customerCursor) { _ in prepared = nil }
             .onChange(of: model.currentCursor) { _ in prepared = nil }
+    }
+
+    private var guardedContent: some View {
+        observedContent
             .onChange(of: model.customerSyncedAt) { _ in prepared = nil }
             .onChange(of: model.lastSyncAt) { _ in prepared = nil }
             .onChange(of: sourcesReady) { ready in if !ready { prepared = nil } }
             .onChange(of: permitted) { allowed in if !allowed { prepared = nil; onClose() } }
-            .alert(isTest ? "确认保存到测试账本？" : "确认保存营业到正式账本？", isPresented: $showSend) {
-                Button("确认提交") {
-                    if let prepared { let value = TXBusinessV2Immutable(scope: scope, prepared: prepared); Task { await send(value) } }
-                }
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text(scope.storeName + " · " + scope.date + "\n营业额 ¥" + (prepared?.proposal.totalRevenue ?? "待核对"))
-            }
-            .confirmationDialog("有未保存的营业草稿", isPresented: $showClose, titleVisibility: .visible) {
-                Button("保存草稿并关闭") { save(); if saved == draft { onClose() } }
-                Button("放弃未保存修改", role: .destructive) { onClose() }
-                Button("继续编辑", role: .cancel) {}
-            }
+    }
+
+    private var confirmationTitle: String {
+        isTest ? "确认保存到测试账本？" : "确认保存营业到正式账本？"
+    }
+    private var confirmationMessage: String {
+        let amount = prepared?.proposal.totalRevenue ?? "待核对"
+        return scope.storeName + " · " + scope.date + "\n营业额 ¥" + amount
+    }
+    private func confirmSend() {
+        guard let prepared else { return }
+        let value = TXBusinessV2Immutable(scope: scope, prepared: prepared)
+        Task { await send(value) }
+    }
+
+    private var confirmedContent: some View {
+        guardedContent.alert(confirmationTitle, isPresented: $showSend) {
+            Button("确认提交", action: confirmSend)
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text(confirmationMessage)
+        }
+    }
+
+    var body: some View {
+        confirmedContent.confirmationDialog("有未保存的营业草稿", isPresented: $showClose, titleVisibility: .visible) {
+            Button("保存草稿并关闭") { save(); if saved == draft { onClose() } }
+            Button("放弃未保存修改", role: .destructive) { onClose() }
+            Button("继续编辑", role: .cancel) {}
+        }
     }
 }
 
