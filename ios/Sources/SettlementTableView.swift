@@ -184,29 +184,13 @@ struct SettlementTableView: View {
                     Text("结算记录").tag("结算记录")
                 }
                 .pickerStyle(.segmented)
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("结算表").font(.title3.bold())
-                        Text("当日计算优先 · 云端已保存数据")
-                            .font(.caption2).foregroundColor(.secondary)
-                    }
-                    Spacer()
-                    if !model.settlementCloudBookAllowed && model.selectedBook?.name.hasPrefix("iOS_TEST_") != true {
-                        Label("只读", systemImage: "lock.shield")
-                            .font(.caption2).foregroundColor(.secondary)
-                    }
-                    Button {
-                        Task { await model.refresh() }
-                    } label: {
-                        if model.isBusy { ProgressView() }
-                        else { Image(systemName: "arrow.clockwise") }
-                    }
-                    .disabled(model.isBusy)
-                    .accessibilityLabel("同步资金数据")
+                if model.isBusy || model.errorMessage != nil || model.isUsingCachedAuthorization || model.lastSyncAt == nil {
+                    TXCloudSyncStatusBar()
                 }
-                .padding(9)
-                .background(TXTheme.header,
-                            in: RoundedRectangle(cornerRadius: 12))
+                if !model.settlementCloudBookAllowed && model.selectedBook?.name.hasPrefix("iOS_TEST_") != true {
+                    Label("当前账本未授权结算写入 · 仅查看", systemImage: "lock.shield")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
 
                 if settlementSection == "结算记录" {
                 NavigationLink(destination: TXFundHistoryView()) {
@@ -223,7 +207,11 @@ struct SettlementTableView: View {
                                 in: RoundedRectangle(cornerRadius: 11))
                 }
                 }
-                if settlementSection == "当日计算" && (TXTestBookAccess.isCandidate(model.selectedBook,
+                if settlementSection == "当日计算" {
+                TXPageDateHeader(title: "当日结算", date: $model.workDate)
+                    .onChange(of: selectedDate) { _ in visibleDays = 14 }
+                TXDailySettlement092Panel(date: BusinessDates.key(selectedDate))
+                if (TXTestBookAccess.isCandidate(model.selectedBook,
                                                  account: model.account,
                                                  offline: model.isUsingCachedAuthorization) || model.settlementCloudBookAllowed) {
                     NavigationLink(destination: TXSettlementTestWorkbenchView(initialDate: selectedDate)) {
@@ -239,14 +227,7 @@ struct SettlementTableView: View {
                                     in: RoundedRectangle(cornerRadius: 10))
                     }
                 }
-
-
-                if settlementSection == "当日计算" {
-                Text("已同步日结记录与当日实时计算预览分开展示。")
-                    .font(.caption2).foregroundColor(.secondary)
-                TXPageDateHeader(title: "当日结算", date: $model.workDate)
-                    .onChange(of: selectedDate) { _ in visibleDays = 14 }
-                TXDailySettlement092Panel(date: BusinessDates.key(selectedDate))
+                Text("云端已保存结算记录").font(.subheadline.bold())
                 DisclosureGroup(isExpanded: $showFilters) {
                 Picker("日期范围", selection: $range) {
                     Text("单日").tag("单日")
@@ -344,7 +325,7 @@ struct SettlementTableView: View {
                 }
                 // Recorded transfers are not effective fund balances.
                 SyncFooter()
-            }.padding(12)
+            }.padding(8)
         }
         .navigationBarTitle("结算", displayMode: .inline)
     }
@@ -376,10 +357,10 @@ private struct SettlementDateCard: View {
                     }
                     if let snapshot = day.uniqueSnapshot {
                         HStack(spacing: 5) {
-                            SettlementSummaryTile(label: "营业额", amount: snapshot.revenue)
-                            SettlementSummaryTile(label: "采购额", amount: snapshot.purchase)
+                            SettlementSummaryTile(label: "营业额", amount: snapshot.revenue, tint: .green)
+                            SettlementSummaryTile(label: "采购额", amount: snapshot.purchase, tint: .purple)
                             SettlementSummaryTile(label: "利润", amount: snapshot.profit,
-                                                  emphasize: true)
+                                                  emphasize: true, tint: .orange)
                         }
                         HStack(spacing: 5) {
                             Image(systemName: "doc.text")
@@ -481,6 +462,7 @@ private struct SettlementSummaryTile: View {
     let label: String
     let amount: Double
     var emphasize = false
+    var tint: Color = .gray
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -493,9 +475,8 @@ private struct SettlementSummaryTile: View {
                 .minimumScaleFactor(0.62)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(8)
-        .background(Color(UIColor.tertiarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 9))
+        .padding(7)
+        .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
     }
 }
 
@@ -573,6 +554,25 @@ private struct SettlementDateDetail: View {
             }
 
             Divider()
+            Text("实际利润分配 · 原始记录").font(.subheadline.bold())
+            if day.shares.isEmpty {
+                Text("没有已同步的分配记录，不自动推算")
+                    .font(.caption).foregroundColor(.secondary)
+            } else {
+                ForEach(day.shares) { item in
+                    VStack(alignment: .leading, spacing: 3) {
+                        SettlementValueLine(label: item.partner, amount: item.allocated)
+                        Text("云端比例值：" + item.ratio.formatted() +
+                             (item.role.isEmpty ? "" : "  ·  角色：" + item.role))
+                            .font(.caption2).foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 2)
+                }
+                Text("ratio 原样显示，不擅自按百分比转换。")
+                    .font(.caption2).foregroundColor(.secondary)
+            }
+
+            Divider()
             Text("合伙人资金轧差 · 原始记录").font(.subheadline.bold())
             if day.funds.isEmpty {
                 Text("没有已同步的合伙人资金日结记录")
@@ -603,25 +603,6 @@ private struct SettlementDateDetail: View {
                                 in: RoundedRectangle(cornerRadius: 9))
                 }
                 Text("本日资金差额不是跨日累计余额，也不表示已结清。")
-                    .font(.caption2).foregroundColor(.secondary)
-            }
-
-            Divider()
-            Text("实际利润分配 · 原始记录").font(.subheadline.bold())
-            if day.shares.isEmpty {
-                Text("没有已同步的分配记录，不自动推算")
-                    .font(.caption).foregroundColor(.secondary)
-            } else {
-                ForEach(day.shares) { item in
-                    VStack(alignment: .leading, spacing: 3) {
-                        SettlementValueLine(label: item.partner, amount: item.allocated)
-                        Text("云端比例值：" + item.ratio.formatted() +
-                             (item.role.isEmpty ? "" : "  ·  角色：" + item.role))
-                            .font(.caption2).foregroundColor(.secondary)
-                    }
-                    .padding(.vertical, 2)
-                }
-                Text("ratio 原样显示，不擅自按百分比转换。")
                     .font(.caption2).foregroundColor(.secondary)
             }
 

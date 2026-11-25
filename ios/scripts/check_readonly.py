@@ -330,7 +330,7 @@ assert "snapshotState" in settlement_ui
 assert "day.uniqueSnapshot" in settlement_ui
 assert "day.savedDaily.count > 1" in settlement_ui
 assert "SettlementDateDetail(day: day)" in settlement_ui
-assert "await model.refresh()" in settlement_ui
+assert "TXCloudSyncStatusBar()" in settlement_ui
 assert (root.parent / "Tests" / "SettlementCompactPresentationTests.swift").exists()
 
 
@@ -653,3 +653,9 @@ assert "TXPurchaseLineTotalEditor" in swift["PurchaseWorkspaceEditorView.swift"]
 assert "receiptList" in swift["ReadOnlyInsightsViews.swift"]
 assert "hourlyAmounts" in swift["ReadOnlyInsightsViews.swift"]
 print("V1.0.1 exact line-total reverse and compact customer analysis guard PASS")
+
+assert "resultKey == previewKey" in swift["TXDailySettlement092.swift"]
+assert "model.errorMessage == nil" in swift["TXDailySettlement092.swift"]
+assert swift["SettlementTableView.swift"].index('Text("实际利润分配 · 原始记录")') < swift["SettlementTableView.swift"].index('Text("合伙人资金轧差 · 原始记录")')
+assert 'menuSection("账本与数据")' in swift["Views.swift"]
+print("V1.0.1 settlement presentation and grouped settings guard PASS")

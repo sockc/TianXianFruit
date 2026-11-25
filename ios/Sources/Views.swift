@@ -768,46 +768,56 @@ private struct MorePage: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 11) {
-                Text("经营资料").font(.headline)
-                NavigationLink(destination: TXBookDirectoryView()) {
-                    menuLine("账本管理", "books.vertical", "查看与切换账本")
+            VStack(alignment: .leading, spacing: 8) {
+                menuSection("经营数据") {
+                    NavigationLink(destination: PurchasesHistoryView()) {
+                        menuLine("采购历史", "clock.arrow.circlepath", "按日期查看")
+                    }
+                    Divider().padding(.leading, 36)
+                    NavigationLink(destination: BusinessStatsView()) {
+                        menuLine("经营统计", "chart.bar.xaxis", "位置 · 趋势")
+                    }
+                    Divider().padding(.leading, 36)
+                    NavigationLink(destination: CustomerInsightsView()) {
+                        menuLine("客户分析", "person.2", "客流 · 账单")
+                    }
+                    Divider().padding(.leading, 36)
+                    NavigationLink(destination: OperatingReportView()) {
+                        menuLine("生成报表", "doc.text", "经营汇总")
+                    }
                 }
-                NavigationLink(destination: TXBasicDirectoryView(kind: .fruit)) {
-                    menuLine("商品管理", "shippingbox", "查看商品资料")
+                menuSection("经营资料") {
+                    NavigationLink(destination: TXBasicDirectoryView(kind: .partner)) {
+                        menuLine("合伙人管理", "person.2", "查看资料")
+                    }
+                    Divider().padding(.leading, 36)
+                    NavigationLink(destination: TXProfitRuleDirectoryView()) {
+                        menuLine("利润分配规则", "chart.pie", "当前比例 · 只读")
+                    }
+                    Divider().padding(.leading, 36)
+                    NavigationLink(destination: TXBasicDirectoryView(kind: .store)) {
+                        menuLine("位置管理", "mappin.and.ellipse", "查看营业位置")
+                    }
+                    Divider().padding(.leading, 36)
+                    NavigationLink(destination: TXBasicDirectoryView(kind: .fruit)) {
+                        menuLine("商品管理", "shippingbox", "查看商品资料")
+                    }
                 }
-                NavigationLink(destination: TXBasicDirectoryView(kind: .store)) {
-                    menuLine("位置管理", "mappin.and.ellipse", "查看营业位置")
+                menuSection("账本与数据") {
+                    NavigationLink(destination: TXBookDirectoryView()) {
+                        menuLine("账本管理", "books.vertical", "查看与切换")
+                    }
+                    Divider().padding(.leading, 36)
+                    NavigationLink(destination: TXFundHistoryView()) {
+                        menuLine("资金余额与结算记录", "banknote", "历史结清")
+                    }
                 }
-                NavigationLink(destination: TXBasicDirectoryView(kind: .partner)) {
-                    menuLine("合伙人管理", "person.2", "查看合伙人资料")
+                menuSection("设置") {
+                    NavigationLink(destination: WeatherAlertsView()) {
+                        menuLine("天气提醒", "cloud.rain", "未来7天")
+                    }
                 }
-                Divider().padding(.vertical, 2)
-                Text("经营数据").font(.headline)
-                NavigationLink(destination: CustomerInsightsView()) {
-                    menuLine("客户分析", "person.2", "微信、支付宝 · 逐小时")
-                }
-                NavigationLink(destination: BusinessStatsView()) {
-                    menuLine("经营统计", "chart.bar.xaxis", "位置 · 趋势")
-                }
-                NavigationLink(destination: PurchasesHistoryView()) {
-                    menuLine("采购历史", "clock.arrow.circlepath", "按日期查看")
-                }
-                NavigationLink(destination: WeatherAlertsView()) {
-                    menuLine("天气提醒", "cloud.rain", "未来7天")
-                }
-                Divider().padding(.vertical, 2)
-                Text("资金与报表").font(.headline)
-                NavigationLink(destination: TXFundHistoryView()) {
-                    menuLine("资金余额与结算记录", "banknote", "每日明细 · 历史结清")
-                }
-                NavigationLink(destination: TXProfitRuleDirectoryView()) {
-                    menuLine("利润分配规则", "chart.pie", "当前比例 · 只读")
-                }
-                NavigationLink(destination: OperatingReportView()) {
-                    menuLine("生成报表", "doc.text", "经营汇总 · PDF / 图片")
-                }
-                Divider().padding(.vertical, 2)
+                Text("账号与同步").font(.caption.bold()).foregroundColor(.secondary)
                 DisclosureGroup(isExpanded: $showAccountDetails) {
                     VStack(alignment: .leading, spacing: 12) {
                         Label(model.account?.displayName ?? "未登录",
@@ -840,32 +850,40 @@ private struct MorePage: View {
                                 in: RoundedRectangle(cornerRadius: 11))
                     .padding(.top, 8)
                 } label: {
-                    Label("账号与同步", systemImage: "person.crop.circle")
+                    Label(model.account?.displayName ?? "账号详情", systemImage: "person.crop.circle")
                         .font(.subheadline.bold())
                 }
                 Text(TXAppPresentation.versionLabel(version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
                     build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String))
                     .font(.caption2).foregroundColor(.secondary)
             }
-            .padding(12)
+            .padding(8)
+        }
+    }
+
+    private func menuSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption.bold()).foregroundColor(.secondary)
+                .padding(.leading, 4)
+            VStack(spacing: 0) { content() }
+                .background(TXTheme.header, in: RoundedRectangle(cornerRadius: 10))
         }
     }
 
     private func menuLine(_ title: String, _ symbol: String,
                           _ detail: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: symbol).font(.title3).foregroundColor(TXTheme.primary)
-                .frame(width: 28)
-            Text(title).font(.subheadline.bold()).foregroundColor(.primary)
+        HStack(spacing: 7) {
+            Image(systemName: symbol).font(.subheadline).foregroundColor(TXTheme.primary)
+                .frame(width: 24)
+            Text(title).font(.subheadline).foregroundColor(.primary).layoutPriority(1)
             Spacer(minLength: 4)
             Text(detail).font(.caption2).foregroundColor(.secondary)
                 .lineLimit(1)
             Image(systemName: "chevron.right").font(.caption2).foregroundColor(.secondary)
         }
-        .padding(.horizontal, 12)
-        .frame(minHeight: 51)
-        .background(Color(UIColor.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 11))
+        .padding(.horizontal, 8)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
     }
 }
 
