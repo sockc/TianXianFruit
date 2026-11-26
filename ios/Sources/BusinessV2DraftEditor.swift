@@ -228,6 +228,8 @@ struct TXBusinessV2DraftEditor: View {
     @State private var serverAllowed = false
     @State private var working = false
     @State private var showSend = false
+    @State private var billPlan: TXBillLocalPlan?
+    @State private var discardBill = false
 
     private var permitted: Bool { scope.permits(model.account, model.selectedBook) }
     private var sourcesReady: Bool {
@@ -249,6 +251,7 @@ struct TXBusinessV2DraftEditor: View {
             }
             saved = draft
             reserved = try TXBusinessV2Outbox().load(scope)
+            billPlan = try TXBillPlanStore.load(scope)
         } catch { storageError = error.localizedDescription }
     }
     private func save() {
@@ -261,6 +264,7 @@ struct TXBusinessV2DraftEditor: View {
     }
     private func prepare() {
         prepared = nil
+        guard billPlan == nil else { message = TXBillPlanError.pending.localizedDescription; return }
         guard sourcesReady, reserved == nil, !working, let account = model.account, let book = model.selectedBook else {
             message = "请先完成在线营业及凌晨同步"; return
         }
@@ -289,6 +293,54 @@ struct TXBusinessV2DraftEditor: View {
         } catch { message = "V2 接口未开放：" + error.localizedDescription }
     }
 
+    private func stageBillPlan(_ plan: TXBillLocalPlan) throws {
+        guard permitted, loaded, sourcesReady, !editorLocked, billPlan == nil,
+              draft == plan.original, plan.customerCursor == model.customerCursor else { throw TXBillPlanError.scope }
+        try plan.validate(scope: scope)
+        let pair = try TXBusinessV2DraftPolicy.sources(events, date: scope.date, partner: plan.partner)
+        guard pair.0.revision == plan.previousRevision, pair.1.revision == plan.followingRevision else { throw TXBillPlanError.source }
+        // Save only the ORIGINAL normal draft. The proposed amounts are stored
+        // under an independent key so even an older IPA cannot submit them.
+        try TXBusinessV2DraftStore.save(draft, scope: scope)
+        saved = draft
+        try TXBillPlanStore.save(plan, scope: scope)
+        billPlan = plan; prepared = nil
+    }
+    private func discardStagedBill() {
+        guard permitted, !editorLocked, let billPlan else { return }
+        do {
+            try TXBillPlanStore.discard(billPlan, scope: scope)
+            self.billPlan = nil
+            message = "已放弃独立补录草稿，原营业输入未改动"
+        } catch { message = error.localizedDescription }
+    }
+    private var billCard: some View {
+        card {
+            if let billPlan, let original = billPlan.originalCollector, let proposed = billPlan.proposedCollector {
+                Text("账单补录草稿 · 未提交").font(.subheadline.bold())
+                HStack { Text("微信自然日"); Spacer(); Text(original.wechat.natural + " → " + proposed.wechat.natural) }
+                    .font(.caption)
+                HStack { Text("支付宝自然日"); Spacer(); Text(original.alipay.natural + " → " + proposed.alipay.natural) }
+                    .font(.caption)
+                HStack { Text("现金（原样保留）"); Spacer(); Text(original.cash.natural) }.font(.caption)
+                let amount = billPlan.adjustedWechat + billPlan.adjustedAlipay + billPlan.adjustedCash
+                HStack { Text("该收款人调整后预览"); Spacer(); Text("¥" + BusinessCommitPolicy.money(amount)).bold() }
+                    .font(.caption)
+                if billPlan.customerCursor != model.customerCursor || billPlan.original != draft {
+                    Text("原输入或客户游标已变化，补录方案需要重新核对。").font(.caption).foregroundColor(.orange)
+                }
+                Text("仅保存独立草稿；原营业及客户数据未更改。联合提交尚未开放。")
+                    .font(.caption).foregroundColor(.orange)
+                Button("放弃补录草稿", role: .destructive) { discardBill = true }.disabled(editorLocked)
+            } else {
+                TXBillPreviewEntry(scope: scope, draft: draft, onStage: stageBillPlan).disabled(editorLocked || !loaded)
+            }
+        }
+        .alert("放弃独立补录草稿？", isPresented: $discardBill) {
+            Button("放弃", role: .destructive, action: discardStagedBill)
+            Button("取消", role: .cancel) {}
+        } message: { Text("原营业草稿、现金和云端记录均不会被修改。") }
+    }
     private func requestClose() {
         guard !working else { return }
         if reserved != nil { onClose(); return }
@@ -297,7 +349,7 @@ struct TXBusinessV2DraftEditor: View {
     }
 
     private func send(_ request: TXBusinessV2Immutable) async {
-        guard !working, permitted, serverAllowed, sourcesReady, reserved == nil, prepared == request.prepared else { return }
+        guard !working, permitted, serverAllowed, sourcesReady, billPlan == nil, reserved == nil, prepared == request.prepared else { return }
         working = true
         defer { working = false }
         do {
@@ -408,7 +460,7 @@ struct TXBusinessV2DraftEditor: View {
                         prepare()
                         if prepared != nil && serverAllowed { showSend = true }
                     }.buttonStyle(.borderedProminent)
-                        .disabled(editorLocked || !sourcesReady || !serverAllowed)
+                        .disabled(editorLocked || !sourcesReady || !serverAllowed || billPlan != nil)
                 }
             } else {
                 Text("原操作已锁定，只能查询及回读；不会自动重发。").font(.caption).foregroundColor(.orange)
@@ -428,13 +480,13 @@ struct TXBusinessV2DraftEditor: View {
             } label: {
                 Label("增加收款人", systemImage: "person.badge.plus").font(.caption)
             }.disabled(draft.collectors.count >= 12)
-        }.disabled(editorLocked)
+        }.disabled(editorLocked || billPlan != nil)
     }
 
     private var editorContent: some View {
         VStack(alignment: .leading, spacing: 7) {
             header
-            TXBillPreviewEntry(scope: scope).disabled(editorLocked)
+            billCard
             receiptCard
             card { costFields }.disabled(editorLocked)
             submission

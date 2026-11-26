@@ -169,6 +169,7 @@ final class LedgerViewModel: ObservableObject {
               let token = accessToken, businessV2Scope(scope, token: token) else { throw BusinessAtomicError.scope }
         isBusinessCommitBusy = true
         defer { isBusinessCommitBusy = false }
+        try TXBillPlanStore.requireNoPlan(scope)
         let outbox = try TXBusinessV2Outbox()
         guard try outbox.load(scope) == nil else { throw BusinessAtomicError.locked }
         try await freshBusinessV2(scope, token: token)
@@ -178,6 +179,7 @@ final class LedgerViewModel: ObservableObject {
               !isBusy, !isCustomerBusy else { throw BusinessAtomicError.unavailable }
         guard !(try BusinessLocalDraftStore.loadChecked(account: scope.account, bookID: scope.book))
             .contains(where: { $0.date == scope.date && $0.storeID == scope.storeID }) else { throw BusinessAtomicError.locked }
+        try TXBillPlanStore.requireNoPlan(scope)
         let rebuilt = try TXBusinessV2DraftPolicy.prepare(draft, scope: scope, account: user, book: book,
             records: Array(snapshot.records.values), events: Array(customerSnapshot.events.values))
         guard rebuilt == immutable.prepared else { throw BusinessAtomicError.cloudConflict }

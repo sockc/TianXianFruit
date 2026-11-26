@@ -5,12 +5,14 @@ import UniformTypeIdentifiers
 struct TXBillPreviewEntry: View {
     @EnvironmentObject private var model: LedgerViewModel
     let scope: TXBusinessV2EditorScope
+    let draft: TXBusinessV2LocalDraft
+    let onStage: (TXBillLocalPlan) throws -> Void
     @State private var show = false
     var body: some View {
         Button { show = true } label: {
             Label("账单补录预览", systemImage: "doc.text.magnifyingglass").font(.subheadline)
         }.buttonStyle(.bordered)
-        .sheet(isPresented: $show) { TXBillPreviewView(scope: scope).environmentObject(model) }
+        .sheet(isPresented: $show) { TXBillPreviewView(scope: scope, draft: draft, onStage: onStage).environmentObject(model) }
     }
 }
 
@@ -18,6 +20,9 @@ private struct TXBillPreviewView: View {
     @EnvironmentObject private var model: LedgerViewModel
     @Environment(\.dismiss) private var dismiss
     let scope: TXBusinessV2EditorScope
+    let draft: TXBusinessV2LocalDraft
+    let onStage: (TXBillLocalPlan) throws -> Void
+    @State private var confirmed: Set<TXBillPlatform> = []
     @State private var partner = ""
     @State private var choose = false
     @State private var reading = false
@@ -79,6 +84,7 @@ private struct TXBillPreviewView: View {
                     duplicateFilesSeen += combined.duplicateFiles
                     files = combined.files
                     batch = combined
+                    confirmed = []
                 } catch { self.error = error.localizedDescription }
             }
         } catch { self.error = error.localizedDescription }
@@ -119,6 +125,33 @@ private struct TXBillPreviewView: View {
                 .disabled(model.isCustomerBusy || !permitted || reading)
         }
     }
+    private var planSection: some View {
+        Section(header: Text("自然日补录方案（仅本机）")) {
+            if let batch {
+                ForEach(TXBillPlatform.allCases, id: \.self) { platform in
+                    if batch.rows.contains(where: { $0.platform == platform && $0.date == scope.date }) {
+                        Toggle("已核对" + platform.label + "完整自然日账单", isOn: Binding(
+                            get: { confirmed.contains(platform) },
+                            set: { enabled in if enabled { confirmed.insert(platform) } else { confirmed.remove(platform) } }
+                        )).font(.caption)
+                    }
+                }
+                Text("仅选择完整的电子收款渠道；其他渠道、现金及所有凌晨输入保持原样。确认不等于系统已证明覆盖完整。")
+                    .font(.caption).foregroundColor(.secondary)
+                Button("生成并保存独立补录草稿") {
+                    do {
+                        guard permitted, snapshotReady, model.customerOvernightCovered, !reading,
+                              selectedDayOffset == 0 else { throw TXBillPlanError.source }
+                        let plan = try TXBillLocalPlan.build(scope: scope, draft: draft, partner: partner,
+                            batch: batch, confirmed: confirmed, events: Array(model.customerSnapshot.events.values),
+                            customerCursor: model.customerCursor)
+                        try onStage(plan)
+                        dismiss()
+                    } catch { self.error = error.localizedDescription }
+                }.disabled(confirmed.isEmpty || selectedDayOffset != 0 || !snapshotReady || reading || !permitted)
+            } else { Text("先导入账单。").font(.caption).foregroundColor(.secondary) }
+        }
+    }
     var body: some View {
         NavigationView {
             Form {
@@ -126,20 +159,21 @@ private struct TXBillPreviewView: View {
                     Text(scope.date + " · " + scope.storeName)
                     Picker("账单收款人", selection: $partner) {
                         Text("请选择").tag("")
-                        ForEach(model.snapshot.testPartners) { Text($0.name).tag($0.id) }
+                        ForEach(model.snapshot.testPartners.filter { p in draft.collectors.contains { $0.partner == p.id } }) { Text($0.name).tag($0.id) }
                     }.disabled(reading || !files.isEmpty)
                     Button { choose = true } label: {
                         Label(reading ? "正在解析" : "添加账单文件", systemImage: "folder")
                     }.disabled(!permitted || partner.isEmpty || reading || files.count >= 12)
                     if !files.isEmpty {
-                        Button("清空本次预览", role: .destructive) { files = []; batch = nil; duplicateFilesSeen = 0; error = nil }.disabled(reading)
+                        Button("清空本次预览", role: .destructive) { files = []; batch = nil; duplicateFilesSeen = 0; confirmed = []; error = nil }.disabled(reading)
                     }
                     if let error { Text(error).font(.caption).foregroundColor(.red) }
                 }
                 summary
                 reconciliation
+                planSection
                 Section(header: Text("注意")) {
-                    Text("仅本机预览，不上传、不覆盖电子收款、不改变现金或客户交易。支持 CSV、单账单 ZIP、单工作表 XLSX；加密 ZIP、多个候选文件、公式及不可靠数字订单号需先在官方渠道重新导出。没有交易不代表收入为零或账单覆盖完整。")
+                    Text("仅本机预览和独立补录草稿，不上传、不覆盖原营业草稿、不改变现金或客户交易。支持 CSV、单账单 ZIP、单工作表 XLSX；加密 ZIP、多个候选文件、公式及不可靠数字订单号需先在官方渠道重新导出。没有交易不代表收入为零或账单覆盖完整。")
                         .font(.caption).foregroundColor(.secondary)
                 }
             }
@@ -147,7 +181,7 @@ private struct TXBillPreviewView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() }.disabled(reading) } }
             .fileImporter(isPresented: $choose, allowedContentTypes: [.commaSeparatedText,.plainText,.zip,UTType(filenameExtension: "xlsx") ?? .data], allowsMultipleSelection: true, onCompletion: importFile)
-            .onChange(of: partner) { _ in files = []; batch = nil; duplicateFilesSeen = 0; error = nil }
+            .onChange(of: partner) { _ in files = []; batch = nil; duplicateFilesSeen = 0; confirmed = []; error = nil }
             .onChange(of: permitted) { allowed in if !allowed { files = []; batch = nil; dismiss() } }
         }.navigationViewStyle(.stack)
     }

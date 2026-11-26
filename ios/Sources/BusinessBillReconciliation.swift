@@ -83,6 +83,21 @@ struct TXBillCloudAudit {
         guard let n = value?.decimal, n.isFinite else { return false }
         return abs(n*100-Double(cents)) < 0.00001
     }
+    /// Only a known same-collector cloud row can establish missing coverage.
+    /// Unknown attribution does not establish zero or completeness.
+    func hasOmittedKnownReceipts(date: String, platform: TXBillPlatform, partner: String,
+                                 included: Set<String>) -> Bool {
+        receipts.values.contains { receipt in
+            let p = receipt.payload
+            guard !receipt.isDeleted, p["platform"]?.text == platform.rawValue,
+                  p["trade_time"]?.text.hasPrefix(date + " ") == true,
+                  !included.contains(receipt.key) else { return false }
+            return (sourceLinks[receipt.key] ?? []).contains { source in
+                collectors[source]?.contains(partner) == true
+            }
+        }
+    }
+
     func match(_ row: TXBillPreviewRow, selectedPartner: String, fileHashes: Set<String>) -> TXBillCloudMatch {
         let prefix = row.platform.rawValue+"|"
         if let keys = referenceKeys[prefix+row.reference], keys.contains(where: { $0 != row.id }) { return .conflict }

@@ -732,7 +732,7 @@ assert "BusinessDraftWorkflowPolicy.preview(lines: adjusted.lines" in v2editor
 assert "!local.contains(store.id)" in swift["Views.swift"]
 print("Build 80 live amount preview and draft recovery routing PASS")
 
-assert "TXBillPreviewEntry(scope: scope)" in v2editor
+assert "TXBillPreviewEntry(scope: scope, draft: draft, onStage: stageBillPlan)" in v2editor
 bill = swift["BusinessBillCSV.swift"] + swift["BusinessBillPreviewView.swift"]
 assert "TXBillCSV.parse" in bill and "账单收款人" in bill
 assert "commitBusiness" not in bill and "URLSession" not in bill and "customer-analytics/push" not in bill
@@ -744,3 +744,12 @@ assert "compression_decode_buffer" in swift["BusinessBillArchive.swift"] and "cr
 assert "TXBillCloudAudit" in swift["BusinessBillPreviewView.swift"]
 assert "SOURCE_LINK" in swift["BusinessBillReconciliation.swift"] and "COLLECTOR" in swift["BusinessBillReconciliation.swift"]
 print("Build 81 bounded archive and multi-file attribution preview guard PASS")
+
+plan = swift["BusinessBillLocalPlan.swift"]
+assert "ios.business.bill.plan.v1." in plan
+assert "TXBillPlanStore.requireNoPlan(scope)" in swift["LedgerViewModel.swift"]
+assert "TXBusinessV2DraftStore.save(draft, scope: scope)" in v2editor
+assert "TXBillPlanStore.save(plan, scope: scope)" in v2editor
+assert "TXBusinessV2Preparation.adjusted" in plan and "proposed.collectors[index].cash" not in plan
+assert "customer-analytics/push" not in plan and "URLSession" not in plan
+print("Build 81 separate bill plan, cash preservation and ordinary upload guard PASS")
