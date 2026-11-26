@@ -756,3 +756,11 @@ print("Build 81 separate bill plan, cash preservation and ordinary upload guard 
 
 assert (root.parent / "Tests" / "BusinessBillLocalPlanTests.swift").exists()
 assert "try TXBillPlanStore.requireNoPlan(scope)" in swift["LedgerViewModel.swift"]
+
+wire = swift["BusinessBillV3Wire.swift"]
+assert "object[\"protocol_version\"] = 3" in wire and "object[\"bill\"]" in wire
+assert "book.name.hasPrefix(\"iOS_TEST_\")" in wire
+assert "TXBusinessV2Readback.verified" in wire and "request.bill.eventKeys" in wire
+assert "URLSession" not in wire and "/v3/commit" not in wire
+assert "wireBill: wire" in plan
+print("Build 81 V3 exact request, full single-day evidence and two-stream receipt guard PASS")

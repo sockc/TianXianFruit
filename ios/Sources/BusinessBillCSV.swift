@@ -32,6 +32,10 @@ struct TXBillPreviewRow: Equatable, Identifiable {
     let dedupeKey: String
     let customerKey: String
     let reliableIdentity: Bool
+    let customerName: String
+    let transactionType: String
+    let merchantProduct: String
+    let tradeStatus: String
     var id: String { platform.rawValue + "|" + dedupeKey }
     var date: String { String(tradeTime.prefix(10)) }
     var hour: Int { Int(tradeTime.dropFirst(11).prefix(2)) ?? -1 }
@@ -41,6 +45,7 @@ struct TXBillPreviewRow: Equatable, Identifiable {
 struct TXBillCSVResult: Equatable {
     let platform: TXBillPlatform
     let fileHash: String
+    let fileName: String
     let rows: [TXBillPreviewRow]
     let ignored: Int
     let review: Int
@@ -173,6 +178,7 @@ enum TXBillCSV {
     }
 
     static func parse(fileName: String, data: Data) throws -> TXBillCSVResult {
+        let originalName = (fileName as NSString).lastPathComponent
         let decoded = try TXBillArchive.read(fileName: fileName, data: data)
         let source = decoded.rows.prefix(30).flatMap { $0 }.joined(separator: "|")
         let rows = decoded.rows
@@ -236,13 +242,17 @@ enum TXBillCSV {
                 !stable.contains(where: { "*＊•●··".contains($0) })
             let prefix = platform.rawValue
             let customer = hash(reliable ? prefix + "|ID|" + stable : prefix + "|ANON|" + ref + "|" + stamp)
+            let display = value(["交易对方","付款方","付款方名称","买家名称","对方名称","对方昵称","用户昵称","买家","明细名称"])
+            let suffix = String(stable.filter { $0.isLetter || $0.isNumber }.suffix(4))
+            let name = display.isEmpty ? (reliable ? platform.label + "客户·" + (suffix.isEmpty ? "****" : suffix) : "匿名客户") : display
             let key = hash([prefix,ref,stamp,kotlinMoney(paid),kotlinMoney(refund),status].joined(separator: "|"))
             if seen.contains(key) { duplicates += 1; continue }
             if let old = byRef[ref], old != key { throw TXBillCSVError.conflict }
             byRef[ref] = key; seen.insert(key)
             accepted.append(TXBillPreviewRow(platform: platform, tradeTime: stamp, reference: ref, cents: paid,
-                refundCents: refund, dedupeKey: key, customerKey: customer, reliableIdentity: reliable))
+                refundCents: refund, dedupeKey: key, customerKey: customer, reliableIdentity: reliable,
+                customerName: name, transactionType: kind, merchantProduct: goods, tradeStatus: status))
         }
-        return TXBillCSVResult(platform: platform, fileHash: digest(data), rows: accepted, ignored: ignored, review: review, duplicates: duplicates)
+        return TXBillCSVResult(platform: platform, fileHash: digest(data), fileName: originalName, rows: accepted, ignored: ignored, review: review, duplicates: duplicates)
     }
 }

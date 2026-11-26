@@ -80,8 +80,13 @@ struct TXBillCloudAudit {
         self.receipts = receipts; referenceKeys = refs; sourceLinks = links; collectors = owners; conflictedCollectors = conflicts
     }
     private func moneyMatches(_ value: JSONValue?, _ cents: Int64) -> Bool {
-        guard let n = value?.decimal, n.isFinite else { return false }
-        return abs(n*100-Double(cents)) < 0.00001
+        let n: Double
+        switch value {
+        case .number(let x)?: n = x
+        case .exactInteger(let x)?: n = Double(x)
+        default: return false
+        }
+        return n.isFinite && abs(n*100-Double(cents)) < 0.00001
     }
     /// Only a known same-collector cloud row can establish missing coverage.
     /// Unknown attribution does not establish zero or completeness.

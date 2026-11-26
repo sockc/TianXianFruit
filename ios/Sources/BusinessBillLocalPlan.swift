@@ -32,6 +32,8 @@ struct TXBillLocalPlan: Codable, Equatable {
     let adjustedWechat: Int64
     let adjustedAlipay: Int64
     let adjustedCash: Int64
+    // Optional for compatibility with previously staged preview-only plans.
+    let wireBill: TXBillV3Input?
 
     static func build(scope: TXBusinessV2EditorScope, draft: TXBusinessV2LocalDraft,
                       partner: String, batch: TXBillBatchPreview, confirmed: Set<TXBillPlatform>,
@@ -98,10 +100,16 @@ struct TXBillLocalPlan: Codable, Equatable {
         let input = proposed.collectors[index]
         let request = try input.request(previousRevision: pair.0.revision, followingRevision: pair.1.revision)
         let amounts = try TXBusinessV2Preparation.adjusted(request, previous: pair.0.morning, following: pair.1.morning)
+        let candidate = try? TXBillV3Input.build(batch: batch, date: scope.date, partner: partner, channels: platforms, cursor: customerCursor)
+        let wire: TXBillV3Input?
+        if let candidate, (try? candidate.validate(date: scope.date, partner: partner, channels: platforms, cursor: customerCursor,
+                receiptKeys: keys.sorted(), fileHashes: hashes.sorted(), target: input)) != nil { wire = candidate }
+        else { wire = nil }
         return Self(scopeID: scope.id, partner: partner, date: scope.date, original: draft, proposed: proposed,
                     platforms: platforms, receiptKeys: keys.sorted(), fileHashes: hashes.sorted(),
                     previousRevision: pair.0.revision, followingRevision: pair.1.revision,
-                    customerCursor: customerCursor, adjustedWechat: amounts[0], adjustedAlipay: amounts[1], adjustedCash: amounts[2])
+                    customerCursor: customerCursor, adjustedWechat: amounts[0], adjustedAlipay: amounts[1], adjustedCash: amounts[2],
+                    wireBill: wire)
     }
 
     var originalCollector: TXBusinessV2CollectorInput? { original.collectors.first { $0.partner == partner } }
@@ -119,6 +127,10 @@ struct TXBillLocalPlan: Codable, Equatable {
         if platforms.contains(.alipay) { expected.collectors[i].alipay.natural = target.alipay.natural }
         guard expected == proposed, original.collectors[i].matchesSources(previous: previousRevision, following: followingRevision)
         else { throw TXBillPlanError.scope }
+        if let wireBill {
+            try wireBill.validate(date: date, partner: partner, channels: platforms, cursor: customerCursor,
+                                  receiptKeys: receiptKeys, fileHashes: fileHashes, target: target)
+        }
     }
 }
 

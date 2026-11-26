@@ -329,6 +329,13 @@ struct TXBusinessV2DraftEditor: View {
                 if billPlan.customerCursor != model.customerCursor || billPlan.original != draft {
                     Text("原输入或客户游标已变化，补录方案需要重新核对。").font(.caption).foregroundColor(.orange)
                 }
+                if let wire = billPlan.wireBill {
+                    Text("已保留 \(wire.receipts.count) 笔完整交易证据，可用于 V3 请求核对。")
+                        .font(.caption2).foregroundColor(.secondary)
+                } else {
+                    Text("仅预览：V3 首版要求完整单日文件、最多1000笔及明确经营凭据。")
+                        .font(.caption2).foregroundColor(.orange)
+                }
                 Text("仅保存独立草稿；原营业及客户数据未更改。联合提交尚未开放。")
                     .font(.caption).foregroundColor(.orange)
                 Button("放弃补录草稿", role: .destructive) { discardBill = true }.disabled(editorLocked)
