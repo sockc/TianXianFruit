@@ -94,6 +94,7 @@ struct TXBillLocalPlan: Codable, Equatable {
             if platform == .wechat { proposed.collectors[index].wechat.natural = BusinessCommitPolicy.money(net) }
             else { proposed.collectors[index].alipay.natural = BusinessCommitPolicy.money(net) }
         }
+        guard keys.count <= 10000 else { throw TXBillCSVError.tooLarge }
         let input = proposed.collectors[index]
         let request = try input.request(previousRevision: pair.0.revision, followingRevision: pair.1.revision)
         let amounts = try TXBusinessV2Preparation.adjusted(request, previous: pair.0.morning, following: pair.1.morning)
@@ -109,7 +110,7 @@ struct TXBillLocalPlan: Codable, Equatable {
     func validate(scope: TXBusinessV2EditorScope) throws {
         guard scopeID == scope.id, date == scope.date, !platforms.isEmpty,
               Set(platforms).count == platforms.count, !receiptKeys.isEmpty, !fileHashes.isEmpty,
-              receiptKeys.count <= 100000, fileHashes.count <= 12,
+              receiptKeys.count <= 10000, fileHashes.count <= 12,
               let i = original.collectors.firstIndex(where: { $0.partner == partner }),
               original.collectors.filter({ $0.partner == partner }).count == 1,
               let target = proposedCollector else { throw TXBillPlanError.scope }

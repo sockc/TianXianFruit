@@ -753,3 +753,6 @@ assert "TXBillPlanStore.save(plan, scope: scope)" in v2editor
 assert "TXBusinessV2Preparation.adjusted" in plan and "proposed.collectors[index].cash" not in plan
 assert "customer-analytics/push" not in plan and "URLSession" not in plan
 print("Build 81 separate bill plan, cash preservation and ordinary upload guard PASS")
+
+assert (root.parent / "Tests" / "BusinessBillLocalPlanTests.swift").exists()
+assert "try TXBillPlanStore.requireNoPlan(scope)" in swift["LedgerViewModel.swift"]
