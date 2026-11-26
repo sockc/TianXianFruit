@@ -377,7 +377,7 @@ struct TXBusinessV2DraftEditor: View {
     private var billCard: some View {
         card {
             if let billPlan, let original = billPlan.originalCollector, let proposed = billPlan.proposedCollector {
-                Text("账单补录草稿 · 未提交").font(.subheadline.bold())
+                Text(billVerified ? "账单补录 · 已回读确认" : (billReserved == nil ? "账单补录草稿 · 未提交" : "账单补录 · 原请求已锁定")).font(.subheadline.bold())
                 HStack { Text("微信自然日"); Spacer(); Text(original.wechat.natural + " → " + proposed.wechat.natural) }
                     .font(.caption)
                 HStack { Text("支付宝自然日"); Spacer(); Text(original.alipay.natural + " → " + proposed.alipay.natural) }
@@ -386,7 +386,7 @@ struct TXBusinessV2DraftEditor: View {
                 let amount = billPlan.adjustedWechat + billPlan.adjustedAlipay + billPlan.adjustedCash
                 HStack { Text("该收款人调整后预览"); Spacer(); Text("¥" + BusinessCommitPolicy.money(amount)).bold() }
                     .font(.caption)
-                if billPlan.customerCursor != model.customerCursor || billPlan.original != draft {
+                if billReserved == nil && (billPlan.customerCursor != model.customerCursor || billPlan.original != draft) {
                     Text("原输入或客户游标已变化，补录方案需要重新核对。").font(.caption).foregroundColor(.orange)
                 }
                 if let wire = billPlan.wireBill {

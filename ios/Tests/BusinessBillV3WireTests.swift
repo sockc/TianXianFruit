@@ -68,4 +68,62 @@ final class BusinessBillV3WireTests: XCTestCase {
         let disabled = try JSONDecoder().decode(TXBillV3Capabilities.self,from:Data(text.replacingOccurrences(of:"\"enabled\":true",with:"\"enabled\":false").utf8))
         XCTAssertFalse(disabled.allows(book:book))
     }
+
+    func testImmutableBodyAndOutboxReopen() throws {
+        let (plan,scope,account,book,records) = try fixture()
+        let request = try TXBillV3Prepared.prepare(plan:plan,scope:scope,account:account,book:book,
+            records:records,events:[],cursor:0)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: request.body(deviceID: "test-device")) as? [String:Any])
+        XCTAssertEqual(body["protocol_version"] as? Int,3)
+        XCTAssertEqual(body["device_id"] as? String,"test-device")
+        XCTAssertEqual(body["payload_hash"] as? String,request.hash)
+        var withoutTransport = body
+        withoutTransport.removeValue(forKey:"device_id")
+        withoutTransport.removeValue(forKey:"payload_hash")
+        XCTAssertEqual(try JSONSerialization.data(withJSONObject:withoutTransport,options:[.sortedKeys,.withoutEscapingSlashes]),request.canonical)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let file = folder.appendingPathComponent("v3.sqlite")
+        let outbox = try TXBillV3Outbox(url:file)
+        XCTAssertNil(try outbox.load(scope))
+        try outbox.reserve(request)
+        XCTAssertThrowsError(try outbox.reserve(request))
+        XCTAssertEqual(try TXBillV3Outbox(url:file).load(scope),request)
+        let other = TXBusinessV2EditorScope(account:"other",book:scope.book,date:scope.date,storeID:scope.storeID,storeName:scope.storeName)
+        XCTAssertNil(try outbox.load(other))
+        let invalid = TXBillV3Prepared(base:request.base,bill:request.bill,canonical:request.canonical,hash:String(repeating:"0",count:64))
+        XCTAssertThrowsError(try outbox.reserve(invalid))
+        XCTAssertEqual(try outbox.load(scope),request)
+    }
+
+    func testReceiptRejectsWrongHashMissingEventAndStaleCursor() throws {
+        let (plan,scope,account,book,records) = try fixture()
+        let request = try TXBillV3Prepared.prepare(plan:plan,scope:scope,account:account,book:book,
+            records:records,events:[],cursor:0)
+        let wire = try request.base.validated()
+        let revisions: [[String:Any]] = wire.natural.map {
+            ["partner_sync_id":$0.partnerSyncID,"previous_revision":$0.previousRevision,
+             "following_revision":$0.followingRevision+1,"natural_revision":1]
+        }
+        let manifest: [[String:Any]] = request.bill.eventKeys.sorted().map {
+            let fields = $0.split(separator:"|",maxSplits:1).map(String.init)
+            return ["kind":fields[0],"key":fields[1],"revision":1]
+        }
+        let original: [String:Any] = ["status":"committed","operation_id":wire.operation_id,
+            "book_id":wire.book_id,"record_sync_id":BusinessUploadPolicy.androidSyncID(date:scope.date,storeSyncID:scope.storeID),
+            "collector_sync_ids":request.base.prepared.proposal.collectors.map(\.partnerSyncID),"payload_hash":request.hash,
+            "sync_cursor":22,"customer_cursor":10,"bill_events":manifest,"overnight_receipts":revisions,
+            "expense_payer_sync_id":wire.expense_payer_sync_id ?? ""]
+        func decode(_ body:[String:Any]) throws -> TXBillV3Receipt {
+            try JSONDecoder().decode(TXBillV3Receipt.self,from:JSONSerialization.data(withJSONObject:body))
+        }
+        XCTAssertTrue(try decode(original).matches(request))
+        var broken = original; broken["payload_hash"] = request.base.prepared.hash
+        XCTAssertFalse(try decode(broken).matches(request))
+        broken = original; broken["bill_events"] = Array(manifest.dropLast())
+        XCTAssertFalse(try decode(broken).matches(request))
+        broken = original; broken["customer_cursor"] = 0
+        XCTAssertFalse(try decode(broken).matches(request))
+        XCTAssertFalse(try decode(original).verified(request,records:records,events:[],ledgerCursor:22,customerCursor:10))
+    }
 }
