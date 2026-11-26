@@ -103,7 +103,7 @@ struct TXBillCloudAudit {
             else if (sourceLinks[row.id] ?? []).contains(source) { unknown = true }
         }
         if found.contains(where: { $0 != selectedPartner }) { return .otherCollector }
-        if existing == nil { return unknown && !found.isEmpty ? .unknownCollector : .new }
+        if existing == nil { return unknown ? .unknownCollector : .new }
         if found == [selectedPartner] && !unknown { return .sameCollector }
         return .unknownCollector
     }

@@ -25,6 +25,7 @@ private struct TXBillPreviewView: View {
     @State private var batch: TXBillBatchPreview?
     @State private var error: String?
     @State private var selectedDayOffset = 0
+    @State private var duplicateFilesSeen = 0
 
     private var permitted: Bool { scope.permits(model.account, model.selectedBook) }
     private var selectedDate: String {
@@ -75,6 +76,7 @@ private struct TXBillPreviewView: View {
                     }.value
                     guard permitted, chosenPartner == partner else { return }
                     let combined = try TXBillBatchPreview(files + parsed)
+                    duplicateFilesSeen += combined.duplicateFiles
                     files = combined.files
                     batch = combined
                 } catch { self.error = error.localizedDescription }
@@ -97,7 +99,7 @@ private struct TXBillPreviewView: View {
             }
             HStack { Text("付款笔数"); Spacer(); Text("\(rows.filter { $0.cents > 0 && $0.net > 0 }.count)") }
             if let batch {
-                Text("\(batch.files.count) 份有效文件，跨文件重复 \(batch.duplicateRows) 笔，重复文件 \(batch.duplicateFiles) 份。")
+                Text("\(batch.files.count) 份有效文件，跨文件重复 \(batch.duplicateRows) 笔，重复文件 \(duplicateFilesSeen) 份。")
                     .font(.caption)
                 Text("文件内重复 \(batch.files.reduce(0) { $0 + $1.duplicates }) 笔，异常待核对 \(batch.files.reduce(0) { $0 + $1.review }) 笔。")
                     .font(.caption)
@@ -130,7 +132,7 @@ private struct TXBillPreviewView: View {
                         Label(reading ? "正在解析" : "添加账单文件", systemImage: "folder")
                     }.disabled(!permitted || partner.isEmpty || reading || files.count >= 12)
                     if !files.isEmpty {
-                        Button("清空本次预览", role: .destructive) { files = []; batch = nil; error = nil }.disabled(reading)
+                        Button("清空本次预览", role: .destructive) { files = []; batch = nil; duplicateFilesSeen = 0; error = nil }.disabled(reading)
                     }
                     if let error { Text(error).font(.caption).foregroundColor(.red) }
                 }
@@ -145,7 +147,7 @@ private struct TXBillPreviewView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() }.disabled(reading) } }
             .fileImporter(isPresented: $choose, allowedContentTypes: [.commaSeparatedText,.plainText,.zip,UTType(filenameExtension: "xlsx") ?? .data], allowsMultipleSelection: true, onCompletion: importFile)
-            .onChange(of: partner) { _ in files = []; batch = nil; error = nil }
+            .onChange(of: partner) { _ in files = []; batch = nil; duplicateFilesSeen = 0; error = nil }
             .onChange(of: permitted) { allowed in if !allowed { files = []; batch = nil; dismiss() } }
         }.navigationViewStyle(.stack)
     }
