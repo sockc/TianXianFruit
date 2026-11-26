@@ -764,3 +764,14 @@ assert "TXBusinessV2Readback.verified" in wire and "request.bill.eventKeys" in w
 assert "URLSession" not in wire and "/v3/commit" not in wire
 assert "wireBill: wire" in plan
 print("Build 81 V3 exact request, full single-day evidence and two-stream receipt guard PASS")
+
+v3out = swift["BusinessBillV3Outbox.swift"]
+assert "INSERT INTO reserved(scope,payload)" in v3out and "DELETE FROM reserved" not in v3out
+assert regular.count('request("POST", "/api/v1/business/v3/commit"') == 1
+assert "capabilities.allows(book: book)" in regular
+v3vm = swift["LedgerViewModel.swift"].split("func submitBillV3(")[1].split("func submitBusinessV2(")[0]
+assert v3vm.index("try outbox.reserve(immutable)") < v3vm.index("api.billV3Commit(token:")
+assert "api.billV3Operation" in v3vm and "receipt.verified" in v3vm
+assert "TXBillV3Outbox().load(scope) == nil" in v2tx
+assert "billV3Scope" in v3vm and "联合保存营业与客户交易" in v2editor
+print("Build 81 V3 test-only single POST, durable reservation and query-only recovery PASS")

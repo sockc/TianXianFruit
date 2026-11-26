@@ -187,6 +187,8 @@ final class TXBusinessV2Outbox {
     static func requireV1Free(book: CloudBook, account: String, date: String, storeID: String) throws {
         let scope = TXBusinessV2EditorScope(account: account, book: book.id, date: date, storeID: storeID, storeName: "")
         guard try TXBusinessV2Outbox().load(scope) == nil,
+              try TXBillV3Outbox().load(scope) == nil,
+              try TXBillPlanStore.load(scope) == nil,
               try TXBusinessV2DraftStore.load(scope) == nil else { throw BusinessAtomicError.locked }
     }
 

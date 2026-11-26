@@ -163,6 +163,70 @@ final class LedgerViewModel: ObservableObject {
               customerBefore == nil || latest > customerBefore! else { throw BusinessAtomicError.cloudConflict }
     }
 
+    private func billV3Scope(_ scope: TXBusinessV2EditorScope, token: String) -> Bool {
+        businessV2Scope(scope, token: token) && selectedBook?.name.hasPrefix("iOS_TEST_") == true
+    }
+
+    func checkBillV3(_ scope: TXBusinessV2EditorScope) async throws -> Bool {
+        guard let token = accessToken, billV3Scope(scope, token: token) else { return false }
+        let caps = try await api.billV3Capabilities(token: token, bookID: scope.book)
+        guard billV3Scope(scope, token: token), let book = selectedBook else { return false }
+        return caps.allows(book: book)
+    }
+
+    func submitBillV3(_ immutable: TXBillV3Prepared, plan: TXBillLocalPlan) async throws {
+        let scope = immutable.base.scope
+        guard !isBusinessCommitBusy, !isPurchaseCommitBusy, !isSettlementCommitBusy, !isLedgerV33Busy, !v33HasPending,
+              let token = accessToken, billV3Scope(scope, token: token) else { throw BusinessAtomicError.scope }
+        isBusinessCommitBusy = true
+        defer { isBusinessCommitBusy = false }
+        let outbox = try TXBillV3Outbox()
+        guard try outbox.load(scope) == nil, try TXBusinessV2Outbox().load(scope) == nil,
+              try TXBillPlanStore.load(scope) == plan,
+              try TXBusinessV2DraftStore.load(scope) == plan.original else { throw BusinessAtomicError.locked }
+        try await freshBusinessV2(scope, token: token)
+        let caps = try await api.billV3Capabilities(token: token, bookID: scope.book)
+        guard billV3Scope(scope, token: token), let book = selectedBook, let user = account,
+              caps.allows(book: book), !isBusy, !isCustomerBusy, !v33HasPending else { throw BusinessAtomicError.unavailable }
+        guard !(try BusinessLocalDraftStore.loadChecked(account: scope.account, bookID: scope.book))
+            .contains(where: { $0.date == scope.date && $0.storeID == scope.storeID }),
+              try TXBillPlanStore.load(scope) == plan,
+              try TXBusinessV2DraftStore.load(scope) == plan.original,
+              try TXBusinessV2Outbox().load(scope) == nil,
+              try outbox.load(scope) == nil else { throw BusinessAtomicError.locked }
+        let rebuilt = try TXBillV3Prepared.prepare(plan: plan, scope: scope, account: user, book: book,
+            records: Array(snapshot.records.values), events: Array(customerSnapshot.events.values), cursor: customerCursor)
+        guard rebuilt == immutable else { throw BusinessAtomicError.cloudConflict }
+        // Reserve before the one network write. Never place proposed amounts
+        // in ordinary V1/V2 drafts; no fallbacks or automatic retransmission.
+        try outbox.reserve(immutable)
+        let receipt = try await api.billV3Commit(token: token, immutable: immutable,
+            book: book, account: user, capabilities: caps)
+        try await verifyBillV3(immutable, receipt: receipt, token: token)
+    }
+
+    func recoverBillV3(_ immutable: TXBillV3Prepared) async throws {
+        let scope = immutable.base.scope
+        guard !isBusinessCommitBusy, !isPurchaseCommitBusy, !isSettlementCommitBusy, !isLedgerV33Busy,
+              let token = accessToken, billV3Scope(scope, token: token), let book = selectedBook, let user = account,
+              try TXBillV3Outbox().load(scope) == immutable else { throw BusinessAtomicError.scope }
+        isBusinessCommitBusy = true
+        defer { isBusinessCommitBusy = false }
+        // Recovery remains available if the server stops admitting new writes.
+        guard let receipt = try await api.billV3Operation(token: token, immutable: immutable, book: book, account: user) else {
+            throw BusinessAtomicError.missingResult
+        }
+        try await verifyBillV3(immutable, receipt: receipt, token: token)
+    }
+
+    private func verifyBillV3(_ immutable: TXBillV3Prepared, receipt: TXBillV3Receipt, token: String) async throws {
+        try await freshBusinessV2(immutable.base.scope, token: token)
+        guard billV3Scope(immutable.base.scope, token: token),
+              receipt.verified(immutable, records: Array(snapshot.records.values),
+                events: Array(customerSnapshot.events.values), ledgerCursor: currentCursor, customerCursor: customerCursor)
+        else { throw BusinessAtomicError.readback }
+    }
+
     func submitBusinessV2(_ immutable: TXBusinessV2Immutable, draft: TXBusinessV2LocalDraft) async throws {
         let scope = immutable.scope
         guard !isBusinessCommitBusy, !isPurchaseCommitBusy, !isSettlementCommitBusy, !isLedgerV33Busy,
@@ -170,6 +234,7 @@ final class LedgerViewModel: ObservableObject {
         isBusinessCommitBusy = true
         defer { isBusinessCommitBusy = false }
         try TXBillPlanStore.requireNoPlan(scope)
+        guard try TXBillV3Outbox().load(scope) == nil else { throw BusinessAtomicError.locked }
         let outbox = try TXBusinessV2Outbox()
         guard try outbox.load(scope) == nil else { throw BusinessAtomicError.locked }
         try await freshBusinessV2(scope, token: token)
@@ -180,6 +245,7 @@ final class LedgerViewModel: ObservableObject {
         guard !(try BusinessLocalDraftStore.loadChecked(account: scope.account, bookID: scope.book))
             .contains(where: { $0.date == scope.date && $0.storeID == scope.storeID }) else { throw BusinessAtomicError.locked }
         try TXBillPlanStore.requireNoPlan(scope)
+        guard try TXBillV3Outbox().load(scope) == nil else { throw BusinessAtomicError.locked }
         let rebuilt = try TXBusinessV2DraftPolicy.prepare(draft, scope: scope, account: user, book: book,
             records: Array(snapshot.records.values), events: Array(customerSnapshot.events.values))
         guard rebuilt == immutable.prepared else { throw BusinessAtomicError.cloudConflict }

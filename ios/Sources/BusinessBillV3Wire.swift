@@ -183,6 +183,15 @@ struct TXBillV3Prepared: Codable, Equatable {
         object["bill"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(bill))
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys,.withoutEscapingSlashes])
     }
+    func body(deviceID: String) throws -> Data {
+        try validate()
+        guard !deviceID.isEmpty, var object = try JSONSerialization.jsonObject(with: canonical) as? [String: Any] else {
+            throw BusinessAtomicError.invalidDraft
+        }
+        object["device_id"] = deviceID
+        object["payload_hash"] = hash
+        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys,.withoutEscapingSlashes])
+    }
     func validate() throws {
         let w = try base.validated()
         guard let row = w.natural.first(where: { $0.partnerSyncID == bill.partner_sync_id }),
@@ -215,18 +224,25 @@ struct TXBillV3Receipt: Decodable {
         bill_events = try c.decode([Event].self, forKey: .bill_events)
         customer_cursor = try c.decode(Int64.self, forKey: .customer_cursor)
     }
-    func verified(_ request: TXBillV3Prepared, records: [SyncEvent], events: [CustomerChangeEvent],
-                  ledgerCursor: Int64, customerCursor: Int64) -> Bool {
-        guard (try? request.validate()) != nil, base.payload_hash == request.hash,
-              customer_cursor >= request.bill.expected_customer_cursor, customerCursor >= customer_cursor,
-              Set(bill_events.map(\.id)) == request.bill.eventKeys,
-              bill_events.count == request.bill.eventKeys.count,
-              bill_events.allSatisfy({ $0.revision > 0 }) else { return false }
-        // Adapt only after the V3 hash and exact event manifest are checked.
-        let adapter = TXBusinessV2Receipt(status: base.status, operation_id: base.operation_id,
+    private func adapter(_ request: TXBillV3Prepared) -> TXBusinessV2Receipt {
+        TXBusinessV2Receipt(status: base.status, operation_id: base.operation_id,
             book_id: base.book_id, record_sync_id: base.record_sync_id, collector_sync_ids: base.collector_sync_ids,
             payload_hash: request.base.prepared.hash, sync_cursor: base.sync_cursor,
             overnight_receipts: base.overnight_receipts, expense_payer_sync_id: base.expense_payer_sync_id)
+    }
+    func matches(_ request: TXBillV3Prepared) -> Bool {
+        guard (try? request.validate()) != nil, base.payload_hash == request.hash,
+              customer_cursor > request.bill.expected_customer_cursor,
+              Set(bill_events.map(\.id)) == request.bill.eventKeys,
+              bill_events.count == request.bill.eventKeys.count,
+              bill_events.allSatisfy({ $0.revision > 0 }) else { return false }
+        return adapter(request).matches(request.base)
+    }
+    func verified(_ request: TXBillV3Prepared, records: [SyncEvent], events: [CustomerChangeEvent],
+                  ledgerCursor: Int64, customerCursor: Int64) -> Bool {
+        guard matches(request), customerCursor >= customer_cursor else { return false }
+        // Adapt only after the actual V3 hash and exact event manifest are checked.
+        let adapter = adapter(request)
         guard TXBusinessV2Readback.verified(request.base, receipt: adapter, records: records, events: events,
             ledgerCursor: ledgerCursor) else { return false }
         var index: [String: CustomerChangeEvent] = [:]

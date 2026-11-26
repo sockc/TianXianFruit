@@ -230,6 +230,11 @@ struct TXBusinessV2DraftEditor: View {
     @State private var showSend = false
     @State private var billPlan: TXBillLocalPlan?
     @State private var discardBill = false
+    @State private var billAllowed = false
+    @State private var billReserved: TXBillV3Prepared?
+    @State private var billPrepared: TXBillV3Prepared?
+    @State private var billVerified = false
+    @State private var showBillSend = false
 
     private var permitted: Bool { scope.permits(model.account, model.selectedBook) }
     private var sourcesReady: Bool {
@@ -252,10 +257,11 @@ struct TXBusinessV2DraftEditor: View {
             saved = draft
             reserved = try TXBusinessV2Outbox().load(scope)
             billPlan = try TXBillPlanStore.load(scope)
+            billReserved = try TXBillV3Outbox().load(scope)
         } catch { storageError = error.localizedDescription }
     }
     private func save() {
-        guard permitted, loaded, storageError == nil, reserved == nil, !working else { return }
+        guard permitted, loaded, storageError == nil, reserved == nil, billReserved == nil, !working else { return }
         do {
             try TXBusinessV2DraftStore.save(draft, scope: scope)
             saved = draft
@@ -264,7 +270,7 @@ struct TXBusinessV2DraftEditor: View {
     }
     private func prepare() {
         prepared = nil
-        guard billPlan == nil else { message = TXBillPlanError.pending.localizedDescription; return }
+        guard billPlan == nil, billReserved == nil else { message = TXBillPlanError.pending.localizedDescription; return }
         guard sourcesReady, reserved == nil, !working, let account = model.account, let book = model.selectedBook else {
             message = "请先完成在线营业及凌晨同步"; return
         }
@@ -283,6 +289,7 @@ struct TXBusinessV2DraftEditor: View {
     private func refreshSources() async {
         guard !working, permitted else { return }
         serverAllowed = false
+        billAllowed = false
         await model.refresh()
         guard permitted else { return }
         await model.refreshCustomer()
@@ -291,6 +298,8 @@ struct TXBusinessV2DraftEditor: View {
             serverAllowed = try await model.checkBusinessV2(scope)
             if !serverAllowed { message = "当前账本未获得 V2 写入授权；草稿仍可保存" }
         } catch { message = "V2 接口未开放：" + error.localizedDescription }
+        guard permitted, isTest else { return }
+        billAllowed = (try? await model.checkBillV3(scope)) == true
     }
 
     private func stageBillPlan(_ plan: TXBillLocalPlan) throws {
@@ -307,12 +316,63 @@ struct TXBusinessV2DraftEditor: View {
         billPlan = plan; prepared = nil
     }
     private func discardStagedBill() {
-        guard permitted, !editorLocked, let billPlan else { return }
+        guard permitted, !editorLocked, billReserved == nil, let billPlan else { return }
         do {
             try TXBillPlanStore.discard(billPlan, scope: scope)
             self.billPlan = nil
             message = "已放弃独立补录草稿，原营业输入未改动"
         } catch { message = error.localizedDescription }
+    }
+    private func prepareBillSend() {
+        billPrepared = nil
+        guard isTest, billAllowed, sourcesReady, !editorLocked, let plan = billPlan,
+              draft == plan.original, let user = model.account, let book = model.selectedBook else { return }
+        do {
+            billPrepared = try TXBillV3Prepared.prepare(plan: plan, scope: scope, account: user, book: book,
+                records: Array(model.snapshot.records.values), events: events, cursor: model.customerCursor)
+            showBillSend = true
+        } catch { message = error.localizedDescription }
+    }
+    private func sendBill() async {
+        guard isTest, billAllowed, sourcesReady, !editorLocked, let plan = billPlan,
+              draft == plan.original, let request = billPrepared else { return }
+        working = true
+        defer { working = false; billPrepared = nil }
+        do {
+            try await model.submitBillV3(request, plan: plan)
+            billVerified = true
+            message = "营业、凌晨及客户交易均已云端回读一致"
+        } catch { message = error.localizedDescription }
+        do { billReserved = try TXBillV3Outbox().load(scope) }
+        catch { storageError = error.localizedDescription }
+    }
+    private func recoverBill() async {
+        guard !working, permitted, isTest, let request = billReserved else { return }
+        working = true
+        defer { working = false }
+        do {
+            try await model.recoverBillV3(request)
+            billVerified = true
+            message = "已核对原操作：营业及客户数据一致"
+        } catch { message = error.localizedDescription }
+    }
+    private var billActions: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if billReserved != nil {
+                Text(billVerified ? "联合提交已确认" : "原联合请求已锁定，仅可查询核对")
+                    .font(.caption).foregroundColor(billVerified ? .green : .orange)
+                Button("查询原联合操作") { Task { await recoverBill() } }.disabled(working || !permitted || !isTest)
+            } else {
+                if isTest && billAllowed, billPlan?.wireBill != nil {
+                    Button("联合保存营业与客户交易") { prepareBillSend() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(editorLocked || !sourcesReady || billPlan?.customerCursor != model.customerCursor || billPlan?.original != draft)
+                } else {
+                    Text("V3 暂未获得测试账本授权，不能联合上传。").font(.caption).foregroundColor(.orange)
+                }
+                Button("放弃补录草稿", role: .destructive) { discardBill = true }.disabled(editorLocked)
+            }
+        }
     }
     private var billCard: some View {
         card {
@@ -336,9 +396,9 @@ struct TXBusinessV2DraftEditor: View {
                     Text("仅预览：V3 首版要求完整单日文件、最多1000笔及明确经营凭据。")
                         .font(.caption2).foregroundColor(.orange)
                 }
-                Text("仅保存独立草稿；原营业及客户数据未更改。联合提交尚未开放。")
-                    .font(.caption).foregroundColor(.orange)
-                Button("放弃补录草稿", role: .destructive) { discardBill = true }.disabled(editorLocked)
+                billActions
+            } else if billReserved != nil {
+                billActions
             } else {
                 TXBillPreviewEntry(scope: scope, draft: draft, onStage: stageBillPlan).disabled(editorLocked || !loaded)
             }
@@ -350,13 +410,13 @@ struct TXBusinessV2DraftEditor: View {
     }
     private func requestClose() {
         guard !working else { return }
-        if reserved != nil { onClose(); return }
+        if reserved != nil || billReserved != nil { onClose(); return }
         if saved != draft && storageError == nil { showClose = true }
         else { onClose() }
     }
 
     private func send(_ request: TXBusinessV2Immutable) async {
-        guard !working, permitted, serverAllowed, sourcesReady, billPlan == nil, reserved == nil, prepared == request.prepared else { return }
+        guard !working, permitted, serverAllowed, sourcesReady, billPlan == nil, billReserved == nil, reserved == nil, prepared == request.prepared else { return }
         working = true
         defer { working = false }
         do {
@@ -402,7 +462,7 @@ struct TXBusinessV2DraftEditor: View {
         }
     }
 
-    private var editorLocked: Bool { !permitted || storageError != nil || reserved != nil || working }
+    private var editorLocked: Bool { !permitted || storageError != nil || reserved != nil || billReserved != nil || working }
     private var isTest: Bool { model.selectedBook?.name.hasPrefix("iOS_TEST_") == true }
 
     private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
@@ -504,9 +564,9 @@ struct TXBusinessV2DraftEditor: View {
         editorContent
             .onAppear(perform: load)
             .task { await refreshSources() }
-            .onChange(of: draft) { _ in prepared = nil; message = "" }
-            .onChange(of: model.customerCursor) { _ in prepared = nil }
-            .onChange(of: model.currentCursor) { _ in prepared = nil }
+            .onChange(of: draft) { _ in prepared = nil; billPrepared = nil; message = "" }
+            .onChange(of: model.customerCursor) { _ in prepared = nil; billPrepared = nil }
+            .onChange(of: model.currentCursor) { _ in prepared = nil; billPrepared = nil }
     }
 
     private var guardedContent: some View {
@@ -539,8 +599,16 @@ struct TXBusinessV2DraftEditor: View {
         }
     }
 
+    private var billConfirmedContent: some View {
+        confirmedContent.alert("确认联合保存到测试账本？", isPresented: $showBillSend) {
+            Button("确认提交") { Task { await sendBill() } }
+            Button("取消", role: .cancel) { billPrepared = nil }
+        } message: {
+            Text("营业额 ¥" + (billPrepared?.base.prepared.proposal.totalRevenue ?? "待核对") + "，账单 " + String(billPrepared?.bill.receipts.count ?? 0) + " 笔。一次联合保存，失败后查询原操作。")
+        }
+    }
     var body: some View {
-        confirmedContent.confirmationDialog("有未保存的营业草稿", isPresented: $showClose, titleVisibility: .visible) {
+        billConfirmedContent.confirmationDialog("有未保存的营业草稿", isPresented: $showClose, titleVisibility: .visible) {
             Button("保存草稿并关闭") { save(); if saved == draft { onClose() } }
             Button("放弃未保存修改", role: .destructive) { onClose() }
             Button("继续编辑", role: .cancel) {}
