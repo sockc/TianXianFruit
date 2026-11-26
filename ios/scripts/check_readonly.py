@@ -738,3 +738,9 @@ assert "TXBillCSV.parse" in bill and "账单收款人" in bill
 assert "commitBusiness" not in bill and "URLSession" not in bill and "customer-analytics/push" not in bill
 assert (root.parent / "Tests" / "BusinessBillCSVTests.swift").exists()
 print("Build 81 local-only bill CSV parsing and preview guard PASS")
+
+assert "TXBillArchive.read" in swift["BusinessBillCSV.swift"]
+assert "compression_decode_buffer" in swift["BusinessBillArchive.swift"] and "crc(output)" in swift["BusinessBillArchive.swift"]
+assert "TXBillCloudAudit" in swift["BusinessBillPreviewView.swift"]
+assert "SOURCE_LINK" in swift["BusinessBillReconciliation.swift"] and "COLLECTOR" in swift["BusinessBillReconciliation.swift"]
+print("Build 81 bounded archive and multi-file attribution preview guard PASS")

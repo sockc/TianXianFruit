@@ -8,7 +8,7 @@ enum TXBillCSVError: LocalizedError {
     case unsupported, malformed, header, ambiguous, conflict, tooLarge
     var errorDescription: String? {
         switch self {
-        case .unsupported: return "目前仅支持官方 CSV 文本账单，ZIP/XLSX 暂未开放"
+        case .unsupported: return "不支持的账单格式、加密压缩包或旧版 XLS"
         case .malformed: return "CSV 格式或编码异常"
         case .header: return "没有找到可核验的交易表头"
         case .ambiguous: return "无法确认账单平台，请使用官方导出文件"
@@ -133,6 +133,17 @@ enum TXBillCSV {
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.timeZone = TimeZone(secondsFromGMT: 28800)
         formatter.isLenient = false
+        // Match Android Excel serial (1899-12-30, China-local natural day).
+        if let serial = Double(value), serial.isFinite, serial > 30000, serial < 100000 {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 28800)!
+            if let epoch = calendar.date(from: DateComponents(year: 1899, month: 12, day: 30)),
+               let date = calendar.date(byAdding: .day, value: Int(serial), to: epoch) {
+                let seconds = min(86399, max(0, Int((serial - Double(Int(serial))) * 86400)))
+                formatter.dateFormat = formats[0]
+                return formatter.string(from: date.addingTimeInterval(Double(seconds)))
+            }
+        }
         for format in formats {
             formatter.dateFormat = format
             guard let date = formatter.date(from: value), formatter.string(from: date) == value else { continue }
@@ -162,8 +173,10 @@ enum TXBillCSV {
     }
 
     static func parse(fileName: String, data: Data) throws -> TXBillCSVResult {
-        let source = try decode(data)
-        let rows = try table(source)
+        let decoded = try TXBillArchive.read(fileName: fileName, data: data)
+        let source = decoded.rows.prefix(30).flatMap { $0 }.joined(separator: "|")
+        let rows = decoded.rows
+        let fileName = decoded.name
         guard let index = rows.firstIndex(where: { row in
             let h = Set(row.map(header))
             return time.contains { h.contains(header($0)) } &&
@@ -216,7 +229,7 @@ enum TXBillCSV {
             let ref = value(reference)
             // No synthetic identifier: Android's fallback hash depends on
             // original raw evidence. Missing order IDs require manual review.
-            guard !ref.isEmpty, !ref.contains("*"), !ref.lowercased().contains("e+"),
+            guard !ref.isEmpty, !ref.hasPrefix("UNSAFE_NUMERIC_ID:"), !ref.contains("*"), !ref.lowercased().contains("e+"), !ref.lowercased().contains("e-"),
                   ref.range(of: "[\\r\\n]", options: .regularExpression) == nil else { review += 1; continue }
             let stable = identity(value(["用户标识","OPENID","买家账号","买家信息","付款方账号","对方账号","对方支付宝账号","支付宝账号","买家支付宝账号"]))
             let reliable = stable.count >= 3 && !["匿名","未知","无","微信用户","支付宝用户","-","--","null","n/a"].contains(stable) &&
