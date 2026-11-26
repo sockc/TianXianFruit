@@ -184,8 +184,17 @@ struct TXBillV3Prepared: Codable, Equatable {
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys,.withoutEscapingSlashes])
     }
     func validate() throws {
-        guard canonical == (try Self.encode(base,bill: bill)),
+        let w = try base.validated()
+        guard let row = w.natural.first(where: { $0.partnerSyncID == bill.partner_sync_id }),
+              w.natural.filter({ $0.partnerSyncID == bill.partner_sync_id }).count == 1,
+              canonical == (try Self.encode(base,bill: bill)),
               hash == TXBusinessV2Preparation.hash(canonical) else { throw BusinessAtomicError.badReceipt }
+        var target = TXBusinessV2CollectorInput()
+        target.partner = row.partnerSyncID
+        target.wechat.natural = row.wechat; target.alipay.natural = row.alipay
+        try bill.validate(date: w.date, partner: row.partnerSyncID, channels: bill.channels,
+            cursor: bill.expected_customer_cursor, receiptKeys: bill.receipts.map(\.key).sorted(),
+            fileHashes: Array(Set(bill.files.map(\.file_hash))).sorted(), target: target)
     }
 }
 
