@@ -99,6 +99,16 @@ struct BusinessCloudDetailView: View {
                     }
                 }
 
+                if canEdit {
+                    Section(header: Text("账单补录")) {
+                        NavigationLink(destination: TXHistoryBillPreview(recordSyncID: recordSyncID, bookID: bookID)) {
+                            Label("已有营业账单补录预览", systemImage: "doc.text.magnifyingglass")
+                        }
+                        Text("仅核对历史金额，不修改云端营业。需有可靠自然日及凌晨来源。")
+                            .font(.caption2).foregroundColor(.secondary)
+                    }
+                }
+
                 Section(header: Text("营业记录更正")) {
                     if canEdit {
                         NavigationLink(destination: TestBusinessEditView(

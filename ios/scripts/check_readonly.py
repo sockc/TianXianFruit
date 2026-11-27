@@ -577,7 +577,7 @@ assert 'showConfirmedDrafts || attempt.phase != .confirmed || confirmedPurchaseC
 assert 'DisclosureGroup(isExpanded: $showAudit)' in swift['TXFundOverviewPanel.swift']
 assert '服务端库存写入未授权' in swift['TXInventory094Page.swift']
 assert 'MARKETING_VERSION: "1.0.3"' in project
-assert 'CURRENT_PROJECT_VERSION: "81"' in project
+assert 'CURRENT_PROJECT_VERSION: "82"' in project
 print("V1.0.0 RC1 PASS: routine UI, retained history, honest sync states")
 
 # RC2: directory is read-only except existing book selection.
@@ -775,3 +775,9 @@ assert "api.billV3Operation" in v3vm and "receipt.verified" in v3vm
 assert "TXBillV3Outbox().load(scope) == nil" in v2tx
 assert "billV3Scope" in v3vm and "联合保存营业与客户交易" in v2editor
 print("Build 81 V3 test-only single POST, durable reservation and query-only recovery PASS")
+
+historybill = swift["BusinessBillHistoryPreview.swift"]
+assert "TXHistoryBillPreview" in swift["BusinessCloudDetailView.swift"]
+assert "TXBusinessV2Preparation.adjusted" in historybill and "hasDerivedSettlement" in historybill
+assert "URLSession" not in historybill and "/v4/commit" not in regular
+print("Build 82 history bill preview only; no V4 cloud write PASS")

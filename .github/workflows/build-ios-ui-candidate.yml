@@ -4,6 +4,7 @@ on:
     branches:
       - feature/ios-v1.0.2-business-parity
       - feature/ios-v1.0.3-bill-preview
+      - feature/ios-v1.0.3-build82-history-bill
   workflow_dispatch:
 permissions:
   contents: read
