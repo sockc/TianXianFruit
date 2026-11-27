@@ -1,0 +1,81 @@
+name: Publish verified Build 81 test IPA
+on:
+  push:
+    branches: [release/ios-v1.0.3-build81]
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: publish-ios-build81
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'sockc/TianXianFruit' && github.ref == 'refs/heads/release/ios-v1.0.3-build81'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: sockc/TianXianFruit
+      TARGET: 6edc8931287de4b35d64ff05300c2f3450cd45aa
+      RUN: "45831978732"
+      ARTIFACT: "15123521523"
+      DIGEST: sha256:e38ddca2c038a540296e7c98ca09dedd39975782f3c2b60b4095553bf61c3cb3
+      TAG: ios-v1.0.3-build81
+      IPA: TianXianFruit-iOS-v1.0.3-Build81-TrollStore.ipa
+    steps:
+      - name: Verify source and exact build artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          for id in "$RUN" 45831978526; do
+            gh api "repos/$GH_REPO/actions/runs/$id" > run.json
+            jq -e --arg target "$TARGET" '.head_sha == $target and .status == "completed" and .conclusion == "success"' run.json >/dev/null
+          done
+          gh api "repos/$GH_REPO/actions/artifacts/$ARTIFACT" > artifact.json
+          jq -e --arg target "$TARGET" --arg digest "$DIGEST" --argjson run "$RUN" '.workflow_run.head_sha == $target and .workflow_run.id == $run and .digest == $digest and .expired == false and .name == "TianXianFruit-iOS-v1.0.3-Build81-TrollStore"' artifact.json >/dev/null
+          test "$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" = "v1.4.7.135"
+          if gh release view "$TAG" >/dev/null 2>&1; then echo "Refusing to overwrite existing release"; exit 1; fi
+          if gh api "repos/$GH_REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then echo "Refusing to reuse existing tag"; exit 1; fi
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: "15123521523"
+          run-id: "45831978732"
+          github-token: ${{ github.token }}
+          path: dist
+          merge-multiple: true
+      - name: Validate IPA and generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          test -s "$IPA"
+          python3 - <<'PY'
+          import os,plistlib,zipfile
+          with zipfile.ZipFile(os.environ["IPA"]) as z:
+              assert z.testzip() is None
+              paths=[p for p in z.namelist() if p.startswith("Payload/") and p.count("/")==2 and p.endswith(".app/Info.plist")]
+              assert len(paths)==1, paths
+              d=plistlib.loads(z.read(paths[0]))
+              assert d["CFBundleIdentifier"]=="com.tianxian.fruit.ios"
+              assert d["CFBundleShortVersionString"]=="1.0.3"
+              assert d["CFBundleVersion"]=="81"
+              assert d["MinimumOSVersion"]=="15.0"
+              assert paths[0].rsplit("/",1)[0]+"/"+d["CFBundleExecutable"] in z.namelist()
+          PY
+          sha256sum "$IPA" > SHA256SUMS.txt
+      - name: Publish public prerelease without changing Android Latest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > notes.md <<'EOF'
+          ## iOS V1.0.3 Build 81 · 账单补录联合测试版
+
+          - 微信、支付宝 CSV、单账单 ZIP、单工作表 XLSX，多文件合并、重复交易及收款人归属核对。
+          - 生成独立电子收款补录草稿，现金保持不变，复用凌晨计算。
+          - 需要 Server V1.0.39，V3 仅测试账本、新增营业、完整单日文件、最多1000笔；不支持已有营业覆盖。
+          - 独立不可变 SQLite 请求、营业与客户联合保存及查询恢复，双流回读校验。
+          - iOS 编译、XCTest、IPA 构建已通过；V39 RC2 真实隔离 PostgreSQL/HTTP 已由用户确认成功，线上 V39 部署及实机验收仍待确认。
+          - Android Latest V1.4.7.135 保留；正式账本 V3 未开放。最低 iOS 15.0，TrollStore 安装。
+          EOF
+          gh release create "$TAG" "dist/$IPA" dist/SHA256SUMS.txt --target "$TARGET" --title "iOS V1.0.3 Build 81 · 账单补录联合测试版" --notes-file notes.md --prerelease --latest=false
+          gh api "repos/$GH_REPO/releases/tags/$TAG" --jq '{tag_name,prerelease,draft,assets:[.assets[]|{name,state,digest}]}'
+          test "$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)" = "v1.4.7.135"
