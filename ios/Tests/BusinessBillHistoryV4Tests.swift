@@ -73,4 +73,23 @@ final class BusinessBillHistoryV4Tests: XCTestCase {
             XCTAssertFalse(try decode(object).matches(p))
         }
     }
+
+    func testHistoryReservationAndScope() throws {
+        let (p,_,_) = try fixture()
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let url = folder.appendingPathComponent("v4.sqlite")
+        let box = try TXHistoryBillV4Outbox(url:url)
+        XCTAssertNil(try box.load(bookID:p.request.book_id,recordID:p.request.record_sync_id))
+        try box.reserve(p)
+        XCTAssertThrowsError(try box.reserve(p))
+        XCTAssertEqual(try TXHistoryBillV4Outbox(url:url).load(bookID:p.request.book_id,recordID:p.request.record_sync_id),p)
+        XCTAssertNil(try box.load(bookID:uuid(9),recordID:p.request.record_sync_id))
+        let owner = Account(username:"seller",displayName:"seller",systemRole:nil)
+        let other = Account(username:"other",displayName:"other",systemRole:nil)
+        let book = CloudBook(id:p.request.book_id,name:"iOS_TEST_V40",role:"OWNER",deleted:nil,purged:nil)
+        XCTAssertTrue(p.permits(owner,book))
+        XCTAssertFalse(p.permits(other,book))
+        XCTAssertFalse(p.permits(owner,CloudBook(id:book.id,name:"正式账本",role:"OWNER",deleted:nil,purged:nil)))
+    }
 }

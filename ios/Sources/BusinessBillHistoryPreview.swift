@@ -193,6 +193,12 @@ struct TXHistoryBillPreview: View {
     @State private var error: String?
     @State private var plan: TXHistoryBillPlan?
     @State private var prepared: TXHistoryBillV4Prepared?
+    @State private var reserved: TXHistoryBillV4Prepared?
+    @State private var allowed = false
+    @State private var working = false
+    @State private var verified = false
+    @State private var storageFailed = false
+    @State private var showSend = false
     private var record: SyncEvent? {
         guard model.selectedBookID == bookID else { return nil }
         return model.snapshot.records["store_daily_record|"+recordSyncID]
@@ -201,8 +207,55 @@ struct TXHistoryBillPreview: View {
     private var permitted: Bool {
         BusinessCorrectionEntryPolicy.allowed(book:model.selectedBook,record:record,events:records,cachedAuthorization:model.isUsingCachedAuthorization)
     }
-    private var ready: Bool { permitted && model.customerOvernightCovered && model.customerAPIAvailable &&
-        model.customerError == nil && !model.isCustomerBusy && model.customerSyncedAt != nil }
+    private var ready: Bool { permitted && !storageFailed && reserved == nil && !working &&
+        model.customerOvernightCovered && model.customerAPIAvailable &&
+        model.customerError == nil && !model.isCustomerBusy && !model.isBusy &&
+        model.customerSyncedAt != nil && model.errorMessage == nil && model.lastSyncAt != nil }
+    private func loadReservation() {
+        guard model.selectedBookID == bookID else { return }
+        do { reserved = try TXHistoryBillV4Outbox().load(bookID:bookID,recordID:recordSyncID) }
+        catch { storageFailed = true;self.error = error.localizedDescription }
+    }
+    private func refreshOnline() async {
+        guard !working,model.selectedBookID == bookID else { return }
+        allowed = false
+        let user = model.account?.username
+        await model.refresh()
+        guard model.selectedBookID == bookID, model.account?.username == user else { return }
+        await model.refreshCustomer(forceFull:true)
+        guard model.selectedBookID == bookID, model.account?.username == user else { return }
+        allowed = (try? await model.checkHistoryBillV4(bookID:bookID)) == true
+    }
+    private func send() async {
+        guard ready,allowed,let prepared,let batch,prepared.permits(model.account,model.selectedBook) else { return }
+        working = true;error = nil
+        defer { working = false;loadReservation() }
+        do { try await model.submitHistoryBillV4(prepared,batch:batch);verified = true }
+        catch { self.error = error.localizedDescription }
+    }
+    private func recover() async {
+        guard !working,let reserved,reserved.permits(model.account,model.selectedBook) else { return }
+        working = true;error = nil
+        defer { working = false }
+        do { try await model.recoverHistoryBillV4(reserved);verified = true }
+        catch { self.error = error.localizedDescription }
+    }
+    private var operationSection: some View {
+        Section(header:Text("历史补录联合操作")) {
+            if let reserved {
+                Text(verified ? "已回读确认" : "原请求已锁定；只能查询核对")
+                    .foregroundColor(verified ? .green : .orange)
+                if reserved.permits(model.account,model.selectedBook) {
+                    Button("查询原联合操作") { Task { await recover() } }.disabled(working)
+                } else { Text("需使用原提交账号查询").font(.caption).foregroundColor(.secondary) }
+            } else if allowed,prepared != nil {
+                Button("联合覆盖历史营业与客户交易") { showSend = true }.disabled(!ready || reading)
+            } else {
+                Text("V4 未授权或尚未生成补录方案。").font(.caption).foregroundColor(.secondary)
+            }
+            if working { ProgressView("正在核对…") }
+        }
+    }
     private var partners: Set<String> {
         guard let record else { return [] }
         return Set((try? TXHistoryBillPlan.partners(record:record,records:records)) ?? [])
@@ -249,7 +302,7 @@ struct TXHistoryBillPreview: View {
     }
     var body: some View {
         Form {
-            Section(header:Text("历史营业 · 只读预览")) {
+            Section(header:Text("历史营业 · 账单补录")) {
                 Text((record?.payload["date"]?.text ?? "")+" · "+(record?.payload["store_name"]?.text ?? ""))
                 Picker("账单收款人",selection:$partner) {
                     Text("请选择").tag("")
@@ -257,7 +310,7 @@ struct TXHistoryBillPreview: View {
                 }.disabled(reading || batch != nil)
                 Button("选择完整单日账单") { choose = true }.disabled(!ready || partner.isEmpty || reading)
                 if batch != nil { Button("重新选择收款人或账单") { batch=nil;plan=nil;prepared=nil;confirmed=[];partner="" }.disabled(reading) }
-                Button("刷新客户及凌晨来源") { Task { await model.refresh();await model.refreshCustomer(forceFull:true) } }.disabled(reading || model.isBusy || model.isCustomerBusy)
+                Button("刷新客户及凌晨来源") { Task { await refreshOnline() } }.disabled(reading || working || model.isBusy || model.isCustomerBusy)
                 if !ready { Text("需要在线同步及可靠凌晨来源。").font(.caption).foregroundColor(.orange) }
                 if let error { Text(error).font(.caption).foregroundColor(.red) }
             }
@@ -289,12 +342,20 @@ struct TXHistoryBillPreview: View {
                     }
                 }
             }
-            Section { Text("历史覆盖 V4 尚未开放。原营业、库存、费用、现金和结算均不修改；多日文件暂不能生成历史覆盖方案。").font(.caption).foregroundColor(.secondary) }
+            operationSection
+            Section { Text("仅授权测试账本。原营业身份、库存、费用、现金、其他收款人和结算保留；多日文件暂不支持联合覆盖。原操作不明时禁止重发。").font(.caption).foregroundColor(.secondary) }
         }
         .navigationTitle("历史账单补录")
+        .task { loadReservation();await refreshOnline() }
+        .alert("确认覆盖测试账本原营业？",isPresented:$showSend) {
+            Button("确认联合保存") { Task { await send() } }
+            Button("取消",role:.cancel) {}
+        } message: { Text("仅更新所选电子渠道、营业额、利润及账单客户交易；原现金与结算保持不变。") }
         .fileImporter(isPresented:$choose,allowedContentTypes:[.commaSeparatedText,.plainText,.zip,UTType(filenameExtension:"xlsx") ?? .data],allowsMultipleSelection:true,onCompletion:selectFiles)
         .onChange(of:model.customerCursor) { _ in plan=nil;prepared=nil }
         .onChange(of:model.currentCursor) { _ in plan=nil;prepared=nil }
         .onChange(of:permitted) { value in if !value { plan=nil;prepared=nil;batch=nil;confirmed=[] } }
+        .onChange(of:model.selectedBookID) { _ in allowed=false;plan=nil;prepared=nil;batch=nil;reserved=nil;confirmed=[];verified=false }
+        .onChange(of:model.account?.username) { _ in allowed=false;plan=nil;prepared=nil;batch=nil;confirmed=[];verified=false;loadReservation() }
     }
 }

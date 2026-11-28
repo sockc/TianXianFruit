@@ -99,12 +99,12 @@ struct BusinessCloudDetailView: View {
                     }
                 }
 
-                if canEdit {
+                if canEdit || model.selectedBook?.name.hasPrefix("iOS_TEST_") == true {
                     Section(header: Text("账单补录")) {
                         NavigationLink(destination: TXHistoryBillPreview(recordSyncID: recordSyncID, bookID: bookID)) {
-                            Label("已有营业账单补录预览", systemImage: "doc.text.magnifyingglass")
+                            Label("已有营业账单补录 / 原操作核对", systemImage: "doc.text.magnifyingglass")
                         }
-                        Text("仅核对历史金额，不修改云端营业。需有可靠自然日及凌晨来源。")
+                        Text("需有可靠自然日及凌晨来源；仅授权测试账本可联合覆盖，原操作可只读核对。")
                             .font(.caption2).foregroundColor(.secondary)
                     }
                 }
