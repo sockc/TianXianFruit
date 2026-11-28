@@ -47,6 +47,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             || path == "/api/v1/business/capabilities"
             || path == "/api/v1/business/v2/capabilities"
             || path == "/api/v1/business/v3/capabilities"
+            || path == "/api/v1/business/v4/capabilities"
             || path == "/api/v1/settlements/capabilities"
             || path == "/api/v1/ledger-v33/capabilities"
             || path == "/api/v1/ledger-v33/funds/balance"
@@ -63,6 +64,7 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
             || path == "/api/v1/business/commit"
             || path == "/api/v1/business/v2/commit"
             || path == "/api/v1/business/v3/commit"
+            || path == "/api/v1/business/v4/commit"
             || path == "/api/v1/settlements/commit"
             || path == "/api/v1/ledger-v33/inventory/commit"
             || path == "/api/v1/ledger-v33/daily/generate"
@@ -172,6 +174,32 @@ final class CloudAPI: NSObject, URLSessionTaskDelegate {
         }
     }
 
+    func historyBillV4Capabilities(token:String,bookID:String) async throws -> TXHistoryBillV4Capabilities {
+        guard UUID(uuidString:bookID) != nil else { throw BusinessAtomicError.scope }
+        return try decode(TXHistoryBillV4Capabilities.self,from:await request("GET","/api/v1/business/v4/capabilities",
+            token:token,query:[URLQueryItem(name:"book_id",value:bookID)]))
+    }
+    func historyBillV4Commit(token:String,immutable:TXHistoryBillV4Prepared,book:CloudBook,
+                            account:Account,capabilities:TXHistoryBillV4Capabilities) async throws -> TXHistoryBillV4Receipt {
+        guard immutable.permits(account,book),capabilities.allows(book:book) else { throw BusinessAtomicError.scope }
+        let body = try immutable.body(deviceID:Self.scopedDeviceID(account.username))
+        let receipt = try decode(TXHistoryBillV4Receipt.self,from:await request("POST", "/api/v1/business/v4/commit",
+            token:token,jsonBody:body))
+        guard receipt.matches(immutable) else { throw BusinessAtomicError.badReceipt }
+        return receipt
+    }
+    func historyBillV4Operation(token:String,immutable:TXHistoryBillV4Prepared,book:CloudBook,account:Account) async throws -> TXHistoryBillV4Receipt? {
+        guard immutable.permits(account,book) else { throw BusinessAtomicError.scope }
+        try immutable.validate()
+        let r = immutable.request
+        do {
+            let receipt = try decode(TXHistoryBillV4Receipt.self,from:await request("GET",
+                "/api/v1/business/operations/"+r.operation_id,token:token,
+                query:[URLQueryItem(name:"book_id",value:r.book_id)]))
+            guard receipt.matches(immutable) else { throw BusinessAtomicError.badReceipt }
+            return receipt
+        } catch let error as CloudAPIError where error.status == 404 { return nil }
+    }
     func billV3Capabilities(token: String, bookID: String) async throws -> TXBillV3Capabilities {
         guard UUID(uuidString: bookID) != nil else { throw BusinessAtomicError.scope }
         return try decode(TXBillV3Capabilities.self, from: await request("GET", "/api/v1/business/v3/capabilities",

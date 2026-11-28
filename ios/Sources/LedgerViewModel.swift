@@ -163,6 +163,74 @@ final class LedgerViewModel: ObservableObject {
               customerBefore == nil || latest > customerBefore! else { throw BusinessAtomicError.cloudConflict }
     }
 
+    private func historyBillV4Scope(_ immutable:TXHistoryBillV4Prepared,token:String) -> Bool {
+        immutable.permits(account,selectedBook) && accessToken == token && !isUsingCachedAuthorization
+    }
+    func checkHistoryBillV4(bookID:String) async throws -> Bool {
+        guard let token = accessToken,let book = selectedBook,let user = account,
+              book.id == bookID,book.name.hasPrefix("iOS_TEST_"),!isUsingCachedAuthorization else { return false }
+        let caps = try await api.historyBillV4Capabilities(token:token,bookID:bookID)
+        guard accessToken == token,selectedBookID == bookID,account?.username == user.username,
+              !isUsingCachedAuthorization,let current = selectedBook else { return false }
+        return caps.allows(book:current)
+    }
+    private func checkLegacyHistoryJobs(book:CloudBook,account:Account,recordID:String) throws {
+        let store = try TestDraftStore()
+        guard !(try store.businessEditJobs(account:account.username,book:book.id)).contains(where:{
+            $0.original.syncId == recordID && $0.state != .complete
+        }), !(try store.businessJobs(account:account.username,book:book.id)).contains(where:{
+            $0.syncID == recordID && $0.state != .complete
+        }) else { throw BusinessAtomicError.locked }
+    }
+    func submitHistoryBillV4(_ immutable:TXHistoryBillV4Prepared,batch:TXBillBatchPreview) async throws {
+        let r = immutable.request
+        guard !isBusinessCommitBusy,!isPurchaseCommitBusy,!isSettlementCommitBusy,!isLedgerV33Busy,!v33HasPending,
+              let token = accessToken,historyBillV4Scope(immutable,token:token) else { throw BusinessAtomicError.scope }
+        isBusinessCommitBusy = true
+        defer { isBusinessCommitBusy = false }
+        let outbox = try TXHistoryBillV4Outbox()
+        guard try outbox.load(bookID:r.book_id,recordID:r.record_sync_id) == nil else { throw BusinessAtomicError.locked }
+        try await freshBusinessV2(immutable.scope,token:token)
+        let caps = try await api.historyBillV4Capabilities(token:token,bookID:r.book_id)
+        guard historyBillV4Scope(immutable,token:token),let book = selectedBook,let user = account,
+              caps.allows(book:book),!isBusy,!isCustomerBusy,!v33HasPending,
+              customerCursor == r.bill.expected_customer_cursor,
+              let sale = snapshot.records["store_daily_record|"+r.record_sync_id],
+              BusinessCorrectionEntryPolicy.allowed(book:book,record:sale,events:Array(snapshot.records.values),cachedAuthorization:false),
+              let op = UUID(uuidString:r.operation_id)
+        else { throw BusinessAtomicError.cloudConflict }
+        try checkLegacyHistoryJobs(book:book,account:user,recordID:r.record_sync_id)
+        let plan = try TXHistoryBillPlan.prepare(record:sale,records:Array(snapshot.records.values),
+            events:Array(customerSnapshot.events.values),partner:r.bill.partner_sync_id,batch:batch,
+            channels:Set(r.bill.channels),cursor:customerCursor)
+        let rebuilt = try TXHistoryBillV4Prepared.prepare(plan:plan,account:user,book:book,operationID:op)
+        guard rebuilt == immutable,try outbox.load(bookID:r.book_id,recordID:r.record_sync_id) == nil else {
+            throw BusinessAtomicError.cloudConflict
+        }
+        try outbox.reserve(immutable)
+        let receipt = try await api.historyBillV4Commit(token:token,immutable:immutable,book:book,account:user,capabilities:caps)
+        try await verifyHistoryBillV4(immutable,receipt:receipt,token:token)
+    }
+    func recoverHistoryBillV4(_ immutable:TXHistoryBillV4Prepared) async throws {
+        let r = immutable.request
+        guard !isBusinessCommitBusy,!isPurchaseCommitBusy,!isSettlementCommitBusy,!isLedgerV33Busy,
+              let token = accessToken,historyBillV4Scope(immutable,token:token),let book = selectedBook,let user = account,
+              try TXHistoryBillV4Outbox().load(bookID:r.book_id,recordID:r.record_sync_id) == immutable
+        else { throw BusinessAtomicError.scope }
+        isBusinessCommitBusy = true
+        defer { isBusinessCommitBusy = false }
+        guard let receipt = try await api.historyBillV4Operation(token:token,immutable:immutable,book:book,account:user) else {
+            throw BusinessAtomicError.missingResult
+        }
+        try await verifyHistoryBillV4(immutable,receipt:receipt,token:token)
+    }
+    private func verifyHistoryBillV4(_ immutable:TXHistoryBillV4Prepared,receipt:TXHistoryBillV4Receipt,token:String) async throws {
+        try await freshBusinessV2(immutable.scope,token:token)
+        guard historyBillV4Scope(immutable,token:token),
+              receipt.verified(immutable,records:Array(snapshot.records.values),events:Array(customerSnapshot.events.values),
+                ledgerCursor:currentCursor,customerCursor:customerCursor) else { throw BusinessAtomicError.readback }
+    }
+
     private func billV3Scope(_ scope: TXBusinessV2EditorScope, token: String) -> Bool {
         businessV2Scope(scope, token: token) && selectedBook?.name.hasPrefix("iOS_TEST_") == true
     }

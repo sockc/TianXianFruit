@@ -146,6 +146,7 @@ final class TestBusinessEditCoordinator: ObservableObject {
         var job: TestBusinessEditJob?
         do {
             let (api, auth, book, store) = try active()
+            guard try TXHistoryBillV4Outbox().load(bookID:book.id,recordID:original.syncId) == nil else { throw BusinessAtomicError.locked }
             try await api.validateSession(auth)
             try current(g)
             let available = try await api.pullAll(auth)
@@ -207,6 +208,11 @@ final class TestBusinessEditCoordinator: ObservableObject {
                 liveEvents = check; liveRecordsReady = true
                 message = "更正未发送：提交前云端记录发生变化，已清理本机未发送任务。返回上一页重新打开最新记录。"
                 return
+            }
+            guard try TXHistoryBillV4Outbox().load(bookID:book.id,recordID:original.syncId) == nil else {
+                try store.cancelUnsentBusinessEdit(id:prepared.id,account:account,book:book.id)
+                job = nil
+                throw BusinessAtomicError.locked
             }
             var sending = prepared
             sending.state = .sending

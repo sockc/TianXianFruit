@@ -87,6 +87,16 @@ struct TXHistoryBillV4Prepared: Codable, Equatable {
         return result
     }
 
+    func permits(_ account:Account?,_ book:CloudBook?) -> Bool {
+        guard let account,let book,book.isAvailable,book.name.hasPrefix("iOS_TEST_"),
+              ["OWNER","EDITOR","SUPERADMIN"].contains(book.role.uppercased()) else { return false }
+        return account.username.lowercased() == request.account && book.id.lowercased() == request.book_id
+    }
+    var scopeKey: String { request.book_id+"|"+request.record_sync_id }
+    var scope: TXBusinessV2EditorScope {
+        TXBusinessV2EditorScope(account:request.account,book:request.book_id,date:request.date,
+            storeID:request.store_sync_id,storeName:originalSale["store_name"]?.text ?? "")
+    }
     func validate() throws {
         guard canonical == (try request.canonical()), hash == TXBusinessV2Preparation.hash(canonical),
               originalSale["date"] == .string(request.date),

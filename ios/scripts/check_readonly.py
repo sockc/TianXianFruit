@@ -779,12 +779,21 @@ print("Build 81 V3 test-only single POST, durable reservation and query-only rec
 historybill = swift["BusinessBillHistoryPreview.swift"]
 assert "TXHistoryBillPreview" in swift["BusinessCloudDetailView.swift"]
 assert "TXBusinessV2Preparation.adjusted" in historybill and "hasDerivedSettlement" in historybill
-assert "URLSession" not in historybill and "/v4/commit" not in regular
+assert "URLSession" not in historybill
 print("Build 82 history bill preview only; no V4 cloud write PASS")
 
 historywire = swift["BusinessBillHistoryV4Wire.swift"]
 assert "expected_row_version" in historywire and "expected_natural_revision" in historywire
 assert "expectedSplits" in historywire and "originalMorning" in historywire
 assert "TXHistoryBillV4Prepared.prepare" in historybill
-assert "/v4/commit" not in regular and "URLSession" not in historywire
+assert "URLSession" not in historywire
 print("Build 82 V4 exact request and strict historical readback, no POST PASS")
+
+v4out = swift["BusinessBillHistoryV4Outbox.swift"]
+assert "INSERT INTO reserved(scope,payload)" in v4out and "DELETE FROM reserved" not in v4out
+assert regular.count('request("POST", "/api/v1/business/v4/commit"') == 1
+v4vm = swift["LedgerViewModel.swift"].split("func submitHistoryBillV4(")[1].split("private func billV3Scope(")[0]
+assert v4vm.index("try outbox.reserve(immutable)") < v4vm.index("api.historyBillV4Commit(")
+assert "receipt.verified" in v4vm and "api.historyBillV4Operation" in v4vm
+assert "checkLegacyHistoryJobs" in v4vm and "TXHistoryBillV4Outbox" in swift["TestBusinessEditCoordinator.swift"]
+print("Build 82 V4 test-only immutable historical reservation and query-only recovery PASS")
