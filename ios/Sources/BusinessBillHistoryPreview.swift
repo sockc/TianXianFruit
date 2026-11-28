@@ -119,7 +119,7 @@ struct TXHistoryBillPlan {
         let excludeLarge = setting?.payload["exclude_large_payments"]?.isTrue ?? true
         guard threshold.isFinite, threshold >= 1 else { throw TXBillPlanError.conflict }
         if let setting {
-            guard case .bool = setting.payload["exclude_large_payments"] else { throw TXBillPlanError.conflict }
+            guard case .bool(_)? = setting.payload["exclude_large_payments"] else { throw TXBillPlanError.conflict }
         }
         let assignment = events.first { $0.kind == "ASSIGNMENT" && $0.key == day && !$0.isDeleted }
         guard assignment == nil || assignment?.payload["store_sync_id"] == .string(store) else { throw TXBillPlanError.conflict }

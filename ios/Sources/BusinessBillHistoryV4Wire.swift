@@ -139,7 +139,7 @@ struct TXHistoryBillV4Receipt: Decodable {
             operation_id.lowercased() == r.operation_id && book_id.lowercased() == r.book_id &&
             record_sync_id == r.record_sync_id && payload_hash == prepared.hash &&
             sync_cursor > 0 && customer_cursor > r.bill.expected_customer_cursor &&
-            row_version == r.expected_row_version+1 && natural_revision == r.expected_natural_revision+1 &&
+            row_version == r.expected_row_version+1 && natural_revision == r.expected_natural_revision + (prepared.originalNatural == prepared.expectedNatural ? 0 : 1) &&
             previous_revision == r.previous_revision && following_revision == r.following_revision &&
             Set(bill_events.map(\.id)) == r.bill.eventKeys && bill_events.count == r.bill.eventKeys.count &&
             bill_events.allSatisfy { $0.revision > 0 }
