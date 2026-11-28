@@ -18,6 +18,16 @@ struct TXHistoryBillPlan {
     let naturalRevision: Int64
     let previousRevision: Int64
     let followingRevision: Int64
+    let bill: TXBillV3Input
+    let originalSale: [String:JSONValue]
+    let originalNatural: [String:JSONValue]
+    let expectedSale: [String:JSONValue]
+    let expectedNatural: [String:JSONValue]
+    let expectedSplits: [[String:JSONValue]]
+    let recordID: String
+    let storeID: String
+    let date: String
+    let originalMorning: [CustomerChangeEvent]
 
     private static func numeric(_ value: JSONValue?) throws -> Int64 {
         switch value {
@@ -28,7 +38,7 @@ struct TXHistoryBillPlan {
         default: throw TXBillPlanError.conflict
         }
     }
-    private static func money(_ value: JSONValue?, signed: Bool = false) throws -> Int64 {
+    static func money(_ value: JSONValue?, signed: Bool = false) throws -> Int64 {
         let d: Double
         switch value {
         case .number(let n)?: d = n
@@ -104,6 +114,15 @@ struct TXHistoryBillPlan {
         // V4 first candidate: whole single-day file only, exactly one collector.
         let wire = try TXBillV3Input.build(batch:batch,date:day,partner:partner,channels:selected,cursor:cursor)
         let audit = TXBillCloudAudit(events:events)
+        let setting = events.first { $0.kind == "SETTINGS" && $0.key == "global" && !$0.isDeleted }
+        let threshold = setting?.payload["large_payment_threshold"]?.decimal ?? 2000
+        let excludeLarge = setting?.payload["exclude_large_payments"]?.isTrue ?? true
+        guard threshold.isFinite, threshold >= 1 else { throw TXBillPlanError.conflict }
+        if let setting {
+            guard case .bool = setting.payload["exclude_large_payments"] else { throw TXBillPlanError.conflict }
+        }
+        let assignment = events.first { $0.kind == "ASSIGNMENT" && $0.key == day && !$0.isDeleted }
+        guard assignment == nil || assignment?.payload["store_sync_id"] == .string(store) else { throw TXBillPlanError.conflict }
         let selectedRows = batch.rows.filter { channels.contains($0.platform) && $0.date == day }
         for platform in selected {
             let rows = selectedRows.filter { $0.platform == platform }
@@ -112,6 +131,18 @@ struct TXHistoryBillPlan {
             for row in rows {
                 let match = audit.match(row,selectedPartner:partner,fileHashes:batch.sourceHashes[row.id] ?? [])
                 guard match == .new || match == .sameCollector else { throw TXBillPlanError.conflict }
+                let state = events.first { $0.kind == "ANALYSIS" && $0.key == row.id && !$0.isDeleted }?.payload["state"]?.text
+                if state == "EXCLUDED" || (state != "INCLUDED" && excludeLarge && Double(row.cents)/100 >= threshold) {
+                    throw TXBillPlanError.excluded
+                }
+                if match == .sameCollector {
+                    guard let existing = events.first(where: { $0.kind == "RECEIPT" && $0.key == row.id }),
+                          existing.payload["store_sync_id"] == .string(store),
+                          existing.payload["business_date"] == .string(day),
+                          existing.payload["customer_key"] == .string(row.customerKey),
+                          existing.payload["identity_confidence"] == .string(row.reliableIdentity ? "HIGH" : "LOW")
+                    else { throw TXBillPlanError.conflict }
+                }
             }
             let total = rows.reduce(Int64(0)) { $0 + $1.net }
             guard total >= 0 else { throw TXBillPlanError.incomplete }
@@ -124,9 +155,29 @@ struct TXHistoryBillPlan {
         let changed = try TXBusinessV2Preparation.adjusted(request,previous:pair.0.morning,following:pair.1.morning)
         guard changed[2] == actual[2], changed.reduce(0,+)>0 else { throw TXBillPlanError.conflict }
         let delta = changed.reduce(0,+)-actual.reduce(0,+)
+        var updated = p, updatedNatural = source, updatedSplits = splits
+        guard let index = splits.firstIndex(where: { (try? numeric($0["partner_id"])) == numericID }),
+              record.rowVersion < Int64.max, natural.revision < Int64.max else { throw TXBillPlanError.conflict }
+        func value(_ cents: Int64) -> JSONValue { .number(Double(cents)/100) }
+        for i in 0..<2 where selected.contains(i == 0 ? .wechat : .alipay) {
+            let key = names[i]
+            updatedSplits[index][key+"_income"] = value(changed[i])
+            updatedNatural[key] = value(try BusinessCollectorDraftPolicy.cents(i == 0 ? input.wechat.natural : input.alipay.natural,label:"账单"))
+            updatedNatural["saved_"+key] = value(changed[i])
+            updated[key+"_income"] = value(totals[i]+changed[i]-actual[i])
+        }
+        updatedSplits[index]["amount"] = value(changed.reduce(0,+))
+        updated["revenue"] = value(revenue+delta); updated["profit"] = value(profit+delta)
+        // Only compare parsed split arrays; server normalizes JSON key ordering.
+        updated.removeValue(forKey:"receipt_splits_json")
+        let followingDate = TXBusinessOvernightReferencePolicy.reference(events,businessDate:day,partner:partner)?.followingDate
+        let morning = events.filter { $0.kind == "OVERNIGHT" &&
+            ($0.key == day+"|"+partner || $0.key == (followingDate ?? "")+"|"+partner) }
         return Self(oldRevenue:revenue,newRevenue:revenue+delta,oldProfit:profit,newProfit:profit+delta,cash:totals[2],
             oldWechat:actual[0],newWechat:changed[0],oldAlipay:actual[1],newAlipay:changed[1],
-            rowVersion:record.rowVersion,naturalRevision:natural.revision,previousRevision:pair.0.revision,followingRevision:pair.1.revision)
+            rowVersion:record.rowVersion,naturalRevision:natural.revision,previousRevision:pair.0.revision,followingRevision:pair.1.revision,
+            bill:wire,originalSale:p,originalNatural:source,expectedSale:updated,expectedNatural:updatedNatural,expectedSplits:updatedSplits,
+            recordID:record.syncId,storeID:store,date:day,originalMorning:morning)
     }
 }
 
@@ -141,6 +192,7 @@ struct TXHistoryBillPreview: View {
     @State private var confirmed: Set<TXBillPlatform> = []
     @State private var error: String?
     @State private var plan: TXHistoryBillPlan?
+    @State private var prepared: TXHistoryBillV4Prepared?
     private var record: SyncEvent? {
         guard model.selectedBookID == bookID else { return nil }
         return model.snapshot.records["store_daily_record|"+recordSyncID]
@@ -158,7 +210,7 @@ struct TXHistoryBillPreview: View {
     private func money(_ amount: Int64) -> String { "¥"+BusinessCommitPolicy.money(amount) }
     private func selectFiles(_ result: Result<[URL],Error>) {
         guard ready,!partner.isEmpty,!reading else { return }
-        plan = nil;batch = nil;confirmed = [];error = nil
+        plan = nil;prepared = nil;batch = nil;confirmed = [];error = nil
         do {
             let urls = try result.get()
             guard (1...12).contains(urls.count) else { throw TXBillCSVError.tooLarge }
@@ -182,11 +234,14 @@ struct TXHistoryBillPreview: View {
         } catch { self.error = error.localizedDescription }
     }
     private func calculate() {
-        plan = nil;error = nil
+        plan = nil;prepared = nil;error = nil
         do {
             guard ready,let record,let batch else { throw TXBillPlanError.source }
-            plan = try TXHistoryBillPlan.prepare(record:record,records:records,events:Array(model.customerSnapshot.events.values),
+            let result = try TXHistoryBillPlan.prepare(record:record,records:records,events:Array(model.customerSnapshot.events.values),
                 partner:partner,batch:batch,channels:confirmed,cursor:model.customerCursor)
+            guard let account = model.account, let book = model.selectedBook else { throw TXBillPlanError.scope }
+            prepared = try TXHistoryBillV4Prepared.prepare(plan:result,account:account,book:book)
+            plan = result
         } catch { self.error = error.localizedDescription }
     }
     private func line(_ title:String,_ before:Int64,_ after:Int64) -> some View {
@@ -201,7 +256,7 @@ struct TXHistoryBillPreview: View {
                     ForEach(model.snapshot.testPartners.filter { partners.contains($0.id) }) { Text($0.name).tag($0.id) }
                 }.disabled(reading || batch != nil)
                 Button("选择完整单日账单") { choose = true }.disabled(!ready || partner.isEmpty || reading)
-                if batch != nil { Button("重新选择收款人或账单") { batch=nil;plan=nil;confirmed=[];partner="" }.disabled(reading) }
+                if batch != nil { Button("重新选择收款人或账单") { batch=nil;plan=nil;prepared=nil;confirmed=[];partner="" }.disabled(reading) }
                 Button("刷新客户及凌晨来源") { Task { await model.refresh();await model.refreshCustomer(forceFull:true) } }.disabled(reading || model.isBusy || model.isCustomerBusy)
                 if !ready { Text("需要在线同步及可靠凌晨来源。").font(.caption).foregroundColor(.orange) }
                 if let error { Text(error).font(.caption).foregroundColor(.red) }
@@ -211,7 +266,7 @@ struct TXHistoryBillPreview: View {
                     ForEach(TXBillPlatform.allCases,id:\.self) { platform in
                         if batch.rows.contains(where:{ $0.platform == platform }) {
                             Toggle("确认"+platform.label+"账单完整",isOn:Binding(get:{confirmed.contains(platform)},set:{ enabled in
-                                if enabled { confirmed.insert(platform) } else { confirmed.remove(platform) };plan=nil
+                                if enabled { confirmed.insert(platform) } else { confirmed.remove(platform) };plan=nil;prepared=nil
                             }))
                         }
                     }
@@ -227,14 +282,19 @@ struct TXHistoryBillPreview: View {
                     line("营业额",plan.oldRevenue,plan.newRevenue)
                     line("利润",plan.oldProfit,plan.newProfit)
                     Text("原营业版本 \(plan.rowVersion)，自然日来源版本 \(plan.naturalRevision)。仅预览，不提交。").font(.caption).foregroundColor(.orange)
+                    if let prepared {
+                        DisclosureGroup("V4 请求指纹（未发送）") {
+                            Text(prepared.hash).font(.caption2).textSelection(.enabled)
+                        }.font(.caption2)
+                    }
                 }
             }
             Section { Text("历史覆盖 V4 尚未开放。原营业、库存、费用、现金和结算均不修改；多日文件暂不能生成历史覆盖方案。").font(.caption).foregroundColor(.secondary) }
         }
         .navigationTitle("历史账单补录")
         .fileImporter(isPresented:$choose,allowedContentTypes:[.commaSeparatedText,.plainText,.zip,UTType(filenameExtension:"xlsx") ?? .data],allowsMultipleSelection:true,onCompletion:selectFiles)
-        .onChange(of:model.customerCursor) { _ in plan=nil }
-        .onChange(of:model.currentCursor) { _ in plan=nil }
-        .onChange(of:permitted) { value in if !value { plan=nil;batch=nil;confirmed=[] } }
+        .onChange(of:model.customerCursor) { _ in plan=nil;prepared=nil }
+        .onChange(of:model.currentCursor) { _ in plan=nil;prepared=nil }
+        .onChange(of:permitted) { value in if !value { plan=nil;prepared=nil;batch=nil;confirmed=[] } }
     }
 }

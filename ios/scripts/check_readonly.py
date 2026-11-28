@@ -781,3 +781,10 @@ assert "TXHistoryBillPreview" in swift["BusinessCloudDetailView.swift"]
 assert "TXBusinessV2Preparation.adjusted" in historybill and "hasDerivedSettlement" in historybill
 assert "URLSession" not in historybill and "/v4/commit" not in regular
 print("Build 82 history bill preview only; no V4 cloud write PASS")
+
+historywire = swift["BusinessBillHistoryV4Wire.swift"]
+assert "expected_row_version" in historywire and "expected_natural_revision" in historywire
+assert "expectedSplits" in historywire and "originalMorning" in historywire
+assert "TXHistoryBillV4Prepared.prepare" in historybill
+assert "/v4/commit" not in regular and "URLSession" not in historywire
+print("Build 82 V4 exact request and strict historical readback, no POST PASS")
